@@ -107,6 +107,291 @@ def write_teams_ingest_worker_config(
     )
 
 
+def test_idle_notification_queue_compacts_terminal_rows_without_workflow_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    origin = datetime.now(UTC)
+    wall_now = [origin + timedelta(days=31)]
+    monotonic_now = [10.0]
+    for key, state, completed_at in (
+        ("completed-expired", "completed", origin),
+        ("failed-expired", "failed", origin),
+        ("completed-at-cutoff", "completed", wall_now[0] - timedelta(days=7)),
+        ("failed-at-cutoff", "failed", wall_now[0] - timedelta(days=30)),
+        ("retry", "retry", None),
+        ("leased", "leased", None),
+    ):
+        worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+            idempotency_key=key,
+            notification_kind="message",
+            subscription_id="subscription",
+            tenant_id="tenant",
+            resource="chats/chat/messages/message",
+            received_at=origin,
+            next_attempt_at=wall_now[0] + timedelta(days=90),
+            state=state,
+            completed_at=completed_at,
+            leased_until=wall_now[0] + timedelta(days=90) if state == "leased" else None,
+        ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return wall_now[0]
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    compaction_calls = []
+    compact = worker.store.compact_notifications
+
+    def track_compaction(**kwargs):
+        compaction_calls.append(kwargs["now"])
+        return compact(**kwargs)
+
+    monkeypatch.setattr(worker.store, "compact_notifications", track_compaction)
+
+    def unexpected_preparation(**_kwargs):
+        raise AssertionError("an idle notification worker must not prepare workflow/session state")
+
+    monkeypatch.setattr(worker, "_capture_trigger_config_snapshot", unexpected_preparation)
+    monkeypatch.setattr(
+        worker.session_repository, "list_active_sessions", unexpected_preparation
+    )
+
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert {row[0] for row in connection.execute(
+            "SELECT idempotency_key FROM teams_inbox_notification_queue"
+        )} == {"completed-at-cutoff", "failed-at-cutoff", "retry", "leased"}
+
+    # Wall-clock changes affect retention cutoffs, never the monotonic schedule.
+    wall_now[0] += timedelta(days=7)
+    monotonic_now[0] += 3599.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 1
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 2
+    with worker.store._connect() as connection:
+        assert {row[0]: row[1] for row in connection.execute(
+            "SELECT idempotency_key, state FROM teams_inbox_notification_queue"
+        )} == {"retry": "retry", "leased": "leased"}
+    for _ in range(3):
+        assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 2
+
+
+def test_idle_notification_compaction_retries_failure_without_per_pass_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    origin = datetime.now(UTC)
+    worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+        idempotency_key="expired", notification_kind="message", subscription_id="subscription",
+        tenant_id="tenant", resource="resource", received_at=origin, next_attempt_at=origin,
+        state="completed", completed_at=origin,
+    ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return origin + timedelta(days=8)
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monotonic_now = [10.0]
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    compact = worker.store.compact_notifications
+    calls = []
+
+    def fail_once(**kwargs):
+        calls.append(kwargs["now"])
+        if len(calls) == 1:
+            raise OSError("notification storage is temporarily unavailable")
+        return compact(**kwargs)
+
+    monkeypatch.setattr(worker.store, "compact_notifications", fail_once)
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 1
+    monotonic_now[0] += 59.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 1
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 2
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
+    monotonic_now[0] += 3599.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 2
+
+
+def test_idle_notification_compaction_resumes_bounded_slices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    origin = datetime.now(UTC)
+    wall_now = origin + timedelta(days=31)
+    for state in ("completed", "failed"):
+        for number in range(101):
+            worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+                idempotency_key=f"{state}-{number}", notification_kind="message",
+                subscription_id="subscription", tenant_id="tenant", resource="resource",
+                received_at=origin, next_attempt_at=origin, state=state, completed_at=origin,
+            ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return wall_now
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monotonic_now = [10.0]
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert dict(connection.execute(
+            "SELECT state, COUNT(*) FROM teams_inbox_notification_queue GROUP BY state"
+        )) == {"completed": 1, "failed": 1}
+    monotonic_now[0] += 59.0
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 2
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
+
+
+def test_teams_workflow_cache_keeps_cursors_fresh_and_adopts_valid_config_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+    from evander.workflow import runtime_config
+
+    trigger = {
+        "id": "teams-cache",
+        "display_name": "Cached Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-a"}],
+    }
+    write_trigger_config(tmp_path, [trigger])
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    compile_calls = []
+    metadata_calls = []
+    real_compile = runtime_config._compile_worker_global_config
+    real_metadata = teams_ingest.resolve_workflow_graph_metadata
+
+    def compile_config(config):
+        compile_calls.append(config)
+        return real_compile(config)
+
+    def resolve_metadata(**kwargs):
+        metadata_calls.append(kwargs)
+        return real_metadata(**kwargs)
+
+    monkeypatch.setattr(runtime_config, "_compile_worker_global_config", compile_config)
+    monkeypatch.setattr(teams_ingest, "resolve_workflow_graph_metadata", resolve_metadata)
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    message = TeamsInboxMessage(
+        cursor="team-a/channel-a/message-a",
+        message_id="message-a",
+        team_id="team-a",
+        channel_id="channel-a",
+        author_id="user-a",
+        content="hello",
+        created_at=now,
+    )
+    first = worker._capture_trigger_config_snapshot(captured_at=now)
+    assert first.matchers[0].events_for(message)
+    # The direct event queue can initialize target-store WAL files during the first
+    # capture. Settle those startup dependencies before checking repeated polling.
+    worker._trigger_config_cache.get_latest()
+    initial_compiles = len(compile_calls)
+    (tmp_path / "runtime" / "trigger-cursors-teams.json").write_text(
+        json.dumps({"teams-cache": {"last_created_at": (now + timedelta(seconds=1)).isoformat()}}),
+        encoding="utf-8",
+    )
+    second = worker._capture_trigger_config_snapshot(captured_at=now + timedelta(seconds=2))
+
+    assert second.matchers[0].events_for(message) == ()
+    assert second.revision == first.revision
+    assert len(compile_calls) == initial_compiles
+    assert len(metadata_calls) == 1
+
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.write_text("{invalid", encoding="utf-8")
+    recovery = worker._capture_trigger_config_snapshot(captured_at=now + timedelta(seconds=3))
+    assert recovery.revision == first.revision
+    assert recovery.matchers[0].events_for(message) == ()
+
+    write_trigger_config(tmp_path, [{**trigger, "targets": [{"target": "team-a/channel-b"}]}])
+    updated = worker._capture_trigger_config_snapshot(captured_at=now + timedelta(seconds=4))
+    assert updated.revision != first.revision
+    assert updated.poll_targets_by_directory["root"] == frozenset({"team-a/channel-b"})
+    assert first.poll_targets_by_directory["root"] == frozenset({"team-a/channel-a"})
+    assert first.matchers[0].events_for(message)
+    assert len(metadata_calls) == 2
+
+
+def test_cached_teams_workflow_observes_target_moves_and_read_revocation(tmp_path: Path) -> None:
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    target = {
+        "id": "teams-policy",
+        "provider": "teams",
+        "kind": "teams",
+        "address": "team-a/channel-a",
+        "policy": {"capabilities": ["read"]},
+    }
+    write_root_communication_targets(worker, [target])
+    write_trigger_config(tmp_path, [{
+        "id": "communication-policy",
+        "display_name": "Communication",
+        "type": "trigger:communication:new-message",
+        "communication_target_ids": ["teams-policy"],
+    }])
+    now = datetime.now(UTC)
+    first = worker._capture_trigger_config_snapshot(captured_at=now)
+    assert first.poll_targets_by_directory["root"] == frozenset({"team-a/channel-a"})
+
+    write_root_communication_targets(worker, [{**target, "address": "team-a/channel-b"}])
+    moved = worker._capture_trigger_config_snapshot(captured_at=now)
+    assert moved.poll_targets_by_directory["root"] == frozenset({"team-a/channel-b"})
+
+    write_root_communication_targets(worker, [{**target, "policy": {"capabilities": ["write"]}}])
+    revoked = worker._capture_trigger_config_snapshot(captured_at=now)
+    assert revoked.revision == first.revision
+    assert revoked.poll_targets_by_directory == {}
+    message = TeamsInboxMessage(
+        cursor="team-a/channel-a/message-a",
+        message_id="message-a",
+        team_id="team-a",
+        channel_id="channel-a",
+        author_id="user-a",
+        content="hello",
+        created_at=now,
+    )
+    assert revoked.matchers[0].events_for(message) == ()
+
+
 def test_teams_ingest_worker_binds_wake_socket_for_its_lock(tmp_path: Path) -> None:
     config = GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"})
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
@@ -1300,7 +1585,7 @@ def test_teams_ingest_worker_backs_off_only_the_failing_graph_target(
         {
             "runtime_dir": str(tmp_path / "runtime"),
             "teams_backend": "graph_api",
-            "teams_retry_count": 0,
+            "teams_retry_count": 2,
         }
     )
     wake_calls: list[str] = []
@@ -1323,6 +1608,8 @@ def test_teams_ingest_worker_backs_off_only_the_failing_graph_target(
     first = worker.run_once()
 
     assert first.targets_failed == 1
+    assert requests.count("/v1.0/teams/team-a/channels/bad/messages") == 1
+    assert worker.store.get_cursor("team-a/bad") is None
     assert first.new_messages_discovered == 1
     assert first.trigger_wake_notified is True
     assert wake_calls == ["wake"]
@@ -2094,7 +2381,7 @@ def test_teams_ingest_worker_uses_history_page_budget_per_target(
 
     result = worker.run_once()
 
-    assert [request.url.path for request in requests] == [
+    assert sorted(request.url.path for request in requests) == [
         "/v1.0/teams/team-a/channels/channel-1/messages",
         "/v1.0/teams/team-a/channels/channel-2/messages",
     ]
@@ -2103,17 +2390,11 @@ def test_teams_ingest_worker_uses_history_page_budget_per_target(
     assert result.channel_targets_polled == 2
 
 
-@pytest.mark.parametrize("configured_limit", [None, 1])
-def test_teams_ingest_worker_default_and_explicit_one_poll_targets_serially(
+def test_teams_ingest_worker_explicit_one_polls_targets_serially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    configured_limit: int | None,
 ) -> None:
-    if configured_limit is not None:
-        write_teams_ingest_worker_config(
-            tmp_path,
-            max_concurrent_target_polls=configured_limit,
-        )
+    write_teams_ingest_worker_config(tmp_path, max_concurrent_target_polls=1)
 
     active_requests = 0
     maximum_active_requests = 0
@@ -2162,16 +2443,20 @@ def test_teams_ingest_worker_default_and_explicit_one_poll_targets_serially(
     assert result.channel_targets_polled == 2
 
 
+@pytest.mark.parametrize("configured_limit", [None, 2])
 def test_teams_ingest_worker_bounds_concurrent_target_polls_globally(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    configured_limit: int | None,
 ) -> None:
-    write_teams_ingest_worker_config(tmp_path, max_concurrent_target_polls=2)
+    expected_limit = 4 if configured_limit is None else configured_limit
+    if configured_limit is not None:
+        write_teams_ingest_worker_config(tmp_path, max_concurrent_target_polls=configured_limit)
     active_requests = 0
     maximum_active_requests = 0
     request_paths: list[str] = []
     request_lock = threading.Lock()
-    two_requests_started = threading.Event()
+    all_slots_busy = threading.Event()
     release_requests = threading.Event()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2180,8 +2465,8 @@ def test_teams_ingest_worker_bounds_concurrent_target_polls_globally(
             active_requests += 1
             maximum_active_requests = max(maximum_active_requests, active_requests)
             request_paths.append(request.url.path)
-            if active_requests == 2:
-                two_requests_started.set()
+            if active_requests == expected_limit:
+                all_slots_busy.set()
         assert release_requests.wait(timeout=5)
         with request_lock:
             active_requests -= 1
@@ -2204,9 +2489,7 @@ def test_teams_ingest_worker_bounds_concurrent_target_polls_globally(
             directory_path="root/team-a",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
             teams_channel_allowlist=[
-                "team-a/channel-1",
-                "team-a/channel-2",
-                "team-a/channel-3",
+                f"team-a/channel-{index}" for index in range(expected_limit + 1)
             ],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
@@ -2222,10 +2505,10 @@ def test_teams_ingest_worker_bounds_concurrent_target_polls_globally(
     worker_thread = threading.Thread(target=run_worker)
     worker_thread.start()
     try:
-        assert two_requests_started.wait(timeout=5)
+        assert all_slots_busy.wait(timeout=5)
         with request_lock:
-            assert len(request_paths) == 2
-            assert maximum_active_requests == 2
+            assert len(request_paths) == expected_limit
+            assert maximum_active_requests == expected_limit
         release_requests.set()
     finally:
         release_requests.set()
@@ -2233,10 +2516,10 @@ def test_teams_ingest_worker_bounds_concurrent_target_polls_globally(
 
     assert not worker_thread.is_alive()
     assert "exception" not in outcome
-    assert worker.worker_config.max_concurrent_target_polls == 2
-    assert maximum_active_requests == 2
-    assert len(request_paths) == 3
-    assert outcome["result"].channel_targets_polled == 3
+    assert worker.worker_config.max_concurrent_target_polls == expected_limit
+    assert maximum_active_requests == expected_limit
+    assert len(request_paths) == expected_limit + 1
+    assert outcome["result"].channel_targets_polled == expected_limit + 1
 
 
 def test_teams_ingest_worker_concurrent_polls_persist_cursors_and_wake_once(
@@ -2334,6 +2617,90 @@ def test_teams_ingest_worker_concurrent_polls_persist_cursors_and_wake_once(
     assert second_result.new_messages_discovered == 0
     assert len(worker.store.list_all_messages()) == 2
     assert wake_calls == ["wake"]
+
+
+def test_teams_ingest_worker_wakes_for_healthy_target_before_slow_target_times_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_started = threading.Event()
+    release_slow_request = threading.Event()
+    healthy_wake = threading.Event()
+    slow_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal slow_attempts
+        if request.url.path.endswith("/channels/blocked/messages"):
+            slow_attempts += 1
+            slow_started.set()
+            assert release_slow_request.wait(timeout=5)
+            raise httpx.ReadTimeout("slow Graph history", request=request)
+        if request.url.path.endswith("/channels/healthy/messages"):
+            assert slow_started.wait(timeout=5)
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "healthy-message",
+                            "createdDateTime": "2026-08-14T10:01:00Z",
+                            "body": {"content": "healthy", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 2,
+        }
+    )
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: healthy_wake.set() or True,
+    )
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/blocked", "team-a/healthy"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    outcome: dict[str, object] = {}
+
+    def run_worker() -> None:
+        try:
+            outcome["result"] = worker.run_once()
+        except BaseException as exc:  # pragma: no cover - asserted after joining the thread.
+            outcome["exception"] = exc
+
+    worker_thread = threading.Thread(target=run_worker)
+    worker_thread.start()
+    try:
+        assert healthy_wake.wait(timeout=5)
+        assert not release_slow_request.is_set()
+        assert worker.store.get_cursor("team-a/healthy") == "team-a/healthy/healthy-message"
+        assert worker.store.get_cursor("team-a/blocked") is None
+    finally:
+        release_slow_request.set()
+        worker_thread.join(timeout=5)
+
+    assert not worker_thread.is_alive()
+    assert "exception" not in outcome
+    assert slow_attempts == 1
+    assert outcome["result"].targets_failed == 1
+    assert outcome["result"].new_messages_discovered == 1
 
 
 def test_teams_ingest_worker_concurrent_throttle_does_not_block_healthy_target(

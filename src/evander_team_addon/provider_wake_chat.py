@@ -294,6 +294,7 @@ def _dispatch_queued_team_chat_messages(
                 state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
                     agent_id=agent_id,
                     dispatch_id=dispatch_id,
+                    state=state,
                 )
                 dispatches.append(
                     {

@@ -630,6 +630,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         agent_id=agent["id"],
                         dispatch_id=lease["dispatch_id"],
                         granted_tool_names=tool_grant_result["requested_tools"],
+                        state=state,
                     )
                     lease = {
                         **lease,
@@ -765,6 +766,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
                         agent_id=agent["id"],
                         dispatch_id=lease["dispatch_id"],
+                        state=state,
                     )
                     dispatches.append(
                         {

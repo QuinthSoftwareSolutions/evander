@@ -128,7 +128,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     wake_paths: list[Path] = []
     monkeypatch.setattr(
@@ -408,7 +408,7 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     wake_paths: list[Path] = []
     monkeypatch.setattr(
@@ -541,7 +541,7 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_completed_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_completed_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     calls: list[tuple[str, str, bool | None, bool | None]] = []
 
@@ -663,7 +663,7 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setattr(
         ado_worker,
         "_load_ado_pr_feedback_session_bindings",
@@ -882,7 +882,7 @@ def test_publish_directory_pr_feedback_events_keeps_explicit_stream_unbound_with
 
     monkeypatch.setattr(
         ado_worker,
-        "_load_ado_pr_feedback_triggers",
+        "_ado_pr_feedback_triggers",
         lambda _config: [legacy_trigger, explicit_trigger],
     )
     monkeypatch.setattr(
@@ -994,7 +994,7 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_completed_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_completed_triggers", lambda _config: [trigger])
     monkeypatch.setattr(
         ado_worker,
         "_load_ado_pr_feedback_session_bindings",
@@ -1207,7 +1207,7 @@ def test_publish_directory_pr_completion_events_defaults_explicit_query_to_termi
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_completed_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_completed_triggers", lambda _config: [trigger])
     monkeypatch.setattr(
         ado_worker,
         "_resolve_directory_worker_config",
@@ -1337,7 +1337,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     observed_projects: list[str] = []
 
@@ -1433,7 +1433,7 @@ def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_contin
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     calls: list[tuple[str, str]] = []
 
@@ -1563,7 +1563,7 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
         }
     )
 
-    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(ado_worker, "_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
     feedback_created_at = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
     feedback_cursor = feedback_created_at.isoformat().replace("+00:00", "Z")
@@ -1854,3 +1854,89 @@ def test_pr_feedback_worker_rejects_an_arbitrary_trigger_organization() -> None:
             trigger=trigger,
             legacy_organization_url="https://dev.azure.com/directory-org",
         )
+
+
+def test_ado_worker_reuses_compiled_configuration_across_directories_and_reloads_edits(
+    worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.daemons import ado_issue_worker as ado_worker
+    from evander.directories import DirectoryStore
+    from evander.messaging.targets import (
+        SqliteCommunicationTargetsRepository,
+        communication_targets_db_path,
+    )
+    from evander.workflow import runtime_config
+
+    gateway_config = ado_worker.GatewayConfig(
+        runtime_dir=worker_config.runtime_dir, azure_devops_pr_pat_env="TEST_ADO_CACHE_PAT"
+    )
+    DirectoryStore(gateway_config.directories_store_path).ensure_root()
+    SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(worker_config.runtime_dir)
+    ).ensure_schema()
+    monkeypatch.delenv("TEST_ADO_CACHE_PAT", raising=False)
+    monkeypatch.setattr(ado_worker, "_worker_runtime_config", lambda _config: gateway_config)
+    path = ado_worker._trigger_orchestrator_config_path(worker_config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trigger = {
+        "id": "feedback-cache",
+        "display_name": "Feedback",
+        "type": "trigger:pull-request:new-feedback",
+        "provider": "ado",
+    }
+
+    def write_config(*, enabled: bool) -> None:
+        path.write_text(
+            json.dumps(canonical_workflow_payload({"triggers": [{**trigger, "enabled": enabled}]})),
+            encoding="utf-8",
+        )
+
+    write_config(enabled=True)
+    compile_calls = []
+    snapshots = []
+    sleep_compile_counts = []
+    real_compile = runtime_config._compile_worker_global_config
+    real_feedback = ado_worker._publish_directory_pr_feedback_events
+    real_completion = ado_worker._publish_directory_pr_completion_events
+
+    def compile_config(config):
+        compile_calls.append(config)
+        return real_compile(config)
+
+    def publish_feedback(**kwargs):
+        snapshots.append(kwargs["config_cache"].get_latest())
+        return real_feedback(**kwargs)
+
+    def publish_completion(**kwargs):
+        snapshots.append(kwargs["config_cache"].get_latest())
+        return real_completion(**kwargs)
+
+    class StopWorker(Exception):
+        pass
+
+    def sleep(_seconds):
+        sleep_compile_counts.append(len(compile_calls))
+        if len(sleep_compile_counts) == 1:
+            write_config(enabled=False)
+        else:
+            raise StopWorker
+
+    monkeypatch.setattr(runtime_config, "_compile_worker_global_config", compile_config)
+    monkeypatch.setattr(ado_worker, "_publish_directory_pr_feedback_events", publish_feedback)
+    monkeypatch.setattr(ado_worker, "_publish_directory_pr_completion_events", publish_completion)
+    monkeypatch.setattr(ado_worker.time, "sleep", sleep)
+    six_directories = WorkerConfig(
+        **{**worker_config.__dict__, "directories": tuple(f"root/team-{index}" for index in range(6))}
+    )
+
+    with pytest.raises(StopWorker):
+        ado_worker.run_worker(six_directories)
+
+    assert sleep_compile_counts[0] <= 2
+    assert sleep_compile_counts[1] == sleep_compile_counts[0] + 1
+    assert len(snapshots) == 24
+    assert all(config is snapshots[0] for config in snapshots[:12])
+    assert all(config is snapshots[12] for config in snapshots[12:])
+    assert snapshots[0] is not snapshots[12]
+    assert ado_worker._ado_pr_feedback_triggers(snapshots[0])
+    assert ado_worker._ado_pr_feedback_triggers(snapshots[12]) == []

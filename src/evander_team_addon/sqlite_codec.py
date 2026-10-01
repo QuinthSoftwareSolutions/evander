@@ -250,9 +250,11 @@ def _insert_position_values(
         )
 
 
-def _grouped_values(connection: sqlite3.Connection, query: str) -> dict[str, list[str]]:
+def _grouped_values(
+    connection: sqlite3.Connection, query: str, parameters: Sequence[Any] = ()
+) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
-    for row in connection.execute(query):
+    for row in connection.execute(query, parameters):
         grouped.setdefault(row["owner_id"], []).append(row["value"])
     return grouped
 

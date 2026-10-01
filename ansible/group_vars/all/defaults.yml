@@ -513,7 +513,7 @@ evander_teams_ingest_config:
   poll_interval_seconds: 2
   jitter_seconds: 5
   backoff_seconds: 60
-  max_concurrent_target_polls: 1
+  max_concurrent_target_polls: 4
   target_backoff_initial_seconds: 60
   target_backoff_max_seconds: 900
   target_transient_backoff_initial_seconds: 5

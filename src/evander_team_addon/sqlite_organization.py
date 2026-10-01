@@ -569,8 +569,18 @@ class OrganizationStoreMixin:
             )
 
     @staticmethod
-    def _read_agent_runtimes(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
-        for row in connection.execute("SELECT * FROM team_agent_runtimes ORDER BY agent_id"):
+    def _read_agent_runtimes(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+        *,
+        agent_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        parameters = agent_ids or ()
+        placeholders = ",".join("?" for _ in parameters)
+        where = f" WHERE agent_id IN ({placeholders})" if agent_ids is not None else ""
+        for row in connection.execute(
+            f"SELECT * FROM team_agent_runtimes{where} ORDER BY agent_id", parameters
+        ):
             payload["agent_runtimes"][row["agent_id"]] = {
                 "agent_id": row["agent_id"],
                 "wake_leased_until": row["wake_leased_until"],

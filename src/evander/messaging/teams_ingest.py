@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from threading import RLock
+from time import monotonic
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote, unquote
@@ -82,11 +83,19 @@ from evander.triggers.providers.teams_message_events import (
     TeamsNewMessageEventMatcher,
 )
 from evander.triggers.queue import SqliteTriggerEventQueue
-from evander.workflow.graph_metadata import resolve_workflow_graph_metadata
-from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from evander.workflow.graph_metadata import (
+    ResolvedWorkflowGraphMetadata,
+    resolve_workflow_graph_metadata,
+)
+from evander.workflow.runtime_config import (
+    TriggerOrchestratorWorkerGlobalConfigCache,
+    load_trigger_orchestrator_worker_global_config,
+)
 from evander.workflow.node_state import workflow_node_is_enabled
 
 logger = logging.getLogger(__name__)
+_NOTIFICATION_COMPACTION_INTERVAL_SECONDS = 3600.0
+_NOTIFICATION_COMPACTION_RETRY_SECONDS = 60.0
 _ATTACHMENT_SECRET_KEYS = {
     "authorization",
     "token",
@@ -185,6 +194,19 @@ class _TeamsTriggerConfigSnapshot:
     event_queue: _TriggerEventQueue | None
 
 
+@dataclass(frozen=True)
+class _TeamsTriggerDefinitions:
+    trigger_config: TriggerOrchestratorWorkerGlobalConfig
+    revision: str
+    node_graph_metadata_by_id: Mapping[str, ResolvedWorkflowGraphMetadata]
+    triggers: tuple[
+        TeamsDirectMessageTriggerDefinition
+        | TeamsNewMessageTriggerDefinition
+        | CommunicationNewMessageTriggerDefinition,
+        ...,
+    ]
+
+
 class _VerifiedNotificationPublicationError(RuntimeError):
     pass
 
@@ -220,6 +242,9 @@ class TeamsIngestWorker:
             config.runtime_dir / "teams-inbox-store.db"
         )
         self._notification_store = self.store if isinstance(self.store, TeamsInboxStore) else None
+        self._notification_compaction_lock = RLock()
+        self._notification_compaction_clock = monotonic
+        self._next_notification_compaction_at = 0.0
         self._subscription_reconciler = (
             TeamsSubscriptionReconciler(
                 store=self._notification_store,
@@ -237,6 +262,10 @@ class TeamsIngestWorker:
         self._effect_wake_notifier = effect_wake_notifier
         self._event_queue_override = event_queue
         self._event_queue_cache: tuple[tuple[object, ...], _TriggerEventQueue] | None = None
+        self._trigger_config_cache = TriggerOrchestratorWorkerGlobalConfigCache(
+            project_dir=self.project_dir, base_config=self.config
+        )
+        self._trigger_definitions_cache: _TeamsTriggerDefinitions | None = None
         self._cycle_state_lock = RLock()
         self._cycle_trigger_wake_notified = False
         self._cycle_effect_wake_notified = False
@@ -380,6 +409,11 @@ class TeamsIngestWorker:
 
         self._reset_cycle_metrics()
         now = datetime.now(UTC)
+        self._compact_notification_queue_if_due(now=now)
+        if self._notification_store is None or not self._notification_store.has_ready_notifications(
+            now=now
+        ):
+            return 0
         trigger_snapshot = self._capture_trigger_config_snapshot(captured_at=now)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         directories = self._directories_to_scan(
@@ -395,6 +429,23 @@ class TeamsIngestWorker:
             )
         finally:
             self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
+
+    def _compact_notification_queue_if_due(self, *, now: datetime) -> None:
+        store = self._notification_store
+        if store is None:
+            return
+        with self._notification_compaction_lock:
+            if self._notification_compaction_clock() < self._next_notification_compaction_at:
+                return
+            interval = _NOTIFICATION_COMPACTION_RETRY_SECONDS
+            try:
+                if not store.compact_notifications(now=now):
+                    interval = _NOTIFICATION_COMPACTION_INTERVAL_SECONDS
+            except Exception:
+                logger.warning(
+                    "Failed to compact Teams notification queue; retrying later", exc_info=True
+                )
+            self._next_notification_compaction_at = self._notification_compaction_clock() + interval
 
     def _log_start(self) -> None:
         logger.info(
@@ -545,10 +596,7 @@ class TeamsIngestWorker:
         captured_at: datetime,
     ) -> _TeamsTriggerConfigSnapshot:
         try:
-            trigger_config = load_trigger_orchestrator_worker_global_config(
-                self.project_dir,
-                base_config=self.config,
-            )
+            trigger_config = self._trigger_config_cache.get_latest()
         except Exception:
             logger.exception(
                 "Failed to capture trigger orchestrator config for Teams ingest; "
@@ -558,32 +606,16 @@ class TeamsIngestWorker:
                 {"runtime_dir": self.config.runtime_dir}
             )
 
-        trigger_config = trigger_config.model_copy(deep=True)
-        revision = _trigger_config_revision(trigger_config)
+        definitions = self._trigger_definitions_for(trigger_config)
+        revision = definitions.revision
         direct_sender_refs: set[str] = set()
         targets_by_directory: dict[str, set[str]] = {}
         matchers: list[_CapturedTeamsMessageMatcher] = []
         communication_targets_by_directory: dict[str, dict[str, Any]] = {}
-        nodes_by_id = {
-            node.id: node
-            for node in (
-                *trigger_config.triggers,
-                *trigger_config.gates,
-                *trigger_config.effects,
-                *trigger_config.queries,
-            )
-        }
-        node_graph_metadata_by_id = resolve_workflow_graph_metadata(
-            nodes_by_id=nodes_by_id,
-            edges=trigger_config.edges,
-            workflow_graphs=trigger_config.workflow_graphs,
-        )
+        node_graph_metadata_by_id = definitions.node_graph_metadata_by_id
 
-        for trigger in trigger_config.triggers:
-            if not workflow_node_is_enabled(trigger):
-                continue
+        for materialized in definitions.triggers:
             try:
-                materialized = materialize_node_definition(trigger)
                 if isinstance(materialized, TeamsDirectMessageTriggerDefinition):
                     direct_sender_refs.update(
                         value.strip() for value in materialized.sender_user_ids if value.strip()
@@ -673,8 +705,8 @@ class TeamsIngestWorker:
                 logger.warning(
                     "Failed to capture Teams trigger matcher trigger_id=%s trigger_type=%s "
                     "revision=%s",
-                    getattr(trigger, "id", ""),
-                    getattr(trigger, "type", ""),
+                    materialized.id,
+                    materialized.type,
                     revision,
                     exc_info=True,
                 )
@@ -707,6 +739,57 @@ class TeamsIngestWorker:
             matchers=tuple(matchers),
             event_queue=event_queue,
         )
+
+    def _trigger_definitions_for(
+        self, trigger_config: TriggerOrchestratorWorkerGlobalConfig
+    ) -> _TeamsTriggerDefinitions:
+        cached = self._trigger_definitions_cache
+        if cached is not None and cached.trigger_config is trigger_config:
+            return cached
+        nodes_by_id = {
+            node.id: node
+            for node in (
+                *trigger_config.triggers,
+                *trigger_config.gates,
+                *trigger_config.effects,
+                *trigger_config.queries,
+            )
+        }
+        graph_metadata = resolve_workflow_graph_metadata(
+            nodes_by_id=nodes_by_id,
+            edges=trigger_config.edges,
+            workflow_graphs=trigger_config.workflow_graphs,
+        )
+        triggers = []
+        for trigger in trigger_config.triggers:
+            if not workflow_node_is_enabled(trigger):
+                continue
+            try:
+                materialized = materialize_node_definition(trigger)
+                if isinstance(
+                    materialized,
+                    (
+                        TeamsDirectMessageTriggerDefinition,
+                        TeamsNewMessageTriggerDefinition,
+                        CommunicationNewMessageTriggerDefinition,
+                    ),
+                ):
+                    triggers.append(materialized)
+            except Exception:
+                logger.warning(
+                    "Failed to materialize Teams trigger trigger_id=%s trigger_type=%s",
+                    trigger.id,
+                    trigger.type,
+                    exc_info=True,
+                )
+        cached = _TeamsTriggerDefinitions(
+            trigger_config=trigger_config,
+            revision=_trigger_config_revision(trigger_config),
+            node_graph_metadata_by_id=MappingProxyType(graph_metadata),
+            triggers=tuple(triggers),
+        )
+        self._trigger_definitions_cache = cached
+        return cached
 
     def _event_queue_for(
         self,
@@ -1334,7 +1417,9 @@ class TeamsIngestWorker:
                 provider_config,
                 directory_path=directory_path,
             ),
+            # Persist polling failures as target cooldowns instead of holding a worker slot.
             defer_retry_after=True,
+            defer_timeout_retry=True,
         )
 
     def _resolve_direct_message_sender_refs_by_id(
