@@ -1576,6 +1576,16 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Include matching record maps in addition to revision and success metadata.",
                 default_value=True,
             ),
+            _catalog_field(
+                "record_fields",
+                "Record fields",
+                "json",
+                description=(
+                    "Optional object selecting tasks and/or cases with arrays of public field names. "
+                    "Omit to preserve the full scoped state; compact reads hydrate only dependencies."
+                ),
+                json_value_type="object",
+            ),
         ],
     ),
     _catalog_entry(

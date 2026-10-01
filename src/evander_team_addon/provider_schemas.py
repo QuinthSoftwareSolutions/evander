@@ -533,6 +533,19 @@ class TeamStateQueryDefinition(QueryDefinition):
     project_id: ConfigValue | None = None
     agent_id: ConfigValue | None = None
     include_records: ConfigValue | None = None
+    record_fields: ConfigValue | None = None
+
+    @field_validator("record_fields")
+    @classmethod
+    def validate_record_fields(cls, value: ConfigValue | None) -> ConfigValue | None:
+        # An output reference is resolved before execution; validate literal
+        # projections now and always validate the resolved object at dispatch.
+        if isinstance(value, str):
+            return value
+        from .provider_query_projection import validate_record_fields
+
+        validate_record_fields(value)
+        return value
 
 
 class TeamMemoryQueryDefinition(QueryDefinition):
@@ -957,6 +970,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "teams": {"type": "object"},
         "projects": {"type": "object"},
         "agents": {"type": "object"},
+        "cases": {"type": "object"},
         "tasks": {"type": "object"},
         "external_source_evidence_snapshots": {"type": "object"},
     },

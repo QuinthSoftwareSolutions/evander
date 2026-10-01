@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.queries.providers.base import QueryRuntimeContext
@@ -33,6 +36,8 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon import provider_triggers
+from evander_team_addon.sqlite_store import TeamStateSqliteStore
 
 
 def _admin(repo: TeamStateRepository) -> TeamAdminService:
@@ -252,17 +257,42 @@ def test_team_memory_query_reads_compact_canonical_records(tmp_path: Path) -> No
 
 def test_team_deliverable_created_trigger_suppresses_existing_then_emits_new(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _seed_team(tmp_path)
     _record_deliverable(repo, "old-deliverable")
     provider = _trigger(tmp_path)
+    reads = []
+    assessments = []
+    read_state = TeamStateSqliteStore._read_state
+    assessment_service = provider_triggers.TaskAssessmentService
+
+    def record_read(store, connection):
+        reads.append(True)
+        return read_state(store, connection)
+
+    def record_assessment(state):
+        assessments.append(True)
+        return assessment_service(state)
+
+    monkeypatch.setattr(TeamStateSqliteStore, "_read_state", record_read)
+    monkeypatch.setattr(provider_triggers, "TaskAssessmentService", record_assessment)
 
     assert provider.poll() == []
+    assert reads == []
+    assert assessments == []
 
     _record_deliverable(repo, "new-deliverable")
+    _record_deliverable(repo, "second-deliverable")
+    reads.clear()
     events = provider.poll()
 
-    assert [event.event_id for event in events] == ["team-deliverable-created:new-deliverable"]
+    assert [event.event_id for event in events] == [
+        "team-deliverable-created:new-deliverable",
+        "team-deliverable-created:second-deliverable",
+    ]
+    assert len(reads) == 1
+    assert len(assessments) == 1
     payload = events[0].payload
     assert payload["deliverable_id"] == "new-deliverable"
     assert payload["team_id"] == "team"
@@ -273,9 +303,121 @@ def test_team_deliverable_created_trigger_suppresses_existing_then_emits_new(
     assert payload["task"]["assessment"]["task_id"] == "task"
     assert payload["task"]["readiness"] == payload["task"]["assessment"]["readiness"]
 
-    provider.acknowledge_published_event(events[0])
+    # A poll is not an acknowledgement: failed publication retries both events.
+    assert [event.event_id for event in provider.poll()] == [event.event_id for event in events]
+    for event in events:
+        provider.acknowledge_published_event(event)
 
+    reads.clear()
+    assessments.clear()
     assert provider.poll() == []
+    assert reads == []
+    assert assessments == []
+
+
+def test_team_deliverable_trigger_keeps_equal_time_and_late_arrivals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "existing")
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    class PollClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return started_at
+
+    monkeypatch.setattr(provider_triggers, "datetime", PollClock)
+    repo.update(lambda state: setattr(state.deliverables["existing"], "created_at", started_at))
+    provider = _trigger(tmp_path)
+    assert provider.poll() == []
+
+    _record_deliverable(repo, "latest")
+    latest_at = started_at + timedelta(seconds=10)
+    repo.update(lambda state: setattr(state.deliverables["latest"], "created_at", latest_at))
+    latest = provider.poll()
+    assert [event.payload["deliverable_id"] for event in latest] == ["latest"]
+    provider.acknowledge_published_event(latest[0])
+
+    for item_id, occurred_at in (("equal", latest_at), ("late", started_at)):
+        _record_deliverable(repo, item_id)
+        repo.update(lambda state: setattr(state.deliverables[item_id], "created_at", occurred_at))
+    assert {event.payload["deliverable_id"] for event in provider.poll()} == {"equal", "late"}
+
+
+@pytest.mark.parametrize("scope", ["team_id", "project_id", "producer_agent_id"])
+def test_team_deliverable_trigger_filters_scope_before_hydration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    provider = _trigger(tmp_path)
+    definition = provider.trigger_definition.model_copy(update={scope: "other"})
+    provider.initialize(definition, provider.runtime_context)
+    assert provider.poll() == []
+    _record_deliverable(repo, "outside-scope")
+
+    def forbid_read(*args):
+        pytest.fail("Out-of-scope history must not load the complete Team state")
+
+    with monkeypatch.context() as idle_patch:
+        idle_patch.setattr(TeamStateSqliteStore, "_read_state", forbid_read)
+        assert provider.poll() == []
+
+    # A later scope edit must still discover matching, unpublished identities.
+    expected = {"team_id": "team", "project_id": "project", "producer_agent_id": "implementer"}
+    provider.initialize(definition.model_copy(update={scope: expected[scope]}), provider.runtime_context)
+    assert [event.payload["deliverable_id"] for event in provider.poll()] == ["outside-scope"]
+
+
+def test_team_deliverable_trigger_payload_uses_candidate_read_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    provider = _trigger(tmp_path)
+    assert provider.poll() == []
+    _record_deliverable(repo, "new-deliverable")
+    delivery_store = provider._delivery_store()
+    list_undelivered = delivery_store.list_undelivered
+
+    def update_after_candidates(subscription, candidates):
+        repo.update(lambda state: setattr(state.deliverables["new-deliverable"], "summary", "Updated"))
+        return list_undelivered(subscription, candidates)
+
+    monkeypatch.setattr(delivery_store, "list_undelivered", update_after_candidates)
+    monkeypatch.setattr(provider, "_delivery_store", lambda: delivery_store)
+    events = provider.poll()
+
+    assert events[0].payload["deliverable"]["summary"] == "Deliverable new-deliverable"
+    assert repo.read().deliverables["new-deliverable"].summary == "Updated"
+
+
+@pytest.mark.parametrize("separate_scope", ["trigger", "directory"])
+def test_team_deliverable_acknowledgement_is_subscription_scoped(
+    tmp_path: Path, separate_scope: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    first = _trigger(tmp_path)
+    second = _trigger(tmp_path)
+    definition = second.trigger_definition
+    context = second.runtime_context
+    if separate_scope == "trigger":
+        definition = definition.model_copy(update={"id": "other-trigger"})
+    else:
+        context = TriggerRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root/other"},
+        )
+    second.initialize(definition, context)
+    assert first.poll() == []
+    assert second.poll() == []
+    _record_deliverable(repo, "shared-deliverable")
+    first_events = first.poll()
+    second_events = second.poll()
+    assert len(first_events) == len(second_events) == 1
+
+    first.acknowledge_published_event(first_events[0])
+    assert first.poll() == []
+    assert [event.payload["deliverable_id"] for event in second.poll()] == ["shared-deliverable"]
 
 
 def test_contracted_leaf_can_flow_through_operator_configured_review_primitives(

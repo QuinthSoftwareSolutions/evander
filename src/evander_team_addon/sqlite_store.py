@@ -297,6 +297,12 @@ def _require_complete_state(state: TeamState) -> None:
         raise ValueError("Team read projections cannot be persisted")
 
 
+@dataclass(frozen=True)
+class TeamDeliverableTriggerSnapshot:
+    sources: list[tuple[str, datetime]]
+    read_state: Callable[[], TeamState]
+
+
 class TeamStateSqliteStore(
     DispatchBookkeepingStoreMixin,
     CommandJournalStoreMixin,
@@ -331,6 +337,25 @@ class TeamStateSqliteStore(
         with self._read_connection() as connection:
             connection.execute("BEGIN")
             return self._read_state(connection)
+
+    @contextmanager
+    def deliverable_trigger_snapshot(
+        self,
+        *,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        producer_agent_id: str | None = None,
+    ) -> Iterator[TeamDeliverableTriggerSnapshot]:
+        """Read identities first; hydrate undelivered events from the same snapshot."""
+        with self._read_connection() as connection:
+            connection.execute("BEGIN")
+            sources = self._deliverable_trigger_sources(
+                connection, team_id=team_id, project_id=project_id,
+                producer_agent_id=producer_agent_id,
+            )
+            yield TeamDeliverableTriggerSnapshot(
+                sources=sources, read_state=lambda: self._read_state(connection),
+            )
 
     def read_state_with_dispatch_activity(
         self, *, dispatch_id: str

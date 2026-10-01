@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
@@ -1636,13 +1637,22 @@ class AzureDevOpsIssueAdapter:
         top: int = 50,
         skip: int = 0,
         include_relations: bool = False,
+        _client: httpx.Client | None = None,
+        _connection: tuple[str, str, str] | None = None,
+        _full_details: bool = False,
     ) -> dict[str, Any]:
-        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = (
+            _connection if _connection is not None else self._resolve_connection(directory_path)
+        )
         normalized_project = str(project or configured_project).strip()
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps backlog queries.")
         auth_header = self._auth_header(pat)
-        with httpx.Client(timeout=self.timeout_seconds) as client:
+        with (
+            nullcontext(_client)
+            if _client is not None
+            else httpx.Client(timeout=self.timeout_seconds) as client
+        ):
             return self._query_backlog_items_core(
                 client,
                 organization_url=organization_url,
@@ -1659,6 +1669,7 @@ class AzureDevOpsIssueAdapter:
                 top=top,
                 skip=skip,
                 include_relations=include_relations,
+                full_details=_full_details,
             )
 
     def query_work_item_activity(
@@ -2108,15 +2119,24 @@ class AzureDevOpsIssueAdapter:
         top: int = 50,
         skip: int = 0,
         include_relations: bool = False,
+        _client: httpx.Client | None = None,
+        _connection: tuple[str, str, str] | None = None,
+        _full_details: bool = False,
     ) -> dict[str, Any]:
-        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = (
+            _connection if _connection is not None else self._resolve_connection(directory_path)
+        )
         normalized_project = str(project or configured_project).strip()
         if not normalized_project:
             raise ValueError(
                 "project is required for Azure DevOps current-iteration backlog queries."
             )
         auth_header = self._auth_header(pat)
-        with httpx.Client(timeout=self.timeout_seconds) as client:
+        with (
+            nullcontext(_client)
+            if _client is not None
+            else httpx.Client(timeout=self.timeout_seconds) as client
+        ):
             current_iteration = self._resolve_current_iteration(
                 client,
                 organization_url=organization_url,
@@ -2147,6 +2167,7 @@ class AzureDevOpsIssueAdapter:
                 top=top,
                 skip=skip,
                 include_relations=include_relations,
+                full_details=_full_details,
             )
         return {
             "provider": self.provider_name,
@@ -2339,6 +2360,7 @@ class AzureDevOpsIssueAdapter:
         skip: int = 0,
         include_relations: bool = False,
         work_item_ids: list[int] | None = None,
+        full_details: bool = False,
     ) -> dict[str, Any]:
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
@@ -2394,6 +2416,11 @@ class AzureDevOpsIssueAdapter:
                     "fields": select_fields,
                     "errorPolicy": "Omit",
                 }
+                if full_details:
+                    # Comment polling needs the same fields and relations as a
+                    # detail read, supplied once for the whole selected batch.
+                    batch_body.pop("fields")
+                    batch_body["$expand"] = "All"
                 batch_response = client.post(
                     batch_url,
                     params={"api-version": "7.1"},
@@ -2406,7 +2433,7 @@ class AzureDevOpsIssueAdapter:
                     )
                 batch_payload = batch_response.json()
                 relations_by_id: dict[str, list[dict[str, Any]]] = {}
-                if include_relations:
+                if include_relations and not full_details:
                     relations_response = client.post(
                         batch_url,
                         params={"api-version": "7.1"},
@@ -2441,6 +2468,21 @@ class AzureDevOpsIssueAdapter:
                 values = batch_payload.get("value") if isinstance(batch_payload, dict) else None
                 for raw_item in values or []:
                     if not isinstance(raw_item, dict):
+                        continue
+                    if full_details:
+                        items.append(
+                            self._backlog_item_from_payload(
+                                raw_item,
+                                client=client,
+                                organization_url=organization_url,
+                                project=project,
+                                auth_header=auth_header,
+                                backlog_item_id=str(raw_item.get("id") or ""),
+                                include_comments=False,
+                                include_relations=True,
+                                include_updates=False,
+                            )
+                        )
                         continue
                     raw_fields = (
                         raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
@@ -3343,6 +3385,104 @@ class GitHubIssueAdapter:
         return AzureDevOpsIssueAdapter._json_safe(value)
 
 
+class AdoCommentPollReader:
+    """One directory's query, detail projection and comments share a short-lived client."""
+
+    def __init__(
+        self,
+        adapter: AzureDevOpsIssueAdapter,
+        *,
+        directory_path: str,
+        connection: tuple[str, str, str],
+        client: httpx.Client,
+    ) -> None:
+        self.adapter = adapter
+        self.directory_path = directory_path
+        self.connection = connection
+        self.client = client
+        self.items: dict[tuple[str, str], dict[str, Any]] = {}
+        self.with_comments: set[tuple[str, str]] = set()
+
+    def _check_scope(self, provider: str, directory_path: str) -> None:
+        if _normalize_issue_provider(provider) != "azure_devops":
+            raise ValueError("ADO comment polling only supports Azure DevOps")
+        if directory_path != self.directory_path:
+            raise ValueError("ADO comment poll directory cannot change")
+
+    def _remember(self, result: dict[str, Any]) -> dict[str, Any]:
+        for item in result.get("items", []):
+            key = (str(item.get("project") or result.get("project") or ""), str(item["id"]))
+            self.items[key] = item
+        return result
+
+    def query_remote_backlog_items(
+        self, *, provider: str, directory_path: str, **query: Any
+    ) -> dict[str, Any]:
+        self._check_scope(provider, directory_path)
+        return self._remember(
+            self.adapter.query_backlog_items(
+                directory_path=directory_path,
+                _client=self.client,
+                _connection=self.connection,
+                _full_details=True,
+                **query,
+            )
+        )
+
+    def list_remote_current_iteration_backlog_items(
+        self, *, provider: str, directory_path: str, **query: Any
+    ) -> dict[str, Any]:
+        self._check_scope(provider, directory_path)
+        return self._remember(
+            self.adapter.list_current_iteration_backlog_items(
+                directory_path=directory_path,
+                _client=self.client,
+                _connection=self.connection,
+                _full_details=True,
+                **query,
+            )
+        )
+
+    def get_remote_backlog_item_by_id(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        backlog_item_id: str,
+        project: str | None = None,
+        include_comments: bool = True,
+        include_relations: bool = True,
+        include_updates: bool = False,
+    ) -> dict[str, Any]:
+        self._check_scope(provider, directory_path)
+        if not include_comments or not include_relations or include_updates:
+            raise ValueError("ADO comment poll requires comments and relations without updates")
+        organization_url, configured_project, pat = self.connection
+        normalized_project = str(project or configured_project).strip()
+        key = (normalized_project, backlog_item_id)
+        item = self.items[key]
+        if key not in self.with_comments:
+            paging = dict(item["comments_paging"])
+            comments = self.adapter._fetch_comments(
+                self.client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=self.adapter._auth_header(pat),
+                remote_issue_id=backlog_item_id,
+                paging=paging,
+            )
+            item = dict(item)
+            item["comments"] = comments
+            item["comments_paging"] = paging
+            item["inline_media"] = [
+                *item["inline_media"],
+                *(media for comment in comments for media in comment.get("inline_media", [])),
+            ]
+            self.items[key] = item
+            self.with_comments.add(key)
+        return item
+
+
 class IssueService:
     def __init__(self, config_resolver: ProviderConfigResolver) -> None:
         azure_devops = AzureDevOpsIssueAdapter(config_resolver)
@@ -3353,6 +3493,17 @@ class IssueService:
             "ado": azure_devops,
             "github": github,
         }
+
+    @contextmanager
+    def ado_comment_poll(self, *, directory_path: str) -> Iterator[AdoCommentPollReader]:
+        adapter = self.adapters["azure_devops"]
+        if not isinstance(adapter, AzureDevOpsIssueAdapter):
+            raise ValueError("ADO comment polling requires the Azure DevOps adapter")
+        connection = adapter._resolve_connection(directory_path)
+        with httpx.Client(timeout=adapter.timeout_seconds) as client:
+            yield AdoCommentPollReader(
+                adapter, directory_path=directory_path, connection=connection, client=client
+            )
 
     def read_remote_issue(
         self,

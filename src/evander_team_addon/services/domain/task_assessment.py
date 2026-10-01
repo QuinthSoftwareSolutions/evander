@@ -313,6 +313,7 @@ def task_payload_with_assessment(
     visible_review_request_ids: Collection[str] | None = None,
     visible_blocker_ids: Collection[str] | None = None,
     visible_agent_ids: Collection[str] | None = None,
+    include_fields: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Return the backwards-compatible task payload plus canonical lifecycle state."""
 
@@ -324,6 +325,7 @@ def task_payload_with_assessment(
             assessment = assessment_service.assess(task.id)
     payload = task_payload_with_derived(
         state, task, child_task_ids=assessment.direct_child_ids, assessment=assessment,
+        include_fields=include_fields,
     )
     assessment_payload = assessment.model_dump(mode="json")
     if visible_task_ids is not None:
@@ -414,7 +416,10 @@ def task_payload_with_assessment(
         visible_blocker_ids=visible_blocker_ids,
         visible_agent_ids=visible_agent_ids,
     )
-    return payload
+    return (
+        {key: value for key, value in payload.items() if key in include_fields}
+        if include_fields is not None else payload
+    )
 
 
 def inherited_task_blocker_payloads(

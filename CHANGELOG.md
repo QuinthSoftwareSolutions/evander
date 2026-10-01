@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-01 - Reduce control-plane polling and query payloads (0.77.0)
+
+- Select scoped Team deliverable identities before constructing event payloads,
+  skip full state hydration for idle and initial-baseline polls, and share task
+  assessment across pending events from the same SQLite read snapshot.
+- Add opt-in `record_fields` to `query:team:state` for compact task and case
+  results. Read only required state collections, preserve scope and assessment
+  dependencies, and retain the existing full response when selection is omitted.
+- Reuse one directory-bound HTTP client throughout ADO comment polling and
+  obtain complete work-item fields and relations through the existing batch,
+  removing individual detail requests while preserving comment cursors and retries.
+- Keep fast recovery passes without work at DEBUG, retain slow and active passes
+  at INFO, and avoid provider completion wrappers for inherited empty callbacks
+  while preserving custom lifecycle hooks.
+
 ## 2026-10-01 - Recover retention batch limits after successful cleanup (0.76.5)
 
 - Gradually restore persisted record and index-row batch limits after fully used

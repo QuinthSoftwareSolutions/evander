@@ -243,6 +243,8 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True
+    assert state_fields["record_fields"]["kind"] == "json"
+    assert state_fields["record_fields"]["json_value_type"] == "object"
 
 
 def test_workflow_editor_catalog_enriches_team_bridge_target_options(
