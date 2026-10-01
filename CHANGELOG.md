@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-01 - Enforce WordPress resource permissions (0.76.6)
+
+- Release WordPress Add-on 0.1.3 and companion 1.0.2 with object, operation,
+  metadata and taxonomy authorization for inspection, publication and browser edits.
+- Reject ACF aliases of protected metadata and mismatched field references while
+  preserving conditional restoration after editing permissions are revoked.
+- Core runtime behavior is unchanged; the add-on remains separately installed and enabled.
+
 ## 2026-10-01 - Recover retention batch limits after successful cleanup (0.76.5)
 
 - Gradually restore persisted record and index-row batch limits after fully used
