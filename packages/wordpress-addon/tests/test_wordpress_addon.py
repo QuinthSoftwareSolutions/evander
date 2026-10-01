@@ -18,10 +18,13 @@ import pytest
 from starlette.applications import Starlette
 
 from evander.addons import AddonContext
+from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.connectors.models import ConnectorDefinition, ConnectorDirectoryConfig
 from evander.website_sessions import validate_browser_state, WebsiteSessionError
 from evander.workflow.binding import resolve_workflow_bindings
+from evander.workflow.contracts import effective_node_output_schema
 from evander.workflow.packs import WorkflowPack
+from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander_wordpress_addon import register_addon
 from evander_wordpress_addon.api import admin_api_routes, plugin_zip
 from evander_wordpress_addon.deployment import SSHAdapter
@@ -1524,26 +1527,47 @@ def test_site_retention_does_not_shorten_another_sites_undo_window(rig, monkeypa
         rig.store.get(older["short"], "root/design")
 
 
-def test_example_workflow_imports_and_routes_queued_change_to_publication(rig, monkeypatch):
+@pytest.mark.parametrize("restore", [False, True], ids=["publication", "recovery"])
+def test_example_workflow_routes_pending_change_to_publication_or_recovery(
+    rig, monkeypatch, restore
+):
     pack = WorkflowPack.model_validate_json(
         (Path(__file__).parents[1] / "examples/workflow-packs/wordpress.v1-example.json").read_text()
     )
-    trigger_node, effect_node = (entry.node for entry in pack.ir.nodes)
+    register_providers()
+    project = rig.store.runtime_dir / "workflow-project"
+    config_path = project / "config/trigger-orchestrator/config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        TriggerOrchestratorWorkerGlobalConfig(
+            runtime_dir=rig.store.runtime_dir,
+            workflow_ir=pack.ir.model_dump(mode="json"),
+            workflow_graphs=pack.graphs,
+        ).model_dump_json()
+    )
+    compiled = load_trigger_orchestrator_worker_global_config(project)
+    trigger_node = next(node for node in compiled.triggers if node.id == "website-ready")
+    effect_node = next(node for node in compiled.effects if node.id == "website-execute")
     context = SimpleNamespace(
         metadata={"directory_path": pack.graphs[0].directory_path},
         resolved_config=SimpleNamespace(runtime_dir=rig.store.runtime_dir),
     )
     queued = queue(rig, prepare(rig))
+    if restore:
+        published = run(rig.service.execute("main", queued["change_id"]))
+        queued = queue(rig, published, restore=True)
     trigger = WordPressReadyProvider()
     trigger.initialize(trigger.validate_definition(trigger_node), context)
     event = trigger.poll()[0]
-    edge = pack.ir.edges[0]
+    edge = next(edge for edge in compiled.edges if edge.source_id == event.trigger_id)
     assert (edge.source_id, edge.target_id) == (event.trigger_id, effect_node.id)
+    declared_outputs = effective_node_output_schema(trigger_node)
     bound = resolve_workflow_bindings(
         effect_node.config,
-        {event.trigger_id: {"payload": event.payload}},
-        {event.trigger_id: {"payload"}},
+        {event.trigger_id: event.payload},
+        {event.trigger_id: set(declared_outputs) | set(event.payload)},
     )
+    assert {entry.output_path for entry in bound.trace.entries} <= set(declared_outputs)
     monkeypatch.setattr(
         "evander_wordpress_addon.providers.background_service", lambda context, change: rig.service
     )
@@ -1551,8 +1575,8 @@ def test_example_workflow_imports_and_routes_queued_change_to_publication(rig, m
     effect.initialize(effect.validate_definition(effect_node), context)
     result = effect.execute(resolved_config=bound.resolved_config)
     assert result["change_id"] == queued["change_id"]
-    assert result["state"] == "published"
-    assert rig.remote.value["post_title"] == "After"
+    assert result["state"] == ("restored" if restore else "published")
+    assert rig.remote.value["post_title"] == ("Before" if restore else "After")
 
 
 def test_cookie_state_rejects_foreign_domains_insecure_or_overlong_ttl():
