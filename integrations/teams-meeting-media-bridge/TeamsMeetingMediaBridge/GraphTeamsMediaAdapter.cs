@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Graph.Communications.Calls;
 using Microsoft.Graph.Communications.Calls.Media;
 using Microsoft.Graph.Communications.Client;
@@ -173,6 +174,8 @@ public sealed class GraphRestMeetingClient : IGraphMeetingClient
         string joinUrl,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(options.OnlineMeetingLookupUserId))
+            throw new InvalidOperationException("TEAMS_ONLINE_MEETING_LOOKUP_USER_ID is required to join meetings.");
         var token = await AcquireTokenAsync(cancellationToken);
         var escapedJoinUrl = Uri.EscapeDataString(joinUrl);
         using var request = new HttpRequestMessage(
@@ -247,10 +250,13 @@ public sealed class GraphApplicationHostedMediaClient :
 {
     private readonly GraphTeamsMediaOptions options;
     private readonly ICommunicationsClient communicationsClient;
+    private readonly IGraphMeetingClient graphClient;
+    private Func<IIncomingTeamsCall, Task>? incomingCallHandler;
 
-    public GraphApplicationHostedMediaClient(GraphTeamsMediaOptions options)
+    public GraphApplicationHostedMediaClient(GraphTeamsMediaOptions options, IGraphMeetingClient graphClient)
     {
         this.options = options;
+        this.graphClient = graphClient;
         var logger = new GraphLogger(
             "TeamsMeetingMediaBridge",
             Array.Empty<object>(),
@@ -271,6 +277,75 @@ public sealed class GraphApplicationHostedMediaClient :
             .SetServiceBaseUrl(new Uri("https://graph.microsoft.com/v1.0"))
             .SetMediaPlatformSettings(mediaSettings)
             .Build();
+        communicationsClient.Calls(maintainState: true).OnIncoming += (sender, args) =>
+        {
+            foreach (var call in args.AddedResources)
+            {
+                var incoming = new GraphIncomingCall(this, call);
+                var task = incomingCallHandler is null
+                    ? incoming.RejectAsync(CancellationToken.None)
+                    : incomingCallHandler(incoming);
+                _ = task.ContinueWith(completed =>
+                {
+                    if (completed.Exception is not null)
+                        logger.Error(completed.Exception.GetBaseException(), "Incoming Teams call failed");
+                }, TaskScheduler.Default);
+            }
+        };
+    }
+
+    public void SetIncomingCallHandler(Func<IIncomingTeamsCall, Task> handler) => incomingCallHandler = handler;
+
+    private sealed class GraphIncomingCall : IIncomingTeamsCall
+    {
+        private readonly GraphApplicationHostedMediaClient owner;
+        private readonly ICall call;
+        private readonly TaskCompletionSource ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource established = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public GraphIncomingCall(GraphApplicationHostedMediaClient owner, ICall call)
+        {
+            this.owner = owner;
+            this.call = call;
+            call.OnUpdated += (_, _) => UpdateState();
+            UpdateState();
+        }
+        private void UpdateState()
+        {
+            if (call.Resource.State == CallState.Established) established.TrySetResult();
+            if (call.Resource.State == CallState.Terminated)
+            {
+                ended.TrySetResult();
+                established.TrySetException(new InvalidOperationException("Call ended before media was established."));
+            }
+        }
+        public string CallId => call.Resource.Id ?? "";
+        public string TenantId => call.TenantId ?? "";
+        public string CallerUserId => call.Resource.Source?.Identity?.User?.Id ?? "";
+        public bool IsPersonalAudioCall => call.Resource.ChatInfo is null
+            && call.Resource.RequestedModalities?.Count == 1
+            && call.Resource.RequestedModalities?.Contains(Modality.Audio) == true;
+        public Task Ended => ended.Task;
+        public async Task<IMeetingAudioSession> AnswerAsync(CancellationToken token)
+        {
+            var media = owner.communicationsClient.CreateMediaSession(new AudioSocketSettings
+            {
+                StreamDirections = StreamDirection.Sendrecv,
+                SupportedAudioFormat = AudioFormat.Pcm16K,
+            }, Enumerable.Empty<VideoSocketSettings>(), null!, null!, Guid.NewGuid());
+            var audio = new GraphMeetingAudioSession(call, media);
+            try
+            {
+                await call.AnswerAsync((IMediaSession)media, cancellationToken: token);
+                await established.Task.WaitAsync(token);
+                return audio;
+            }
+            catch { await audio.DisposeAsync(); throw; }
+        }
+        public Task SetRecordingAsync(bool recording, CancellationToken token) =>
+            owner.graphClient.SetRecordingStatusAsync(CallId, recording, token);
+        public Task RejectAsync(CancellationToken token) => call.Resource.State == CallState.Incoming
+            ? call.RejectAsync(RejectReason.Forbidden, cancellationToken: token)
+            : call.DeleteAsync(true, token);
     }
 
     public async Task<ApplicationHostedMediaSession> JoinAsync(
@@ -454,7 +529,6 @@ public sealed class GraphApplicationHostedMediaClient :
         private readonly GraphTeamsMediaOptions options;
         private readonly IConfidentialClientApplication app;
         private readonly ConfigurationManager<OpenIdConnectConfiguration> configurationManager;
-        private readonly JsonWebTokenHandler tokenHandler = new();
 
         public ClientCredentialRequestAuthenticationProvider(GraphTeamsMediaOptions options)
         {
@@ -465,7 +539,7 @@ public sealed class GraphApplicationHostedMediaClient :
                 .WithAuthority(AzureCloudInstance.AzurePublic, options.TenantId)
                 .Build();
             configurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
-                $"https://login.microsoftonline.com/{Uri.EscapeDataString(options.TenantId)}/v2.0/.well-known/openid-configuration",
+                "https://api.aps.skype.com/v1/.well-known/OpenIdConfiguration",
                 new OpenIdConnectConfigurationRetriever());
         }
 
@@ -488,38 +562,15 @@ public sealed class GraphApplicationHostedMediaClient :
 
             var token = authorization.Parameter;
             var configuration = await configurationManager.GetConfigurationAsync(CancellationToken.None);
-            var result = await tokenHandler.ValidateTokenAsync(
-                token,
-                new TokenValidationParameters
-                {
-                    RequireSignedTokens = true,
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKeys = configuration.SigningKeys,
-                    ValidateIssuer = true,
-                    ValidIssuers =
-                    [
-                        $"https://login.microsoftonline.com/{options.TenantId}/v2.0",
-                        $"https://sts.windows.net/{options.TenantId}/",
-                    ],
-                    ValidateAudience = true,
-                    ValidAudiences = [options.BotAppId, $"api://{options.BotAppId}"],
-                    ValidateLifetime = true,
-                    ClockSkew = TimeSpan.FromMinutes(5),
-                });
+            var result = await InboundCallTokenValidator.ValidateAsync(
+                token, configuration.SigningKeys, options.BotAppId, options.TenantId);
             if (!result.IsValid)
             {
                 configurationManager.RequestRefresh();
                 return InvalidRequest();
             }
 
-            var tenantId = tokenHandler.ReadJsonWebToken(token).Claims
-                .FirstOrDefault(claim => string.Equals(claim.Type, "tid", StringComparison.Ordinal))
-                ?.Value;
-            return new RequestValidationResult
-            {
-                IsValid = true,
-                TenantId = string.IsNullOrWhiteSpace(tenantId) ? options.TenantId : tenantId,
-            };
+            return result;
         }
 
         private static RequestValidationResult InvalidRequest()
@@ -528,11 +579,15 @@ public sealed class GraphApplicationHostedMediaClient :
         }
     }
 
-    private sealed class GraphMeetingAudioSession : IMeetingAudioSession
+    private sealed class GraphMeetingAudioSession : IMeetingAudioSession, IPlaybackMonitoredAudioSession
     {
         private readonly ICall call;
         private readonly ILocalMediaSession mediaSession;
         private readonly IAudioSocket audioSocket;
+        // Bound PCM buffering to about 82 seconds without blocking incoming speech/VAD events.
+        private readonly Channel<byte[]> frames = System.Threading.Channels.Channel.CreateBounded<byte[]>(4096);
+        private readonly CancellationTokenSource playbackCts = new();
+        private readonly Task playback;
         private bool disposed;
 
         public GraphMeetingAudioSession(ICall call, ILocalMediaSession mediaSession)
@@ -541,9 +596,11 @@ public sealed class GraphApplicationHostedMediaClient :
             this.mediaSession = mediaSession;
             audioSocket = mediaSession.AudioSocket;
             audioSocket.AudioMediaReceived += OnAudioMediaReceived;
+            playback = Task.Run(() => PlayFramesAsync(playbackCts.Token));
         }
 
         public event EventHandler<byte[]>? AudioReceived;
+        public Task PlaybackCompletion => playback;
 
         public Task EnqueueAudioAsync(
             string operationId,
@@ -552,19 +609,35 @@ public sealed class GraphApplicationHostedMediaClient :
         {
             _ = operationId;
             cancellationToken.ThrowIfCancellationRequested();
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (playback.IsFaulted) return playback;
             foreach (var frame in frames)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                SendFrame(frame);
+                if (!this.frames.Writer.TryWrite(frame))
+                    throw new InvalidOperationException("Teams audio playback buffer is full.");
             }
-
             return Task.CompletedTask;
         }
 
         public Task ClearPendingAudioAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            while (frames.Reader.TryRead(out _)) { }
             return Task.CompletedTask;
+        }
+
+        private async Task PlayFramesAsync(CancellationToken token)
+        {
+            try
+            {
+                await foreach (var frame in frames.Reader.ReadAllAsync(token))
+                {
+                    SendFrame(frame);
+                    await Task.Delay(TimeSpan.FromMilliseconds(20), token);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         }
 
         public async ValueTask DisposeAsync()
@@ -575,12 +648,19 @@ public sealed class GraphApplicationHostedMediaClient :
             }
 
             disposed = true;
+            playbackCts.Cancel();
+            try { await playback; } catch { /* Media cleanup must still run. */ }
             audioSocket.AudioMediaReceived -= OnAudioMediaReceived;
-            await call.DeleteAsync(handleHttpNotFoundInternally: true, CancellationToken.None);
-            call.Dispose();
-            if (mediaSession is IDisposable disposableMediaSession)
+            try
             {
-                disposableMediaSession.Dispose();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await call.DeleteAsync(handleHttpNotFoundInternally: true, timeout.Token);
+            }
+            finally
+            {
+                call.Dispose();
+                if (mediaSession is IDisposable disposableMediaSession) disposableMediaSession.Dispose();
+                playbackCts.Dispose();
             }
         }
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-01 - Native Teams assistant calls (0.79.0)
+
+- Route incoming personal Teams audio calls through an explicit root tenant/user map,
+  independently authorize the selected existing assistant, and preserve admitted bindings
+  across configuration changes. Add revision-checked Admin Web route editing with assistant names.
+- Extend the Windows media bridge to answer calls and delegate realtime function queries
+  into the original assistant context, with interruption, idempotent queries, durable capacity
+  reservations, terminal reconciliation, and bridge-loss recovery.
+- Validate communications notification signing keys, audience, and tenant; update the Graph
+  media SDK. Include local tests, app and environment templates, Windows service installation,
+  and an activation runbook. Calling remains disabled by default.
+- Preserve valid Realtime session configuration for existing meetings and serialize native
+  caller turns with delegated replies, waiting for cancelled responses to finish before restarting.
+
 ## 2026-10-02 - Enforce WordPress resource permissions (0.78.2)
 
 - Release WordPress Add-on 0.1.3 and companion 1.0.2 with object, operation,

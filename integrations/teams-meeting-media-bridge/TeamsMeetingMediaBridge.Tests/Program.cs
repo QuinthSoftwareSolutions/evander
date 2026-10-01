@@ -4,6 +4,16 @@ using TeamsMeetingMediaBridge;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("communications callback authentication", NativeCallTests.CommunicationsAuthentication),
+    ("realtime delegation permits interruption and deduplicates functions", NativeCallTests.RealtimeDelegationAndInterruption),
+    ("hangup stops query polling", NativeCallTests.HangupStopsQueryPolling),
+    ("concurrent delegated results serialize responses", NativeCallTests.ConcurrentQueryResultsSerializeResponses),
+    ("native call binding lifecycle and replay", NativeCallTests.NativeLifecycleAndReplay),
+    ("rejected calls never start speech", NativeCallTests.RejectedCallsNeverStartSpeech),
+    ("native recording failure prevents transcription", NativeCallTests.RecordingFailurePreventsNativeTranscription),
+    ("native playback failure releases and reconciles call", NativeCallTests.PlaybackFailureEndsNativeCall),
+    ("control plane retries preserve request identity", NativeCallTests.ControlPlaneRetryPreservesRequestId),
+    ("control plane preserves stored deadline and permanent denial", NativeCallTests.ControlPlaneHonorsStoredDeadlineAndPermanentDenial),
     ("adapter selection defaults to in-memory", AdapterSelectionDefaultsToInMemory),
     ("in-memory mode honors configured default voice", InMemoryModeHonorsConfiguredDefaultVoice),
     ("graph mode validates required config", GraphModeValidatesRequiredConfig),
@@ -15,6 +25,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("interrupt clears pending speech queue", InterruptClearsPendingSpeechQueue),
     ("graph join resolves url and chunks synthesized audio", GraphJoinResolvesUrlAndChunksSynthesizedAudio),
     ("realtime adapter streams audio and transcripts over websocket", RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket),
+    ("native speech and delegated results share response scheduling", NativeCallTests.NativeSpeechAndDelegationShareResponses),
+    ("native interruption waits for response completion", NativeCallTests.InterruptionWaitsForResponseCompletion),
     ("recording status failure prevents transcript persistence", RecordingStatusFailurePreventsTranscriptPersistence),
     ("leave marks meeting stopped and disposes live resources", LeaveMarksMeetingStoppedAndDisposesResources),
 };
@@ -272,6 +284,14 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
     AssertContains("\"type\":\"session.update\"", socket.SentMessages[0]);
     AssertContains("\"voice\":\"cedar\"", socket.SentMessages[0]);
     AssertContains("Represent the originating Evander agent.", socket.SentMessages[0]);
+    using (var update = JsonDocument.Parse(socket.SentMessages[0]))
+    {
+        var config = update.RootElement.GetProperty("session");
+        AssertEqual(JsonValueKind.Array, config.GetProperty("tools").ValueKind);
+        AssertEqual(0, config.GetProperty("tools").GetArrayLength());
+        AssertEqual(true, config.GetProperty("audio").GetProperty("input")
+            .GetProperty("turn_detection").GetProperty("create_response").GetBoolean());
+    }
 
     await session.PushAudioAsync(new byte[640], CancellationToken.None);
     var appendEvent = socket.SentMessages.Single(item => item.Contains("input_audio_buffer.append"));
@@ -671,12 +691,14 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     private readonly object sync = new();
     private readonly Queue<string?> incoming = new();
     private readonly SemaphoreSlim incomingSignal = new(0);
+    private readonly List<string> sentMessages = [];
+    public bool StallClose, Disposed;
 
     public Uri? ConnectUri { get; private set; }
 
     public Dictionary<string, string> Headers { get; } = new(StringComparer.Ordinal);
 
-    public List<string> SentMessages { get; } = [];
+    public IReadOnlyList<string> SentMessages { get { lock (sync) return sentMessages.ToArray(); } }
 
     public Task ConnectAsync(
         Uri uri,
@@ -696,7 +718,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     public Task SendTextAsync(string text, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        SentMessages.Add(text);
+        lock (sync) sentMessages.Add(text);
         return Task.CompletedTask;
     }
 
@@ -712,6 +734,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     public Task CloseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (StallClose) return Task.Delay(Timeout.Infinite, cancellationToken);
         lock (sync)
         {
             incoming.Enqueue(null);
@@ -733,6 +756,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
 
     public ValueTask DisposeAsync()
     {
+        Disposed = true;
         incomingSignal.Dispose();
         return ValueTask.CompletedTask;
     }

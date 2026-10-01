@@ -1,5 +1,8 @@
 # Evander
 
+Native incoming Teams audio calls can reach explicitly assigned existing assistants;
+see [Teams assistant calls](docs/teams-calls.md) for routing, local verification, and setup.
+
 Evander is a host-side control plane for running AI agents in disposable libvirt VMs or Docker
 containers on dedicated worker VMs. The host owns credentials, policy, workflow state, and managed
 Git. Agents reach external systems through explicitly granted MCP tools and narrow model, package,

@@ -1,5 +1,8 @@
 # Teams Meeting Media Bridge
 
+For incoming one-to-one calls to explicitly mapped existing assistants, see
+[Teams assistant calls](teams-calls.md). The same Windows bridge supports both paths.
+
 This MVP keeps live Teams media on a separate Azure Windows-hosted service and keeps raw audio,
 Teams credentials, Azure Speech credentials, and OpenAI Realtime credentials out of guest VMs.
 

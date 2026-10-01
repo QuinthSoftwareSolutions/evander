@@ -208,6 +208,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "didww_sip_bridge_token_env",
             "didww_from_number",
             "inbound_phone_routes",
+            "teams_call_enabled",
+            "teams_call_routes",
+            "teams_call_max_concurrency",
             "semantic_embedding_dimensions",
             "semantic_embedding_model",
             "semantic_embedding_provider",
@@ -673,6 +676,11 @@ class DirectoryConfigStore:
         )
 
     def write(self, reference: str, *, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if domain == "providers" and isinstance(payload, dict):
+            if self._service.show(reference).directory.path != "root" and any(
+                field in payload for field in ("teams_call_routes", "teams_call_max_concurrency")
+            ):
+                raise ValueError("Teams call routing and concurrency may be configured only in root providers.json")
         original_domain = domain
         domain = self._normalize_domain_name(domain)
         directory = None
@@ -1067,6 +1075,10 @@ class DirectoryConfigResolver:
             # Profiles are live grants, not bootstrap defaults. A loaded GatewayConfig
             # may contain yesterday's root profiles; only current layers may grant them.
             effective["managed_website_sessions"] = {}
+        if domain == "providers":
+            # Routing and enablement are live grants, not cached process defaults.
+            effective["teams_call_routes"] = []
+            effective["teams_call_enabled"] = False
         provenance: dict[str, DirectoryConfigValueSource] = {}
         if base_config is not None:
             self._mark_provenance(
@@ -1083,6 +1095,10 @@ class DirectoryConfigResolver:
                 continue
             if domain == "providers":
                 overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
+                if directory.path != "root" and any(
+                    field in overlay for field in ("teams_call_routes", "teams_call_max_concurrency")
+                ):
+                    raise ValueError("Teams call routing and concurrency may be configured only in root providers.json")
                 if directory.path != "root" and "local_openai_max_concurrency" in overlay:
                     raise ValueError(
                         "local_openai_max_concurrency is host-global and may be configured only "

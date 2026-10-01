@@ -79,7 +79,8 @@ public sealed record MeetingSpeechStartRequest(
     IReadOnlyDictionary<string, object>? Projection,
     Func<string, CancellationToken, Task> OnFinalTranscript,
     Func<string, CancellationToken, Task> OnError,
-    SpeechStatusCallback OnSpeechStatus);
+    SpeechStatusCallback OnSpeechStatus,
+    Func<string, string, string, CancellationToken, Task<string>>? QueryOriginAgent = null);
 
 public sealed record OnlineMeetingCoordinates(
     string ChatInfo,

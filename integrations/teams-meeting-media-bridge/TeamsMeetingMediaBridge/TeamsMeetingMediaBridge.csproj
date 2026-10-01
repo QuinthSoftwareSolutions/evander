@@ -5,7 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.49.1" />
-    <PackageReference Include="Microsoft.Graph.Communications.Calls.Media" Version="1.2.0.15690" />
+    <PackageReference Include="Microsoft.Graph.Communications.Calls.Media" Version="1.2.0.18736" />
   </ItemGroup>
 </Project>

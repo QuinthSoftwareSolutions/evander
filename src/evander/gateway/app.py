@@ -800,6 +800,7 @@ def create_app(context: RuntimeContext) -> Starlette:
             ).create_query_and_wake_origin(
                 voice_session_id,
                 question=str(payload.get("question") or ""),
+                request_id=str(payload.get("request_id") or "").strip() or None,
                 transcript_excerpt=str(payload.get("transcript_excerpt") or "").strip() or None,
                 metadata=payload.get("metadata")
                 if isinstance(payload.get("metadata"), dict)
@@ -832,6 +833,8 @@ def create_app(context: RuntimeContext) -> Starlette:
                 voice_session_id,
                 payload,
             )
+            if updated.channel == "teams_call" and updated.status in {"ended", "failed"}:
+                updated = context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             return JSONResponse(
                 {
                     "voice_session_id": updated.voice_session_id,
@@ -861,6 +864,19 @@ def create_app(context: RuntimeContext) -> Starlette:
         if query is None:
             return JSONResponse({"error": "Unknown voice query"}, status_code=404)
         return JSONResponse(voice_query_payload(query))
+
+    async def inbound_teams_call(request: Request) -> JSONResponse:
+        auth_error = voice_controller_auth_error(request, "root")
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Teams call payload must be an object")
+            result = await run_in_threadpool(context.teams_voice_service.admit, payload)
+            return JSONResponse(result)
+        except (ValueError, PolicyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     async def timeout_voice_query(request: Request) -> JSONResponse:
         voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
@@ -898,6 +914,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 create_inbound_phone_call,
                 methods=["POST"],
             ),
+            Route("/voice-sessions/inbound-teams-calls", inbound_teams_call, methods=["POST"]),
             Route(
                 "/voice-sessions/{voice_session_id}/queries",
                 create_voice_query,

@@ -366,6 +366,9 @@ class TeamsMeetingBridgeClient:
     def leave(self, *, meeting_id: str) -> dict[str, Any]:
         return self._request("POST", f"/meetings/{quote(meeting_id, safe='')}/leave")
 
+    def get_call(self, voice_session_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/calls/{quote(voice_session_id, safe='')}")
+
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if self.base_url is None:
             raise RuntimeError("teams_meeting_media_bridge_url must be configured")
