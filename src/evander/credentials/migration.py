@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from evander.directories import DirectoryService
 from evander.messaging.teams_auth import (
@@ -23,6 +24,9 @@ from .store import (
     fsync_directory,
     protected_read,
 )
+
+if TYPE_CHECKING:
+    from evander.admin.services.credential_admin_service import CredentialAdminService
 
 
 def config_revision(payload: object) -> str:
@@ -130,46 +134,86 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
             "Stop Teams consumers and pass --maintenance before applying migration"
         )
     admin = runtime.credential_admin
-    groups = _teams_groups(runtime)
-    for group in groups:
-        marker_id = "teams:" + hashlib.sha256(
-            canonical([group["source"], group["identity"]])
-        ).hexdigest()
-        group.update(marker_id=marker_id, marker=admin.store.migration(marker_id))
-    # All imports precede reference switches. An interrupted parent switch can
-    # temporarily flow into descendants whose own imported record is still pending.
-    switched_ancestors = {
-        (c["directory"], g["marker"]["credential_ref"])
-        for g in groups
-        if g["marker"]
-        for c in g["consumers"]
-        if c["overlay"].get("teams_delegated_credential_ref") == g["marker"]["credential_ref"]
-    }
+    return _TeamsCredentialMigration(admin, _teams_groups(runtime)).run(apply=apply)
 
-    def inherited_migration_switch(consumer):
+
+class _TeamsCredentialMigration:
+    """Inspect one migration; import, snapshot, switch, and retire under one lock."""
+
+    result: dict[str, Any]
+    sources: dict[str, tuple[bytes, dict]]
+    transitional_keys: dict[str, Path]
+    switched_ancestors: set[tuple[str, str]]
+
+    def __init__(self, admin: CredentialAdminService, groups: list[dict]) -> None:
+        self.admin = admin
+        self.groups = groups
+
+    def run(self, *, apply: bool) -> dict:
+        self._capture_migration_markers()
+        self.result = {"family": "teams", "applied": False, "identities": [], "conflicts": []}
+        # Capture both config and source identity before acquiring the mutation lock.
+        self.sources: dict[str, tuple[bytes, dict]] = {}
+        self.transitional_keys: dict[str, Path] = {}
+        for group in self.groups:
+            self._inspect_identity(group)
+        if not apply or self.result["conflicts"]:
+            return self.result
+        if not self.admin.store.health()["available"]:
+            raise CredentialError("Initialize credential storage before migration")
+        if not self.sources and all(group["already"] for group in self.groups):
+            self._resolve_existing_bindings()
+            self.result["unchanged"] = True
+            return self.result
+        with self.admin.operations.admin_config_mutation_lock():
+            self._revalidate_inputs()
+            self._import_credentials()
+            # Snapshot imported encrypted values before switching any configuration.
+            self.result["recovery_snapshot"] = str(
+                encrypted_backup(self.admin.store, "teams-migration-recovery")
+            )
+            self._switch_references()
+            self._retire_sources()
+        self.result["applied"] = True
+        return self.result
+
+    def _capture_migration_markers(self) -> None:
+        for group in self.groups:
+            marker_id = (
+                "teams:"
+                + hashlib.sha256(canonical([group["source"], group["identity"]])).hexdigest()
+            )
+            group.update(marker_id=marker_id, marker=self.admin.store.migration(marker_id))
+        # All imports precede reference switches. An interrupted parent switch can
+        # temporarily flow into descendants whose own imported record is still pending.
+        self.switched_ancestors = {
+            (c["directory"], g["marker"]["credential_ref"])
+            for g in self.groups
+            if g["marker"]
+            for c in g["consumers"]
+            if c["overlay"].get("teams_delegated_credential_ref") == g["marker"]["credential_ref"]
+        }
+
+    def _inherited_migration_switch(self, consumer: dict) -> bool:
         if consumer["overlay"].get("teams_delegated_credential_ref"):
             return False
         return any(
             consumer["directory"].startswith(parent + "/")
             and consumer["config"].teams_delegated_credential_ref == ref
-            for parent, ref in switched_ancestors
+            for parent, ref in self.switched_ancestors
         )
 
-    result = {"family": "teams", "applied": False, "identities": [], "conflicts": []}
-    # Capture both config and source identity before acquiring the mutation lock.
-    sources: dict[str, tuple[bytes, dict]] = {}
-    transitional_keys: dict[str, Path] = {}
-    for group in groups:
+    def _inspect_identity(self, group: dict) -> None:
         consumers = group["consumers"]
         refs = {c["config"].teams_delegated_credential_ref for c in consumers}
         source = Path(group["source"])
         marker = group["marker"]
         ref = marker["credential_ref"] if marker else (next(iter(refs)) if len(refs) == 1 else None)
-        imported = admin.store.metadata(ref) if marker else None
+        imported = self.admin.store.metadata(ref) if marker else None
         already = bool(ref) and all(
             ref == c["config"].teams_delegated_credential_ref for c in consumers
         )
-        result["identities"].append(
+        self.result["identities"].append(
             {
                 "identity": group["identity"],
                 "directories": [c["directory"] for c in consumers],
@@ -186,78 +230,39 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
                 and any(
                     c["config"].teams_delegated_credential_ref
                     and c["config"].teams_delegated_credential_ref != marker["credential_ref"]
-                    and not inherited_migration_switch(c)
+                    and not self._inherited_migration_switch(c)
                     for c in consumers
                 )
             )
             or (imported and any(c["binding"] not in imported["bindings"] for c in consumers))
             or (any(refs) and not already and not marker)
         ):
-            result["conflicts"].append(
+            self.result["conflicts"].append(
                 "Shared Teams identity has conflicting configuration or references"
             )
-            continue
-        if source.exists() and group["source"] not in sources:
-            # Legacy files may predate restrictive modes. Never expose their data;
-            # maintenance first makes the source private, then uses no-follow reads.
-            if source.is_symlink():
-                result["conflicts"].append("Teams source must not be a symlink")
-                continue
-            raw = protected_read(source, limit=4 * 1024 * 1024, legacy_permissions=True)
-            if len(raw) > 4 * 1024 * 1024:
-                raise CredentialError("Teams source exceeds migration size limit")
-            try:
-                payload = json.loads(raw)
-                if not isinstance(payload, dict):
-                    raise ValueError
-                identities = {
-                    item["identity"] for item in groups if item["source"] == group["source"]
-                }
-                decoded = decode_legacy_teams_credential_envelope(
-                    payload,
-                    key_path=legacy_teams_credential_key_path(source),
-                )
-                if decoded is not None:
-                    kind, credentials = decoded
-                    if kind == "single":
-                        if len(identities) != 1:
-                            raise ValueError
-                        payload = {next(iter(identities)): credentials}
-                    else:
-                        payload = credentials
-                    transitional_keys[group["source"]] = legacy_teams_credential_key_path(source)
-                # Support the original single-identity credential document.
-                if "access_token" in payload:
-                    if len(identities) != 1:
-                        raise ValueError
-                    payload = {group["identity"]: payload}
-                sources[group["source"]] = (raw, payload)
-            except (TeamsAuthProtocolError, ValueError, TypeError):
-                raise CredentialError(
-                    "Teams source format or identity mapping is invalid"
-                ) from None
-        payload = sources.get(group["source"], (b"", {}))[1]
+            return
+        if not self._capture_source(group, source):
+            return
+        payload = self.sources.get(group["source"], (b"", {}))[1]
         group["source_digest"] = hashlib.sha256(
-            sources.get(group["source"], (b"", {}))[0]
+            self.sources.get(group["source"], (b"", {}))[0]
         ).hexdigest()
         values = payload.get(group["identity"], {})
         if payload and group["identity"] not in payload:
-            result["conflicts"].append(
-                "Teams source does not contain the configured identity"
-            )
-            continue
+            self.result["conflicts"].append("Teams source does not contain the configured identity")
+            return
         if already and not marker:
             # References prepared independently are not evidence that this legacy
             # source was imported. Keep it for explicit operator reconciliation.
             group["ref"] = ref
             group["retain_source"] = True
-            continue
+            return
         if marker:
             if source.exists() and marker.get("source_digest") != group["source_digest"]:
-                result["conflicts"].append(
+                self.result["conflicts"].append(
                     "Teams source changed after import; reconcile before retirement"
                 )
-                continue
+                return
             group["ref"] = marker["credential_ref"]
         else:
             if values:
@@ -275,44 +280,86 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
                         raise ValueError
                     values = creds.model_dump(mode="json")
                 except ValueError:
-                    result["conflicts"].append(
+                    self.result["conflicts"].append(
                         "Teams token identity/client/tenant does not match its configuration"
                     )
-                    continue
+                    return
             group["values"] = values
-    if not apply or result["conflicts"]:
-        return result
-    if not admin.store.health()["available"]:
-        raise CredentialError("Initialize credential storage before migration")
-    if not sources and all(group["already"] for group in groups):
-        for group in groups:
+
+    def _capture_source(self, group: dict, source: Path) -> bool:
+        if source.exists() and group["source"] not in self.sources:
+            # Legacy files may predate restrictive modes. Never expose their data;
+            # maintenance first makes the source private, then uses no-follow reads.
+            if source.is_symlink():
+                self.result["conflicts"].append("Teams source must not be a symlink")
+                return False
+            raw = protected_read(source, limit=4 * 1024 * 1024, legacy_permissions=True)
+            if len(raw) > 4 * 1024 * 1024:
+                raise CredentialError("Teams source exceeds migration size limit")
+            try:
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError
+                identities = {
+                    item["identity"] for item in self.groups if item["source"] == group["source"]
+                }
+                decoded = decode_legacy_teams_credential_envelope(
+                    payload,
+                    key_path=legacy_teams_credential_key_path(source),
+                )
+                if decoded is not None:
+                    kind, credentials = decoded
+                    if kind == "single":
+                        if len(identities) != 1:
+                            raise ValueError
+                        payload = {next(iter(identities)): credentials}
+                    else:
+                        payload = credentials
+                    self.transitional_keys[group["source"]] = legacy_teams_credential_key_path(
+                        source
+                    )
+                # Support the original single-identity credential document.
+                if "access_token" in payload:
+                    if len(identities) != 1:
+                        raise ValueError
+                    payload = {group["identity"]: payload}
+                self.sources[group["source"]] = (raw, payload)
+            except (TeamsAuthProtocolError, ValueError, TypeError):
+                raise CredentialError(
+                    "Teams source format or identity mapping is invalid"
+                ) from None
+        return True
+
+    def _resolve_existing_bindings(self) -> None:
+        for group in self.groups:
             for consumer in group["consumers"]:
-                admin.store.resolve(
+                self.admin.store.resolve(
                     group["ref"],
                     directory=consumer["directory"],
                     binding=consumer["binding"],
                     kind="teams_oauth",
                 )
-        result["unchanged"] = True
-        return result
-    with admin.operations.admin_config_mutation_lock():
-        for group in groups:
+
+    def _revalidate_inputs(self) -> None:
+        for group in self.groups:
             for c in group["consumers"]:
-                if config_revision(_overlay(admin, c["directory"])) != config_revision(
+                if config_revision(_overlay(self.admin, c["directory"])) != config_revision(
                     c["overlay"]
                 ):
                     raise CredentialConflict("Teams configuration changed during migration")
-        for source, (raw, _) in sources.items():
+        for source, (raw, _) in self.sources.items():
             if protected_read(Path(source), limit=4 * 1024 * 1024, legacy_permissions=True) != raw:
                 raise CredentialConflict("Teams source changed; stop all consumers before retrying")
             os.chmod(source, 0o600, follow_symlinks=False)
-        for group in groups:
+
+    def _import_credentials(self) -> None:
+        for group in self.groups:
             if group["already"]:
                 continue
             if not group.get("ref"):
                 consumers = group["consumers"]
                 values = group["values"]
-                metadata = admin.store.create(
+                metadata = self.admin.store.create(
                     owner=consumers[0]["directory"] if len(consumers) == 1 else "root",
                     kind="teams_oauth",
                     label=group["identity"],
@@ -325,21 +372,21 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
                     source_digest=group["source_digest"],
                 )
                 group["ref"] = metadata["id"]
-        # Snapshot imported encrypted values before switching any configuration.
-        result["recovery_snapshot"] = str(encrypted_backup(admin.store, "teams-migration-recovery"))
-        for group in groups:
+
+    def _switch_references(self) -> None:
+        for group in self.groups:
             for c in group["consumers"]:
                 # Verify authenticated ciphertext and its original binding first.
-                admin.store.resolve(
+                self.admin.store.resolve(
                     group["ref"], directory=c["directory"], binding=c["binding"], kind="teams_oauth"
                 )
                 if group["already"]:
                     continue
-                overlay = _overlay(admin, c["directory"])
+                overlay = _overlay(self.admin, c["directory"])
                 overlay["teams_delegated_credential_ref"] = group["ref"]
-                _write(admin, c["directory"], overlay)
+                _write(self.admin, c["directory"], overlay)
             if not group.get("retain_source"):
-                admin.store.record_migration(
+                self.admin.store.record_migration(
                     group["marker_id"],
                     {
                         "credential_ref": group["ref"],
@@ -349,28 +396,28 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
                         ),
                     },
                 )
-        for source, (raw, payload) in sources.items():
+
+    def _retire_sources(self) -> None:
+        for source, (raw, payload) in self.sources.items():
             # Never discard an unconfigured identity from a shared legacy file.
-            migrated_ids = {g["identity"] for g in groups if g["source"] == source}
+            migrated_ids = {g["identity"] for g in self.groups if g["source"] == source}
             if set(payload) - migrated_ids or any(
-                g.get("retain_source") for g in groups if g["source"] == source
+                g.get("retain_source") for g in self.groups if g["source"] == source
             ):
-                result.setdefault("retained_sources", 0)
-                result["retained_sources"] += 1
+                self.result.setdefault("retained_sources", 0)
+                self.result["retained_sources"] += 1
                 continue
             if protected_read(Path(source), limit=4 * 1024 * 1024) != raw:
                 raise CredentialConflict("Teams source changed before retirement")
             Path(source).unlink()
             fsync_directory(Path(source).parent)
-            key_path = transitional_keys.get(source)
+            key_path = self.transitional_keys.get(source)
             if key_path is not None:
                 try:
                     key_path.unlink(missing_ok=True)
                     fsync_directory(key_path.parent)
                 except OSError:
-                    result.setdefault("retained_legacy_keys", []).append(str(key_path))
-    result["applied"] = True
-    return result
+                    self.result.setdefault("retained_legacy_keys", []).append(str(key_path))
 
 
 def migrate_connector(runtime, *, directory: str, profile_id: str, apply=False) -> dict:

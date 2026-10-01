@@ -349,6 +349,11 @@ class FakeSessionsStore:
         self.deleted.append(key)
         self._data.pop(key, None)
 
+    def delete_session(self, key: str) -> bool:
+        existed = key in self._data
+        self.delete(key)
+        return existed
+
     def write_all(self, data: dict[str, FakeManifest]) -> None:
         self.write_all_records.append(dict(data))
         self._data = dict(data)
@@ -1260,6 +1265,77 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     assert updated.vm_id == "assistant-shared"
     assert updated.vm_provider == "libvirt"
     assert updated.metadata["assistant_scope"] == "admin_chat"
+
+
+@pytest.mark.parametrize("had_existing_session", [False, True])
+@pytest.mark.parametrize("preserved_vm", [False, True])
+def test_libvirt_helper_setup_failure_reports_failure_and_preserves_recoverable_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    had_existing_session: bool,
+    preserved_vm: bool,
+) -> None:
+    manifest = SessionManifest(
+        session_id="session-create",
+        vm_id="vm-create",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={"purpose": "retry provisioning"},
+    )
+    sessions = FakeSessionsStore(
+        {"session-create": manifest} if had_existing_session else {}
+    )
+    admin = FakeAdmin(sessions=sessions)
+    admin.config.runtime_dir = tmp_path
+
+    class Helper:
+        called = False
+
+        def is_running(self) -> bool:
+            return True
+
+        def call(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            self.called = True
+            return {
+                "returncode": 7,
+                "stdout": "setup incomplete",
+                "stderr": "synthetic bootstrap failure",
+            }
+
+    helper = Helper()
+    admin.use_privileged_helper = True
+    admin._privileged_helper = helper
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    monkeypatch.setattr(
+        session_helpers, "build_issue_session_manifest", lambda **kwargs: manifest
+    )
+    monkeypatch.setattr(
+        vm_helpers,
+        "dominfo_field",
+        lambda *args: "running" if helper.called and preserved_vm else None,
+    )
+    monkeypatch.setattr(
+        process_helpers,
+        "run_subprocess",
+        lambda *args, **kwargs: pytest.fail("helper setup must not use a subprocess"),
+    )
+
+    result = service.create_vm(
+        provider="libvirt",
+        vm_name="vm-create",
+        session_id="session-create",
+        allow_existing_session=had_existing_session,
+    )
+
+    assert result.success is False
+    assert "synthetic bootstrap failure" in result.message
+    assert (sessions.get_session("session-create") is not None) == (
+        had_existing_session or preserved_vm
+    )
+    assert sessions.deleted == (
+        [] if had_existing_session or preserved_vm else ["session-create"]
+    )
+    assert ("preserved for inspection" in result.message) == preserved_vm
 
 
 @pytest.mark.parametrize("model", [None, "unapproved/model"])

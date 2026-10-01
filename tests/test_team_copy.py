@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
+import evander_team_addon.services.admin_service as admin_service_module
 from evander_team_addon.services.admin_service import (
     TeamAdminService,
     team_copy_configuration_token,
@@ -126,9 +128,13 @@ def _seed_copyable_team(tmp_path: Path) -> tuple[TeamAdminService, TeamStateRepo
     return admin, repo
 
 
-def test_copy_team_creates_clean_configuration_graph(tmp_path: Path) -> None:
+def test_copy_team_creates_clean_configuration_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     admin, repo = _seed_copyable_team(tmp_path)
     source_state = repo.read()
+    copied_at = datetime(2026, 9, 30, 12, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: copied_at)
 
     state, copied = admin.copy_team(
         source_team_id="source",
@@ -157,6 +163,10 @@ def test_copy_team_creates_clean_configuration_graph(tmp_path: Path) -> None:
     assert float(copied_team.max_cost_usd or 0) == 25.0
     assert len(copied_team.cost_budget_windows) == 1
     assert copied_team.cost_budget_windows[0].actor == "operator:team-copy"
+    assert copied_team.created_at == copied_at
+    assert copied_project.created_at == copied_at
+    assert state.review_profiles[copied_profile_id].created_at == copied_at
+    assert copied_team.cost_budget_windows[0].started_at == copied_at
     assert copied_team.project_ids == [copied_project.id]
 
     assert copied_manager.session_id == "session-copy-manager"
@@ -265,6 +275,44 @@ def test_copy_team_keeps_source_snapshot_revision_strict(tmp_path: Path) -> None
             },
             expected_revision=stale_revision,
         )
+
+
+def test_copy_team_rejects_source_changes_during_copy_without_explicit_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin, repo = _seed_copyable_team(tmp_path)
+    original_read = repo.read
+    source_state = original_read()
+
+    def read_then_change_source():
+        snapshot = original_read()
+        monkeypatch.setattr(repo, "read", original_read)
+        admin.update_team(
+            team_id="source",
+            name="Concurrently changed source",
+            expected_revision=snapshot.revision,
+        )
+        return snapshot
+
+    monkeypatch.setattr(repo, "read", read_then_change_source)
+    with pytest.raises(TeamStateConflictError):
+        admin.copy_team(
+            source_team_id="source",
+            team_id="destination",
+            name="Destination",
+            agent_session_ids={
+                "manager": "session-copy-manager",
+                "lead": "session-copy-lead",
+                "reviewer": "session-copy-reviewer",
+            },
+        )
+
+    persisted = repo.read()
+    assert persisted.revision == source_state.revision + 1
+    assert persisted.teams["source"].name == "Concurrently changed source"
+    assert set(persisted.teams) == {"source"}
+    assert set(persisted.projects) == {"project"}
+    assert set(persisted.agents) == {"manager", "lead", "reviewer"}
 
 
 def test_team_copy_configuration_token_ignores_live_state_but_tracks_configuration(

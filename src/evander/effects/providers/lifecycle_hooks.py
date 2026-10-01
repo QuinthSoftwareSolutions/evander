@@ -345,361 +345,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         return True
 
     def _dispatch_queued(self, *, worker: Any, budget: Any = None) -> int:
-        queue_store = getattr(worker, "queued_agent_prompt_store", None)
-        dispatch_port = resolve_agent_prompt_dispatch_port(worker)
-        if queue_store is None or dispatch_port is None:
-            return 0
-
-        queued_records = queue_store.read_all()
-        if not queued_records:
-            return 0
-
-        selected_keys = None
-        if budget is not None:
-            eligible = [
-                key
-                for key in self._fifo_queue_keys(queued_records)
-                if key not in self._slice_visited
-            ]
-            selected_keys = set(eligible[:50])
-            self._slice_remaining = len(eligible) > len(selected_keys)
-        all_snapshot = queued_records
-        if selected_keys is not None:
-            queued_records = {
-                key: record for key, record in queued_records.items() if key in selected_keys
-            }
-
-        graph = self._build_current_execution_graph(worker=worker)
-        if graph is not None:
-            self._discard_non_dispatchable_queue_records(
-                queue_store=queue_store,
-                records=queued_records,
-                graph=graph,
-            )
-            all_snapshot = queue_store.read_all()
-            queued_records = {
-                key: record
-                for key, record in all_snapshot.items()
-                if selected_keys is None or key in selected_keys
-            }
-            if not queued_records:
-                return 0
-
-        dispatched = 0
-        container_queue_keys = self._container_queue_keys(worker=worker, records=queued_records)
-        for queue_key in self._fifo_queue_keys(queued_records, container_queue_keys):
-            if budget is not None and queue_key in self._slice_visited:
-                continue
-            if not self._take_candidate(queue_key, budget):
-                return dispatched
-            current_records = all_snapshot
-            get = getattr(queue_store, "get", None)
-            if callable(get):
-                current_records = dict(current_records)
-                current_records[queue_key] = get(queue_key)
-            else:
-                current_records = queue_store.read_all()
-            record = current_records.get(queue_key)
-            if record is None:
-                continue
-            if not self._validate_queue_ownership(worker, record):
-                continue
-            if not self._retry_not_before_ready(record):
-                continue
-            if self._has_earlier_subscription_profile_record(
-                worker=worker,
-                records=current_records,
-                queue_key=queue_key,
-            ):
-                continue
-            if self._has_earlier_local_capacity_record(
-                records=current_records,
-                queue_key=queue_key,
-                candidates=set(current_records),
-            ):
-                continue
-            if not self._scheduled_wake_queue_record_is_current(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if self._discard_queue_record_for_exact_execution(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if self._has_earlier_claimed_replay_record(
-                records=current_records,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if self._has_waiting_enqueue_prompt_for_record(worker=worker, record=record):
-                continue
-            if self._dispatch_container_record_if_idle(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            ):
-                dispatched += 1
-                all_snapshot = queue_store.read_all()
-
-        all_queued_records = queue_store.read_all()
-        current_container_queue_keys = self._container_queue_keys(
-            worker=worker,
-            records={
-                key: record
-                for key, record in all_queued_records.items()
-                if selected_keys is None or key in selected_keys
-            },
-        )
-        queued_records = {
-            queue_key: record
-            for queue_key, record in all_queued_records.items()
-            if queue_key not in current_container_queue_keys
-            and (selected_keys is None or queue_key in selected_keys)
-        }
-        if not queued_records:
-            return dispatched
-
-        try:
-            summaries = {
-                str(getattr(item, "vm_name", "") or "").strip(): item
-                for item in list_vm_summaries_for_agent_reconciliation(worker)
-            }
-        except Exception:
-            logger.exception(
-                "AgentEnqueuePromptQueueDispatchHook inventory reconciliation skipped "
-                "phase=post_completion_dispatch queued_non_container_records=%d",
-                len(queued_records),
-            )
-            if budget is not None:
-                # Defer this VM page until the next pass, allowing later pages
-                # (including container prompts) to proceed during an outage.
-                self._slice_visited.update(queued_records)
-            return dispatched
-
-        for queue_key in self._fifo_queue_keys(queued_records):
-            if budget is not None and queue_key in self._slice_visited:
-                continue
-            if not self._take_candidate(queue_key, budget):
-                return dispatched
-            current_records = all_queued_records
-            get = getattr(queue_store, "get", None)
-            if callable(get):
-                current_records = dict(current_records)
-                current_records[queue_key] = get(queue_key)
-            else:
-                current_records = queue_store.read_all()
-            record = current_records.get(queue_key)
-            if record is None:
-                continue
-            if not self._validate_queue_ownership(worker, record):
-                continue
-            if self._has_earlier_local_capacity_record(
-                records=current_records,
-                queue_key=queue_key,
-                candidates=set(current_records),
-            ):
-                continue
-            if not self._scheduled_wake_queue_record_is_current(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if self._discard_queue_record_for_exact_execution(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if self._has_earlier_claimed_replay_record(
-                records=current_records,
-                queue_key=queue_key,
-                record=record,
-            ):
-                continue
-            if graph is None:
-                continue
-            effect = graph.effects_by_id.get(record.effect_id)
-            if not self._is_dispatchable_libvirt_record(effect=effect, record=record):
-                continue
-            if self._has_waiting_enqueue_prompt_for_record(worker=worker, record=record):
-                continue
-            vm_name = str(record.vm_name or "").strip()
-            summary = summaries.get(vm_name)
-            if (
-                summary is not None
-                and str(getattr(summary, "agent_state", "") or "").strip() == "running"
-            ):
-                continue
-
-            dispatch_id = self._dispatch_id_for_queue_record(record)
-            claimed_queue_key = agent_prompt_replay_queue_key(record)
-            _session_id, session = self._session_context_for_libvirt_record(
-                worker=worker,
-                record=record,
-            )
-            if session is not None and self._queued_prompt_session_is_expired(
-                queue_key=queue_key,
-                session=session,
-            ):
-                self._delete_queue_record_if_current(
-                    queue_store=queue_store,
-                    queue_key=queue_key,
-                    dispatch_id=dispatch_id,
-                )
-                continue
-            effective_resume_thread_id = self._effective_record_resume_thread_id(
-                record=record,
-                session=session,
-            )
-            prompt_lock_claim = self._claim_enqueue_prompt_for_record(
-                worker=worker,
-                record=record,
-                queue_key=claimed_queue_key,
-                dispatch_id=dispatch_id,
-                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
-            )
-            if prompt_lock_claim is not None and not bool(
-                getattr(prompt_lock_claim, "claimed", False)
-            ):
-                continue
-            capacity_admission = self._claim_local_inference_capacity_for_record(
-                worker=worker,
-                record=record,
-                config=self._config_for_libvirt_record(
-                    worker=worker,
-                    session_id=_session_id or "",
-                    session=session,
-                ),
-                queue_key=queue_key,
-                owner_queue_key=claimed_queue_key,
-                dispatch_id=dispatch_id,
-                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
-            )
-            if not capacity_admission.admitted:
-                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
-                continue
-            claimed = self._claim_queue_record_for_replay(
-                worker=worker,
-                queue_store=queue_store,
-                queue_key=queue_key,
-                record=record,
-            )
-            if claimed is None:
-                self._release_local_inference_capacity(
-                    worker=worker,
-                    admission=capacity_admission,
-                )
-                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
-                continue
-            queue_key, record, dispatch_id = claimed
-            with maintain_local_inference_launch(
-                resolve_runtime_dir(worker),
-                capacity_admission.slot_id,
-            ):
-                result = dispatch_with_cost_context(
-                    lambda: dispatch_agent_prompt(
-                        worker,
-                        target=record.target,
-                        prompt=record.prompt,
-                        model=record.model,
-                        reasoning_effort=record.reasoning_effort,
-                        fast_mode=record.fast_mode,
-                        reasoning_effort_source=record.reasoning_effort_source,
-                        fast_mode_source=record.fast_mode_source,
-                        vm_user=record.vm_user,
-                        dispatch_id=dispatch_id,
-                        resume_thread_id=effective_resume_thread_id,
-                        resume_mode=str(getattr(record, "resume_mode", None) or "new_context"),
-                        persist_thread_id=self._resume_thread_metadata_key(record) is None,
-                        mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
-                            worker=worker,
-                            record=record,
-                        ),
-                    ),
-                    runtime_dir=resolve_runtime_dir(worker),
-                    session=session,
-                    session_id=_session_id,
-                    payload=dict(record.metadata),
-                    dispatch_id=dispatch_id,
-                    model=record.model,
-                    effect_id=record.effect_id,
-                    workflow_run_id=record.metadata.get("workflow_run_id"),
-                    agent_harness=(getattr(session, "metadata", {}) or {}).get(
-                        "agent_provider", "codex"
-                    ),
-                    execution_backend="libvirt_vm",
-                )
-            if result is not None and bool(getattr(result, "success", False)):
-                # Legacy queue entries resolve their effort in the VM dispatcher.
-                # Capture that result before recording the execution for retries.
-                if getattr(result, "reasoning_effort_source", None) is not None:
-                    record.reasoning_effort = result.reasoning_effort
-                    record.reasoning_effort_source = result.reasoning_effort_source
-                if getattr(result, "fast_mode_source", None) is not None:
-                    record.fast_mode = result.fast_mode
-                    record.fast_mode_source = result.fast_mode_source
-                self._mark_local_inference_running(
-                    worker=worker,
-                    admission=capacity_admission,
-                    target_name=str(record.vm_name or record.target).strip(),
-                    execution_id=str(record.vm_name or record.target).strip(),
-                )
-                self._persist_chat_assistant_thread_id(
-                    worker=worker,
-                    record=record,
-                    result=result,
-                    queue_key=queue_key,
-                )
-                self._persist_resume_thread_metadata_key(
-                    worker=worker,
-                    record=record,
-                    thread_id=str(getattr(result, "thread_id", "") or "").strip(),
-                )
-                recorded = self._record_libvirt_waiting_execution(
-                    worker=worker,
-                    record=record,
-                    queue_key=queue_key,
-                    dispatch_id=dispatch_id,
-                    result=result,
-                    effective_resume_thread_id=effective_resume_thread_id,
-                    prompt_lock_metadata=self._prompt_lock_metadata_from_claim(prompt_lock_claim),
-                    capacity_metadata=capacity_admission.output_metadata(),
-                )
-                if not recorded:
-                    continue
-                steering_note_consumed = self._mark_queued_operator_steering_delivered(
-                    worker=worker,
-                    record=record,
-                    worker_execution_id=str(record.vm_name or record.target).strip(),
-                    execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
-                )
-                if steering_note_consumed:
-                    self._delete_queue_record_if_current(
-                        queue_store=queue_store,
-                        queue_key=queue_key,
-                        dispatch_id=dispatch_id,
-                    )
-                dispatched += 1
-                all_queued_records = queue_store.read_all()
-            else:
-                self._release_local_inference_capacity(
-                    worker=worker,
-                    admission=capacity_admission,
-                )
-                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
-
-        return dispatched
+        return _QueuedPromptDispatch(hook=self, worker=worker, budget=budget).dispatch()
 
     @staticmethod
     def _fifo_queue_keys(
@@ -2495,6 +2141,498 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if runtime_resolver is not None and runtime_resolver is not direct_resolver:
             resolvers.append(runtime_resolver)
         return tuple(resolvers)
+
+
+class _QueuedPromptDispatch:
+    """Run one bounded queue page, replaying containers before inspecting VMs."""
+
+    queue_store: Any
+    queued_records: dict[str, Any]
+    selected_keys: set[str] | None
+    all_snapshot: dict[str, Any]
+    graph: Any | None
+    all_queued_records: dict[str, Any]
+    summaries: dict[str, Any]
+
+    def __init__(
+        self,
+        *,
+        hook: AgentEnqueuePromptQueueDispatchHook,
+        worker: Any,
+        budget: Any,
+    ) -> None:
+        self.hook = hook
+        self.worker = worker
+        self.budget = budget
+        self.dispatched = 0
+
+    def dispatch(self) -> int:
+        if not self._read_queue():
+            return 0
+        self._select_page()
+        if not self._prepare_graph():
+            return 0
+        if not self._dispatch_container_records():
+            return self.dispatched
+        if not self._read_libvirt_records():
+            return self.dispatched
+        self._dispatch_libvirt_records()
+        return self.dispatched
+
+    def _read_queue(self) -> bool:
+        self.queue_store = getattr(self.worker, "queued_agent_prompt_store", None)
+        dispatch_port = resolve_agent_prompt_dispatch_port(self.worker)
+        if self.queue_store is None or dispatch_port is None:
+            return False
+
+        self.queued_records = self.queue_store.read_all()
+        if not self.queued_records:
+            return False
+
+        return True
+
+    def _select_page(self) -> None:
+        self.selected_keys = None
+        if self.budget is not None:
+            eligible = [
+                key
+                for key in self.hook._fifo_queue_keys(self.queued_records)
+                if key not in self.hook._slice_visited
+            ]
+            self.selected_keys = set(eligible[:50])
+            self.hook._slice_remaining = len(eligible) > len(self.selected_keys)
+        self.all_snapshot = self.queued_records
+        if self.selected_keys is not None:
+            self.queued_records = {
+                key: record
+                for key, record in self.queued_records.items()
+                if key in self.selected_keys
+            }
+
+    def _prepare_graph(self) -> bool:
+        self.graph = self.hook._build_current_execution_graph(worker=self.worker)
+        if self.graph is not None:
+            self.hook._discard_non_dispatchable_queue_records(
+                queue_store=self.queue_store,
+                records=self.queued_records,
+                graph=self.graph,
+            )
+            self.all_snapshot = self.queue_store.read_all()
+            self.queued_records = {
+                key: record
+                for key, record in self.all_snapshot.items()
+                if self.selected_keys is None or key in self.selected_keys
+            }
+            if not self.queued_records:
+                return False
+
+        return True
+
+    def _dispatch_container_records(self) -> bool:
+        container_queue_keys = self.hook._container_queue_keys(
+            worker=self.worker, records=self.queued_records
+        )
+        for queue_key in self.hook._fifo_queue_keys(self.queued_records, container_queue_keys):
+            if self.budget is not None and queue_key in self.hook._slice_visited:
+                continue
+            if not self.hook._take_candidate(queue_key, self.budget):
+                return False
+            current_records = self.all_snapshot
+            get = getattr(self.queue_store, "get", None)
+            if callable(get):
+                current_records = dict(current_records)
+                current_records[queue_key] = get(queue_key)
+            else:
+                current_records = self.queue_store.read_all()
+            record = current_records.get(queue_key)
+            if record is None:
+                continue
+            if not self.hook._validate_queue_ownership(self.worker, record):
+                continue
+            if not self.hook._retry_not_before_ready(record):
+                continue
+            if self.hook._has_earlier_subscription_profile_record(
+                worker=self.worker,
+                records=current_records,
+                queue_key=queue_key,
+            ):
+                continue
+            if self.hook._has_earlier_local_capacity_record(
+                records=current_records,
+                queue_key=queue_key,
+                candidates=set(current_records),
+            ):
+                continue
+            if not self.hook._scheduled_wake_queue_record_is_current(
+                worker=self.worker,
+                queue_store=self.queue_store,
+                queue_key=queue_key,
+                record=record,
+            ):
+                continue
+            if self.hook._discard_queue_record_for_exact_execution(
+                worker=self.worker,
+                queue_store=self.queue_store,
+                queue_key=queue_key,
+                record=record,
+            ):
+                continue
+            if self.hook._has_earlier_claimed_replay_record(
+                records=current_records,
+                queue_key=queue_key,
+                record=record,
+            ):
+                continue
+            if self.hook._has_waiting_enqueue_prompt_for_record(worker=self.worker, record=record):
+                continue
+            if self.hook._dispatch_container_record_if_idle(
+                worker=self.worker,
+                queue_store=self.queue_store,
+                queue_key=queue_key,
+                record=record,
+            ):
+                self.dispatched += 1
+                self.all_snapshot = self.queue_store.read_all()
+
+        return True
+
+    def _read_libvirt_records(self) -> bool:
+        self.all_queued_records = self.queue_store.read_all()
+        current_container_queue_keys = self.hook._container_queue_keys(
+            worker=self.worker,
+            records={
+                key: record
+                for key, record in self.all_queued_records.items()
+                if self.selected_keys is None or key in self.selected_keys
+            },
+        )
+        self.queued_records = {
+            queue_key: record
+            for queue_key, record in self.all_queued_records.items()
+            if queue_key not in current_container_queue_keys
+            and (self.selected_keys is None or queue_key in self.selected_keys)
+        }
+        if not self.queued_records:
+            return False
+
+        try:
+            self.summaries = {
+                str(getattr(item, "vm_name", "") or "").strip(): item
+                for item in list_vm_summaries_for_agent_reconciliation(self.worker)
+            }
+        except Exception:
+            logger.exception(
+                "AgentEnqueuePromptQueueDispatchHook inventory reconciliation skipped "
+                "phase=post_completion_dispatch queued_non_container_records=%d",
+                len(self.queued_records),
+            )
+            if self.budget is not None:
+                # Defer this VM page until the next pass, allowing later pages
+                # (including container prompts) to proceed during an outage.
+                self.hook._slice_visited.update(self.queued_records)
+            return False
+
+        return True
+
+    def _dispatch_libvirt_records(self) -> None:
+        for queue_key in self.hook._fifo_queue_keys(self.queued_records):
+            if self.budget is not None and queue_key in self.hook._slice_visited:
+                continue
+            if not self.hook._take_candidate(queue_key, self.budget):
+                return
+            replay = _LibvirtQueuedPromptReplay(
+                hook=self.hook,
+                worker=self.worker,
+                queue_store=self.queue_store,
+                queue_key=queue_key,
+                current_records=self.all_queued_records,
+                graph=self.graph,
+                summaries=self.summaries,
+            )
+            if replay.dispatch():
+                self.dispatched += 1
+                self.all_queued_records = self.queue_store.read_all()
+
+
+class _LibvirtQueuedPromptReplay:
+    """Keep one prompt's session, claims and delivery receipt in one replay attempt."""
+
+    record: Any
+    dispatch_id: str
+    claimed_queue_key: str
+    session_id: str | None
+    session: Any | None
+    effective_resume_thread_id: str | None
+    prompt_lock_claim: Any | None
+    capacity_admission: LocalInferenceCapacityAdmission
+
+    def __init__(
+        self,
+        *,
+        hook: AgentEnqueuePromptQueueDispatchHook,
+        worker: Any,
+        queue_store: Any,
+        queue_key: str,
+        current_records: dict[str, Any],
+        graph: Any | None,
+        summaries: dict[str, Any],
+    ) -> None:
+        self.hook = hook
+        self.worker = worker
+        self.queue_store = queue_store
+        self.queue_key = queue_key
+        self.current_records = current_records
+        self.graph = graph
+        self.summaries = summaries
+
+    def dispatch(self) -> bool:
+        if not self._read_current_record():
+            return False
+        if not self._validate_candidate():
+            return False
+        if not self._prepare_session():
+            return False
+        if not self._claim_delivery():
+            return False
+        result = self._submit_prompt()
+        if result is not None and bool(getattr(result, "success", False)):
+            return self._record_delivery(result)
+        self._release_delivery_claims()
+        return False
+
+    def _read_current_record(self) -> bool:
+        get = getattr(self.queue_store, "get", None)
+        if callable(get):
+            self.current_records = dict(self.current_records)
+            self.current_records[self.queue_key] = get(self.queue_key)
+        else:
+            self.current_records = self.queue_store.read_all()
+        self.record = self.current_records.get(self.queue_key)
+        if self.record is None:
+            return False
+        if not self.hook._validate_queue_ownership(self.worker, self.record):
+            return False
+
+        return True
+
+    def _validate_candidate(self) -> bool:
+        if self.hook._has_earlier_local_capacity_record(
+            records=self.current_records,
+            queue_key=self.queue_key,
+            candidates=set(self.current_records),
+        ):
+            return False
+        if not self.hook._scheduled_wake_queue_record_is_current(
+            worker=self.worker,
+            queue_store=self.queue_store,
+            queue_key=self.queue_key,
+            record=self.record,
+        ):
+            return False
+        if self.hook._discard_queue_record_for_exact_execution(
+            worker=self.worker,
+            queue_store=self.queue_store,
+            queue_key=self.queue_key,
+            record=self.record,
+        ):
+            return False
+        if self.hook._has_earlier_claimed_replay_record(
+            records=self.current_records,
+            queue_key=self.queue_key,
+            record=self.record,
+        ):
+            return False
+        if self.graph is None:
+            return False
+        effect = self.graph.effects_by_id.get(self.record.effect_id)
+        if not self.hook._is_dispatchable_libvirt_record(effect=effect, record=self.record):
+            return False
+        if self.hook._has_waiting_enqueue_prompt_for_record(worker=self.worker, record=self.record):
+            return False
+        vm_name = str(self.record.vm_name or "").strip()
+        summary = self.summaries.get(vm_name)
+        if (
+            summary is not None
+            and str(getattr(summary, "agent_state", "") or "").strip() == "running"
+        ):
+            return False
+
+        return True
+
+    def _prepare_session(self) -> bool:
+        self.dispatch_id = self.hook._dispatch_id_for_queue_record(self.record)
+        self.claimed_queue_key = agent_prompt_replay_queue_key(self.record)
+        self.session_id, self.session = self.hook._session_context_for_libvirt_record(
+            worker=self.worker,
+            record=self.record,
+        )
+        if self.session is not None and self.hook._queued_prompt_session_is_expired(
+            queue_key=self.queue_key,
+            session=self.session,
+        ):
+            self.hook._delete_queue_record_if_current(
+                queue_store=self.queue_store,
+                queue_key=self.queue_key,
+                dispatch_id=self.dispatch_id,
+            )
+            return False
+        self.effective_resume_thread_id = self.hook._effective_record_resume_thread_id(
+            record=self.record,
+            session=self.session,
+        )
+
+        return True
+
+    def _claim_delivery(self) -> bool:
+        self.prompt_lock_claim = self.hook._claim_enqueue_prompt_for_record(
+            worker=self.worker,
+            record=self.record,
+            queue_key=self.claimed_queue_key,
+            dispatch_id=self.dispatch_id,
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        )
+        if self.prompt_lock_claim is not None and not bool(
+            getattr(self.prompt_lock_claim, "claimed", False)
+        ):
+            return False
+        self.capacity_admission = self.hook._claim_local_inference_capacity_for_record(
+            worker=self.worker,
+            record=self.record,
+            config=self.hook._config_for_libvirt_record(
+                worker=self.worker,
+                session_id=self.session_id or "",
+                session=self.session,
+            ),
+            queue_key=self.queue_key,
+            owner_queue_key=self.claimed_queue_key,
+            dispatch_id=self.dispatch_id,
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        )
+        if not self.capacity_admission.admitted:
+            self.hook._release_enqueue_prompt_claim(
+                worker=self.worker, claim=self.prompt_lock_claim
+            )
+            return False
+        claimed = self.hook._claim_queue_record_for_replay(
+            worker=self.worker,
+            queue_store=self.queue_store,
+            queue_key=self.queue_key,
+            record=self.record,
+        )
+        if claimed is None:
+            self.hook._release_local_inference_capacity(
+                worker=self.worker,
+                admission=self.capacity_admission,
+            )
+            self.hook._release_enqueue_prompt_claim(
+                worker=self.worker, claim=self.prompt_lock_claim
+            )
+            return False
+        self.queue_key, self.record, self.dispatch_id = claimed
+
+        return True
+
+    def _submit_prompt(self) -> Any:
+        with maintain_local_inference_launch(
+            resolve_runtime_dir(self.worker),
+            self.capacity_admission.slot_id,
+        ):
+            result = dispatch_with_cost_context(
+                lambda: dispatch_agent_prompt(
+                    self.worker,
+                    target=self.record.target,
+                    prompt=self.record.prompt,
+                    model=self.record.model,
+                    reasoning_effort=self.record.reasoning_effort,
+                    fast_mode=self.record.fast_mode,
+                    reasoning_effort_source=self.record.reasoning_effort_source,
+                    fast_mode_source=self.record.fast_mode_source,
+                    vm_user=self.record.vm_user,
+                    dispatch_id=self.dispatch_id,
+                    resume_thread_id=self.effective_resume_thread_id,
+                    resume_mode=str(getattr(self.record, "resume_mode", None) or "new_context"),
+                    persist_thread_id=self.hook._resume_thread_metadata_key(self.record) is None,
+                    mcp_gateway_url=self.hook._mcp_gateway_url_for_libvirt_record(
+                        worker=self.worker,
+                        record=self.record,
+                    ),
+                ),
+                runtime_dir=resolve_runtime_dir(self.worker),
+                session=self.session,
+                session_id=self.session_id,
+                payload=dict(self.record.metadata),
+                dispatch_id=self.dispatch_id,
+                model=self.record.model,
+                effect_id=self.record.effect_id,
+                workflow_run_id=self.record.metadata.get("workflow_run_id"),
+                agent_harness=(getattr(self.session, "metadata", {}) or {}).get(
+                    "agent_provider", "codex"
+                ),
+                execution_backend="libvirt_vm",
+            )
+
+        return result
+
+    def _record_delivery(self, result: Any) -> bool:
+        # Legacy queue entries resolve their effort in the VM dispatcher.
+        # Capture that result before recording the execution for retries.
+        if getattr(result, "reasoning_effort_source", None) is not None:
+            self.record.reasoning_effort = result.reasoning_effort
+            self.record.reasoning_effort_source = result.reasoning_effort_source
+        if getattr(result, "fast_mode_source", None) is not None:
+            self.record.fast_mode = result.fast_mode
+            self.record.fast_mode_source = result.fast_mode_source
+        self.hook._mark_local_inference_running(
+            worker=self.worker,
+            admission=self.capacity_admission,
+            target_name=str(self.record.vm_name or self.record.target).strip(),
+            execution_id=str(self.record.vm_name or self.record.target).strip(),
+        )
+        self.hook._persist_chat_assistant_thread_id(
+            worker=self.worker,
+            record=self.record,
+            result=result,
+            queue_key=self.queue_key,
+        )
+        self.hook._persist_resume_thread_metadata_key(
+            worker=self.worker,
+            record=self.record,
+            thread_id=str(getattr(result, "thread_id", "") or "").strip(),
+        )
+        recorded = self.hook._record_libvirt_waiting_execution(
+            worker=self.worker,
+            record=self.record,
+            queue_key=self.queue_key,
+            dispatch_id=self.dispatch_id,
+            result=result,
+            effective_resume_thread_id=self.effective_resume_thread_id,
+            prompt_lock_metadata=self.hook._prompt_lock_metadata_from_claim(self.prompt_lock_claim),
+            capacity_metadata=self.capacity_admission.output_metadata(),
+        )
+        if not recorded:
+            # The prompt is running; retain its claims and queued row for recovery.
+            return False
+        steering_note_consumed = self.hook._mark_queued_operator_steering_delivered(
+            worker=self.worker,
+            record=self.record,
+            worker_execution_id=str(self.record.vm_name or self.record.target).strip(),
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        )
+        if steering_note_consumed:
+            self.hook._delete_queue_record_if_current(
+                queue_store=self.queue_store,
+                queue_key=self.queue_key,
+                dispatch_id=self.dispatch_id,
+            )
+
+        return True
+
+    def _release_delivery_claims(self) -> None:
+        self.hook._release_local_inference_capacity(
+            worker=self.worker,
+            admission=self.capacity_admission,
+        )
+        self.hook._release_enqueue_prompt_claim(worker=self.worker, claim=self.prompt_lock_claim)
 
 
 def build_effect_lifecycle_hooks(*, provider_factory: Any) -> tuple[EffectLifecycleHookBase, ...]:

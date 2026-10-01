@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-10-01 - Clarify control-plane transaction stages (0.76.2)
+
+- Apply Team agent action batches through named stages with invocation-local
+  progress and project-recalculation state, preserving stage order, partial-error
+  handling, transactional events, and dispatch completion.
+- Split ordinary dispatch leasing into eligibility, work selection, wake timing,
+  lineage selection, reservation, and payload phases while retaining role
+  allocation recovery, manager fallback order, and revision-conflict retries.
+- Build release packages through explicit lineage, provenance, input, destination,
+  persistence, and promotion stages shared by agent and operator requests, keeping
+  duplicate reuse and correction failure cleanup in their established order.
+- Separate task-update validation, edits, preparation invalidation, and response
+  projection, removing unreachable direct blocker-transition handling while
+  preserving blocker reassignment events and command response fields.
+- Apply administrative task upserts through a typed request with explicit edit
+  flags and separate existing-task and new-task stages, preserving graph policy,
+  inherited provenance, immutable Git base checks, and transactional wake events.
+- Dispatch wake reservations through separate repository, capability, artifact,
+  prompt, delivery, and recovery stages with fresh state for each lease, retaining
+  queue activation rules and durable failure and conflict retries.
+- Project scoped Team state through ordered membership, work, delivery, dispatch,
+  assessment, and reference-closure stages, removing a superseded task projection
+  while retaining scope intersections and globally derived task assessments.
+- Consolidate agent role updates so explicit role clearing uses a defined value:
+  teamless agents may clear it, while team members receive the existing validation
+  error with their attempted edits rolled back.
+- Prepare task Git contexts through named base-selection, worktree, receipt,
+  provenance, and commit stages, making recovery strategy priority explicit while
+  retaining cleanup locks, durable receipts, and state-conflict retry metrics.
+- Collect case-history evidence through ordered scope, source, note, artifact,
+  review, conversation, and temporal-annotation phases, preserving record and
+  warning order and removing an unused review-ID accumulator.
+- Apply administrative task edits through a typed request and ordered graph,
+  contract, lifecycle, preparation, blocker-repair, and wake stages, preserving
+  explicit clears and revision-checked transactional events.
+- Separate Teams credential migration inspection, import, reference switching,
+  and source retirement, retaining one maintenance lock and the encrypted backup
+  boundary so interrupted migrations reuse durable imports safely.
+- Apply administrative agent edits through a typed request and named team,
+  project, role, session, context-policy, and reporting stages, retaining explicit
+  clear rules, membership validation, the patchable clock, and wake-event outbox.
+- Build workflow failure reports through explicit metadata, activity, clustering,
+  classification, and pagination phases, preserving one SQLite read transaction,
+  state priority, newest-first examples, and the operational-payload loader seam.
+- Create libvirt VMs through named session, policy, setup, and recovery stages.
+  Check setup exit status for both privileged-helper and subprocess execution so
+  helper failures report failure and retain only recoverable VM or session state.
+- Build workflow run searches through separate event selection, activity grouping,
+  session enrichment, filtering, and pagination stages, retaining SQLite counts,
+  bounded record hydration, shared-trace sessions, and the patchable report clock.
+- Replay queued prompts through explicit batch and VM delivery stages, retaining
+  container-first dispatch, maintenance budgets, claim order, and queue replacement
+  guards. Keep delivery claims and pending steering when a waiting receipt fails.
+- Plan manager fallback through separate team eligibility, lineage selection,
+  authority, scope, reservation, and runtime stages. Replace positional work tuples
+  with named fields while retaining full work fingerprints and wake suppression.
+- Execute release verification through explicit run recovery, workspace, command,
+  evidence, persistence, and cleanup stages. Keep generation checks, single-flight
+  execution, infrastructure precedence, and cleanup of partial setup in their order.
+- Separate release-state validation into ordered package checks for ownership,
+  cohorts, inputs, verification, reviews, and frozen evidence. Report missing runs
+  and reviews as validation errors and continue collecting later diagnostics.
+
+- Refactor the standalone Team UI into feature controllers with local state,
+  rendering, and action handlers. Keep the entry point focused on composition,
+  preserve delegated event order and mutation guards, and remove unused legacy
+  renderers. Verify module publication and exercise the actual controllers.
+- Extract Team copying and template materialization into typed requests and
+  ordered application stages. Keep revision checks and managed repository binding
+  locks in the admin facade, retaining configuration selection, ID allocation,
+  reporting links, cost budgets, and atomic graph creation.
+
 ## 2026-10-01 - Reduce control-plane polling and bookkeeping cost (0.76.1)
 
 - Reuse revision-aware compiled workflow configuration in polling consumers and skip
