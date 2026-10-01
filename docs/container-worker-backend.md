@@ -139,6 +139,13 @@ ${EDITOR:-vi} ansible/inventory/prod.yml
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
+The worker playbook compares the running daemon's startup revision with the deployed Git
+checkout. It restarts the daemon when they differ, including after code-only upgrades or an
+interrupted deployment that already wrote the new environment file. Repeating a completed
+deployment leaves a matching daemon running. Verification requires `/healthz` to report the
+deployed revision and the Codex Fast mode capability, so an older process returning HTTP 200
+cannot make the deployment pass. Deploy workers before enabling new control-plane turn fields.
+
 Both build scripts first reconcile `evander-runner-base:latest`, which owns their common Ubuntu and
 Playwright operating-system dependencies. Sequential Codex and Claude archive builds therefore run
 the expensive apt install once and reuse the resulting local Docker layer for the second image. If

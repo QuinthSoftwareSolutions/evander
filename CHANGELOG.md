@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-01 - Reload worker code during deployment (0.76.4)
+
+- Restart container worker daemons when their running revision differs from the deployed
+  checkout, including retries after an interrupted deployment.
+- Verify the running revision and Codex Fast mode support before accepting a worker
+  deployment, preventing stale request schemas from rejecting new turn fields.
+
 ## 2026-10-01 - Preserve untracked files during reference preparation (0.76.3)
 
 - Allow persistent reference repositories to be reused or refreshed with unrelated

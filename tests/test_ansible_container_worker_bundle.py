@@ -1,8 +1,84 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+import yaml
+from jinja2 import StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "health,expected_state",
+    [
+        ({}, "restarted"),
+        ({"json": {"status": "ok"}}, "restarted"),
+        ({"json": {"deployment_revision": "old-revision"}}, "restarted"),
+        ({"json": {"deployment_revision": "new-revision"}}, "started"),
+    ],
+)
+def test_worker_deploy_reconciles_running_code_even_when_files_are_unchanged(
+    health, expected_state,
+) -> None:
+    tasks = yaml.safe_load(
+        (ROOT / "ansible/roles/container_worker_service/tasks/main.yml").read_text()
+    )
+    reconcile = next(t for t in tasks if t["name"] == "Reconcile worker daemon service")
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    state = environment.from_string(reconcile["ansible.builtin.systemd"]["state"]).render(
+        evander_worker_env_render={"changed": False},
+        evander_worker_unit_render={"changed": False},
+        evander_worker_current_health=health,
+        evander_worker_deployed_revision={"stdout": "new-revision"},
+    )
+    assert state.strip() == expected_state
+
+
+@pytest.mark.parametrize(
+    "health,accepted",
+    [
+        ({"status": 200, "json": {"status": "ok"}}, False),
+        (
+            {
+                "status": 200,
+                "json": {
+                    "deployment_revision": "old-revision",
+                    "capabilities": {"codex_fast_mode": 1},
+                },
+            },
+            False,
+        ),
+        ({"status": 200, "json": {"deployment_revision": "new-revision"}}, False),
+        (
+            {
+                "status": 200,
+                "json": {
+                    "deployment_revision": "new-revision",
+                    "capabilities": {"codex_fast_mode": 1},
+                },
+            },
+            True,
+        ),
+    ],
+)
+def test_worker_deploy_verification_requires_loaded_revision_and_fast_mode(health, accepted) -> None:
+    tasks = yaml.safe_load(
+        (ROOT / "ansible/roles/container_worker_verification/tasks/main.yml").read_text()
+    )
+    verify = next(t for t in tasks if t["name"] == "Verify worker daemon health endpoint")
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    conditions = verify.get("until", [])
+    assert conditions, "An HTTP 200 from the previous daemon does not verify the deployment"
+    results = [
+        environment.from_string("{{ " + condition + " }}").render(
+            evander_worker_health=health,
+            evander_worker_deployed_revision={"stdout": "new-revision"},
+        )
+        for condition in conditions
+    ]
+    assert all(results) is accepted
 
 
 def test_worker_playbook_exists_with_expected_roles() -> None:
