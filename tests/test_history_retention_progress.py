@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +11,9 @@ from evander.repositories import execution_history as history
 from evander.repositories.sqlite_runtime import (
     SqliteOperationDeadlineExceeded,
     close_sqlite_runtimes,
+    foreground_storage_wait_budget,
+    is_storage_contention,
+    storage_lock,
 )
 
 
@@ -211,6 +215,33 @@ def test_writer_contention_does_not_reduce_retention_workload(tmp_path):
             "SELECT 1 FROM orchestration_metadata WHERE key='retention_batch_limits'"
         ).fetchone()
     assert _slice(path).compact_executions_deleted == 2
+
+
+def test_repository_lock_contention_does_not_reduce_retention_workload(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=2, fields=20)
+    _start_compact(path)
+    _set_batch_limits(path, records=8, index_rows=32)
+    blocker = threading.Lock()
+    blocker.acquire()
+
+    def blocked(*args, **kwargs):
+        with foreground_storage_wait_budget(0), storage_lock(blocker):
+            pytest.fail("The occupied repository lock must yield")
+
+    monkeypatch.setattr(db, "_delete_compact_history_batch", blocked)
+    try:
+        with pytest.raises(SqliteOperationDeadlineExceeded) as caught:
+            _slice(path)
+        assert is_storage_contention(caught.value)
+    finally:
+        blocker.release()
+    with db.connect_orchestration_db_read_only(path) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_batch_limits'"
+        ).fetchone()
+        assert json.loads(row[0]) == {"records": 8, "index_rows": 32}
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 2
 
 
 def _set_batch_limits(path, *, records=1, index_rows=1):

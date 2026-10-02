@@ -16,7 +16,11 @@ from evander.repositories.orchestration_db import (
     maybe_checkpoint_orchestration_wal,
     run_orchestration_retention_slice,
 )
-from evander.repositories.sqlite_runtime import is_storage_busy
+from evander.repositories.sqlite_runtime import (
+    SqliteOperationDeadlineExceeded,
+    is_storage_busy,
+    is_storage_contention,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,34 +90,18 @@ def run_storage_maintenance(
                     }
                 elif phase == "history":
                     from evander.repositories.execution_history import (
-                        prepare_pending_history_indexing,
-                        run_pending_history_indexing,
+                        run_history_indexing_slice,
                     )
 
                     deadline = time.monotonic() + 0.25
                     details = {"indexed_values": 0, "completed": 0}
                     while time.monotonic() < deadline:
                         remaining = deadline - time.monotonic()
-                        prepared = prepare_pending_history_indexing(
+                        indexed = run_history_indexing_slice(
                             path,
                             batch_size=100,
                             time_budget_seconds=remaining,
                         )
-                        with connect_orchestration_db(
-                            path,
-                            busy_timeout_ms=0,
-                            deadline_seconds=0.1,
-                            operation="history_index_batch",
-                        ) as connection:
-                            indexed = (
-                                run_pending_history_indexing(
-                                    connection,
-                                    batch_size=100,
-                                    time_budget_seconds=remaining,
-                                    prepared=prepared,
-                                )
-                                or {}
-                            )
                         details["indexed_values"] += indexed.get("indexed_values", 0)
                         details["completed"] += indexed.get("completed", 0)
                         if not any(indexed.values()):
@@ -210,8 +198,16 @@ def run_storage_maintenance(
 
                     details = run_execution_history_backfill(path, batch_size=10, busy_timeout_ms=0)
             except Exception as error:
-                outcome = "busy" if is_storage_busy(error) else "failed"
+                outcome = (
+                    "busy" if is_storage_contention(error)
+                    else "deadline" if isinstance(error, SqliteOperationDeadlineExceeded)
+                    else "failed"
+                )
                 writer_busy = outcome == "busy"
+                if outcome == "deadline":
+                    # Finish independent phases, but pace the next pass even
+                    # when a pending history job cannot shrink its batch.
+                    result = replace(result, skipped_reason="execution_deadline")
                 logger.warning(
                     "storage_maintenance phase=%s outcome=%s",
                     phase,

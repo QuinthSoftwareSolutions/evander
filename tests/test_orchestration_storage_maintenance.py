@@ -23,6 +23,7 @@ from evander.repositories.orchestration_db import (
     orchestration_maintenance_index_status,
     run_orchestration_retention_slice,
 )
+from evander.repositories.sqlite_runtime import SqliteOperationDeadlineExceeded
 
 
 def _config(path, **overrides):
@@ -200,26 +201,25 @@ def test_backfill_waits_for_active_delivery_using_indexed_lookup(
     assert not any("SCAN trigger_events" in row for row in plan)
 
 
-def test_disabled_checkpoint_still_runs_history_projection(tmp_path, monkeypatch):
+def test_disabled_checkpoint_still_runs_history_projection(tmp_path):
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
-    calls = []
-
-    def index(connection, **kwargs):
-        calls.append(kwargs)
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] >= 6
-        return {"indexed_values": 0, "completed": 0}
-
-    monkeypatch.setattr(execution_history, "run_pending_history_indexing", index)
+    with connect_orchestration_db(path) as connection:
+        execution_history.archive_execution_record(
+            connection,
+            kind="effect",
+            record={
+                "execution_id": "pending", "event_id": "event", "effect_id": "node",
+                "effect_type": "effect:test", "status": "succeeded",
+                "started_at": datetime.now(UTC), "input_payload": {"answer": 42}, "outputs": {},
+            },
+        )
     result = run_storage_maintenance(_config(path))
-    assert calls == [
-        {
-            "batch_size": 100,
-            "time_budget_seconds": calls[0]["time_budget_seconds"],
-            "prepared": None,
-        }
-    ]
-    assert 0 < calls[0]["time_budget_seconds"] <= 0.25
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM workflow_history_index_jobs").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT numeric_value FROM workflow_node_execution_current_values WHERE json_pointer='/answer'"
+        ).fetchone()[0] == 42
     assert result.skipped_reason == "disabled"
 
 
@@ -456,6 +456,122 @@ def test_maintenance_yields_remaining_write_phases_to_foreground_writer(tmp_path
         assert result.garbage_collection_pending is True
         assert retention_calls == []
         assert foreground.in_transaction
+
+
+@pytest.mark.parametrize(
+    ("initial_limit", "reduced_limit"), [(None, 50), (1, 1)], ids=["default_batch", "one_field"]
+)
+def test_storage_lane_paces_history_deadlines_without_starving_other_phases(
+    tmp_path, monkeypatch, caplog, initial_limit, reduced_limit
+):
+    now = [10.0]
+    calls = []
+
+    class ImmediateExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, function, config, *, run_garbage_collection):
+            calls.append(now[0])
+            future = Future()
+            future.set_result(function(config, run_garbage_collection=run_garbage_collection))
+            return future
+
+        def shutdown(self, *, wait):
+            pass
+
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    with connect_orchestration_db(path) as connection:
+        execution_history.archive_execution_record(
+            connection, kind="effect",
+            record={
+                "execution_id": "pending", "event_id": "event", "effect_id": "node",
+                "effect_type": "effect:test", "status": "succeeded",
+                "started_at": datetime.now(UTC), "input_payload": {"value": 42}, "outputs": {},
+            },
+        )
+        connection.execute(
+            "INSERT INTO workflow_events(event_id,event_type,source,occurred_at,payload_json) "
+            "VALUES ('expired','test','test',?,'{}')",
+            ((datetime.now(UTC) - timedelta(days=40)).isoformat(),),
+        )
+        connection.execute(
+            "INSERT INTO orchestration_metadata VALUES ('retention_progress',?)",
+            (json.dumps({"date": "2026-01-01", "phase": "workflow", "cutoff": cutoff,
+                         "compact_cutoff": cutoff}),),
+        )
+        connection.execute(
+            "INSERT INTO orchestration_metadata VALUES ('execution_history_backfill',?)",
+            (json.dumps({"completed": True}),),
+        )
+        if initial_limit is not None:
+            connection.execute(
+                "INSERT INTO orchestration_metadata VALUES ('history_index_batch_limit',?)",
+                (json.dumps({"rows": initial_limit}),),
+            )
+        connection.execute(
+            "INSERT INTO workflow_operational_blobs VALUES ('orphan','zlib-json-v1',X'',0)"
+        )
+    original = execution_history.run_pending_history_indexing
+
+    def timed_out(connection, **kwargs):
+        original(connection, **kwargs)
+        raise SqliteOperationDeadlineExceeded("Indexing execution timed out")
+
+    monkeypatch.setattr(execution_history, "run_pending_history_indexing", timed_out)
+    monkeypatch.setattr(wal_maintenance, "ThreadPoolExecutor", ImmediateExecutor)
+    lane = wal_maintenance.OrchestrationWalCheckpointMaintenance(clock=lambda: now[0])
+    config = _config(path)
+    try:
+        lane.run_if_due(config)
+        result = lane.run_if_due(config)
+        assert result.history_index_pending == 1
+        assert result.skipped_reason != "storage_busy"
+        assert "phase=history outcome=deadline" in caplog.text
+        # A failed indexing batch must not immediately resubmit the same job,
+        # even when the field limit cannot shrink further.
+        assert calls == [10.0]
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM workflow_events").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 0
+            assert connection.execute("SELECT next_offset FROM workflow_history_index_jobs").fetchone()[0] == 0
+            row = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='history_index_batch_limit'"
+            ).fetchone()
+            assert json.loads(row[0])["rows"] == reduced_limit
+            progress = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='retention_progress'"
+            ).fetchone()
+            assert json.loads(progress[0])["phase"] == "compact"
+
+        now[0] = 10.999
+        assert lane.run_if_due(config) is None
+        assert calls == [10.0]
+        now[0] = 11.0
+        lane.run_if_due(config)
+        assert calls == [10.0, 11.0]
+        # The retry pause starts when the completed failure is observed,
+        # including when the dispatch thread observes it later.
+        now[0] = 11.25
+        assert lane.run_if_due(config).history_index_pending == 1
+        now[0] = 12.249
+        assert lane.run_if_due(config) is None
+        assert calls == [10.0, 11.0]
+
+        monkeypatch.setattr(execution_history, "run_pending_history_indexing", original)
+        now[0] = 12.25
+        lane.run_if_due(config)
+        assert calls == [10.0, 11.0, 12.25]
+        assert lane.run_if_due(config).history_index_pending == 0
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute(
+                "SELECT numeric_value FROM workflow_node_execution_current_values "
+                "WHERE execution_key='effect:pending' AND json_pointer='/value'"
+            ).fetchone()[0] == 42
+    finally:
+        lane.close()
 
 
 def test_scalar_gc_continues_past_live_prefix_before_becoming_idle(tmp_path):

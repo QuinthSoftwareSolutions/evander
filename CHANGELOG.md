@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
+
+- Select expired workflow, internal and scheduled events in timestamp-index order,
+  avoiding backlog scans and sorts when cleanup batches shrink to one record.
+- Persist history field-index batch backoff after rolled-back execution timeouts
+  and recover fully used fast batches, preserving concurrent reductions and atomic
+  publication of complete searchable generations.
+- Continue independent maintenance phases after execution deadlines while still
+  preserving the one-second retry pause and yielding immediately to occupied
+  writer or repository locks. Existing indexes and retention policies are
+  unchanged; no offline index build is required.
+
 ## 2026-10-01 - Native Teams assistant calls (0.79.0)
 
 - Route incoming personal Teams audio calls through an explicit root tenant/user map,

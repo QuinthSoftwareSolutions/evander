@@ -21,6 +21,7 @@ from evander.repositories.sqlite_runtime import (
     ensure_sqlite_initialized,
     foreground_storage_wait_budget,
     is_storage_busy,
+    is_storage_contention,
     open_sqlite_connection,
     storage_lock,
 )
@@ -103,7 +104,7 @@ def test_schema_failure_is_not_cached_and_database_replacement_reinitializes(tmp
     assert len(attempts) == 3
 
 
-@pytest.mark.parametrize("deadline_seconds", [None, 5.0])
+@pytest.mark.parametrize("deadline_seconds", [None, 0.01, 5.0])
 def test_busy_writer_uses_one_budget_and_does_not_commit_partial_writes(tmp_path, deadline_seconds):
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
@@ -119,6 +120,7 @@ def test_busy_writer_uses_one_budget_and_does_not_commit_partial_writes(tmp_path
         ):
             connection.execute("INSERT INTO orchestration_metadata VALUES ('blocked', '{}')")
         assert is_storage_busy(caught.value)
+        assert is_storage_contention(caught.value)
         assert time.monotonic() - started < 1
     finally:
         writer.rollback()
@@ -141,6 +143,7 @@ def test_sql_deadline_interrupts_query_and_remains_retryable(tmp_path):
                 VALUES(1) UNION ALL SELECT x+1 FROM numbers WHERE x<100000000
             ) SELECT sum(x) FROM numbers""").fetchone()
     assert is_storage_busy(caught.value)
+    assert not is_storage_contention(caught.value)
     with connect_orchestration_db_read_only(path) as connection:
         assert connection.execute("SELECT 1").fetchone()[0] == 1
 
