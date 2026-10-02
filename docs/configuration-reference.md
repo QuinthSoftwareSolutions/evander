@@ -29,7 +29,9 @@ sources and reference their environment-variable names in provider configuration
 ### Related feature configuration
 
 Native Teams calls use root-only `teams_call_routes` and `teams_call_max_concurrency`, plus
-directory-scoped `teams_call_enabled` (false by default). See [Teams assistant calls](teams-calls.md)
+directory-scoped `teams_call_enabled` and `teams_call_visual_context_enabled` (both false by default).
+Visual context requires an image-capable Realtime model and an approval-free
+`get_voice_query_visual_context` grant for the mapped assistant. See [Teams assistant calls](teams-calls.md)
 for the explicit map schema, authorization checks, and bridge credentials.
 
 Independent add-ons own their configuration guides. See the

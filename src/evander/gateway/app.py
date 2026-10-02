@@ -791,9 +791,16 @@ def create_app(context: RuntimeContext) -> Starlette:
         if auth_error is not None:
             return auth_error
         try:
-            payload = await request.json()
+            from evander.gateway.voice_visual_uploads import read_voice_query_request
+
+            payload, images = await read_voice_query_request(request)
             if not isinstance(payload, dict):
                 raise ValueError("voice query payload must be an object")
+            if images is not None:
+                query = await run_in_threadpool(
+                    context.teams_voice_service.create_visual_query, record, payload, images,
+                )
+                return JSONResponse(voice_query_payload(query), status_code=201)
             query = VoiceQueryDelegator(
                 store=context.voice_session_store,
                 wake_store=context.wake_store,

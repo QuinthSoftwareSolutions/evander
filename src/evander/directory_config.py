@@ -209,6 +209,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "didww_from_number",
             "inbound_phone_routes",
             "teams_call_enabled",
+            "teams_call_visual_context_enabled",
             "teams_call_routes",
             "teams_call_max_concurrency",
             "semantic_embedding_dimensions",

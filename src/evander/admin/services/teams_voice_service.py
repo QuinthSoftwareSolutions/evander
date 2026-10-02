@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -11,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from evander.config import TeamsCallRoute
 from evander.models import ToolName
+from evander.policy import PolicyError
 from evander.voice_sessions import VoiceProjectionService, realtime_session_config
+from evander.voice_sessions import VoiceQueryDelegator
+from evander.voice_visuals import VisualQuotaExceeded, snapshot_fingerprint, validate_snapshots
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,7 @@ class TeamsVoiceService:
             session, ToolName.SUBMIT_VOICE_QUERY_RESPONSE
         ):
             raise ValueError("Voice query responses must be granted without approval")
+        visuals = self._visual_capability(config, session)
         projection = VoiceProjectionService().build_projection(
             session=session,
             prompt="Talk with the caller in their language. Delegate substantive requests to your originating assistant.",
@@ -93,6 +99,7 @@ class TeamsVoiceService:
                 **call.model_dump(),
                 "teams_user_target": caller_target,
                 "route": route.model_dump(mode="json"),
+                "visual_context": visuals,
             },
             projection=projection,
             max_active_sessions=root.teams_call_max_concurrency,
@@ -133,6 +140,9 @@ class TeamsVoiceService:
             "voice_session_id": record.voice_session_id,
             "status": record.status,
             "projection": record.projection,
+            "visual_context": record.caller_metadata.get(
+                "visual_context", {"enabled": False, "reason": "Visual context was not enabled at admission"}
+            ),
             "realtime": {
                 **realtime_session_config(config),
                 "voice": getattr(config, "openai_realtime_voice", "marin"),
@@ -142,8 +152,82 @@ class TeamsVoiceService:
             },
         }
 
+    def _visual_capability(self, config: Any, session: Any) -> dict[str, Any]:
+        if not config.teams_call_visual_context_enabled:
+            return {"enabled": False, "reason": "Visual context is disabled for this assistant"}
+        if not re.fullmatch(r"gpt-realtime(?:-2)?(?:-\d{4}-\d{2}-\d{2})?", config.openai_realtime_model):
+            return {"enabled": False, "reason": "Configured Realtime model is not enabled for image input"}
+        try:
+            if self.runtime.policy.approval_required_for_tool(session, ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT):
+                raise ValueError("Visual inspection requires a grant without approval")
+            self.runtime.policy.require_tool(session.session_id, ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT)
+        except (PolicyError, ValueError, PermissionError) as exc:
+            return {"enabled": False, "reason": str(exc)}
+        return {"enabled": True, "reason": None}
+
+    def create_visual_query(self, record: Any, payload: dict[str, Any],
+                            images: list[tuple[dict[str, Any], bytes]]) -> Any:
+        if record.channel != "teams_call" or not record.caller_metadata.get("visual_context", {}).get("enabled"):
+            raise ValueError("Visual context is not enabled for this admitted Teams call")
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id or len(request_id) > 256:
+            raise ValueError("A visual query requires a bounded request_id")
+        snapshots = validate_snapshots(images)
+        fingerprint = snapshot_fingerprint(snapshots)
+        metadata = payload.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            raise ValueError("Voice query metadata must be an object")
+        self.cleanup_visual_context()
+
+        def prepare(query):
+            if query.visual_context or query.visual_context_unavailable:
+                return query
+            if query.wake_request_id or query.status != "pending":
+                raise ValueError("Cannot attach snapshots to a dispatched voice query")
+            unavailable = None
+            try:
+                references = self.runtime.voice_visual_store.stage(query, snapshots)
+            except VisualQuotaExceeded as exc:
+                references = []
+                unavailable = str(exc)
+            return self.runtime.voice_session_store.attach_query_visual_context(
+                query.query_id, references=references, fingerprint=fingerprint, unavailable=unavailable,
+            )
+
+        return VoiceQueryDelegator(
+            store=self.runtime.voice_session_store, wake_store=self.runtime.wake_store,
+        ).create_query_and_wake_origin(
+            record.voice_session_id, question=str(payload.get("question") or ""),
+            transcript_excerpt=str(payload.get("transcript_excerpt") or "").strip() or None,
+            metadata={"reason": str(metadata.get("reason") or "")[:2048]},
+            request_id=request_id, deadline_seconds=90, prepare_query=prepare,
+            visual_request_fingerprint=fingerprint,
+        )
+
+    def read_visual_context(self, *, query_id: str, origin_session_id: str) -> list:
+        self.runtime.policy.require_tool(origin_session_id, ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT)
+        query = self.runtime.voice_session_store.get_query(query_id)
+        if query is None or query.origin_session_id != origin_session_id:
+            raise ValueError("Voice query is outside this session scope")
+        if query.status in {"answered", "failed"}:
+            raise ValueError("Visual processing for this query has finished")
+        return self.runtime.voice_visual_store.read(query)
+
+    def cleanup_visual_context(self) -> bool:
+        if not (Path(self.runtime.config.runtime_dir) / "voice-visuals").exists():
+            return True
+        try:
+            self.runtime.voice_visual_store.cleanup(get_queries=self.runtime.voice_session_store.get_queries)
+            return True
+        except (OSError, ValueError) as exc:
+            # A confirmed query answer remains confirmed even if unlink must retry.
+            logger.warning("Teams visual cleanup failed error=%s", type(exc).__name__)
+            return False
+
     def supervise(self, *, directories: list[str] | None = None) -> tuple[int, int]:
         polled = errors = 0
+        if not self.cleanup_visual_context():
+            errors += 1
         for record in self.runtime.voice_session_store.list_sessions(channel="teams_call"):
             if directories and not any(
                 record.directory_path == scope or record.directory_path.startswith(scope + "/")
