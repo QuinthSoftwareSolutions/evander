@@ -23,6 +23,7 @@ from evander.repositories.sqlite_runtime import (
     MAINTENANCE_TIMEOUT_MS,
     SqliteOperationDeadlineExceeded,
     ensure_sqlite_initialized,
+    is_storage_contention,
     open_sqlite_connection,
 )
 
@@ -836,8 +837,7 @@ def run_orchestration_retention_slice(
         )
     except SqliteOperationDeadlineExceeded as error:
         # Lock contention is not evidence that a deletion batch is too large.
-        cause_code = getattr(error.__cause__, "sqlite_errorcode", 0) or 0
-        if (cause_code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        if is_storage_contention(error):
             raise
         # The failed batch has rolled back. Persist adaptation separately so a
         # new process does not retry the same oversized transaction forever.
@@ -1007,6 +1007,8 @@ def _run_orchestration_retention_slice(
                     "row_id",
                     "occurred_at < ?",
                     "workflow_events_deleted",
+                    "idx_workflow_events_occurred",
+                    "occurred_at,row_id",
                 ),
                 "compact": (
                     "workflow_node_execution_history",
@@ -1015,12 +1017,16 @@ def _run_orchestration_retention_slice(
                     AND NOT EXISTS (SELECT 1 FROM workflow_history_index_jobs j
                         WHERE j.execution_key=workflow_node_execution_history.execution_key)""",
                     "compact_executions_deleted",
+                    "idx_workflow_node_history_finished",
+                    "finished_at,execution_key",
                 ),
                 "scheduled": (
                     "scheduled_internal_events",
                     "schedule_id",
                     "status='published' AND published_at < ?",
                     "scheduled_internal_events_deleted",
+                    "idx_scheduled_internal_events_published",
+                    "published_at,schedule_id",
                 ),
                 "internal": (
                     "internal_events",
@@ -1032,15 +1038,17 @@ def _run_orchestration_retention_slice(
                         WHERE s.active=1 AND s.event_type=internal_events.event_type
                           AND s.scan_cursor_row_id < internal_events.row_id)""",
                     "internal_events_deleted",
+                    "idx_internal_events_created",
+                    "created_at,row_id",
                 ),
             }
-            table, key, where, result_key = definitions[phase]
+            table, key, where, result_key, index, order = definitions[phase]
             cutoff = progress["compact_cutoff" if phase == "compact" else "cutoff"]
-            order = "finished_at, execution_key" if phase == "compact" else key
             keys = [
                 row[0]
                 for row in connection.execute(
-                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {order} LIMIT ?",
+                    f"SELECT {key} FROM {table} INDEXED BY {index} "
+                    f"WHERE {where} ORDER BY {order} LIMIT ?",
                     (cutoff, batch_size),
                 ).fetchall()
             ]
@@ -1167,19 +1175,14 @@ def run_orchestration_retention(
             totals[name] += getattr(result, name)
         if result.skipped_reason == "history_index_pending":
             from evander.repositories.execution_history import (
-                prepare_pending_history_indexing,
-                run_pending_history_indexing,
+                run_history_indexing_slice,
             )
 
-            prepared = prepare_pending_history_indexing(path, batch_size=100)
-
-            with connect_orchestration_db(
+            run_history_indexing_slice(
                 path,
                 busy_timeout_ms=100,
-                deadline_seconds=0.25,
-                operation="retention_history_projection",
-            ) as connection:
-                run_pending_history_indexing(connection, prepared=prepared)
+                writer_time_budget_seconds=0.25,
+            )
             continue
         if not result.remaining or result.skipped_reason:
             return OrchestrationRetentionResult(

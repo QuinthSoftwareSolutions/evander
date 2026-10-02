@@ -38,6 +38,10 @@ from evander.repositories.orchestration_db import (
     json_dumps,
     json_loads_object,
 )
+from evander.repositories.sqlite_runtime import (
+    SqliteOperationDeadlineExceeded,
+    is_storage_contention,
+)
 
 EXECUTION_HISTORY_BACKFILL_BATCH_SIZE = 250
 EXECUTION_HISTORY_RETENTION_BATCH_SIZE = 250
@@ -619,6 +623,90 @@ def run_pending_history_indexing(
             (len(prepared.rows), prepared.cursor_json, key),
         )
     return {"indexed_values": len(prepared.rows), "completed": int(prepared.exhausted)}
+
+
+def run_history_indexing_slice(
+    path: Path | str,
+    *,
+    batch_size: int = 100,
+    time_budget_seconds: float = 0.25,
+    writer_time_budget_seconds: float = 0.1,
+    busy_timeout_ms: int = 0,
+) -> dict[str, int]:
+    """Prepare outside the writer and durably adapt its bounded field batch.
+
+    Execution timeouts roll back all values/cursor changes before reducing the
+    limit. Writer contention leaves the limit unchanged. Fast, fully used
+    batches recover their limit in the same transaction as the indexing work.
+    """
+    batch_cap = max(1, min(100, batch_size))
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=0.25, operation="history_index_limit"
+    ) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='history_index_batch_limit'"
+        ).fetchone()
+    expected_limit = row[0] if row else None
+    limit = json_loads_object(expected_limit)
+    effective_batch = min(batch_cap, max(1, int(limit.get("rows", 100))))
+    prepared = prepare_pending_history_indexing(
+        path, batch_size=effective_batch, time_budget_seconds=time_budget_seconds
+    )
+    if prepared is None:
+        return {"indexed_values": 0, "completed": 0}
+    started = time.monotonic()
+    try:
+        with connect_orchestration_db(
+            path,
+            busy_timeout_ms=busy_timeout_ms,
+            deadline_seconds=writer_time_budget_seconds,
+            operation="history_index_batch",
+        ) as connection:
+            indexed = run_pending_history_indexing(
+                connection,
+                batch_size=effective_batch,
+                time_budget_seconds=time_budget_seconds,
+                prepared=prepared,
+            )
+            if (
+                expected_limit is not None
+                and indexed["indexed_values"] >= effective_batch
+                and effective_batch < batch_cap
+                and time.monotonic() - started < writer_time_budget_seconds / 2
+            ):
+                recovered = {**limit, "rows": min(batch_cap, effective_batch * 2)}
+                connection.execute(
+                    """UPDATE orchestration_metadata SET value_json=?
+                    WHERE key='history_index_batch_limit' AND value_json=?""",
+                    (json_dumps(recovered), expected_limit),
+                )
+        return indexed
+    except SqliteOperationDeadlineExceeded as error:
+        if not is_storage_contention(error):
+            # The failed indexing transaction has closed and rolled back. Read
+            # the current limit so a concurrent reduction always wins.
+            with connect_orchestration_db(
+                path,
+                busy_timeout_ms=busy_timeout_ms,
+                deadline_seconds=writer_time_budget_seconds,
+                operation="history_index_backoff",
+            ) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT value_json FROM orchestration_metadata "
+                    "WHERE key='history_index_batch_limit'"
+                ).fetchone()
+                current = json_loads_object(row[0]) if row else {}
+                reduced = {
+                    **current,
+                    "rows": min(max(1, int(current.get("rows", 100))), max(1, effective_batch // 2)),
+                }
+                connection.execute(
+                    """INSERT INTO orchestration_metadata VALUES ('history_index_batch_limit',?)
+                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+                    (json_dumps(reduced),),
+                )
+        raise
 
 
 def collect_superseded_history_values(

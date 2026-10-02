@@ -42,14 +42,26 @@ class SqliteOperationDeadlineExceeded(sqlite3.OperationalError):
     sqlite_errorcode = sqlite3.SQLITE_BUSY
     sqlite_errorname = "SQLITE_BUSY"
 
+    def __init__(self, message: str, *, lock_wait: bool = False) -> None:
+        super().__init__(message)
+        self.lock_wait = lock_wait
 
-def is_storage_busy(error: BaseException) -> bool:
+
+def is_storage_contention(error: BaseException) -> bool:
+    """Identify occupied writer/repository slots separately from execution timeouts."""
+    if isinstance(error, SqliteOperationDeadlineExceeded):
+        return error.lock_wait or (
+            error.__cause__ is not None and is_storage_contention(error.__cause__)
+        )
     return isinstance(error, sqlite3.OperationalError) and (
-        isinstance(error, SqliteOperationDeadlineExceeded)
-        or (getattr(error, "sqlite_errorcode", 0) or 0) & 0xFF
+        (getattr(error, "sqlite_errorcode", 0) or 0) & 0xFF
         in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
         or str(error).lower() in {"database is locked", "database table is locked"}
     )
+
+
+def is_storage_busy(error: BaseException) -> bool:
+    return isinstance(error, SqliteOperationDeadlineExceeded) or is_storage_contention(error)
 
 
 @contextmanager
@@ -73,7 +85,9 @@ def storage_lock(lock) -> Iterator[None]:
             DEFAULT_BUSY_TIMEOUT_MS / 1000 if budget is None else budget
         )
     if not lock.acquire(timeout=max(0, deadline - time.monotonic())):
-        raise SqliteOperationDeadlineExceeded("SQLite repository lock wait deadline exceeded")
+        raise SqliteOperationDeadlineExceeded(
+            "SQLite repository lock wait deadline exceeded", lock_wait=True
+        )
     token = _storage_wait_deadline.set(deadline)
     try:
         yield
@@ -143,7 +157,7 @@ def _acquire_anchor(path: Path, *, timeout_ms: int) -> _Anchor:
     deadline = time.monotonic() + max(0, timeout_ms) / 1000
     lock = _path_lock(path)
     if not lock.acquire(timeout=max(0, deadline - time.monotonic())):
-        raise SqliteOperationDeadlineExceeded("SQLite lifecycle lease is busy")
+        raise SqliteOperationDeadlineExceeded("SQLite lifecycle lease is busy", lock_wait=True)
     try:
         try:
             identity = _identity(path)
@@ -284,7 +298,9 @@ class ManagedSqliteConnection(sqlite3.Connection):
         self._outcome = "busy" if is_storage_busy(error) else "failed"
         if self._deadline is not None and time.monotonic() >= self._deadline:
             self._outcome = "deadline"
-            raise SqliteOperationDeadlineExceeded("SQLite operation deadline exceeded") from error
+            raise SqliteOperationDeadlineExceeded(
+                "SQLite operation deadline exceeded", lock_wait=is_storage_contention(error)
+            ) from error
         raise error
 
     def execute(self, sql, parameters=()):
@@ -439,7 +455,9 @@ def _initialization_lock(path: Path, *, deadline: float) -> Iterator[None]:
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise SqliteOperationDeadlineExceeded("SQLite schema initialization is busy")
+                    raise SqliteOperationDeadlineExceeded(
+                        "SQLite schema initialization is busy", lock_wait=True
+                    )
                 time.sleep(min(0.01, max(0, deadline - time.monotonic())))
         yield
     finally:

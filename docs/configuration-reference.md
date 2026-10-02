@@ -299,6 +299,11 @@ retry cadence. Each scalar table and the payload collector durably retain their 
 markers while other components finish. Sweeps that delete data run a clean follow-up before the
 idle pause, including to reclaim payload children orphaned behind the cursor. The next scheduled
 sweep resets the completed markers and checks newly unreferenced data.
+History indexing prepares fields outside the writer transaction and commits at most 100 fields
+per batch within a 100 ms SQL execution budget. Execution timeouts roll back the batch and persist
+a smaller field limit, down to one; fully used fast batches recover toward 100. An indexing
+execution timeout leaves the remaining maintenance phases eligible to run. An occupied writer
+or repository lock yields the rest of that pass to foreground work without reducing the field limit.
 A completed execution-history backfill skips trigger-queue readiness queries;
 unfinished backfill waits for pending and inflight trigger deliveries to finish.
 
