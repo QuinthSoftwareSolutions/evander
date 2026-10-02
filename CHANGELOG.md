@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-02 - Give artifact-space selection room to browse (0.79.2)
+
+- Open the artifact-space tree in a wider, scrollable dialog from a compact sidebar
+  selector. Keep the selected space visible, apply recursive filtering on selection,
+  and preserve the current filter when the dialog is dismissed.
+- Keep keyboard focus inside the picker and return it to the selector on close;
+  support Escape, backdrop dismissal, and narrow screens in light and dark themes.
+
 ## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
 
 - Select expired workflow, internal and scheduled events in timestamp-index order,
