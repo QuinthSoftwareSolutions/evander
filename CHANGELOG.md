@@ -7,6 +7,7 @@
   MCP image tool, and bound temporary storage with quotas, completion cleanup, and expiry.
 - Add inherited operator configuration and audio fallback when visual capabilities are
   unavailable. Visual context starts disabled; no outgoing video or media recordings are created.
+- Honor removal of the live root visual opt-in for new calls without restarting the gateway.
 
 ## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
 

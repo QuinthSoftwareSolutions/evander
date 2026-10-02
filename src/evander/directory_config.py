@@ -1080,6 +1080,7 @@ class DirectoryConfigResolver:
             # Routing and enablement are live grants, not cached process defaults.
             effective["teams_call_routes"] = []
             effective["teams_call_enabled"] = False
+            effective["teams_call_visual_context_enabled"] = False
         provenance: dict[str, DirectoryConfigValueSource] = {}
         if base_config is not None:
             self._mark_provenance(

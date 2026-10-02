@@ -128,6 +128,19 @@ def test_visuals_default_off_and_directory_override_keeps_admitted_binding(conte
         create_query(context, second)
 
 
+def test_removing_root_visual_opt_in_disables_next_call_without_restart(context):
+    running = build_runtime(context.provider_config.resolve_for_directory("root"))
+    assert running.config.teams_call_visual_context_enabled is True
+    providers = running.provider_config.config_store.read("root", domain="providers")
+    del providers["teams_call_visual_context_enabled"]
+    running.provider_config.config_store.write("root", domain="providers", payload=providers)
+
+    call = admit(running)
+    assert call.caller_metadata["visual_context"]["enabled"] is False
+    with pytest.raises(ValueError, match="not enabled"):
+        create_query(running, call)
+
+
 @pytest.mark.parametrize("change", ["grant", "approval", "model"])
 def test_missing_visual_capability_preserves_audio_admission(context, change):
     if change == "model":
