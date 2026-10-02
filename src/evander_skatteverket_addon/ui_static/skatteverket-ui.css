@@ -158,8 +158,12 @@ article {
   gap: 6px;
 }
 
-.skv-help {
+.skv-field-label,
+.skv-api-picker {
   position: relative;
+}
+
+.skv-help {
   display: inline-grid;
   width: 16px;
   height: 16px;
@@ -177,9 +181,10 @@ article {
   position: absolute;
   z-index: 5;
   bottom: calc(100% + 8px);
-  left: 50%;
+  left: 0;
   width: max-content;
-  max-width: min(320px, 70vw);
+  max-width: min(320px, 100%);
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--skv-panel-border);
   border-radius: var(--ui-radius, 0);
@@ -194,7 +199,7 @@ article {
   overflow-wrap: anywhere;
   pointer-events: none;
   text-align: left;
-  transform: translate(-50%, 4px);
+  transform: translateY(4px);
   transition: opacity 120ms ease, transform 120ms ease;
   visibility: hidden;
 }
@@ -208,7 +213,7 @@ article {
 .skv-help:hover::after,
 .skv-help:focus-visible::after {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translateY(0);
   visibility: visible;
 }
 

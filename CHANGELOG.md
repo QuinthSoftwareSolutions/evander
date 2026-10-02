@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-02 - Align Admin Web spacing and navigation (0.80.3)
+
+- Align dashboard metric labels, toolbar actions, navigation icons, and quick
+  navigation results with consistent padding and vertical centering.
+- Correct form spacing and responsive alignment across Privacy, Classification,
+  managed Git, Subscriptions, and bundled add-on interfaces.
+
 ## 2026-10-02 - Fix the Approvals All filter (0.80.2)
 
 - Include exhausted approval grants in queue sorting so selecting All, or filtering

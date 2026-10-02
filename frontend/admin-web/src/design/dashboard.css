@@ -153,7 +153,10 @@
   background: transparent;
   border-radius: 0;
   border-color: var(--ui-border);
-  padding: 8px 0;
+  padding: 8px 12px;
+}
+[data-admin-design] .dashboard-metric-row {
+  align-items: center;
 }
 [data-admin-design] :is(.dashboard-metric-row, .dashboard-detail-row) strong {
   color: var(--ui-text);

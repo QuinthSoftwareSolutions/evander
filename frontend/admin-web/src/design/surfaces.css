@@ -151,11 +151,17 @@
 }
 [data-admin-design] .admin-quick-nav-search input {
   border: 0;
+  padding: 0;
   background: transparent;
+}
+[data-admin-design] .admin-quick-nav-results {
+  grid-auto-rows: max-content;
+  padding: 0 8px 12px;
+  gap: 4px;
 }
 [data-admin-design] .admin-quick-nav-option {
   min-height: var(--ui-row-height);
-  padding: 8px 12px;
+  padding: 8px;
   gap: 12px;
   border: 0;
   border-radius: var(--ui-radius, 0);
