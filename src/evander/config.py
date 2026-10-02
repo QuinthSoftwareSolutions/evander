@@ -432,6 +432,7 @@ class GatewayConfig(BaseModel):
     didww_from_number: str | None = None
     inbound_phone_routes: list[InboundPhoneRoute] = Field(default_factory=list)
     teams_call_enabled: bool = False
+    teams_call_visual_context_enabled: bool = False
     teams_call_routes: list[TeamsCallRoute] = Field(default_factory=list)
     teams_call_max_concurrency: int = Field(default=4, ge=1, le=32)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"

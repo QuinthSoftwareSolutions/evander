@@ -286,7 +286,9 @@ export function SubscriptionsPage() {
         <div className="panel-header">
           <div>
             <h1>Subscriptions</h1>
-            <p className="muted-text">{loading && !workerUrl ? "Loading subscription profiles…" : error && !workerUrl ? "Subscription profiles unavailable" : workerUrl ?? "No container worker configured"}</p>
+            {!workerUrl ? (
+              <p className="muted-text">{loading ? "Loading subscription profiles…" : error ? "Subscription profiles unavailable" : "No container worker configured"}</p>
+            ) : null}
           </div>
           <button className="admin-action-button compact" type="button" disabled={loading || busy !== null} onClick={() => void refresh()}>
             {loading ? "Refreshing…" : "Refresh"}

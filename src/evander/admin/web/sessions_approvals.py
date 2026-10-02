@@ -207,6 +207,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.SUBMIT_VOICE_QUERY_RESPONSE: (
         "Answer delegated live voice questions for phone calls projected from this session."
     ),
+    ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT: (
+        "Inspect temporary camera and screen snapshots attached to this session's delegated voice query."
+    ),
     ToolName.EMAIL_LIST_MAILBOXES: (
         "Discover granted mailbox IDs, accounts, access levels and folders without reading email."
     ),

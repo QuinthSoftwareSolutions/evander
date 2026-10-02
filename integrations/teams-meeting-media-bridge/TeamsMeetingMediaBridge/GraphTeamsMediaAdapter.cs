@@ -322,17 +322,28 @@ public sealed class GraphApplicationHostedMediaClient :
         public string TenantId => call.TenantId ?? "";
         public string CallerUserId => call.Resource.Source?.Identity?.User?.Id ?? "";
         public bool IsPersonalAudioCall => call.Resource.ChatInfo is null
-            && call.Resource.RequestedModalities?.Count == 1
-            && call.Resource.RequestedModalities?.Contains(Modality.Audio) == true;
+            && call.Resource.RequestedModalities?.Contains(Modality.Audio) == true
+            && call.Resource.RequestedModalities.All(modality => modality is Modality.Audio or Modality.Video or Modality.VideoBasedScreenSharing);
         public Task Ended => ended.Task;
         public async Task<IMeetingAudioSession> AnswerAsync(CancellationToken token)
+            => await AnswerAsync(false, token);
+
+        public async Task<IMeetingAudioSession> AnswerAsync(bool receiveVisuals, CancellationToken token)
         {
             var media = owner.communicationsClient.CreateMediaSession(new AudioSocketSettings
             {
                 StreamDirections = StreamDirection.Sendrecv,
                 SupportedAudioFormat = AudioFormat.Pcm16K,
-            }, Enumerable.Empty<VideoSocketSettings>(), null!, null!, Guid.NewGuid());
-            var audio = new GraphMeetingAudioSession(call, media);
+            }, receiveVisuals ? [new VideoSocketSettings
+            {
+                StreamDirections = StreamDirection.Recvonly, ReceiveColorFormat = VideoColorFormat.NV12,
+                MediaType = MediaType.Video,
+            }] : Enumerable.Empty<VideoSocketSettings>(), receiveVisuals ? new VideoSocketSettings
+            {
+                StreamDirections = StreamDirection.Recvonly, ReceiveColorFormat = VideoColorFormat.NV12,
+                MediaType = MediaType.Vbss,
+            } : null!, null!, Guid.NewGuid());
+            var audio = new GraphMeetingAudioSession(call, media, receiveVisuals);
             try
             {
                 await call.AnswerAsync((IMediaSession)media, cancellationToken: token);
@@ -579,7 +590,7 @@ public sealed class GraphApplicationHostedMediaClient :
         }
     }
 
-    private sealed class GraphMeetingAudioSession : IMeetingAudioSession, IPlaybackMonitoredAudioSession
+    private sealed class GraphMeetingAudioSession : IMeetingAudioSession, IPlaybackMonitoredAudioSession, INativeVisualSession
     {
         private readonly ICall call;
         private readonly ILocalMediaSession mediaSession;
@@ -588,15 +599,88 @@ public sealed class GraphApplicationHostedMediaClient :
         private readonly Channel<byte[]> frames = System.Threading.Channels.Channel.CreateBounded<byte[]>(4096);
         private readonly CancellationTokenSource playbackCts = new();
         private readonly Task playback;
+        private readonly VisualFrameSampler? visuals;
+        private readonly ConcurrentDictionary<IVideoSocket, bool> videoReady = new();
+        private bool visualCaptureStarted;
         private bool disposed;
 
-        public GraphMeetingAudioSession(ICall call, ILocalMediaSession mediaSession)
+        public GraphMeetingAudioSession(ICall call, ILocalMediaSession mediaSession, bool receiveVisuals = false)
         {
             this.call = call;
             this.mediaSession = mediaSession;
             audioSocket = mediaSession.AudioSocket;
             audioSocket.AudioMediaReceived += OnAudioMediaReceived;
+            if (receiveVisuals)
+            {
+                visuals = new VisualFrameSampler(new WindowsJpegSnapshotEncoder());
+                foreach (var socket in mediaSession.VideoSockets.Append(mediaSession.VbssSocket))
+                {
+                    if (socket is null) continue;
+                    videoReady[socket] = false;
+                    socket.VideoMediaReceived += OnVideoMediaReceived;
+                    socket.VideoReceiveStatusChanged += OnVideoReceiveStatusChanged;
+                }
+                call.OnUpdated += (_, _) => ClearStoppedVisualSources();
+            }
             playback = Task.Run(() => PlayFramesAsync(playbackCts.Token));
+        }
+
+        public void StartVisualCapture()
+        {
+            visualCaptureStarted = true;
+            foreach (var socket in videoReady.Where(pair => pair.Value).Select(pair => pair.Key)) SubscribeVideo(socket);
+        }
+
+        public VisualTurnContext CaptureVisualContext() =>
+            visuals?.Capture() ?? VisualTurnContext.Unavailable("Visual context is disabled");
+
+        private void OnVideoReceiveStatusChanged(object? sender, VideoReceiveStatusChangedEventArgs args)
+        {
+            if (sender is not IVideoSocket socket || disposed) return;
+            videoReady[socket] = args.MediaReceiveStatus == MediaReceiveStatus.Active;
+            if (videoReady[socket] && visualCaptureStarted) SubscribeVideo(socket);
+            else visuals?.Clear(socket == mediaSession.VbssSocket ? "screen" : "camera");
+        }
+
+        private void SubscribeVideo(IVideoSocket socket)
+        {
+            try { socket.Subscribe(socket == mediaSession.VbssSocket ? VideoResolution.HD1080p : VideoResolution.HD720p); }
+            catch { visuals?.Clear(socket == mediaSession.VbssSocket ? "screen" : "camera"); }
+        }
+
+        private void ClearStoppedVisualSources()
+        {
+            if (disposed) return;
+            if (call.Resource.State == CallState.Terminated)
+            {
+                visuals?.Clear("camera");
+                visuals?.Clear("screen");
+            }
+        }
+
+        private void OnVideoMediaReceived(object? sender, VideoMediaReceivedEventArgs args)
+        {
+            try
+            {
+                if (!visualCaptureStarted || disposed || sender is not IVideoSocket socket
+                    || !videoReady.GetValueOrDefault(socket)) return;
+                var source = args.MediaType == MediaType.Vbss ? "screen" : "camera";
+                visuals?.Offer(source, () =>
+                {
+                    var buffer = args.Buffer;
+                    var format = buffer.VideoFormat;
+                    var length = checked((int)buffer.Length);
+                    if (length <= 0 || length > 16 * 1024 * 1024 || format.VideoColorFormat != VideoColorFormat.NV12)
+                        throw new ArgumentException("Invalid received video buffer.");
+                    var bytes = new byte[length];
+                    Marshal.Copy(buffer.Data, bytes, 0, length);
+                    return new RawVideoFrame(source, DateTimeOffset.UtcNow,
+                        checked((int)format.Width), checked((int)format.Height), checked((int)buffer.Stride), bytes,
+                        checked((int)(buffer.OriginalVideoFormat?.Width ?? format.Width)),
+                        checked((int)(buffer.OriginalVideoFormat?.Height ?? format.Height)));
+                });
+            }
+            finally { args.Buffer.Dispose(); }
         }
 
         public event EventHandler<byte[]>? AudioReceived;
@@ -648,6 +732,13 @@ public sealed class GraphApplicationHostedMediaClient :
             }
 
             disposed = true;
+            visualCaptureStarted = false;
+            foreach (var socket in videoReady.Keys)
+            {
+                socket.VideoMediaReceived -= OnVideoMediaReceived;
+                socket.VideoReceiveStatusChanged -= OnVideoReceiveStatusChanged;
+            }
+            if (visuals is not null) await visuals.DisposeAsync();
             playbackCts.Cancel();
             try { await playback; } catch { /* Media cleanup must still run. */ }
             audioSocket.AudioMediaReceived -= OnAudioMediaReceived;

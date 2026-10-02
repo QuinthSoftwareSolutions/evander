@@ -1,10 +1,13 @@
 """MCP tools for voice."""
 
 from __future__ import annotations
+import base64
+import json
 from collections.abc import Callable
 from typing import Any
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import CallToolResult, ImageContent, TextContent
 from evander.email.http_utils import ProviderRequestError
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import (
@@ -257,6 +260,32 @@ def create_voice_tools(
             )
             raise
 
+    def get_voice_query_visual_context(
+        query_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> CallToolResult:
+        """Inspect the frozen camera/screen images for this session's delegated voice query."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map,
+        )
+        args = {"session_id": resolved_session_id, "query_id": query_id}
+        try:
+            images = context.teams_voice_service.read_visual_context(
+                query_id=query_id, origin_session_id=resolved_session_id,
+            )
+            metadata = [reference.model_dump(mode="json") for reference, _ in images]
+            audit_success(resolved_session_id, ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT, args,
+                          {"query_id": query_id, "snapshots": metadata})
+            content = []
+            for reference, image in images:
+                content.append(TextContent(type="text", text=json.dumps(reference.model_dump(mode="json"))))
+                content.append(ImageContent(type="image", data=base64.b64encode(image).decode(), mimeType="image/jpeg"))
+            return CallToolResult(content=content)
+        except (PolicyError, ValueError, FileNotFoundError) as exc:
+            audit_failure(resolved_session_id, ToolName.GET_VOICE_QUERY_VISUAL_CONTEXT, args, str(exc))
+            raise ToolError(str(exc)) from exc
+
     def submit_voice_query_response(
         query_id: str,
         answer: str,
@@ -309,6 +338,9 @@ def create_voice_tools(
                 query=query,
                 wake_store=context.wake_store,
             )
+            visual_service = getattr(context, "teams_voice_service", None)
+            if visual_service is not None:
+                visual_service.cleanup_visual_context()
             result = SubmitVoiceQueryResponseResponse(
                 query_id=query.query_id,
                 voice_session_id=query.voice_session_id,
@@ -360,4 +392,5 @@ def create_voice_tools(
         "make_phone_call": make_phone_call,
         "get_phone_call_result": get_phone_call_result,
         "submit_voice_query_response": submit_voice_query_response,
+        "get_voice_query_visual_context": get_voice_query_visual_context,
     }

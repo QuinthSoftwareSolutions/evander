@@ -2,6 +2,7 @@ from __future__ import annotations
 
 CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "teams_call_enabled": "Allow native Teams calls to explicitly mapped assistants in this directory. Disabled by default. Root must also enable calls.",
+    "teams_call_visual_context_enabled": "Include sampled caller camera and shared-screen images with native Teams voice turns. Disabled by default. Requires an image-capable Realtime model and get_voice_query_visual_context granted without approval to the mapped assistant. Query snapshots are temporary and quota bounded.",
     "teams_call_routes": "Root caller map: tenant_id and caller_user_id are Entra GUIDs. Choose an existing assistant; its permissions independently authorize access. One target per tenant/caller pair. Replacing a session requires updating its route.",
     "teams_call_max_concurrency": "Maximum concurrent native Teams calls across the control plane. Each assistant accepts one call. Root only; defaults to four.",
     "default_session_ttl_seconds": (

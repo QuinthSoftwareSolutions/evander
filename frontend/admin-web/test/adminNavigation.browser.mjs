@@ -684,7 +684,7 @@ test("subscriptions page shows worker profile identity and capacity", { timeout:
   assert.match(await page.locator(".subscription-profile-summary").filter({ hasText: "Team B" }).innerText(), /Unavailable\s*7-day remaining/);
   await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).click();
   const pageText = await page.locator(".feature-page").innerText();
-  assert.match(pageText, /http:\/\/worker\.test:11888/);
+  assert.doesNotMatch(pageText, /http:\/\/worker\.test:11888/);
   assert.match(pageText, /team-a@example\.test/);
   const profileSummary = page.locator(".subscription-profile-summary").filter({ hasText: "Team A" });
   assert.match(await profileSummary.innerText(), /2 active\s*·\s*3 queued/i);
