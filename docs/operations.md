@@ -369,6 +369,15 @@ one-second retry pause even at the one-field limit. Writer lock contention still
 to foreground work. These changes use existing tables and indexes and can be deployed without
 another offline storage migration.
 
+Execution-history payload cleanup scans at most 1,000 blob keys per retention pass,
+independently of the adaptive deletion limit. It saves the cursor and a fixed upper
+key in the existing retention progress metadata. Reference checks, deletion and
+cursor updates share the writer transaction, so a timeout rolls them all back and
+a restarted worker resumes the committed position. Ranges with no orphans advance
+the cursor instead of rechecking the entire retained prefix. Newly unreferenced
+blobs behind the cursor or beyond the upper key wait for the next daily retention
+sweep. No additional tables, indexes or offline migration are needed.
+
 For rollback to a release that only understands inline operational records, keep all database users
 stopped and run the **new release's CLI** before starting the old executable:
 

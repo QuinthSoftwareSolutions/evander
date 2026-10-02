@@ -35,6 +35,7 @@ SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
 SQLITE_WAL_CHECKPOINT_INTERVAL_SECONDS = 5 * 60
+_HISTORY_PAYLOAD_SCAN_BATCH_SIZE = 1000
 SQLITE_WAL_CHECKPOINT_MODES = {
     "passive": "PASSIVE",
     "full": "FULL",
@@ -893,6 +894,59 @@ def _delete_compact_history_batch(
     return deleted, removed
 
 
+def _delete_history_payload_batch(
+    connection: sqlite3.Connection,
+    progress: dict[str, Any],
+    *,
+    batch_size: int,
+) -> tuple[int, bool]:
+    """Scan one bounded key range inside the retention writer transaction."""
+    if "blob_high_water" not in progress:
+        row = connection.execute(
+            "SELECT sha256 FROM workflow_execution_payload_blobs ORDER BY sha256 DESC LIMIT 1"
+        ).fetchone()
+        # Fix the sweep boundary so new writes cannot keep extending this phase.
+        progress["blob_high_water"] = row[0] if row else ""
+    after = progress.get("blob_cursor", "")
+    high_water = progress["blob_high_water"]
+    page = [
+        row[0]
+        for row in connection.execute(
+            """SELECT sha256 FROM workflow_execution_payload_blobs
+               WHERE sha256>? AND sha256<=? ORDER BY sha256 LIMIT ?""",
+            (after, high_water, _HISTORY_PAYLOAD_SCAN_BATCH_SIZE),
+        ).fetchall()
+    ]
+    keys = []
+    complete = not page
+    if page:
+        keys = [
+            row[0]
+            for row in connection.execute(
+                """SELECT b.sha256 FROM workflow_execution_payload_blobs b
+                   WHERE b.sha256>? AND b.sha256<=?
+                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.input_blob_sha256=b.sha256)
+                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.output_blob_sha256=b.sha256)
+                   ORDER BY b.sha256 LIMIT ?""",
+                (after, page[-1], batch_size),
+            ).fetchall()
+        ]
+        connection.executemany(
+            "DELETE FROM workflow_execution_payload_blobs WHERE sha256=?",
+            [(key,) for key in keys],
+        )
+        # At the deletion limit, the rest of the range may still have orphans.
+        # Otherwise advance past retained blobs even when nothing was deleted.
+        progress["blob_cursor"] = keys[-1] if len(keys) == batch_size else page[-1]
+        complete = progress["blob_cursor"] >= high_water
+    if complete:
+        progress.pop("blob_cursor", None)
+        progress.pop("blob_high_water", None)
+    return len(keys), complete
+
+
 def _run_orchestration_retention_slice(
     path: Path | str,
     *,
@@ -982,23 +1036,9 @@ def _run_orchestration_retention_slice(
             deleted = len(sources)
             waiting_for_history = _has_pending_retention_sources(connection, progress["cutoff"])
         elif phase == "blobs":
-            keys = [
-                row[0]
-                for row in connection.execute(
-                    """SELECT b.sha256 FROM workflow_execution_payload_blobs b
-                   WHERE NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
-                                     WHERE h.input_blob_sha256=b.sha256)
-                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
-                                     WHERE h.output_blob_sha256=b.sha256)
-                   ORDER BY b.sha256 LIMIT ?""",
-                    (batch_size,),
-                ).fetchall()
-            ]
-            connection.executemany(
-                "DELETE FROM workflow_execution_payload_blobs WHERE sha256=?",
-                [(key,) for key in keys],
+            deleted, blobs_complete = _delete_history_payload_batch(
+                connection, progress, batch_size=batch_size,
             )
-            deleted = len(keys)
             counts["compact_payload_blobs_deleted"] = deleted
         else:
             definitions = {
@@ -1065,6 +1105,7 @@ def _run_orchestration_retention_slice(
         # Advance only after an empty source snapshot, including after CAS skips.
         phase_complete = (
             not prepared_sources.sources if phase == "sources"
+            else blobs_complete if phase == "blobs"
             else not keys if phase == "compact" else deleted < batch_size
         )
         next_index = phases.index(phase) + (phase_complete and not waiting_for_history)

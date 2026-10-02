@@ -301,6 +301,14 @@ retry cadence. Each scalar table and the payload collector durably retain their 
 markers while other components finish. Sweeps that delete data run a clean follow-up before the
 idle pause, including to reclaim payload children orphaned behind the cursor. The next scheduled
 sweep resets the completed markers and checks newly unreferenced data.
+
+The separate execution-history payload retention phase checks at most 1,000 blob keys
+per pass, even when its adaptive deletion limit is one. A durable cursor advances past
+referenced blobs and resumes after restart; a fixed upper key lets the sweep finish
+while new payloads arrive. Reference checks, deletions and progress commit together.
+Newly orphaned blobs behind the cursor, and blobs beyond the upper key, wait for the
+next daily retention sweep.
+
 History indexing prepares fields outside the writer transaction and commits at most 100 fields
 per batch within a 100 ms SQL execution budget. Execution timeouts roll back the batch and persist
 a smaller field limit, down to one; fully used fast batches recover toward 100. An indexing
