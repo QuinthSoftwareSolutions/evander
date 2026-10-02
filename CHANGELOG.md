@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-02 - Bound execution-history payload cleanup (0.80.4)
+
+- Scan execution-history payloads in bounded key ranges with a durable cursor,
+  so sparse or empty orphan sets finish without repeatedly scanning retained blobs.
+- Commit reference checks, deletions and scan progress in the same writer transaction.
+  Fix each sweep's upper boundary; collect newly orphaned blobs behind the cursor
+  or beyond that boundary in the next daily retention sweep. Existing tables and
+  indexes suffice; no offline storage migration is required.
+
 ## 2026-10-02 - Align Admin Web spacing and navigation (0.80.3)
 
 - Align dashboard metric labels, toolbar actions, navigation icons, and quick
