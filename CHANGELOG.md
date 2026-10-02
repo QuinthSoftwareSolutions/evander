@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-02 - Give artifact-space selection room to browse (0.80.1)
+
+- Open the artifact-space tree in a wider, scrollable dialog from a compact sidebar
+  selector. Keep the selected space visible, apply recursive filtering on selection,
+  and preserve the current filter when the dialog is dismissed.
+- Keep keyboard focus inside the picker and return it to the selector on close;
+  support Escape, backdrop dismissal, and narrow screens in light and dark themes.
+
 ## 2026-10-02 - Camera and screen context in Teams calls (0.80.0)
 
 - Receive caller camera video and screen sharing with optional automatic snapshots per spoken

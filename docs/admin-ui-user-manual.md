@@ -347,6 +347,11 @@ Common tasks:
 7. To upload a local file, click the upload button, enter a new artifact key, select the file,
    and click **Upload**. The published archive uses the selected file's name.
 
+Click the current selection under **Artifact spaces** to open the space tree in a larger dialog.
+Choosing a space immediately filters the archive list to that space and its child spaces, then
+closes the dialog. Choose **All spaces** to clear the space filter. The sidebar shows the selected
+space; closing the dialog or pressing **Escape** leaves the filter unchanged.
+
 Artifact keys are durable identifiers. Prefer resolving by key when a workflow, tool call, or run
 detail links to an artifact directly.
 
