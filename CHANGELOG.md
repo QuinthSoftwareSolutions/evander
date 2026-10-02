@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-02 - Fix the Approvals All filter (0.80.2)
+
+- Include exhausted approval grants in queue sorting so selecting All, or filtering
+  for exhausted requests through the API, returns the queue without a server error.
+
 ## 2026-10-02 - Give artifact-space selection room to browse (0.80.1)
 
 - Open the artifact-space tree in a wider, scrollable dialog from a compact sidebar
