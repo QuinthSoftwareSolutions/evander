@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-02 - Hide the Subscriptions worker URL (0.79.2)
+
+- Remove the internal worker URL from the Subscriptions page header while keeping
+  loading, error, and missing-worker messages.
+
 ## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
 
 - Select expired workflow, internal and scheduled events in timestamp-index order,
