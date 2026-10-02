@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-02 - Fix the Approvals All filter (0.79.2)
+
+- Include exhausted approval grants in queue sorting so selecting All, or filtering
+  for exhausted requests through the API, returns the queue without a server error.
+
 ## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
 
 - Select expired workflow, internal and scheduled events in timestamp-index order,

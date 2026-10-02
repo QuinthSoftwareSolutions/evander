@@ -21,6 +21,7 @@ _APPROVAL_STATUS_ORDER: dict[ApprovalStatus, int] = {
     ApprovalStatus.EXPIRED: 1,
     ApprovalStatus.DENIED: 2,
     ApprovalStatus.APPROVED: 3,
+    ApprovalStatus.EXHAUSTED: 4,
 }
 
 
