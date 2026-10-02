@@ -168,6 +168,11 @@
   cursor: pointer;
 }
 
+/* Icon-only buttons keep their glyphs centered within the existing control box. */
+[data-admin-design] button:is(.admin-icon-button, .toolbar-icon-button, .dashboard-icon-button, .session-tool-settings-button, .admin-quick-nav-close) {
+  padding: 0;
+}
+
 [data-admin-design] button:hover:not(:disabled) {
   color: var(--ui-text);
   background: var(--ui-subtle);

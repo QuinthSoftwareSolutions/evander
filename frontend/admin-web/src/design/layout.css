@@ -231,6 +231,11 @@
 [data-admin-design] .panel-header {
   margin-bottom: 12px;
 }
+/* Header actions share the header's spacing rather than a form footer's inset. */
+[data-admin-design] :is(.admin-toolbar, .feature-toolbar, .feature-sidebar-header, .panel-header, .modal-header, .contact-editor-item-header, .contact-subsection-header) > .inline-actions {
+  padding: 0;
+  align-items: center;
+}
 [data-admin-design] :is(.feature-content, .stack-layout) > .panel {
   border: 0;
   border-top: 1px solid var(--ui-border);

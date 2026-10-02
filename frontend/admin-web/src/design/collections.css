@@ -10,9 +10,13 @@
 }
 [data-admin-design] .collection-heading {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
   align-items: center;
+}
+[data-admin-design] .collection-heading > div {
+  min-width: 0;
 }
 [data-admin-design] .collection-heading h1 {
   margin: 0;
@@ -272,6 +276,9 @@
     padding: 12px;
   }
   [data-admin-design] .collection-table :is(th, td) {
+    padding: 8px;
+  }
+  [data-admin-design] .table-sort-button {
     padding: 8px;
   }
   [data-admin-design] .collection-toolbar .panel-meta {

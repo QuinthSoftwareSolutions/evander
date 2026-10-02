@@ -98,8 +98,34 @@
   display: inline-flex;
   gap: 6px;
 }
-[data-admin-design] :is(.config-field-grid, .website-login-grid, .admin-toolbar) > .field-stack {
+[data-admin-design] :is(.config-field-grid, .form-grid, .website-login-grid, .admin-toolbar) > .field-stack {
   min-width: 0;
+  margin-bottom: 0;
+}
+[data-admin-design] .credentials-panel .credential-actions {
+  padding: 0;
+  align-items: center;
+}
+[data-admin-design] :is(.managed-git-index-panel, .managed-git-index-panel fieldset) {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] .managed-git-index-build-meta {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+}
+[data-admin-design] :is(.managed-git-register-form, .managed-git-identity-form) {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+}
+[data-admin-design] .string-list-selector-row.structured-input-map-row {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  align-items: end;
+}
+[data-admin-design] .structured-input-map-row > .inline-actions {
+  padding-top: 0;
+}
+[data-admin-design] .email-mailbox-folder-row {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) auto auto;
+}
+[data-admin-design] .email-mailbox-folder-row > .field-stack {
   margin-bottom: 0;
 }
 [data-admin-design] :is(.website-login-grid, .admin-toolbar, .table-workspace > .feature-sidebar) > :is(.checkbox-row, .checkbox-inline) {
@@ -156,6 +182,7 @@
   border-radius: var(--ui-radius);
   background: var(--ui-surface);
   overflow: hidden;
+  container-type: inline-size;
 }
 [data-admin-design] :is(.subscription-columns, .subscription-profile-summary) {
   display: grid;
@@ -216,6 +243,15 @@
 }
 [data-admin-design] .subscription-profile-body .property-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+@container (max-width: 800px) {
+  [data-admin-design] .subscription-columns {
+    display: none;
+  }
+  [data-admin-design] .subscription-profile-summary {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
 }
 
 [data-admin-design] .table-workspace {
@@ -703,6 +739,9 @@
   }
 }
 @media (max-width: 960px) {
+  [data-admin-design] :is(.managed-git-index-build-meta, .email-mailbox-folder-row, .string-list-selector-row.structured-input-map-row) {
+    grid-template-columns: minmax(0, 1fr);
+  }
   [data-admin-design] :is(.managed-git-register-form, .managed-git-identity-form) {
     grid-template-columns: minmax(0, 1fr);
   }
