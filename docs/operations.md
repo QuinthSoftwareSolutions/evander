@@ -16,7 +16,7 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
 | Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
 | Configure communications | [Teams](#microsoft-teams-delegated-auth), [Discord](#host-side-discord-access), and [email](#host-side-email-access) |
-| Call an existing assistant through Teams | [Teams assistant calls](teams-calls.md) |
+| Call an existing assistant through Teams, with camera or screen context | [Teams assistant calls](teams-calls.md) |
 | Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
 | Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
 

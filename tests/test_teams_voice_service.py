@@ -427,6 +427,7 @@ def test_configuration_schema_offers_named_assistants_and_root_only_routing(runt
     }
     routes = fields["teams_call_routes"]
     assert routes["kind"] == "json"
+    assert fields["teams_call_visual_context_enabled"]["kind"] == "bool"
     choice = next(
         item for item in routes["assistant_options"] if item["session_id"] == "assistant-b"
     )
@@ -438,3 +439,4 @@ def test_configuration_schema_offers_named_assistants_and_root_only_routing(runt
     }
     assert "teams_call_routes" not in child_fields
     assert "teams_call_enabled" in child_fields
+    assert "teams_call_visual_context_enabled" in child_fields

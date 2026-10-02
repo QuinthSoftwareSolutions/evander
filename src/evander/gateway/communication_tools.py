@@ -55,6 +55,7 @@ def register_communication_tools(
         "make_phone_call",
         "get_phone_call_result",
         "submit_voice_query_response",
+        "get_voice_query_visual_context",
         "teams_post_status",
         "teams_meeting_get_events",
         "teams_meeting_speak",

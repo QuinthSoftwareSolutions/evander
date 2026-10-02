@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
   "manifestVersion": "1.19",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "id": "00000000-0000-4000-8000-000000000001",
   "packageName": "com.example.evander.assistant",
   "developer": {
@@ -18,7 +18,7 @@
     "botId": "00000000-0000-4000-8000-000000000001",
     "scopes": ["personal"],
     "supportsCalling": true,
-    "supportsVideo": false,
+    "supportsVideo": true,
     "isNotificationOnly": false
   }],
   "validDomains": ["bridge.example.test"]

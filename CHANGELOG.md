@@ -1,9 +1,31 @@
 # Changelog
 
-## 2026-10-02 - Fix the Approvals All filter (0.79.2)
+## 2026-10-02 - Fix the Approvals All filter (0.80.2)
 
 - Include exhausted approval grants in queue sorting so selecting All, or filtering
   for exhausted requests through the API, returns the queue without a server error.
+
+## 2026-10-02 - Give artifact-space selection room to browse (0.80.1)
+
+- Open the artifact-space tree in a wider, scrollable dialog from a compact sidebar
+  selector. Keep the selected space visible, apply recursive filtering on selection,
+  and preserve the current filter when the dialog is dismissed.
+- Keep keyboard focus inside the picker and return it to the selector on close;
+  support Escape, backdrop dismissal, and narrow screens in light and dark themes.
+
+## 2026-10-02 - Camera and screen context in Teams calls (0.80.0)
+
+- Receive caller camera video and screen sharing with optional automatic snapshots per spoken
+  turn. Bind delegated visual queries to the same images, deliver them through a session-scoped
+  MCP image tool, and bound temporary storage with quotas, completion cleanup, and expiry.
+- Add inherited operator configuration and audio fallback when visual capabilities are
+  unavailable. Visual context starts disabled; no outgoing video or media recordings are created.
+- Honor removal of the live root visual opt-in for new calls without restarting the gateway.
+
+## 2026-10-02 - Hide the Subscriptions worker URL (0.79.2)
+
+- Remove the internal worker URL from the Subscriptions page header while keeping
+  loading, error, and missing-worker messages.
 
 ## 2026-10-02 - Keep retention progressing after indexing deadlines (0.79.1)
 

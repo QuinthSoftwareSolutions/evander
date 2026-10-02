@@ -283,6 +283,7 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
 }
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
+    ("providers", "teams_call_visual_context_enabled"): "Call visual context enabled",
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
     ("providers", "execution_backend"): "Execution backend",
     ("providers", "phone_call_backend"): "Phone call backend",
