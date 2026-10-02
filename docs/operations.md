@@ -364,9 +364,10 @@ Adding these indexes does not require payload conversion, a history rebuild, or 
 Workflow-event, internal-event and published scheduled-event retention uses the existing age
 indexes in timestamp/key order. History field-index batches durably shrink after execution
 timeouts and recover after fast full batches; incomplete generations remain hidden from field
-search. Execution deadlines do not suppress independent maintenance phases, while writer lock
-contention still yields the pass to foreground work. These changes use existing tables and
-indexes and can be deployed without another offline storage migration.
+search. Execution deadlines do not suppress independent maintenance phases and preserve the
+one-second retry pause even at the one-field limit. Writer lock contention still yields the pass
+to foreground work. These changes use existing tables and indexes and can be deployed without
+another offline storage migration.
 
 For rollback to a release that only understands inline operational records, keep all database users
 stopped and run the **new release's CLI** before starting the old executable:

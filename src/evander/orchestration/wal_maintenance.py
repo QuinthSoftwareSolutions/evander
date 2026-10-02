@@ -63,7 +63,7 @@ class OrchestrationWalCheckpointMaintenance:
                 )
             finally:
                 self._future = None
-            if result.skipped_reason == "storage_busy":
+            if result.skipped_reason in ("storage_busy", "execution_deadline"):
                 self._next_check_at = self.clock() + 1.0
             elif result.history_index_pending:
                 self._next_check_at = 0.0

@@ -458,7 +458,28 @@ def test_maintenance_yields_remaining_write_phases_to_foreground_writer(tmp_path
         assert foreground.in_transaction
 
 
-def test_history_execution_deadline_does_not_starve_retention(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize(
+    ("initial_limit", "reduced_limit"), [(None, 50), (1, 1)], ids=["default_batch", "one_field"]
+)
+def test_storage_lane_paces_history_deadlines_without_starving_other_phases(
+    tmp_path, monkeypatch, caplog, initial_limit, reduced_limit
+):
+    now = [10.0]
+    calls = []
+
+    class ImmediateExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, function, config, *, run_garbage_collection):
+            calls.append(now[0])
+            future = Future()
+            future.set_result(function(config, run_garbage_collection=run_garbage_collection))
+            return future
+
+        def shutdown(self, *, wait):
+            pass
+
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
     cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat()
@@ -481,6 +502,18 @@ def test_history_execution_deadline_does_not_starve_retention(tmp_path, monkeypa
             (json.dumps({"date": "2026-01-01", "phase": "workflow", "cutoff": cutoff,
                          "compact_cutoff": cutoff}),),
         )
+        connection.execute(
+            "INSERT INTO orchestration_metadata VALUES ('execution_history_backfill',?)",
+            (json.dumps({"completed": True}),),
+        )
+        if initial_limit is not None:
+            connection.execute(
+                "INSERT INTO orchestration_metadata VALUES ('history_index_batch_limit',?)",
+                (json.dumps({"rows": initial_limit}),),
+            )
+        connection.execute(
+            "INSERT INTO workflow_operational_blobs VALUES ('orphan','zlib-json-v1',X'',0)"
+        )
     original = execution_history.run_pending_history_indexing
 
     def timed_out(connection, **kwargs):
@@ -488,20 +521,57 @@ def test_history_execution_deadline_does_not_starve_retention(tmp_path, monkeypa
         raise SqliteOperationDeadlineExceeded("Indexing execution timed out")
 
     monkeypatch.setattr(execution_history, "run_pending_history_indexing", timed_out)
-    result = run_storage_maintenance(_config(path), run_garbage_collection=False)
-    assert result.skipped_reason != "storage_busy"
-    assert "phase=history outcome=deadline" in caplog.text
-    with connect_orchestration_db_read_only(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM workflow_events").fetchone()[0] == 0
-        assert connection.execute("SELECT next_offset FROM workflow_history_index_jobs").fetchone()[0] == 0
-        row = connection.execute(
-            "SELECT value_json FROM orchestration_metadata WHERE key='history_index_batch_limit'"
-        ).fetchone()
-        assert json.loads(row[0])["rows"] == 50
-        progress = connection.execute(
-            "SELECT value_json FROM orchestration_metadata WHERE key='retention_progress'"
-        ).fetchone()
-        assert json.loads(progress[0])["phase"] == "compact"
+    monkeypatch.setattr(wal_maintenance, "ThreadPoolExecutor", ImmediateExecutor)
+    lane = wal_maintenance.OrchestrationWalCheckpointMaintenance(clock=lambda: now[0])
+    config = _config(path)
+    try:
+        lane.run_if_due(config)
+        result = lane.run_if_due(config)
+        assert result.history_index_pending == 1
+        assert result.skipped_reason != "storage_busy"
+        assert "phase=history outcome=deadline" in caplog.text
+        # A failed indexing batch must not immediately resubmit the same job,
+        # even when the field limit cannot shrink further.
+        assert calls == [10.0]
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM workflow_events").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 0
+            assert connection.execute("SELECT next_offset FROM workflow_history_index_jobs").fetchone()[0] == 0
+            row = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='history_index_batch_limit'"
+            ).fetchone()
+            assert json.loads(row[0])["rows"] == reduced_limit
+            progress = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='retention_progress'"
+            ).fetchone()
+            assert json.loads(progress[0])["phase"] == "compact"
+
+        now[0] = 10.999
+        assert lane.run_if_due(config) is None
+        assert calls == [10.0]
+        now[0] = 11.0
+        lane.run_if_due(config)
+        assert calls == [10.0, 11.0]
+        # The retry pause starts when the completed failure is observed,
+        # including when the dispatch thread observes it later.
+        now[0] = 11.25
+        assert lane.run_if_due(config).history_index_pending == 1
+        now[0] = 12.249
+        assert lane.run_if_due(config) is None
+        assert calls == [10.0, 11.0]
+
+        monkeypatch.setattr(execution_history, "run_pending_history_indexing", original)
+        now[0] = 12.25
+        lane.run_if_due(config)
+        assert calls == [10.0, 11.0, 12.25]
+        assert lane.run_if_due(config).history_index_pending == 0
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute(
+                "SELECT numeric_value FROM workflow_node_execution_current_values "
+                "WHERE execution_key='effect:pending' AND json_pointer='/value'"
+            ).fetchone()[0] == 42
+    finally:
+        lane.close()
 
 
 def test_scalar_gc_continues_past_live_prefix_before_becoming_idle(tmp_path):

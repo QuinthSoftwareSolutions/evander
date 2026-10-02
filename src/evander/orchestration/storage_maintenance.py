@@ -204,6 +204,10 @@ def run_storage_maintenance(
                     else "failed"
                 )
                 writer_busy = outcome == "busy"
+                if outcome == "deadline":
+                    # Finish independent phases, but pace the next pass even
+                    # when a pending history job cannot shrink its batch.
+                    result = replace(result, skipped_reason="execution_deadline")
                 logger.warning(
                     "storage_maintenance phase=%s outcome=%s",
                     phase,

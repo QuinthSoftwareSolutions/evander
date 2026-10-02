@@ -8,8 +8,9 @@
   and recover fully used fast batches, preserving concurrent reductions and atomic
   publication of complete searchable generations.
 - Continue independent maintenance phases after execution deadlines while still
-  yielding immediately to occupied writer or repository locks. Existing indexes
-  and retention policies are unchanged; no offline index build is required.
+  preserving the one-second retry pause and yielding immediately to occupied
+  writer or repository locks. Existing indexes and retention policies are
+  unchanged; no offline index build is required.
 
 ## 2026-10-01 - Native Teams assistant calls (0.79.0)
 
