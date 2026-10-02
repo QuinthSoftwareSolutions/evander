@@ -5,16 +5,23 @@ using System.Text.Json.Serialization;
 
 namespace TeamsMeetingMediaBridge;
 
+public sealed record VisualCapability(
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("reason")] string? Reason);
+
 public sealed record TeamsCallAdmission(
     [property: JsonPropertyName("voice_session_id")] string VoiceSessionId,
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("projection")] Dictionary<string, object> Projection,
-    [property: JsonPropertyName("realtime")] Dictionary<string, object> Realtime);
+    [property: JsonPropertyName("realtime")] Dictionary<string, object> Realtime,
+    [property: JsonPropertyName("visual_context")] VisualCapability? VisualContext = null);
 
 public interface IControlPlaneVoiceClient
 {
     Task<TeamsCallAdmission> AdmitAsync(string tenantId, string callerId, string callId, CancellationToken token);
     Task<string> QueryAsync(string voiceSessionId, string question, string reason, string requestId, CancellationToken token);
+    Task<string> QueryWithVisualsAsync(string voiceSessionId, string question, string reason, string requestId,
+        VisualTurnContext context, CancellationToken token) => QueryAsync(voiceSessionId, question, reason, requestId, token);
     Task CompleteAsync(string voiceSessionId, NativeCallSnapshot snapshot, CancellationToken token);
 }
 
@@ -42,6 +49,11 @@ public sealed class ControlPlaneVoiceClient : IControlPlaneVoiceClient
     }
 
     public async Task<string> QueryAsync(string voiceSessionId, string question, string reason, string requestId, CancellationToken token)
+        => await QueryWithVisualsAsync(voiceSessionId, question, reason, requestId,
+            VisualTurnContext.Unavailable("No visual context attached"), token);
+
+    public async Task<string> QueryWithVisualsAsync(string voiceSessionId, string question, string reason, string requestId,
+        VisualTurnContext context, CancellationToken token)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(90);
         var path = $"voice-sessions/{Uri.EscapeDataString(voiceSessionId)}/queries";
@@ -51,8 +63,8 @@ public sealed class ControlPlaneVoiceClient : IControlPlaneVoiceClient
         {
             try
             {
-                using var response = await HttpClientJsonExtensions.PostAsJsonAsync(client, path,
-                    new { question, request_id = requestId, deadline_seconds = 90, metadata = new { reason } }, token);
+                using var body = CreateQueryContent(question, reason, requestId, context);
+                using var response = await client.PostAsync(path, body, token);
                 response.EnsureSuccessStatusCode();
                 created = await response.Content.ReadFromJsonAsync<JsonElement>(token);
                 break;
@@ -63,6 +75,8 @@ public sealed class ControlPlaneVoiceClient : IControlPlaneVoiceClient
             }
         }
         var queryId = created.GetProperty("query_id").GetString()!;
+        // The durable query owns its snapshots now; polling retains no image buffers.
+        context = VisualTurnContext.Unavailable("Query snapshots were handed to the original assistant");
         var queryPath = $"{path}/{Uri.EscapeDataString(queryId)}";
         if (created.TryGetProperty("deadline_at", out var storedDeadline)
             && storedDeadline.ValueKind == JsonValueKind.String
@@ -97,6 +111,27 @@ public sealed class ControlPlaneVoiceClient : IControlPlaneVoiceClient
         if (final.TryGetProperty("status", out var finalStatus) && finalStatus.GetString() != "timeout")
             return final.GetRawText();
         return "{\"status\":\"timeout\",\"message\":\"No result confirmed. Accepted work may continue in Teams.\"}";
+    }
+
+    private static HttpContent CreateQueryContent(string question, string reason, string requestId, VisualTurnContext context)
+    {
+        if (context.Images.Count == 0)
+            return JsonContent.Create(new { question, request_id = requestId, deadline_seconds = 90,
+                metadata = new { reason, visual_context_unavailable = context.Availability } });
+        if (context.Images.Count > 2 || context.Images.Any(image => image.Jpeg.Length > VisualFrameSampler.MaxImageBytes))
+            throw new ArgumentException("Visual query exceeds its image limits.");
+        var multipart = new MultipartFormDataContent();
+        multipart.Add(JsonContent.Create(new { question, request_id = requestId, deadline_seconds = 90,
+            metadata = new { reason }, images = context.Images.Select(image => new {
+                source = image.Source, captured_at = image.CapturedAt, width = image.Width, height = image.Height,
+            }) }), "payload");
+        foreach (var image in context.Images)
+        {
+            var content = new ByteArrayContent(image.Jpeg);
+            content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+            multipart.Add(content, image.Source, $"{image.Source}.jpg");
+        }
+        return multipart;
     }
 
     private static bool IsTransient(Exception error) => error switch

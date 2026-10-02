@@ -243,13 +243,33 @@ internal static class NativeCallTests
 
     public static async Task RecordingFailurePreventsNativeTranscription()
     {
-        var plane = new FakePlane();
+        var plane = new FakePlane { Visuals = true };
         var speech = new FakeSpeech();
         var call = new FakeCall { FailRecording = true };
         var coordinator = new NativeCallCoordinator(plane, speech, NullLogger<NativeCallCoordinator>.Instance);
         await coordinator.HandleAsync(call).WaitAsync(TimeSpan.FromSeconds(3));
         var snapshot = coordinator.GetSnapshot("voice-selected")!;
         Check(speech.Request is null && snapshot.TranscriptEvents.Count == 0 && snapshot.Status == "failed", "Transcription started without recording status");
+        Check(((FakeMeetingAudioSession)call.Audio).VisualStarts == 0, "Visual processing started without recording status");
+    }
+
+    public static async Task NativeVisualAdmissionAndHandoff()
+    {
+        var plane = new FakePlane { Visuals = true };
+        var speech = new FakeSpeech();
+        var context = new VisualTurnContext(DateTimeOffset.UtcNow,
+            [new("screen", DateTimeOffset.UtcNow, 2, 2, [7])], "Screen: available");
+        var audio = new FakeMeetingAudioSession { VisualContext = context };
+        var call = new FakeCall { Audio = audio };
+        var coordinator = new NativeCallCoordinator(plane, speech, NullLogger<NativeCallCoordinator>.Instance);
+        var task = coordinator.HandleAsync(call);
+        await Until(() => speech.Request is not null);
+        Check(call.ReceiveVisuals && call.Recording && audio.VisualStarts == 1, "Admission did not negotiate and start visual capture");
+        var captured = speech.Request!.CaptureVisualContext!();
+        await speech.Request.QueryOriginWithVisualContext!("Read the screen", "visual", "function-visual", captured, CancellationToken.None);
+        Check(plane.QueryVoiceId == "voice-selected" && ReferenceEquals(plane.VisualContext, context), "Visual query escaped the admitted binding");
+        call.End.SetResult();
+        await task.WaitAsync(TimeSpan.FromSeconds(3));
     }
 
     public static async Task PlaybackFailureEndsNativeCall()
@@ -314,12 +334,13 @@ internal static class NativeCallTests
     {
         public int Admissions, Completions;
         public string? QueryVoiceId;
-        public bool Deny;
+        public bool Deny, Visuals;
+        public VisualTurnContext? VisualContext;
         public Task<TeamsCallAdmission> AdmitAsync(string tenant, string caller, string call, CancellationToken token)
         {
             Admissions++;
             if (Deny) throw new InvalidOperationException("Unmapped caller");
-            return Task.FromResult(new TeamsCallAdmission("voice-selected", "connecting", new(), new()));
+            return Task.FromResult(new TeamsCallAdmission("voice-selected", "connecting", new(), new(), new VisualCapability(Visuals, null)));
         }
         public Task<string> QueryAsync(string voiceSessionId, string question, string reason, string requestId, CancellationToken token)
         {
@@ -328,11 +349,14 @@ internal static class NativeCallTests
         }
         public Task CompleteAsync(string voiceSessionId, NativeCallSnapshot snapshot, CancellationToken token)
         { Completions++; return Task.CompletedTask; }
+        public Task<string> QueryWithVisualsAsync(string voiceSessionId, string question, string reason, string requestId,
+            VisualTurnContext context, CancellationToken token)
+        { VisualContext = context; return QueryAsync(voiceSessionId, question, reason, requestId, token); }
     }
     private sealed class FakeCall : IIncomingTeamsCall
     {
         public int Answers, Rejections;
-        public bool Personal = true, Recording, FailRecording;
+        public bool Personal = true, Recording, FailRecording, ReceiveVisuals;
         public IMeetingAudioSession Audio = new FakeMeetingAudioSession();
         public TaskCompletionSource End = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string CallId => "graph-call";
@@ -342,6 +366,8 @@ internal static class NativeCallTests
         public Task Ended => End.Task;
         public Task<IMeetingAudioSession> AnswerAsync(CancellationToken token)
         { Answers++; return Task.FromResult(Audio); }
+        public Task<IMeetingAudioSession> AnswerAsync(bool receiveVisuals, CancellationToken token)
+        { ReceiveVisuals = receiveVisuals; return AnswerAsync(token); }
         public Task SetRecordingAsync(bool recording, CancellationToken token)
         {
             if (FailRecording) throw new InvalidOperationException("Recording status failed");

@@ -4,6 +4,8 @@ Native calls use the existing Azure Windows Teams media bridge. One calling bot 
 desktop and web users; root configuration explicitly maps each tenant/user pair to an
 existing assistant session. Calling starts disabled. Text workflows keep their existing
 bindings and credentials.
+Native one-to-one calls can also receive the caller's camera and shared screen when visual
+context is enabled. The assistant speaks through audio and sends no video.
 
 ## Configure the caller map
 
@@ -17,6 +19,7 @@ The equivalent provider fields are:
 ```json
 {
   "teams_call_enabled": false,
+  "teams_call_visual_context_enabled": false,
   "teams_call_max_concurrency": 4,
   "teams_call_routes": [{
     "tenant_id": "11111111-1111-4111-8111-111111111111",
@@ -65,7 +68,7 @@ Copy [the app manifest template](../integrations/teams-meeting-media-bridge/team
 into operator storage, replace IDs, domains and organization URLs, and add your required
 32×32 transparent outline and 192×192 color PNG icons. Zip the manifest and both icons at
 the archive root, publish through your organization's Teams app administration, and install
-the personal app for pilot users. Video, group calls, outbound calling, and mobile bot calling
+the personal app for pilot users. Group calls, outgoing bot video, outbound calling, and mobile bot calling
 are outside this implementation.
 
 Copy [bridge.env.example](../integrations/teams-meeting-media-bridge/bridge.env.example) into
@@ -126,6 +129,59 @@ retention through [Privacy operations](privacy-operations.md).
 Bridge terminal snapshots expire from memory after one hour; the durable control plane
 remains authoritative. Protect `GET /calls/{voice_session_id}` with the bridge token.
 
+## Camera and screen context
+
+Use Admin Web **Configuration → the assistant directory → People & Communications → Teams →
+Call visual context enabled** (`teams_call_visual_context_enabled`). It inherits from root and
+starts false. Grant the original assistant `get_voice_query_visual_context` without approval
+in the same session/workflow tool settings used for `submit_voice_query_response`.
+Use `gpt-realtime-2` or `gpt-realtime`, including their dated snapshots, for the existing
+`openai_realtime_model` setting. Other configured models, missing grants, or approval requirements
+leave the admitted call in audio mode; the admission response includes the reason.
+Enabling this setting affects new calls. Changing the caller map keeps an active call attached
+to its admitted original assistant.
+
+The app manifest advertises video capability. A caller can start with a video call or enable
+camera and screen sharing during an audio call. The Windows bridge creates receive-only main
+video and video-based screen-sharing sockets, subscribes when the SDK is ready, and begins
+snapshot processing after Graph accepts recording status. It requests camera up to 720p and
+screen up to 1080p. No additional worker or guest ports, recording packages, local vision models,
+or media host services are required. The Windows encoder uses `System.Drawing.Common`.
+
+One latest frame per source is sampled at most once per second. At the end of each spoken turn,
+the companion receives up to one camera and one screen JPEG, each at most 512 KiB. Frames older
+than five seconds are excluded; inactive receive streams clear their cached image. Source and
+capture time accompany each image, so the companion describes a sampled view rather than
+continuous video. Realtime image acceptance is awaited before the response, while audio and
+interruption handling remain active. An image error disables visual input for that call while
+keeping audio usable. Only the latest four visual turn items remain in the Realtime conversation.
+[OpenAI Realtime image inputs](https://developers.openai.com/api/docs/guides/realtime-conversations)
+and [Teams video and screen-sharing concepts](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/real-time-media-concepts).
+
+When a response delegates a substantive request, it attaches that response's frozen images,
+even if the caller has subsequently changed the view. `POST /voice-sessions/{id}/queries`
+continues accepting JSON for audio queries. Visual queries use multipart form data: one JSON
+`payload` part containing the usual question, request ID, and an `images` metadata array
+(`source`, `captured_at`, `width`, `height`), plus JPEG file parts named `camera` and/or `screen`.
+The complete body is limited to 1 MiB plus 64 KiB. Retrying a request must keep the same question
+and snapshot bundle. The server validates JPEG bytes and dimensions and persists all snapshots
+before waking the original assistant. Query JSON contains only references and metadata.
+
+The original assistant calls `get_voice_query_visual_context(query_id)` to receive native MCP
+image content. The gateway resolves its connected session and verifies ownership against the
+query's original admitted binding. It does not copy images into a VM or container workspace,
+and its audit records include snapshot metadata rather than image bytes.
+
+Only delegated query snapshots are stored in private `runtime/voice-visuals`; ordinary spoken
+turn images stay in bridge memory. Image data is capped at **16 MiB per call** and **128 MiB across
+the control plane**, with additional record-count caps to bound metadata and inode use. A full
+store supplies an explicit unavailable-context result to the assistant. Query snapshots are
+deleted when the original assistant answers or fails the query. Hangup and the 90-second polling
+timeout preserve snapshots for unfinished accepted queries, up to an absolute 24-hour expiry.
+Startup, upload, access, and the existing Teams supervisor perform cleanup; interrupted uploads
+without a completed query attachment are removed after five minutes. Keep supervision running
+after disabling new calls so cleanup and accepted work continue.
+
 Enable the existing `evander-teams-meeting-ingest` supervisor for the intended directories
 with `poll_interval_seconds: 5` and `jitter_seconds: 0`. Restart the supervisor after changing
 its interval, bridge URL, or credential variable name so it loads the new settings.
@@ -142,7 +198,7 @@ calls; otherwise it updates memory silently.
 First verify local suites with explicit timeouts:
 
 ```bash
-timeout 180 ./.venv/bin/pytest -q tests/test_teams_voice_service.py tests/test_voice_sessions.py tests/test_teams_meeting.py tests/test_gateway.py
+timeout 180 ./.venv/bin/pytest -q tests/test_voice_visuals.py tests/test_teams_voice_service.py tests/test_voice_sessions.py tests/test_teams_meeting.py tests/test_gateway.py
 timeout 120 dotnet run --project integrations/teams-meeting-media-bridge/TeamsMeetingMediaBridge.Tests
 ```
 
@@ -151,6 +207,18 @@ one root mapping through the revision-checked configuration UI. Confirm two-way 
 a tool-backed answer, interruption, preserved assistant context, and a substantive recap.
 Then test two concurrent callers mapped to separate assistants. Also give a caller access
 to two assistants and verify its explicit route still selects the intended one.
+
+For visual acceptance, enable the visual setting and its session grant for a pilot assistant,
+update the installed Teams app from the manifest template, and test both desktop and web clients:
+start with video, enable camera after answering an audio call, start/stop screen sharing, and
+use both sources together. Ask about a static shared document after ten seconds and check text
+legibility. Change the view immediately after requesting a delegated action and verify the
+original assistant still receives the requesting turn's view. Interrupt while images are pending,
+and hang up while accepted image work continues. Confirm source unavailability after stopping
+sharing, audio-only fallback, completion/expiry cleanup, and quota behavior with concurrent calls.
+Measure Windows bridge CPU/RAM, response latency, and bounded control-plane image storage.
+These acceptance checks require a prepared Azure Windows media host and are separate from local
+fake tests. No remote activation is implied by building or publishing the branch.
 
 Review admission logs, answer latency, delegated query latency, active durable call records,
 and reconciliation failures before adding more reviewed mappings. Rollback disables new

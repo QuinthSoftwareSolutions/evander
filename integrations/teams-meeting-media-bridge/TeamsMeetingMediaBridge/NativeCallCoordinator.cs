@@ -11,6 +11,7 @@ public interface IIncomingTeamsCall
     bool IsPersonalAudioCall { get; }
     Task Ended { get; }
     Task<IMeetingAudioSession> AnswerAsync(CancellationToken token);
+    Task<IMeetingAudioSession> AnswerAsync(bool receiveVisuals, CancellationToken token) => AnswerAsync(token);
     Task SetRecordingAsync(bool recording, CancellationToken token);
     Task RejectAsync(CancellationToken token);
 }
@@ -62,7 +63,7 @@ public sealed class NativeCallCoordinator
         {
             if (!call.IsPersonalAudioCall || !Guid.TryParse(call.TenantId, out _)
                 || !Guid.TryParse(call.CallerUserId, out _))
-                throw new InvalidOperationException("A verified one-to-one Teams user audio call is required.");
+                throw new InvalidOperationException("A verified one-to-one Teams user call with audio is required.");
             using var admitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             admission = await controlPlane.AdmitAsync(call.TenantId, call.CallerUserId, call.CallId, admitTimeout.Token);
             if (admission.Status is "ended" or "failed")
@@ -70,8 +71,10 @@ public sealed class NativeCallCoordinator
             state = new State();
             calls[admission.VoiceSessionId] = state;
             using var answerTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(9));
-            audio = await call.AnswerAsync(answerTimeout.Token);
+            audio = await call.AnswerAsync(admission.VisualContext?.Enabled == true, answerTimeout.Token);
             await call.SetRecordingAsync(true, answerTimeout.Token);
+            var visuals = admission.VisualContext?.Enabled == true ? audio as INativeVisualSession : null;
+            visuals?.StartVisualCapture();
             session = await speech.StartAsync(new MeetingSpeechStartRequest(
                 admission.VoiceSessionId, null, audio, null, admission.Realtime, admission.Projection,
                 (text, _) => { state.Append(text, "caller"); return Task.CompletedTask; },
@@ -82,7 +85,10 @@ public sealed class NativeCallCoordinator
                     return Task.CompletedTask;
                 },
                 (question, reason, requestId, token) => controlPlane.QueryAsync(
-                    admission.VoiceSessionId, question, reason, requestId, token)), answerTimeout.Token);
+                    admission.VoiceSessionId, question, reason, requestId, token),
+                visuals is null ? null : visuals.CaptureVisualContext,
+                (question, reason, requestId, context, token) => controlPlane.QueryWithVisualsAsync(
+                    admission.VoiceSessionId, question, reason, requestId, context, token)), answerTimeout.Token);
             audioHandler = (_, bytes) => _ = FeedAudioAsync(bytes);
             audio.AudioReceived += audioHandler;
             state.Status = "active";

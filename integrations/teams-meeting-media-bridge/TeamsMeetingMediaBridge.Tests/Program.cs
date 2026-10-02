@@ -4,6 +4,13 @@ using TeamsMeetingMediaBridge;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("visual sampling bounds frames and clears stopped sources", VisualContextTests.BoundedSamplingAndStop),
+    ("NV12 conversion respects row and chroma stride", VisualContextTests.Nv12StrideConversion),
+    ("realtime images precede responses and remain bound to delegation", VisualContextTests.RealtimeImagesAndExactDelegation),
+    ("image acknowledgement permits caller interruption", VisualContextTests.InterruptionWhileImagesArePending),
+    ("image rejection preserves audio and honest delegation", VisualContextTests.RejectedImagesPreserveAudio),
+    ("visual conversation history retains four turns", VisualContextTests.ConversationImageHistoryIsBounded),
+    ("multipart retries preserve snapshot and query identity", VisualContextTests.MultipartRetryPreservesSnapshots),
     ("communications callback authentication", NativeCallTests.CommunicationsAuthentication),
     ("realtime delegation permits interruption and deduplicates functions", NativeCallTests.RealtimeDelegationAndInterruption),
     ("hangup stops query polling", NativeCallTests.HangupStopsQueryPolling),
@@ -11,6 +18,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("native call binding lifecycle and replay", NativeCallTests.NativeLifecycleAndReplay),
     ("rejected calls never start speech", NativeCallTests.RejectedCallsNeverStartSpeech),
     ("native recording failure prevents transcription", NativeCallTests.RecordingFailurePreventsNativeTranscription),
+    ("native admission enables visual capture and scoped handoff", NativeCallTests.NativeVisualAdmissionAndHandoff),
     ("native playback failure releases and reconciles call", NativeCallTests.PlaybackFailureEndsNativeCall),
     ("control plane retries preserve request identity", NativeCallTests.ControlPlaneRetryPreservesRequestId),
     ("control plane preserves stored deadline and permanent denial", NativeCallTests.ControlPlaneHonorsStoredDeadlineAndPermanentDenial),
@@ -646,8 +654,12 @@ internal sealed class FakeApplicationHostedMediaClient : IApplicationHostedMedia
     }
 }
 
-internal sealed class FakeMeetingAudioSession : IMeetingAudioSession
+internal sealed class FakeMeetingAudioSession : IMeetingAudioSession, INativeVisualSession
 {
+    public int VisualStarts;
+    public VisualTurnContext VisualContext = VisualTurnContext.Unavailable("No test snapshots");
+    public void StartVisualCapture() { VisualStarts++; }
+    public VisualTurnContext CaptureVisualContext() => VisualContext;
     public List<(string OperationId, IReadOnlyList<byte[]> Frames)> QueuedFrames { get; } = [];
 
     public int ClearCount { get; private set; }
