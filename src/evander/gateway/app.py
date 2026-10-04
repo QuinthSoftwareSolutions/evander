@@ -18,8 +18,7 @@ from starlette.routing import Mount, Route
 
 from evander.gateway.server import *  # noqa: F403
 from evander.gateway.server import _MCP_REQUEST_CONTEXT, create_server
-from evander.config import GatewayConfig, InboundPhoneRoute, _normalize_phone_number
-from evander.directories import DirectoryService
+from evander.config import GatewayConfig, _normalize_phone_number
 from evander.gateway.request_context import (
     _string_from_headers,
     _string_from_query_params,
@@ -417,82 +416,6 @@ def create_app(context: RuntimeContext) -> Starlette:
             return None
         return {"redacted": "<redacted>", "sha256": _hash_identity(normalized) or ""}
 
-    def _collect_inbound_phone_routes() -> list[InboundPhoneRoute]:
-        routes: list[InboundPhoneRoute] = []
-        seen_signatures: set[str] = set()
-        directory_service = DirectoryService(context.directories)
-        directory_paths = sorted(
-            {
-                directory_service.show(directory_id).directory.path
-                for directory_id in context.directories.read_all()
-            }
-        )
-        for directory_path in directory_paths:
-            resolved_config = context.provider_config.resolve_for_directory(directory_path)
-            for route in resolved_config.inbound_phone_routes:
-                signature = json.dumps(route.model_dump(mode="json"), sort_keys=True)
-                if signature in seen_signatures:
-                    continue
-                seen_signatures.add(signature)
-                routes.append(route)
-        return routes
-
-    def _resolve_inbound_phone_route(
-        *,
-        route_id: str | None,
-        did: str | None,
-        called_number: str | None,
-    ) -> InboundPhoneRoute:
-        routes = _collect_inbound_phone_routes()
-        if not routes:
-            raise LookupError("No inbound phone routes are configured")
-        matches: list[InboundPhoneRoute] = []
-        route_id_filter = str(route_id or "").strip() or None
-        dialed_numbers = {
-            match_key
-            for number in (did, called_number)
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        dialed_number = next(iter(dialed_numbers), None)
-        for route in routes:
-            if route_id_filter and route.id != route_id_filter:
-                continue
-            route_numbers = {
-                match_key
-                for number in (route.did, route.called_number)
-                if (match_key := _inbound_phone_match_key(number))
-            }
-            if dialed_number and dialed_number not in route_numbers:
-                continue
-            matches.append(route)
-        if not matches:
-            raise LookupError("No inbound phone route matched the request")
-        if len(matches) > 1:
-            raise LookupError("Inbound phone route match is ambiguous")
-        return matches[0]
-
-    def _inbound_phone_route_policy_error(
-        route: InboundPhoneRoute,
-        *,
-        caller_number: str,
-    ) -> str | None:
-        caller_key = _inbound_phone_match_key(caller_number)
-        blocked_callers = {
-            match_key
-            for number in route.blocked_callers
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        allowed_callers = {
-            match_key
-            for number in route.allowed_callers
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        if blocked_callers and caller_key in blocked_callers:
-            return "Caller is blocked for this inbound route"
-        if allowed_callers and caller_key not in allowed_callers:
-            return "Caller is not allowlisted for this inbound route"
-        return None
-
     async def create_inbound_phone_call(request: Request) -> JSONResponse:
         root_token, root_env = _controller_token(context.config)
         request_token = _authorization_bearer_token(request)
@@ -539,12 +462,14 @@ def create_app(context: RuntimeContext) -> Starlette:
                 raise ValueError("sip_headers must be an object when provided")
             sip_headers = sanitize_voice_metadata(raw_sip_headers or {})
 
-            route = _resolve_inbound_phone_route(
+            binding = context.inbound_phone_routing_service.resolve(
                 route_id=route_id,
-                did=did,
-                called_number=called_number,
+                did=request_number,
+                caller_number=caller_number,
             )
-            route_config = context.provider_config.resolve_for_directory(route.directory_path)
+            route = binding.route
+            route_directory_path = binding.directory_path
+            route_config = context.provider_config.resolve_for_directory(route_directory_path)
             route_token, route_env = _controller_token(route_config)
 
             if not root_authorized:
@@ -563,7 +488,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                         status_code=503,
                     )
 
-            route_session_id = str(route.session_id or "").strip()
+            route_session_id = binding.session_id
             if not route_session_id:
                 raise ValueError("inbound phone route is missing a session_id")
             route_session = context.session_repository.get_session(route_session_id)
@@ -574,7 +499,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason="route session is unavailable",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -594,7 +519,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason="route session is inactive",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -607,14 +532,14 @@ def create_app(context: RuntimeContext) -> Starlette:
                     {"error": "Configured inbound route session is inactive"},
                     status_code=403,
                 )
-            if str(route_session.directory_path or "").strip() != route.directory_path:
+            if str(route_session.directory_path or "").strip() != route_directory_path:
                 context.audit.log_decision(
                     event_type="inbound_phone_call_provisioning",
                     decision="denied",
                     reason="route session directory mismatch",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "route_session_directory_path": route_session.directory_path,
                         "did_sha256": _hash_identity(request_number),
@@ -629,7 +554,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     status_code=403,
                 )
 
-            policy_error = _inbound_phone_route_policy_error(
+            policy_error = context.inbound_phone_routing_service.caller_policy_error(
                 route,
                 caller_number=caller_number,
             )
@@ -640,7 +565,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason=policy_error,
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -653,7 +578,7 @@ def create_app(context: RuntimeContext) -> Starlette:
 
             prompt_metadata = {
                 "route_id": route.id,
-                "route_directory_path": route.directory_path,
+                "route_directory_path": route_directory_path,
                 "request_number_sha256": _hash_identity(request_number),
                 "caller_sha256": _hash_identity(caller_number),
                 "asterisk_channel_id": asterisk_channel_id,
@@ -668,7 +593,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 metadata={
                     "direction": "inbound",
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "did_redacted": "<redacted>",
                     "did_sha256": _hash_identity(request_number),
                     "caller_redacted": "<redacted>",
@@ -689,7 +614,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 caller_metadata={
                     "direction": "inbound",
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "did_redacted": "<redacted>",
                     "did_sha256": _hash_identity(request_number),
                     "caller_redacted": "<redacted>",
@@ -709,7 +634,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 "realtime_session_config": realtime_session_config(route_config),
                 "route": {
                     "route_id": route.id,
-                    "directory_path": route.directory_path,
+                    "directory_path": route_directory_path,
                     "session_id": route_session_id,
                     "did": _identity_payload(request_number),
                     "caller": _identity_payload(caller_number),
@@ -727,7 +652,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 decision="allowed",
                 args={
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "route_session_id": route_session_id,
                     "did_sha256": _hash_identity(request_number),
                     "caller_sha256": _hash_identity(caller_number),
@@ -741,6 +666,15 @@ def create_app(context: RuntimeContext) -> Starlette:
                 },
             )
             return JSONResponse(response, status_code=201 if created else 200)
+        except PermissionError as exc:
+            context.audit.log_decision(
+                event_type="inbound_phone_call_provisioning",
+                decision="denied",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            return JSONResponse({"error": str(exc)}, status_code=403)
         except LookupError as exc:
             context.audit.log_decision(
                 event_type="inbound_phone_call_provisioning",

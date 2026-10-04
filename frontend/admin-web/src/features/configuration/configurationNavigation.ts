@@ -5,6 +5,8 @@ export type ConfigurationField = {
   kind: "bool" | "int" | "float" | "literal" | "text" | "multiline_text" | "string_list" | "json";
   options: string[];
   assistant_options?: { session_id: string; directory_path: string; name: string }[];
+  session_options?: { session_id: string; directory_path: string; name: string }[];
+  phone_route_options?: { route_id: string; did: string | null; called_number: string | null; directory_path: string }[];
   scope?: "directory" | "global";
   root_starts_editable: boolean;
   tooltip: string;

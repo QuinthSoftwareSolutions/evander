@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
 import { TeamsCallRoutesEditor } from "./TeamsCallRoutesEditor";
+import { PhoneCallerMapsEditor } from "./PhoneCallerMapsEditor";
 import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
 import { CredentialsConfiguration } from "./CredentialsConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
@@ -2684,6 +2685,11 @@ export function ConfigurationScreen() {
   ) {
     const disabled = inheritedOrCleared || loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
     const inputProps = { "aria-label": field.label };
+    if (field.field_name === "inbound_phone_caller_maps") {
+      return <PhoneCallerMapsEditor value={String(fieldState.value)} disabled={disabled || mutationLocked}
+        sessions={field.session_options ?? []} routes={field.phone_route_options ?? []}
+        onChange={(value) => updateFieldState(field.field_name, { include: true, clear: false, value })} />;
+    }
     if (field.field_name === "teams_call_routes") {
       return <TeamsCallRoutesEditor value={String(fieldState.value)} disabled={disabled}
         assistants={field.assistant_options ?? []}
@@ -3414,6 +3420,7 @@ export function ConfigurationScreen() {
                     const isEmailMailboxFolderPolicy = isEmailMailboxFolderPolicyField(field);
                     const isEmailMailboxAllowlist = isEmailMailboxAllowlistField(field);
                     const isApprovalNotificationTargetList = isApprovalNotificationTargetField(field);
+                    const isPhoneCallerMapField = field.field_name === "inbound_phone_caller_maps";
                     const inheritedCommunicationTargets = isCommunicationTargetsField
                       ? communicationTargetEntriesFromConfig(snapshot?.parent_defaults.config?.[field.field_name])
                       : [];
@@ -3422,7 +3429,7 @@ export function ConfigurationScreen() {
                         key={field.field_name}
                         id={configurationFieldDomId(selectedTab, field.field_name)}
                         tabIndex={-1}
-                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : isPhoneCallerMapField ? " complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
                       >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">

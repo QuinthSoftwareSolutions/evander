@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-04 - Route phone callers to agent sessions (0.81.0)
+
+- Add root caller maps keyed by the called DID and caller phone number, with an Admin Web
+  editor that selects any active agent session and retains unavailable destinations for repair.
+- Reuse inbound route greetings and caller access policies, reject unmapped callers, and keep
+  existing fixed routing for numbers without a caller map. Apply map edits to new calls without
+  restart while preserving the origin of admitted calls.
+- Clear cached inbound routing grants before applying live configuration so removing an
+  override cannot leave its startup route active.
+
 ## 2026-10-02 - Bound execution-history payload cleanup (0.80.4)
 
 - Scan execution-history payloads in bounded key ranges with a durable cursor,

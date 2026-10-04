@@ -41,7 +41,8 @@ Git, and HTTP surfaces.
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
   choice/score/boolean evaluations, Smart switch routing, a structured editor, and Jev as the first provider
-- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and inbound phone calls,
+  with [explicit caller routing to agent sessions](docs/operations.md#caller-routing-to-agent-sessions)
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus

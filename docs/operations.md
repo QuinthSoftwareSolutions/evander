@@ -2001,6 +2001,64 @@ creating the voice-session record. `route_prompt` becomes the projected Realtime
 prompt; `startup_text` is the caller-facing greeting. Raw DID and caller numbers are normalized
 for matching, but only redacted or hashed forms are stored in audit logs and JSON stores.
 
+#### Caller routing to agent sessions
+
+To share one DIDWW number across agent sessions, open **Configuration → root → People &
+Communications → Phone calls → Caller routing**. Unlock operations, add a called number,
+select its existing inbound phone route, then add caller phone numbers and choose their
+agent sessions. The picker lists all active sessions, including issue and worker sessions;
+the destination does not need to be a personal assistant. Save changes to persist the map.
+
+The root `providers.json` representation is:
+
+```json
+{
+  "inbound_phone_caller_maps": [
+    {
+      "did": "+15551230000",
+      "route_id": "ops-main",
+      "callers": [
+        {
+          "caller_number": "+15551230001",
+          "session_id": "agent-session-a",
+          "directory_path": "root/ops"
+        },
+        {
+          "caller_number": "+15551230002",
+          "session_id": "agent-session-b",
+          "directory_path": "root/builds"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each map references one existing `inbound_phone_routes` entry for its voice prompt, greeting
+and caller access policy. Its caller assignments replace that route's default `session_id`
+and directory for mapped calls. The gateway resolves provider and controller settings from
+the selected session's directory and requires that session to remain active in that directory.
+Keep a shared route's prompt appropriate for all destinations. The bridge must have access to
+the controller token environment variable configured in each destination directory, as it does
+for existing fixed routes.
+
+Assignments match both the called DID and caller number. Enter international numbers with
+country codes; formatting and an optional `+` do not affect matching, and the gateway does not
+infer country codes. The same caller can reach different sessions through different DIDs.
+Overlapping caller allowlists do not select a destination; each route's allow/block policy is
+still enforced after the explicit lookup.
+
+Unmapped and withheld callers are rejected. Removing the last caller retains the DID map with
+an empty `callers` list and rejects all calls to that number. Use **Remove called number and
+restore fixed routing** to explicitly disable caller routing for a DID; numbers without a map
+keep their existing fixed routing. A bridge-supplied route ID cannot bypass the map.
+
+Changes apply to new calls without restarting the gateway. Calls already admitted keep their
+original session for delegation and transcript handling. If a destination session is replaced,
+update its assignment; unavailable selections remain visible in the editor rather than being
+silently redirected. Phone numbers remain host-side configuration, while voice stores and audit
+events retain only their redacted or hashed identities.
+
 Configure the OpenAI Realtime key env var and upstream base URL in the DIDWW SIP bridge service
 environment. The gateway does not pass those credential-routing values through each phone-call
 request.

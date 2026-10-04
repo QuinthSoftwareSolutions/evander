@@ -208,6 +208,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "didww_sip_bridge_token_env",
             "didww_from_number",
             "inbound_phone_routes",
+            "inbound_phone_caller_maps",
             "teams_call_enabled",
             "teams_call_visual_context_enabled",
             "teams_call_routes",
@@ -678,6 +679,8 @@ class DirectoryConfigStore:
 
     def write(self, reference: str, *, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
         if domain == "providers" and isinstance(payload, dict):
+            if self._service.show(reference).directory.path != "root" and "inbound_phone_caller_maps" in payload:
+                raise ValueError("Inbound phone caller maps may be configured only in root providers.json")
             if self._service.show(reference).directory.path != "root" and any(
                 field in payload for field in ("teams_call_routes", "teams_call_max_concurrency")
             ):
@@ -1081,6 +1084,8 @@ class DirectoryConfigResolver:
             effective["teams_call_routes"] = []
             effective["teams_call_enabled"] = False
             effective["teams_call_visual_context_enabled"] = False
+            effective["inbound_phone_caller_maps"] = []
+            effective["inbound_phone_routes"] = []
         provenance: dict[str, DirectoryConfigValueSource] = {}
         if base_config is not None:
             self._mark_provenance(
@@ -1097,6 +1102,8 @@ class DirectoryConfigResolver:
                 continue
             if domain == "providers":
                 overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
+                if directory.path != "root" and "inbound_phone_caller_maps" in overlay:
+                    raise ValueError("Inbound phone caller maps may be configured only in root providers.json")
                 if directory.path != "root" and any(
                     field in overlay for field in ("teams_call_routes", "teams_call_max_concurrency")
                 ):

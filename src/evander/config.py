@@ -290,6 +290,60 @@ class InboundPhoneRoute(BaseModel):
         return self
 
 
+class InboundPhoneCallerAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    caller_number: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    directory_path: str = Field(min_length=1)
+
+    @field_validator("caller_number", mode="before")
+    @classmethod
+    def normalize_caller(cls, value: object) -> str:
+        number = _normalize_phone_number(value, field_name="caller_number")
+        if number is None:
+            raise ValueError("caller_number must be a non-empty phone number")
+        return number
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="session_id")
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def normalize_directory(cls, value: object) -> str:
+        return _normalize_directory_path(value, field_name="directory_path")
+
+
+class InboundPhoneCallerMap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    did: str = Field(min_length=1)
+    route_id: str = Field(min_length=1)
+    callers: list[InboundPhoneCallerAssignment] = Field(default_factory=list)
+
+    @field_validator("did", mode="before")
+    @classmethod
+    def normalize_did(cls, value: object) -> str:
+        number = _normalize_phone_number(value, field_name="did")
+        if number is None:
+            raise ValueError("did must be a non-empty phone number")
+        return number
+
+    @field_validator("route_id", mode="before")
+    @classmethod
+    def normalize_route(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="route_id")
+
+    @model_validator(mode="after")
+    def validate_unique_callers(self) -> InboundPhoneCallerMap:
+        keys = [entry.caller_number.removeprefix("+") for entry in self.callers]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Each inbound phone caller map must contain one target per caller")
+        return self
+
+
 class TeamsCallRoute(BaseModel):
     """Explicit caller routing; Teams allowlists remain access policies."""
 
@@ -431,6 +485,7 @@ class GatewayConfig(BaseModel):
     didww_sip_bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
     didww_from_number: str | None = None
     inbound_phone_routes: list[InboundPhoneRoute] = Field(default_factory=list)
+    inbound_phone_caller_maps: list[InboundPhoneCallerMap] = Field(default_factory=list)
     teams_call_enabled: bool = False
     teams_call_visual_context_enabled: bool = False
     teams_call_routes: list[TeamsCallRoute] = Field(default_factory=list)
@@ -1180,6 +1235,13 @@ class GatewayConfig(BaseModel):
         keys = [(route.tenant_id, route.caller_user_id) for route in self.teams_call_routes]
         if len(keys) != len(set(keys)):
             raise ValueError("teams_call_routes must contain one target per tenant/caller pair")
+        return self
+
+    @model_validator(mode="after")
+    def validate_inbound_phone_caller_maps(self) -> GatewayConfig:
+        keys = [entry.did.removeprefix("+") for entry in self.inbound_phone_caller_maps]
+        if len(keys) != len(set(keys)):
+            raise ValueError("inbound_phone_caller_maps must contain one map per DID")
         return self
 
     @property
