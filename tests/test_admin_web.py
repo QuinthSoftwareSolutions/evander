@@ -10623,6 +10623,99 @@ def test_admin_web_configuration_exposes_openrouter_policy(tmp_path: Path) -> No
     assert fields["openrouter_api_key_env"]["label"] == "OpenRouter API key env"
 
 
+def test_admin_web_phone_catalog_preserves_root_configuration_when_a_child_loses_inherited_settings(
+    tmp_path: Path,
+) -> None:
+    from evander.directories import DirectoryService
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    directories = DirectoryService(service.directory_store)
+    directories.create(parent="root", name="other")
+    directories.create(parent="root", name="healthy")
+    route = {
+        "id": "shared-phone", "did": "+15550000100", "directory_path": "root",
+        "session_id": "default-agent", "route_prompt": "Help the caller.",
+    }
+    initial = service.operations_admin.write_directory_domain_config("root", "providers", {
+        "inbound_phone_routes": [route],
+        "azure_openai_endpoint": "https://synthetic.openai.azure.com",
+        "azure_openai_api_key_env": "SYNTHETIC_AZURE_KEY",
+        "azure_openai_model_deployments": {"example-model": "example-deployment"},
+    })
+    assert initial.ok, initial.errors
+    child = service.operations_admin.write_directory_domain_config(
+        "root/other", "providers", {"model_provider_mode": "azure_openai"},
+    )
+    assert child.ok, child.errors
+    healthy = service.operations_admin.write_directory_domain_config("root/healthy", "providers", {
+        "inbound_phone_routes": [{**route, "id": "healthy-phone", "did": "+15550000101"}],
+    })
+    assert healthy.ok, healthy.errors
+    with TestClient(create_app(service), raise_server_exceptions=False) as client:
+        assert client.get("/api/configuration/state?directory_path=root").status_code == 200
+        changed = service.operations_admin.write_directory_domain_config(
+            "root", "providers", {"inbound_phone_routes": [route]},
+        )
+        assert changed.ok, changed.errors
+        response = client.get("/api/configuration/state?directory_path=root")
+        assert response.status_code == 200, response.text
+        field = next(field for tab in response.json()["tabs"] for section in tab["sections"]
+                     for field in section["fields"] if field["field_name"] == "inbound_phone_caller_maps")
+        assert {option["route_id"] for option in field["phone_route_options"]} == {
+            "shared-phone", "healthy-phone",
+        }
+
+
+def test_admin_web_phone_caller_maps_expose_any_active_session_and_save_with_revision(tmp_path: Path) -> None:
+    from evander.directories import DirectoryService
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    child = DirectoryService(service.directory_store).create(parent="root", name="builds")
+    service.runtime.session_repository.upsert_session(SessionManifest(
+        session_id="build-agent", directory_path=child.path, allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={"display_name": "Build agent"},
+    ))
+    service.runtime.session_repository.upsert_session(SessionManifest(
+        session_id="expired-agent", directory_path=child.path, allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    ))
+    route = {"id": "shared-phone", "did": "+15550000100", "directory_path": "root",
+             "session_id": "legacy-agent", "route_prompt": "Help the caller."}
+    service.directory_config_store.write("root", domain="providers", payload={"inbound_phone_routes": [route]})
+    caller_maps = [{"did": "+15550000100", "route_id": "shared-phone", "callers": [
+        {"caller_number": "+15550000201", "session_id": "build-agent", "directory_path": child.path},
+    ]}]
+    with TestClient(create_app(service)) as client:
+        state = client.get("/api/configuration/state?directory_path=root").json()
+        field = next(field for tab in state["tabs"] for section in tab["sections"]
+                     for field in section["fields"] if field["field_name"] == "inbound_phone_caller_maps")
+        assert field["kind"] == "json"
+        assert field["session_options"] == [{"session_id": "build-agent", "directory_path": child.path, "name": "Build agent"}]
+        assert field["phone_route_options"][0]["route_id"] == "shared-phone"
+        child_state = client.get(f"/api/configuration/state?directory_path={child.path}").json()
+        assert not any(field["field_name"] == "inbound_phone_caller_maps" for tab in child_state["tabs"]
+                       for section in tab["sections"] for field in section["fields"])
+        revision = _configuration_expected_revision(client, "root", "people_communications")
+        endpoint = "/api/configuration/domains/people_communications?directory_path=root"
+        payload = {"config": {"inbound_phone_routes": [route], "inbound_phone_caller_maps": caller_maps}, "expected_revision": revision}
+        assert client.put(endpoint, json=payload).status_code == 403
+        _unlock_privileged_operations(client)
+        saved = client.put(endpoint, json=payload)
+        assert saved.status_code == 200, saved.text
+        assert client.put(endpoint, json=payload).status_code == 409
+        reread = client.get("/api/configuration/state?directory_path=root").json()
+        assert reread["tab_snapshots"]["people_communications"]["raw"]["config"]["inbound_phone_caller_maps"] == caller_maps
+        child_revision = _configuration_expected_revision(client, child.path, "people_communications")
+        child_write = client.put(f"/api/configuration/domains/people_communications?directory_path={child.path}", json={
+            "config": {"inbound_phone_caller_maps": caller_maps}, "expected_revision": child_revision,
+        })
+        assert child_write.status_code == 400
+    persisted = service.directory_config_store.read("root", domain="providers")
+    assert persisted["inbound_phone_caller_maps"] == caller_maps
+    assert {entry["id"]: entry["session_id"] for entry in persisted["inbound_phone_routes"]} == {"shared-phone": "legacy-agent"}
+
+
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
     SqliteCommunicationTargetsRepository(
         communication_targets_db_path(tmp_path / "runtime")
@@ -10989,6 +11082,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "didww_sip_bridge_token_env",
         "didww_from_number",
         "inbound_phone_routes",
+        "inbound_phone_caller_maps",
     }
     phone_call_fields = {field["field_name"]: field for field in phone_calls["fields"]}
     assert phone_call_fields["phone_call_backend"]["label"] == "Phone call backend"

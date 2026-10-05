@@ -187,6 +187,12 @@ class RuntimeContext:
         return self.provider_config.resolve_for_session_id(session_id)
 
     @property
+    def inbound_phone_routing_service(self):
+        from evander.admin.services.inbound_phone_routing_service import InboundPhoneRoutingService
+
+        return InboundPhoneRoutingService(self)
+
+    @property
     def teams_voice_service(self):
         from evander.admin.services.teams_voice_service import TeamsVoiceService
 

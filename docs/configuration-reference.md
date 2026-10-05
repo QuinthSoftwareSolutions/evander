@@ -2195,6 +2195,7 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
 | `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Evander session. |
+| `inbound_phone_caller_maps` | root `providers.json` only | Explicit called-DID and caller-number assignments to active agent sessions. Each DID references an existing inbound route for its prompt and caller policy; unmapped callers are rejected. |
 
 ### Inbound phone route keys
 
@@ -2220,6 +2221,15 @@ JSON stores. Accepted inbound calls are first provisioned through
 sanitized status and transcript data back through
 `POST /voice-sessions/{voice_session_id}/bridge-result` so the gateway-owned voice-session store can
 schedule the origin-session reconciliation wake.
+
+`inbound_phone_caller_maps` defaults to `[]`. Each entry contains a normalized `did`, an
+existing `route_id`, and a `callers` array of `{caller_number, session_id, directory_path}`
+assignments. There is one map per DID and one target per normalized caller within that DID.
+An empty `callers` array rejects every caller while retaining caller routing for that DID;
+removing its map restores fixed routing. Configuration changes apply to new calls without
+restart, and existing calls retain their original destination. See
+[caller routing to agent sessions](operations.md#caller-routing-to-agent-sessions) for operator
+instructions and an example.
 
 ### DIDWW SIP bridge service keys
 

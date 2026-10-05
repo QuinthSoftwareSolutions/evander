@@ -451,6 +451,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "prompt to an existing Evander session. Caller and number fields are normalized and "
         "stored host-side only."
     ),
+    "inbound_phone_caller_maps": (
+        "Root caller map for each called DID. Choose a phone route for its greeting and caller "
+        "access policy, then assign caller numbers to active agent sessions. Unmapped callers "
+        "are rejected, including when a DID has no assignments. Use international numbers "
+        "with country codes. Replacing a session requires updating its assignment."
+    ),
     "contacts": (
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "
         "description, email_addresses, and phone_numbers with one optional primary phone number."

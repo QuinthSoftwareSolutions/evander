@@ -8105,6 +8105,31 @@ select {
   gap: 0.85rem;
 }
 
+.phone-caller-map {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(42, 76, 90, 0.14);
+}
+
+.phone-caller-map legend {
+  padding: 0 0.3rem;
+  font-weight: 650;
+}
+
+.phone-caller-map .field-stack,
+.phone-caller-map select {
+  min-width: 0;
+}
+
+.phone-caller-assignment {
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(42, 76, 90, 0.14);
+}
+
 .website-login-fields { border: 0; padding: 0; min-width: 0; margin-top: 1.4rem; }
 .website-login-fields legend { font-weight: 650; font-size: 1.15rem; margin-bottom: 1rem; }
 .website-login-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; align-items: end; }
