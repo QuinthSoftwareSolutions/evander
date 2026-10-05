@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,9 @@ from evander.directories import DirectoryService
 
 if TYPE_CHECKING:
     from evander.runtime import RuntimeContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def phone_match_key(value: str | None) -> str | None:
@@ -29,7 +33,7 @@ class InboundPhoneRoutingService:
     def __init__(self, runtime: RuntimeContext) -> None:
         self.runtime = runtime
 
-    def list_routes(self) -> list[InboundPhoneRoute]:
+    def list_routes(self, *, skip_invalid_directories: bool = False) -> list[InboundPhoneRoute]:
         routes: list[InboundPhoneRoute] = []
         seen: set[str] = set()
         directory_service = DirectoryService(self.runtime.directories)
@@ -40,7 +44,16 @@ class InboundPhoneRoutingService:
             }
         )
         for path in paths:
-            config = self.runtime.provider_config.resolve_for_directory(path)
+            try:
+                config = self.runtime.provider_config.resolve_for_directory(path)
+            except (ValueError, OSError):
+                if not skip_invalid_directories:
+                    raise
+                logger.warning(
+                    "Skipping inbound phone route options for invalid directory configuration: %s",
+                    path,
+                )
+                continue
             for route in config.inbound_phone_routes:
                 signature = json.dumps(route.model_dump(mode="json"), sort_keys=True)
                 if signature not in seen:

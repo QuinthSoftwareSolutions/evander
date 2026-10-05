@@ -2175,8 +2175,11 @@ Inbound failure handling is deterministic:
 
 - Route miss or ambiguous DID: the bridge hangs up the inbound Asterisk channel and records a
   sanitized provisioning failure.
-- Unauthorized caller: the gateway returns `403`, no voice-session record is exposed, and the audit
-  log contains only route ids plus redacted/hash identity fields.
+- Missing, invalid, or out-of-scope controller credentials: the gateway returns a generic `401`,
+  including when routing or caller-map lookup fails.
+- Caller policy rejection after controller authentication: the gateway returns `403`, no
+  voice-session record is exposed, and the audit log contains only route ids plus redacted/hash
+  identity fields.
 - Missing or inactive origin session: the gateway rejects the request before exposing a record.
 - ARI bridge or `ExternalMedia` failure after acceptance: the call record ends as `failed`, the
   bridge cleans up the Asterisk channels, and reconciliation is not duplicated.

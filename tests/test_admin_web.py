@@ -10623,6 +10623,49 @@ def test_admin_web_configuration_exposes_openrouter_policy(tmp_path: Path) -> No
     assert fields["openrouter_api_key_env"]["label"] == "OpenRouter API key env"
 
 
+def test_admin_web_phone_catalog_preserves_root_configuration_when_a_child_loses_inherited_settings(
+    tmp_path: Path,
+) -> None:
+    from evander.directories import DirectoryService
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    directories = DirectoryService(service.directory_store)
+    directories.create(parent="root", name="other")
+    directories.create(parent="root", name="healthy")
+    route = {
+        "id": "shared-phone", "did": "+15550000100", "directory_path": "root",
+        "session_id": "default-agent", "route_prompt": "Help the caller.",
+    }
+    initial = service.operations_admin.write_directory_domain_config("root", "providers", {
+        "inbound_phone_routes": [route],
+        "azure_openai_endpoint": "https://synthetic.openai.azure.com",
+        "azure_openai_api_key_env": "SYNTHETIC_AZURE_KEY",
+        "azure_openai_model_deployments": {"example-model": "example-deployment"},
+    })
+    assert initial.ok, initial.errors
+    child = service.operations_admin.write_directory_domain_config(
+        "root/other", "providers", {"model_provider_mode": "azure_openai"},
+    )
+    assert child.ok, child.errors
+    healthy = service.operations_admin.write_directory_domain_config("root/healthy", "providers", {
+        "inbound_phone_routes": [{**route, "id": "healthy-phone", "did": "+15550000101"}],
+    })
+    assert healthy.ok, healthy.errors
+    with TestClient(create_app(service), raise_server_exceptions=False) as client:
+        assert client.get("/api/configuration/state?directory_path=root").status_code == 200
+        changed = service.operations_admin.write_directory_domain_config(
+            "root", "providers", {"inbound_phone_routes": [route]},
+        )
+        assert changed.ok, changed.errors
+        response = client.get("/api/configuration/state?directory_path=root")
+        assert response.status_code == 200, response.text
+        field = next(field for tab in response.json()["tabs"] for section in tab["sections"]
+                     for field in section["fields"] if field["field_name"] == "inbound_phone_caller_maps")
+        assert {option["route_id"] for option in field["phone_route_options"]} == {
+            "shared-phone", "healthy-phone",
+        }
+
+
 def test_admin_web_phone_caller_maps_expose_any_active_session_and_save_with_revision(tmp_path: Path) -> None:
     from evander.directories import DirectoryService
 

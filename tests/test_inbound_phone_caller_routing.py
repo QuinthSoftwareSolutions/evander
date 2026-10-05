@@ -132,6 +132,80 @@ def admit(
     )
 
 
+@pytest.mark.parametrize("token", [None, "invalid-token", "beta-token"])
+@pytest.mark.parametrize("config_state", ["valid", "missing-token", "invalid-provider"])
+def test_unverified_controller_cannot_discover_caller_assignments_or_routing_errors(
+    phone_runtime, monkeypatch, token, config_state
+):
+    runtime, store, _providers = phone_runtime
+    if config_state == "missing-token":
+        monkeypatch.delenv("ROOT_PHONE_TOKEN")
+        monkeypatch.delenv("ALPHA_PHONE_TOKEN")
+    elif config_state == "invalid-provider":
+        store.write("root/alpha", domain="providers", payload={"model_provider_mode": "azure_openai"})
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    probes = [
+        {number_field: " +1 (555) 000-0100 ", "caller_number": caller}
+        for number_field in ("did", "called_number")
+        for caller in ("15550000201", "15550000299")
+    ] + [
+        {"did": "+15550000100", "caller_number": "+15550000201", "route_id": "legacy"},
+        {"did": "+15550000100", "caller_number": "anonymous"},
+        {"did": "+15550000999", "caller_number": "+15550000201"},
+    ]
+    with TestClient(create_app(runtime)) as client:
+        for index, probe in enumerate(probes):
+            response = client.post(
+                "/voice-sessions/inbound-phone-calls",
+                headers=headers,
+                json={
+                    "asterisk_channel_id": f"probe-{index}",
+                    "bridge_call_id": f"bridge-probe-{index}",
+                    **probe,
+                },
+            )
+            assert response.status_code == 401, response.text
+            assert response.json() == {"error": "Unauthorized"}
+    assert runtime.voice_session_store.list_sessions(channel="phone") == []
+
+
+def test_mapped_controller_token_remains_scoped_when_root_token_is_unavailable(
+    phone_runtime, monkeypatch
+):
+    runtime, _store, _providers = phone_runtime
+    monkeypatch.delenv("ROOT_PHONE_TOKEN")
+    with TestClient(create_app(runtime)) as client:
+        allowed = admit(client, token="alpha-token")
+        assert allowed.status_code == 201, allowed.text
+        assert allowed.json()["route"]["session_id"] == "alpha-agent"
+        retry = admit(client, token="alpha-token")
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["voice_session_id"] == allowed.json()["voice_session_id"]
+        assert admit(client, token="beta-token", channel="wrong-scope").status_code == 401
+        assert admit(client, token="alpha-token", caller="+15550000299", channel="unassigned").status_code == 401
+
+
+def test_root_controller_token_setting_changes_revoke_the_previous_credential_without_restart(
+    phone_runtime, monkeypatch
+):
+    runtime, store, providers = phone_runtime
+    monkeypatch.setenv("NEW_ROOT_PHONE_TOKEN", "new-root-token")
+    candidate = deepcopy(providers)
+    candidate["voice_media_controller_token_env"] = "NEW_ROOT_PHONE_TOKEN"
+    with TestClient(create_app(runtime)) as client:
+        assert admit(client, channel="before-rotation").status_code == 201
+        store.write("root", domain="providers", payload=candidate)
+        for index, caller in enumerate(("+15550000201", "+15550000299")):
+            revoked = admit(client, caller=caller, channel=f"old-root-{index}")
+            assert revoked.status_code == 401, revoked.text
+            assert revoked.json() == {"error": "Unauthorized"}
+        admitted = admit(client, token="new-root-token", channel="new-root")
+        assert admitted.status_code == 201, admitted.text
+        assert admitted.json()["route"]["session_id"] == "alpha-agent"
+        assert admit(client, token="new-root-token", caller="+15550000299", channel="new-root-denied").status_code == 403
+        assert admit(client, token="alpha-token", channel="destination-controller").status_code == 201
+
+
 @pytest.mark.parametrize(
     "caller,did,target,directory,token,model",
     [

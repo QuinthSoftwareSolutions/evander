@@ -416,11 +416,25 @@ def create_app(context: RuntimeContext) -> Starlette:
             return None
         return {"redacted": "<redacted>", "sha256": _hash_identity(normalized) or ""}
 
+    def _unauthorized_inbound_phone_call() -> JSONResponse:
+        context.audit.log_decision(
+            event_type="inbound_phone_call_provisioning",
+            decision="denied",
+            reason="Unauthorized",
+            args={},
+            result={},
+        )
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
     async def create_inbound_phone_call(request: Request) -> JSONResponse:
-        root_token, root_env = _controller_token(context.config)
         request_token = _authorization_bearer_token(request)
-        root_authorized = bool(root_token and request_token == root_token)
+        controller_authorized = False
+        if request_token is None:
+            return _unauthorized_inbound_phone_call()
         try:
+            root_config = context.provider_config.resolve_for_directory("root")
+            root_token, _ = _controller_token(root_config)
+            controller_authorized = bool(root_token and request_token == root_token)
             payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("inbound phone call payload must be an object")
@@ -470,23 +484,13 @@ def create_app(context: RuntimeContext) -> Starlette:
             route = binding.route
             route_directory_path = binding.directory_path
             route_config = context.provider_config.resolve_for_directory(route_directory_path)
-            route_token, route_env = _controller_token(route_config)
+            route_token, _ = _controller_token(route_config)
 
-            if not root_authorized:
+            if not controller_authorized:
                 usable_tokens = [token for token in (root_token, route_token) if token]
-                if usable_tokens:
-                    if request_token not in usable_tokens:
-                        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-                else:
-                    missing_env = root_env or route_env or "VOICE_MEDIA_CONTROLLER_TOKEN"
-                    return JSONResponse(
-                        {
-                            "error": (
-                                f"Voice media controller token env var {missing_env!r} is not set"
-                            )
-                        },
-                        status_code=503,
-                    )
+                if request_token not in usable_tokens:
+                    return _unauthorized_inbound_phone_call()
+                controller_authorized = True
 
             route_session_id = binding.session_id
             if not route_session_id:
@@ -666,43 +670,29 @@ def create_app(context: RuntimeContext) -> Starlette:
                 },
             )
             return JSONResponse(response, status_code=201 if created else 200)
-        except PermissionError as exc:
-            context.audit.log_decision(
-                event_type="inbound_phone_call_provisioning",
-                decision="denied",
-                reason=str(exc),
-                args={},
-                result={},
-            )
-            return JSONResponse({"error": str(exc)}, status_code=403)
-        except LookupError as exc:
-            context.audit.log_decision(
-                event_type="inbound_phone_call_provisioning",
-                decision="denied",
-                reason=str(exc),
-                args={},
-                result={},
-            )
-            status_code = 409 if "ambiguous" in str(exc).lower() else 404
-            return JSONResponse({"error": str(exc)}, status_code=status_code)
-        except ValueError as exc:
-            context.audit.log_decision(
-                event_type="inbound_phone_call_provisioning",
-                decision="error",
-                reason=str(exc),
-                args={},
-                result={},
-            )
-            return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception as exc:
+            # Routing errors may reveal caller assignments or private configuration.
+            # Only the root or selected destination controller may see those details.
+            if not controller_authorized:
+                return _unauthorized_inbound_phone_call()
+            message = str(exc)
+            if isinstance(exc, PermissionError):
+                decision, status_code = "denied", 403
+            elif isinstance(exc, LookupError):
+                decision = "denied"
+                status_code = 409 if "ambiguous" in message.lower() else 404
+            elif isinstance(exc, ValueError):
+                decision, status_code = "error", 400
+            else:
+                decision, status_code = "error", 500
             context.audit.log_decision(
                 event_type="inbound_phone_call_provisioning",
-                decision="error",
-                reason=str(exc),
+                decision=decision,
+                reason=message,
                 args={},
                 result={},
             )
-            return JSONResponse({"error": str(exc)}, status_code=500)
+            return JSONResponse({"error": message}, status_code=status_code)
 
     def voice_controller_auth_error(request: Request, directory_path: str) -> JSONResponse | None:
         resolved_config = context.provider_config.resolve_for_directory(directory_path)

@@ -1029,7 +1029,7 @@ def _directory_config_field_metadata(
         "phone_route_options": [
             {"route_id": route.id, "did": route.did, "called_number": route.called_number,
              "directory_path": route.directory_path}
-            for route in service.inbound_phone_routing_service.list_routes()
+            for route in service.inbound_phone_routing_service.list_routes(skip_invalid_directories=True)
         ] if field_name == "inbound_phone_caller_maps" else [],
         "root_starts_editable": (
             (source_domain == "pr_template" and field_name == "pr_template_markdown")

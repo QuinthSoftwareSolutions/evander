@@ -9,6 +9,10 @@
   restart while preserving the origin of admitted calls.
 - Clear cached inbound routing grants before applying live configuration so removing an
   override cannot leave its startup route active.
+- Keep root configuration and valid phone route choices available when another directory has
+  invalid provider settings. Require controller authentication before exposing caller-map or
+  routing errors and honor live root controller-token changes, while retaining destination-scoped
+  credentials for mapped and fixed calls.
 
 ## 2026-10-02 - Bound execution-history payload cleanup (0.80.4)
 
