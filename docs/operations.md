@@ -906,13 +906,17 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   any workflow changes remain unsaved.
 - To run an event workflow manually, select its `trigger:event` node and click
   **Trigger manually** in the inspector. Save or discard any workflow changes first,
-  and enable and save the trigger if it is disabled. Enter a JSON object containing
-  the event payload; the dialog displays the saved event type and supplies event
-  metadata automatically. A configured correlation key is fixed; otherwise one may
+  and enable and save the trigger if it is disabled. Fill the generated event fields;
+  unregistered events retain a JSON editor with a notice. The dialog displays the
+  saved event type and supplies event metadata automatically. A configured correlation key is fixed; otherwise one may
   be entered. **Trigger node** queues only the selected node and its downstream flow.
   **Inspect run** opens the queued run when you have run-read access. This action
-  requires `workflow_runs.control` in the workflow's directory. Payload schemas and
-  generated forms are not available yet.
+  requires `workflow_runs.control` in the workflow's directory. **Validate payload**
+  checks the registered schema without starting a run; submission also validates on
+  the server. **Reload event definition** refreshes a stale schema while retaining
+  entered values. Manage schemas in **Configuration → Automation & Assignment → Events**.
+  Use `gate:event:validate` when automatic workflows should validate event bodies;
+  event publishing itself remains unchanged.
 - Admin Web and workflow API pack mutations write internal change history under
   `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
   `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger

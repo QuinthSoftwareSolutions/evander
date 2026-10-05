@@ -594,22 +594,73 @@ caller-supplied event names under the reserved `external.` prefix, so a POST wit
 
 The editor's **Trigger manually** action queues only the selected saved, enabled
 `trigger:event` node, using its configured event type without adding a prefix. It
-uses the normal event envelope (`payload` contains the entered JSON object) and
+uses the normal event envelope (`payload` contains the form's JSON object) and
 does not publish to other event listeners. The session-authenticated endpoint is
 `POST /api/workflow-editor/nodes/{node_id}/trigger`; its body requires
 `expected_revision`, a JSON-object `payload`, and a non-empty `request_id` (up to
-128 characters), with optional `workflow_pack` and `correlation_key`. It checks
+128 characters), with optional `workflow_pack` and `correlation_key`. For registered
+events it also requires `schema_revision`, obtained from
+`GET /api/workflow-editor/nodes/{node_id}/event-schema` (with optional `workflow_pack`). It checks
 `workflow_runs.control` in the saved workflow directory and returns HTTP 202 with
 `event_id` and `trace_id`. Retries with the same operator, node, and request ID
 reuse the queued event; use a new request ID for an intentional new run. A fixed
 trigger correlation key is used automatically and conflicting values are rejected.
-Accepted attempts are resolved before checking the current workflow revision, so
+Accepted attempts are resolved before checking current workflow and schema revisions, so
 an unchanged retry can recover its original run after a save or lost response.
 Retry payload comparison ignores object-key order and distinguishes booleans from
 numbers; changing the payload while reusing a request ID is rejected.
 Execution uses the existing runtime configuration behavior; the revision check
-does not pin downstream execution to a snapshot. Event catalog entries currently
-provide names and descriptions rather than payload validation schemas.
+does not pin downstream execution to a snapshot. Registered events render structured
+fields; unsupported schema constructs use a JSON sub-editor. Unregistered events
+retain JSON entry with a notice. The server rejects invalid payloads before queuing,
+returning `details.failures` with `code`, JSON Pointer `path`, and `message`. A stale
+schema returns HTTP 409. `POST /api/workflow-editor/nodes/{node_id}/validate-event`
+checks a `payload` and `schema_revision` without queuing. Shared nodes whose directories
+resolve different schemas cannot be manually triggered until the definitions agree.
+
+#### Event definitions
+
+In **Configuration → Automation & Assignment → Events**, directory owners can create
+and override event definitions using the existing privileged-operations unlock and
+revision checks. Definitions live in the `events` directory domain, stored as
+`runtime/directory-config/root/.../events.json`. Core and enabled provider/add-on
+catalog entries provide defaults; root and child definitions override them by event
+type. Each local definition replaces the whole inherited definition. Removing a local
+definition restores inheritance. `GET /api/admin/event-schemas?directory_path=root`
+returns local configuration, effective and inherited entries, and a revision;
+`PUT` accepts `expected_revision` and the complete local `config`.
+
+```json
+{
+  "events": {
+    "custom.answer": {
+      "label": "Answer received",
+      "description": "An operator's answer to a pending request.",
+      "payload_schema": {
+        "type": "object",
+        "properties": {
+          "answer": {"type": "string", "enum": ["yes", "no"]},
+          "count": {"type": "integer", "minimum": 0}
+        },
+        "required": ["answer"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+Schemas use JSON Schema Draft 2020-12 and declare an object payload. Document-local
+references are supported; remote references and unresolved references are rejected
+on save. References resolve within their schema resource, including nested `$id`
+scopes. Manual forms use JSON entry for resources declaring `$id` and references
+with sibling constraints. Standard format checks run during validation. Validation
+does not coerce types, insert defaults, or modify payloads. Form defaults are editable
+initial values.
+Add-ons declare `payload_schema` on their existing `internal_event_catalog_entries`.
+Automatic event publication, scheduling, and external ingress continue to accept
+object payloads without applying these schemas; add an explicit validation gate to
+enforce a contract in a workflow.
 
 `trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
 `stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
@@ -791,6 +842,7 @@ Type-specific keys:
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:switch` | `cases` | `default_port`, `outputs` |
 | `gate:validate` | `checks` | `outputs` |
+| `gate:event:validate` | `event_type`, `payload` | `outputs` |
 | `gate:for` | `items` | `outputs` |
 | `gate:while` | `when`, `max_iterations` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
@@ -845,6 +897,16 @@ passes and to `invalid` when any predicate fails. Both routes preserve the upstr
 failed check's `code` and `message`, in configuration order. These four gate-owned fields replace
 incoming fields with the same names. Predicate configuration or runtime evaluation errors use the
 standard `error` lifecycle route instead of being reported as business-validation failures.
+
+`gate:event:validate` resolves its bindable `event_type` and `payload`, then checks the
+body against the effective event schema in its persisted workflow directory. Connecting
+an event trigger to a new validator initializes both bindings. It routes to `valid` or
+`invalid` and preserves the incoming event data, adding `valid`, `event_type`,
+`schema_revision`, `schema_source`, and `failures` (stable `code`, JSON Pointer `path`,
+and `message`). These gate-owned fields replace incoming fields with the same names.
+A missing schema routes to `invalid` with `schema.not_registered`; binding, configuration,
+or schema evaluation errors use the standard `error` route. Execution records retain
+the directory, schema revision, and definition source used for the check.
 
 `gate:while` evaluates its `when` predicate on each activation and routes to `body` while the
 predicate is true and `max_iterations` has not been reached. It routes to `done` when the predicate

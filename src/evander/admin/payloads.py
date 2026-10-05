@@ -129,6 +129,7 @@ class WorkflowNodeTriggerRequestPayload(BaseModel):
     payload: dict[str, Any]
     correlation_key: str | None = None
     request_id: str = Field(min_length=1, max_length=128)
+    schema_revision: str | None = None
 
     @field_validator("request_id", "expected_revision", mode="before")
     @classmethod

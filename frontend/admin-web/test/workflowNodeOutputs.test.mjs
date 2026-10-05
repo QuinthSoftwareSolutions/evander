@@ -166,6 +166,26 @@ test("derives counter outputs from its upstream schema with a count", () => {
   });
 });
 
+test("event validation keeps event bodies and exposes typed validation bindings before saving", () => {
+  const config = {
+    triggers: [{ id: "source", type: "trigger:event", config: {}, outputs: {
+      payload: { type: "object", properties: { answer: { type: "string" } } },
+      valid: { type: "string" },
+    } }],
+    gates: [{ id: "validate", type: "gate:event:validate", config: { event_type: "${{source.event_type}}", payload: "${{source.payload}}" } }],
+    effects: [{ id: "sink", type: "effect:state:update", config: {} }], queries: [],
+    edges: [{ source_id: "source", target_id: "validate" }, { source_id: "validate", source_port: "valid", target_id: "sink" }],
+  };
+  const schemas = deriveWorkflowOutputSchemas(config);
+  assert.deepEqual(schemas.validate.valid, { type: "boolean" });
+  assert.deepEqual(schemas.validate.schema_source, { type: ["string", "null"] });
+  assert.deepEqual(schemas.validate.failures.items.required, ["code", "path", "message"]);
+  const bindings = upstreamBindingOptions(config, "sink", schemas).map((option) => option.value);
+  assert.ok(bindings.includes("${{validate.payload.answer}}"));
+  assert.ok(bindings.includes("${{validate.failures.0.path}}"));
+  assert.ok(bindings.includes("${{validate.schema_revision}}"));
+});
+
 test("builds a selected-node output contract for declared outputs", () => {
   const config = createWorkflowConfig();
   const contract = selectedNodeOutputContract(config, "trigger-1", deriveWorkflowOutputSchemas(config));

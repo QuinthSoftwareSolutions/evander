@@ -2023,11 +2023,14 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
 def _team_internal_event(
     event_type: str, label: str, description: str
 ) -> WorkflowInternalEventCatalogEntry:
+    from .event_schemas import event_payload_schema
+
     return WorkflowInternalEventCatalogEntry(
         event_type=event_type,
         label=label,
         description=description,
         source="Team Add-on",
+        payload_schema=event_payload_schema(event_type),
     )
 
 

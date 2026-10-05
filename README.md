@@ -470,6 +470,12 @@ Workflow-specific payloads are intentionally not schema-validated by the HTTP AP
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
 example `${{trigger-external-deploy.payload.target}}`.
 
+Directory owners can register JSON Schemas under **Configuration → Automation & Assignment →
+Events**. The manual `trigger:event` action generates fields from the effective schema and
+validates submissions before queuing. Use `gate:event:validate` to explicitly validate
+automatic event bodies and branch through `valid` or `invalid`. Definitions inherit by
+event type, with whole-definition local overrides; see [Event definitions](docs/configuration-reference.md#event-definitions).
+
 ### Signed Workflow Webhooks
 
 For public inbound workflows, configure `trigger:http:webhook` and POST to

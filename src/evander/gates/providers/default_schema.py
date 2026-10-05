@@ -21,6 +21,7 @@ from evander.events.models import (
     GateSwitchDefinition,
     GateThrottleDefinition,
     GateValidateDefinition,
+    GateEventValidateDefinition,
     GateWhileDefinition,
 )
 from evander.schema_bootstrap import _GATE_OUTPUT_SCHEMAS
@@ -43,6 +44,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:switch": GateSwitchDefinition,
     "gate:classifier:switch": GateClassifierSwitchDefinition,
     "gate:validate": GateValidateDefinition,
+    "gate:event:validate": GateEventValidateDefinition,
     "gate:while": GateWhileDefinition,
 }
 

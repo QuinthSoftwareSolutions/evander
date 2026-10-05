@@ -189,6 +189,8 @@ export type WorkflowInternalEventCatalogEntry = {
   description?: string | null;
   source?: string | null;
   metadata?: Record<string, unknown>;
+  payload_schema?: Record<string, unknown> | null;
+  schema_revision?: string | null;
 };
 
 export type WorkflowEditorFieldDefinition = {
