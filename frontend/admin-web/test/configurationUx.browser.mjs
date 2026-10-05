@@ -6,6 +6,58 @@ import { browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout } fro
 
 const browser = suiteBrowser();
 
+test("event definitions replace inherited schemas, preserve other definitions, and remove overrides", { timeout: browserTestTimeout }, async (t) => {
+  const inherited = { event_type: "custom.answer", label: "Answer", source: "Platform", payload_schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } };
+  const unrelated = { label: "Other event", payload_schema: { type: "object" } };
+  let snapshot = { revision: "events-1", config: { events: { "custom.other": unrelated } }, events: [inherited], inherited_events: [inherited] };
+  const writes = [];
+  const { page, errors } = await fixture(t, "EventsConfiguration", "configuration", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON(); writes.push(body);
+      snapshot = { ...snapshot, revision: `events-${writes.length + 1}`, config: body.config };
+    }
+    await route.fulfill({ json: snapshot });
+  });
+  await page.getByLabel("Event", { exact: true }).selectOption("custom.answer");
+  assert.equal(await page.getByRole("button", { name: "Override in this directory", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByRole("button", { name: "Override in this directory", exact: true }).click();
+  const schema = page.getByLabel("Payload JSON Schema", { exact: true });
+  await schema.fill("{");
+  assert.equal(await page.getByRole("button", { name: "Save events", exact: true }).isDisabled(), true);
+  const replacement = { type: "object", properties: { count: { type: "integer" } }, required: ["count"] };
+  await schema.fill(JSON.stringify(replacement));
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByText("Event definitions saved.", { exact: true }).waitFor();
+  assert.equal(writes[0].expected_revision, "events-1");
+  assert.deepEqual(writes[0].config.events["custom.answer"].payload_schema, replacement);
+  assert.deepEqual(writes[0].config.events["custom.other"], unrelated);
+  await page.getByRole("button", { name: "Remove local definition", exact: true }).click();
+  assert.equal(await schema.isDisabled(), true);
+  assert.deepEqual(JSON.parse(await schema.inputValue()), inherited.payload_schema);
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByText("Event definitions saved.", { exact: true }).waitFor();
+  assert.equal(writes[1].expected_revision, "events-2");
+  assert.deepEqual(writes[1].config.events, { "custom.other": unrelated });
+  assert.deepEqual(errors, []);
+});
+
+test("event schema save conflicts retain the operator draft", { timeout: browserTestTimeout }, async (t) => {
+  const definition = { label: "Answer", payload_schema: { type: "object" } };
+  const { page, errors } = await fixture(t, "EventsConfiguration", "configuration", async (route) => {
+    if (route.request().method() === "PUT") return route.fulfill({ status: 409, json: { error: "Event definitions changed. Reload before saving again." } });
+    await route.fulfill({ json: { revision: "events-1", config: { events: { "custom.answer": definition } }, events: [], inherited_events: [] } });
+  });
+  await page.getByLabel("Event", { exact: true }).selectOption("custom.answer");
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByLabel("Event label", { exact: true }).fill("Edited answer");
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Event definitions changed" }).waitFor();
+  assert.equal(await page.getByLabel("Event label", { exact: true }).inputValue(), "Edited answer");
+  assert.equal(await page.getByRole("button", { name: "Save events", exact: true }).isDisabled(), false);
+  assert.deepEqual(errors, []);
+});
+
 async function fixture(t, component, feature, routeHandler, hash = "") {
   const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script type="module">
     import React from 'react';
@@ -21,7 +73,7 @@ async function fixture(t, component, feature, routeHandler, hash = "") {
       return React.createElement(React.Fragment, null,
         React.createElement('button', { onClick: () => setUnlocked(true) }, 'Unlock operations'),
         React.createElement(AdminUiContext.Provider, { value: context },
-          React.createElement(${component}, { selectedDirectoryPath: 'root', privilegedUnlocked: unlocked })));
+          React.createElement(${component}, { selectedDirectoryPath: 'root', directoryPath: 'root', disabled: !unlocked, onDirtyChange: () => {}, privilegedUnlocked: unlocked })));
     }
     createRoot(document.getElementById('root')).render(React.createElement(Fixture));
   </script></body></html>`;

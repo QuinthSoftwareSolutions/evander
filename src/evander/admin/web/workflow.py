@@ -19,6 +19,7 @@ from evander.admin.payloads import (
     WorkflowNodeTriggerRequestPayload,
 )
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
+from evander.events.schema import EventPayloadInvalid, validate_payload
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.rbac import (
     WORKFLOW_PACKS_MANAGE_PERMISSION,
@@ -937,6 +938,39 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
+    async def manual_event_schema(request: Request) -> JSONResponse:
+        try:
+            auth.require(request)
+            body = await json_body(request) if request.method == "POST" else {}
+            definition = await run_in_threadpool(
+                service.workflow_config_admin.read_manual_event_definition,
+                request.path_params["node_id"],
+                workflow_pack=body.get("workflow_pack")
+                or request.query_params.get("workflow_pack"),
+                authorize_directory=lambda directory: auth.require_permission(
+                    request, WORKFLOW_RUNS_CONTROL_PERMISSION, directory_path=directory
+                ),
+            )
+            if request.method == "POST":
+                if body.get("schema_revision") != definition["schema_revision"]:
+                    return json_error(
+                        "Event schema changed. Reload the form before triggering the node.",
+                        status_code=409,
+                    )
+                if not isinstance(body.get("payload"), dict):
+                    raise ValueError("Event payload must be an object")
+                failures = (
+                    validate_payload(definition["payload_schema"], body["payload"])
+                    if definition.get("payload_schema") is not None
+                    else []
+                )
+                return JSONResponse({"valid": not failures, "failures": failures})
+            return JSONResponse(definition, headers={"cache-control": "no-store"})
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+
     async def trigger_node(request: Request) -> JSONResponse:
         try:
             session = auth.require(request)
@@ -960,6 +994,8 @@ def workflow_routes(
             return json_error(str(exc).strip("'"), status_code=428)
         except AdminRevisionConflict as exc:
             return json_error(str(exc), status_code=409, details=exc.details)
+        except EventPayloadInvalid as exc:
+            return json_error(str(exc), details={"failures": exc.failures})
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:
@@ -1282,6 +1318,8 @@ def workflow_routes(
         ),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
         Route("/api/workflow-editor/nodes/{node_id:path}/trigger", trigger_node, methods=["POST"]),
+        Route("/api/workflow-editor/nodes/{node_id:path}/event-schema", manual_event_schema, methods=["GET"]),
+        Route("/api/workflow-editor/nodes/{node_id:path}/validate-event", manual_event_schema, methods=["POST"]),
         Route(
             "/api/workflow-editor/node-failures/{node_id:path}",
             dismiss_node_failures,

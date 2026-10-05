@@ -694,6 +694,17 @@ _GATE_OUTPUT_SCHEMAS = {
             },
         },
     },
+    "gate:event:validate": {
+        "valid": {"type": "boolean"},
+        "event_type": {"type": "string"},
+        "schema_revision": {"type": "string"},
+        "schema_source": {"type": ["string", "null"]},
+        "failures": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "code": {"type": "string"}, "path": {"type": "string"}, "message": {"type": "string"},
+            }, "required": ["code", "path", "message"],
+        }},
+    },
     "gate:while": {
         "iteration_index": {"type": "integer"},
         "iteration_count": {"type": "integer"},

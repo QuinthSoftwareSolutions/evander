@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
+
+- Define event payload schemas in directory configuration and Admin Web, with
+  inherited definitions and local overrides.
+- Generate structured manual-trigger forms from registered schemas, validate
+  submissions, and keep JSON entry available for events without definitions.
+- Add `gate:event:validate` to route valid and invalid event payloads through
+  workflows without changing automatic event publication.
+- Include payload schemas for core and bundled Team add-on events.
+
 ## 2026-10-05 - Restore workflow catalog card padding (0.81.1)
 
 - Add horizontal padding inside the Triggers, Gates, Effects, and Queries catalog

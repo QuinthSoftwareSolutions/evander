@@ -5,6 +5,7 @@ import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
 import { TeamsCallRoutesEditor } from "./TeamsCallRoutesEditor";
 import { PhoneCallerMapsEditor } from "./PhoneCallerMapsEditor";
 import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
+import { EventsConfiguration } from "./EventsConfiguration";
 import { CredentialsConfiguration } from "./CredentialsConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
@@ -964,6 +965,7 @@ export function ConfigurationScreen() {
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [websiteLoginsDirty, setWebsiteLoginsDirty] = useState(false);
   const [classificationDirty, setClassificationDirty] = useState(false);
+  const [eventsDirty, setEventsDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
@@ -1216,7 +1218,7 @@ export function ConfigurationScreen() {
       if (
         state !== null
         && globalSelectedDirectoryPath !== selectedDirectoryPath
-        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty || credentialsDirty)
+        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty || eventsDirty || credentialsDirty)
         && !window.confirm("Discard unsaved configuration edits and switch directories?")
       ) {
         setGlobalSelectedDirectoryPath(selectedDirectoryPath);
@@ -1300,6 +1302,8 @@ export function ConfigurationScreen() {
     fieldName?: string | null,
   ) {
     if (!tabKey || !destinationKey) return;
+    if (eventsDirty && destinationKey !== "events" && !window.confirm("Discard unsaved event definitions?")) return;
+    if (destinationKey !== "events") setEventsDirty(false);
     if (credentialsDirty && destinationKey !== "credentials" && !window.confirm("Discard unsaved credential changes?")) return;
     if (destinationKey !== "credentials") setCredentialsDirty(false);
     if (websiteLoginsDirty && destinationKey !== "website-logins"
@@ -3550,6 +3554,10 @@ export function ConfigurationScreen() {
           </article>
         ) : null}
 
+        {selectedUtility === "events" ? <EventsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setEventsDirty} /> : null}
         {selectedUtility === "classification" ? <ClassificationConfiguration
           key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
           disabled={mutationLocked || !state?.directory_scoped_config_enabled}
