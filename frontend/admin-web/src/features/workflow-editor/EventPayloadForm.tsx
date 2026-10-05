@@ -6,9 +6,12 @@ export type EventFailure = { code: string; path: string; message: string };
 const pointer = (path: string, key: string) => `${path}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const owns = (value: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(value, key);
+const referenceAnnotations = new Set(["title", "description", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly"]);
 
 function resolvedSchema(schema: EventSchema, root: EventSchema, depth: number): EventSchema {
   if (typeof schema.$ref !== "string" || !schema.$ref.startsWith("#/") || depth > 10) return schema;
+  // Assertions apply alongside the reference, and resource IDs change its scope.
+  if (owns(root, "$id") || Object.keys(schema).some((key) => key !== "$ref" && !referenceAnnotations.has(key))) return schema;
   let target: unknown = root;
   for (const part of schema.$ref.slice(2).split("/")) target = object(target)[part.replace(/~1/g, "/").replace(/~0/g, "~")];
   if (!target || typeof target !== "object") return schema;
@@ -17,6 +20,7 @@ function resolvedSchema(schema: EventSchema, root: EventSchema, depth: number): 
 }
 
 export function initialEventValue(schema: EventSchema, root = schema, depth = 0): unknown {
+  if (owns(schema, "$id")) root = schema;
   schema = resolvedSchema(schema, root, depth);
   if (owns(schema, "default")) return structuredClone(schema.default);
   if (owns(schema, "const")) return structuredClone(schema.const);
@@ -65,7 +69,7 @@ function Field({ schema: inputSchema, root, value, onChange, path, label, requir
   const title = typeof schema.title === "string" ? schema.title : label;
   const properties = object(schema.properties);
   const current = object(value);
-  const complex = ["$ref", "allOf", "anyOf", "oneOf", "if", "dependentSchemas", "patternProperties", "prefixItems"].some((key) => key in schema)
+  const complex = ["$ref", "$dynamicRef", "$id", "allOf", "anyOf", "oneOf", "if", "dependentSchemas", "patternProperties", "prefixItems"].some((key) => key in schema)
     || (Array.isArray(schema.type) && schema.type.filter((item) => item !== "null").length > 1) || depth > 10;
   const errors = failures.filter((failure) => failure.path === path);
   const set = (next: unknown) => { onInvalid(path, null); onChange(next); };
@@ -109,7 +113,7 @@ function Field({ schema: inputSchema, root, value, onChange, path, label, requir
     </div>)}<button type="button" disabled={disabled} onClick={() => set([...items, initialEventValue(object(schema.items), root)])}>Add {title} item</button></>;
   } else if (type === "boolean") control = <input type="checkbox" aria-label={title} checked={value === true} disabled={disabled} onChange={(event) => set(event.target.checked)} />;
   else if (type === "number" || type === "integer") control = <input aria-label={title} type="number" step={type === "integer" ? 1 : "any"} min={typeof schema.minimum === "number" ? schema.minimum : undefined} max={typeof schema.maximum === "number" ? schema.maximum : undefined} value={typeof value === "number" ? value : ""} disabled={disabled} required={required} onChange={(event) => set(event.target.value === "" ? undefined : Number(event.target.value))} />;
-  else if (type === "string") control = <input aria-label={title} value={typeof value === "string" ? value : ""} disabled={disabled} required={required} minLength={typeof schema.minLength === "number" ? schema.minLength : undefined} maxLength={typeof schema.maxLength === "number" ? schema.maxLength : undefined} onChange={(event) => set(event.target.value)} />;
+  else if (type === "string") control = <input aria-label={title} value={typeof value === "string" ? value : ""} disabled={disabled} minLength={typeof schema.minLength === "number" ? schema.minLength : undefined} maxLength={typeof schema.maxLength === "number" ? schema.maxLength : undefined} onChange={(event) => set(event.target.value)} />;
   else control = <JsonValue label={`${title} JSON`} value={value} disabled={disabled} onChange={set} onInvalid={(message) => onInvalid(path, message)} />;
   return <fieldset className="workflow-event-field" disabled={disabled}>
     <legend>{title}{required ? " *" : ""}</legend>

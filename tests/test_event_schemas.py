@@ -142,6 +142,60 @@ def test_document_local_refs_formats_and_unregistered_events(catalog):
     )
 
 
+@pytest.mark.parametrize("schema_id", [None, "https://example.test/events/answer.json"])
+@pytest.mark.parametrize("reference", ["#/$defs/value", "#value"])
+def test_nested_resource_references_use_their_own_definitions(catalog, schema_id, reference):
+    schemas, store, _resolver = catalog
+    schema = {
+        "type": "object",
+        "properties": {
+            "nested": {
+                "$id": "nested.json",
+                "type": "object",
+                "$defs": {"value": {"type": "string", "$anchor": "value"}},
+                "properties": {"value": {"$ref": reference}},
+                "required": ["value"],
+            }
+        },
+        "required": ["nested"],
+    }
+    if schema_id is not None:
+        schema["$id"] = schema_id
+    store.write(
+        "root/first",
+        domain="events",
+        payload={"events": {"custom.answer": {"label": "Nested", "payload_schema": schema}}},
+    )
+    assert schemas.validate("root/first", "custom.answer", {"nested": {"value": "yes"}})["valid"]
+    failures = schemas.validate("root/first", "custom.answer", {"nested": {"value": 2}})["failures"]
+    assert {(failure["path"], failure["code"]) for failure in failures} == {
+        ("/nested/value", "schema.type")
+    }
+
+
+def test_unresolved_nested_resource_reference_is_rejected_before_persistence(catalog):
+    schemas, store, _resolver = catalog
+    schema = {
+        "type": "object",
+        "$defs": {"value": {"type": "string"}},
+        "properties": {
+            "nested": {
+                "$id": "nested.json",
+                "type": "object",
+                "properties": {"value": {"$ref": "#/$defs/value"}},
+            }
+        },
+    }
+    with pytest.raises(ValueError):
+        store.write(
+            "root/first",
+            domain="events",
+            payload={"events": {"custom.answer": {"label": "Invalid", "payload_schema": schema}}},
+        )
+    assert store.read("root/first", domain="events") is None
+    assert schemas.validate("root/first", "custom.answer", {"accepted": True})["valid"]
+
+
 def test_defaults_are_event_data_and_recursive_document_references_are_supported():
     schema = {
         "type": "object",

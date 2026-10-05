@@ -652,8 +652,11 @@ returns local configuration, effective and inherited entries, and a revision;
 
 Schemas use JSON Schema Draft 2020-12 and declare an object payload. Document-local
 references are supported; remote references and unresolved references are rejected
-on save. Standard format checks run during validation. Validation does not coerce
-types, insert defaults, or modify payloads. Form defaults are editable initial values.
+on save. References resolve within their schema resource, including nested `$id`
+scopes. Manual forms use JSON entry for resources declaring `$id` and references
+with sibling constraints. Standard format checks run during validation. Validation
+does not coerce types, insert defaults, or modify payloads. Form defaults are editable
+initial values.
 Add-ons declare `payload_schema` on their existing `internal_event_catalog_entries`.
 Automatic event publication, scheduling, and external ingress continue to accept
 object payloads without applying these schemas; add an explicit validation gate to

@@ -36,59 +36,39 @@ def check_payload_schema(schema: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Event payload schemas must declare type: object")
     try:
         Draft202012Validator.check_schema(schema)
-        resolver = (
+        resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+        registry = (
             Registry()
-            .with_resource(
-                "urn:evander:event-schema",
-                Resource.from_contents(schema, default_specification=DRAFT202012),
-            )
-            .resolver("urn:evander:event-schema")
+            .with_resource("urn:evander:event-schema", resource)
+            .crawl()
         )
 
         visited: set[int] = set()
 
-        def visit(value: Any) -> None:
+        def visit(resource: Resource[Any], resolver: Any) -> None:
+            value = resource.contents
             if isinstance(value, dict):
                 if id(value) in visited:
                     return
                 visited.add(id(value))
-                for key, child in value.items():
-                    if key in {"$ref", "$dynamicRef"}:
-                        if not isinstance(child, str) or not child.startswith("#"):
+                for key in ("$ref", "$dynamicRef"):
+                    if key in value:
+                        reference = value[key]
+                        if not isinstance(reference, str) or not reference.startswith("#"):
                             raise ValueError(
                                 "Event schema references must stay within the document"
                             )
-                        target = resolver.lookup(child).contents
-                        Draft202012Validator.check_schema(target)
-                        visit(target)
-                    # Only schema-bearing keywords are visited: examples/defaults are data.
-                    elif key in {
-                        "properties",
-                        "$defs",
-                        "definitions",
-                        "patternProperties",
-                        "dependentSchemas",
-                    }:
-                        for subschema in child.values():
-                            visit(subschema)
-                    elif key in {
-                        "items",
-                        "additionalProperties",
-                        "unevaluatedProperties",
-                        "unevaluatedItems",
-                        "contains",
-                        "not",
-                        "if",
-                        "then",
-                        "else",
-                        "propertyNames",
-                    }:
-                        visit(child)
-                    elif key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
-                        for subschema in child:
-                            visit(subschema)
+                        target = resolver.lookup(reference)
+                        Draft202012Validator.check_schema(target.contents)
+                        visit(
+                            Resource.from_contents(target.contents, default_specification=DRAFT202012),
+                            target.resolver,
+                        )
+                # Schema subresources enter their own $id scope; defaults/examples are data.
+                for subresource in resource.subresources():
+                    visit(subresource, resolver.in_subresource(subresource))
 
-        visit(schema)
+        visit(resource, registry.resolver("urn:evander:event-schema").in_subresource(resource))
         revision(schema)  # Require JSON values, including finite numbers.
     except ValueError:
         raise

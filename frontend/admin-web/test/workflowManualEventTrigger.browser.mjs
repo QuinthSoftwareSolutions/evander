@@ -239,6 +239,59 @@ test("server schema failures stay editable and accepted retries keep the request
   assert.equal(requests[1].body.request_id, requests[2].body.request_id);
 });
 
+test("required strings and array items can submit empty values through simple references", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", additionalProperties: false, required: ["answer", "tags"],
+    $defs: { answer: { type: "string" } },
+    properties: {
+      answer: { $ref: "#/$defs/answer", title: "Answer", default: "" },
+      tags: { type: "array", items: { type: "string" } },
+    },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  assert.equal(await dialog.getByLabel("Answer", { exact: true }).inputValue(), "");
+  await dialog.getByRole("button", { name: "Add tags item", exact: true }).click();
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { answer: "", tags: [""] });
+});
+
+test("reference sibling constraints preserve required values through JSON entry", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", $ref: "#/$defs/base",
+    $defs: { base: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } } },
+    properties: { note: { type: "string" } },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("Event payload JSON", { exact: true }).fill('{"id":"example"}');
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { id: "example" });
+});
+
+test("nested schema resources keep scoped references editable through JSON entry", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", required: ["nested"],
+    $defs: { value: { type: "integer" } },
+    properties: { nested: {
+      $id: "nested.json", type: "object", additionalProperties: false, required: ["value"],
+      $defs: { value: { type: "string" } },
+      properties: { value: { $ref: "#/$defs/value" } },
+    } },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("nested JSON", { exact: true }).fill('{"value":"example"}');
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { nested: { value: "example" } });
+});
+
 test("complex-field JSON cannot be submitted while invalid even after another field changes", { timeout: browserTestTimeout }, async (t) => {
   const schema = { type: "object", additionalProperties: false, required: ["answer", "choice"], properties: { answer: { type: "string" }, choice: { oneOf: [{ type: "string" }, { type: "integer" }] } } };
   const { page, requests } = await editor(t, { schema });

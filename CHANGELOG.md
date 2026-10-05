@@ -9,6 +9,9 @@
 - Add `gate:event:validate` to route valid and invalid event payloads through
   workflows without changing automatic event publication.
 - Include payload schemas for core and bundled Team add-on events.
+- Allow schema-valid empty strings in manual forms, preserve reference sibling
+  constraints through JSON entry, and check references in nested resource scopes
+  before saving event definitions.
 
 ## 2026-10-05 - Restore workflow catalog card padding (0.81.1)
 
