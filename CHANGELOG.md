@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-05 - Restore workflow catalog card padding (0.81.1)
+
+- Add horizontal padding inside the Triggers, Gates, Effects, and Queries catalog
+  headers so their labels and node counts sit clear of the card borders.
+
 ## 2026-10-04 - Route phone callers to agent sessions (0.81.0)
 
 - Add root caller maps keyed by the called DID and caller phone number, with an Admin Web

@@ -126,6 +126,9 @@
   padding: 6px 0;
   color: var(--ui-text);
 }
+[data-admin-design] .create-group-summary {
+  padding-inline: 12px;
+}
 [data-admin-design] :is(.create-group-count, .create-subgroup-count, .current-runs-count, .workflow-graphs-count) {
   color: var(--ui-muted);
   background: var(--ui-subtle);
