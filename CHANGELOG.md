@@ -8,6 +8,8 @@
   queues, wakes, retries, and steering. Explicit Standard restores the default tier.
 - Advertise worker Ultrafast support and require it during worker deployment
   verification; account and model eligibility remain provider-controlled.
+- Seed GPT-6 Astra Ultrafast pricing, including cache and long-context rates,
+  and document how to update existing operator catalogs for accurate estimates.
 
 ## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
 

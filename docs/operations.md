@@ -713,6 +713,18 @@ catalog before writing and writes atomically to either
 `EVANDER_MODEL_PRICING_PATH` or the configured runtime directory's default
 `model-pricing.openai.json` path.
 
+When upgrading to Ultrafast, add a tier-specific rule to each existing active
+catalog through that panel; updating the example seed or running `init-state`
+does not update an existing operator catalog. The seed includes GPT-6 Astra with
+`service_tier: "ultrafast"`: per 1M tokens, input $60, cached input $6, cache
+writes $75, and output $300. For requests exceeding 272,000 input tokens, those
+rates become $120, $12, $150, and $450 respectively. Preserve other rules, add the
+[published Ultrafast pricing source](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast),
+and update the catalog version when saving. These Astra rules have no date limit
+so recorded usage is repriced at query time. Add Ultrafast rules for other models
+only when their rates are published; an untiered rule falls back to Standard
+pricing and cannot represent an Ultrafast estimate accurately.
+
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 

@@ -1184,6 +1184,9 @@ keep later control-plane turns at an overridden speed. Codex maps Fast to priori
 requests.
 Metered relay usage records retain the requested and returned service tiers;
 cost estimates use the returned tier when available, then the requested tier.
+The seed includes GPT-6 Astra Ultrafast rates. Existing operator catalogs require
+the tier-specific rule to be added separately; see
+[pricing catalog upgrade guidance](operations.md#model-usage-querying).
 Availability and higher allowance or credit usage depend on the model/account;
 see [official Codex speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
 and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
