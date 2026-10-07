@@ -1,5 +1,9 @@
 # Evander
 
+Native incoming Teams calls can reach explicitly assigned existing assistants, with optional
+caller camera and screen context;
+see [Teams assistant calls](docs/teams-calls.md) for routing, local verification, and setup.
+
 Evander is a host-side control plane for running AI agents in disposable libvirt VMs or Docker
 containers on dedicated worker VMs. The host owns credentials, policy, workflow state, and managed
 Git. Agents reach external systems through explicitly granted MCP tools and narrow model, package,
@@ -38,7 +42,8 @@ Git, and HTTP surfaces.
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
   choice/score/boolean evaluations, Smart switch routing, a structured editor, Jev, and a
   disabled [OpenAI Decisions integration preparation](docs/classification.md#decisions-preparation)
-- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and inbound phone calls,
+  with [explicit caller routing to agent sessions](docs/operations.md#caller-routing-to-agent-sessions)
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
@@ -50,6 +55,8 @@ Git, and HTTP surfaces.
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - Durable JSON and SQLite stores for sessions, approvals, audit, workflow execution, and add-ons
+- A separately installed [WordPress Add-on](packages/wordpress-addon/README.md) for recoverable content,
+  builder and source design changes, scoped browser editing and external release recovery
 - Admin Web and CLI surfaces for setup, sessions, policy, approvals, workflows, and recovery
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
@@ -463,6 +470,12 @@ machine-authenticated events. Token values must not contain commas or colons.
 Workflow-specific payloads are intentionally not schema-validated by the HTTP API beyond
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
 example `${{trigger-external-deploy.payload.target}}`.
+
+Directory owners can register JSON Schemas under **Configuration → Automation & Assignment →
+Events**. The manual `trigger:event` action generates fields from the effective schema and
+validates submissions before queuing. Use `gate:event:validate` to explicitly validate
+automatic event bodies and branch through `valid` or `invalid`. Definitions inherit by
+event type, with whole-definition local overrides; see [Event definitions](docs/configuration-reference.md#event-definitions).
 
 ### Signed Workflow Webhooks
 

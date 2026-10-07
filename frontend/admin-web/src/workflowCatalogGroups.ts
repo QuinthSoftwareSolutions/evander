@@ -76,7 +76,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "filtering",
       label: "Filtering",
       description: "Filter or suppress activations before they continue.",
-      types: ["gate:filter", "gate:dedupe"],
+      types: ["gate:filter", "gate:dedupe", "gate:validate", "gate:event:validate"],
     },
     {
       key: "data-shaping",

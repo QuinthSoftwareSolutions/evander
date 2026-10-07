@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from team_ui_controller_harness import controller_script
+
 from evander.addons import AddonContext
 from evander_team_addon import api, mcp
 from evander_team_addon.repository import TeamStateRepository
@@ -103,17 +105,8 @@ def test_mcp_recovery_preview_apply_and_transport_replay_from_blocker_only_dispa
 
 
 def test_recovery_dialog_fences_stale_previews_and_reuses_request_on_retry():
-    from pathlib import Path
     import subprocess
 
-    source = (
-        Path(__file__).resolve().parents[1] / "src/evander_team_addon/ui_static/team-ui.js"
-    ).read_text()
-    function = source[
-        source.index("async function previewGitRecovery(") : source.index(
-            "function renderRecordBlockers("
-        )
-    ]
     script = r"""
 const assert = require("node:assert/strict"), crypto = require("node:crypto");
 const API_BASE = "/api", guardTeamMutation = () => true, text = String, escapeHtml = String;
@@ -135,14 +128,14 @@ const teamFetch = async (url, options) => {
  const body = JSON.parse(options.body);
  if (body.action === "apply") {
    submitted.push(body);
-   return fail ? {ok: false, error: "Response lost"} : {ok: true, json: async () => ({})};
+   return fail ? {ok: false, text: async () => "Response lost"} : {ok: true, json: async () => ({})};
  }
  if (calls++ === 0) return response("initial");
  return new Promise(resolve => pending.push(resolve));
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 """
-    script += function
+    script += "// CONTROLLER"
     script += r"""
 (async () => {
  await previewGitRecovery("blocker");
@@ -160,6 +153,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(dialog.open, false);
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """
+    script = controller_script(
+        "recovery",
+        script,
+        "{access: {guardTeamMutation, teamFetch}, mutations: {applyMutationResultPayload}, app: {setStatus}}",
+        ["previewGitRecovery"],
+    )
     result = subprocess.run(
         ["node", "--input-type=commonjs"], input=script, text=True, capture_output=True, timeout=15
     )

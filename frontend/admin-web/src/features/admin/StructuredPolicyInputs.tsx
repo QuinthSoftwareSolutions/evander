@@ -97,6 +97,7 @@ type JsonTextEditorProps = {
 type RegexListEditorProps = {
   values: readonly string[];
   onChange: (nextValues: string[]) => void;
+  onInvalidDraftChange?: (draftValues: string[]) => void;
   fieldLabel: string;
   disabled?: boolean;
   className?: string;
@@ -614,6 +615,7 @@ export function JsonObjectKeyValueEditor({
 export function RegexListEditor({
   values,
   onChange,
+  onInvalidDraftChange,
   fieldLabel,
   disabled = false,
   className,
@@ -643,6 +645,11 @@ export function RegexListEditor({
       setError(null);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
+      if (onInvalidDraftChange) {
+        const draftValues = nextRows.map((row) => row.pattern);
+        locallyEmittedSnapshotRef.current = encodeStringListDraftValue(draftValues);
+        onInvalidDraftChange(draftValues);
+      }
     }
   }
 

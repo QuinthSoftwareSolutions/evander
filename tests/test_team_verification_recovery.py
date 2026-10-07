@@ -76,6 +76,112 @@ def test_recovery_exhaustion_blocks_without_candidate_correction(tmp_path):
     assert "limit exhausted" in run.error
 
 
+@pytest.mark.parametrize(
+    ("failure_phase", "expected_calls"),
+    [
+        ("create", ["create", "cleanup"]),
+        ("clone", ["create", "clone", "cleanup"]),
+        ("pin", ["create", "clone", "pin", "cleanup"]),
+    ],
+)
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_failed_workspace_setup_reconciles_session_and_preserves_first_error(
+    tmp_path, failure_phase, expected_calls, cleanup_fails
+):
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    calls = []
+    cleanup_observations = []
+
+    def setup(phase):
+        def execute(**kwargs):
+            calls.append(phase)
+            if phase == failure_phase:
+                raise RuntimeError(f"{phase} failed")
+            return "/repo" if phase == "clone" else None
+
+        return execute
+
+    def cleanup(**kwargs):
+        calls.append("cleanup")
+        # Cleanup precedes the durable terminal result, including when create
+        # raised after allocating some of the worker's resources.
+        run = repo.read().release_verification_runs["verification-1"]
+        cleanup_observations.append((run.state, run.execution_generation, kwargs))
+        if cleanup_fails:
+            raise RuntimeError("cleanup failed")
+
+    executor = SimpleNamespace(
+        create_verifier=setup("create"),
+        clone_candidate=setup("clone"),
+        pin_candidate=setup("pin"),
+        destroy_verifier=cleanup,
+    )
+    result = TeamReleaseVerificationRunner(repo, executor).run(
+        release_package_id="release-1",
+        verification_run_id="verification-1",
+        candidate_commit_sha="candidate-sha",
+    )
+
+    state = repo.read()
+    run = state.release_verification_runs["verification-1"]
+    assert calls == expected_calls
+    assert cleanup_observations == [
+        ("running", 1, {"run_id": "verification-1-g1", "session_id": "verification-session"})
+    ]
+    assert result["verification_state"] == "failed"
+    assert state.release_packages["release-1"].state == "blocked"
+    assert run.failure_kind == "infrastructure"
+    assert run.error == f"{failure_phase} failed"
+    assert run.correction_task_id is None
+    assert [command.state for command in run.command_results] == ["pending"]
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_resume_completed_commands_reconciles_cleanup_without_another_generation(
+    tmp_path, cleanup_fails
+):
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def completed_before_cleanup(state):
+        run = state.release_verification_runs["verification-1"]
+        run.state = "running"
+        run.execution_generation = 1
+        run.command_results[0] = ReleaseVerificationCommandResult(
+            name="frozen-check", state="passed", execution_generation=1, exit_code=0
+        )
+        return state
+
+    repo.update(completed_before_cleanup)
+    calls = []
+    cleanup_states = []
+
+    def cleanup(**kwargs):
+        calls.append(kwargs)
+        cleanup_states.append(repo.read().release_verification_runs["verification-1"].state)
+        if cleanup_fails:
+            raise RuntimeError("cleanup failed")
+
+    result = TeamReleaseVerificationRunner(
+        repo, SimpleNamespace(destroy_verifier=cleanup)
+    ).run(
+        release_package_id="release-1",
+        verification_run_id="verification-1",
+        candidate_commit_sha="candidate-sha",
+    )
+
+    run = repo.read().release_verification_runs["verification-1"]
+    assert calls == [{"run_id": "verification-1-g1", "session_id": "verification-session"}]
+    assert cleanup_states == ["running"]
+    assert result["verification_state"] == ("failed" if cleanup_fails else "passed")
+    assert run.failure_kind == ("infrastructure" if cleanup_fails else None)
+    assert run.execution_generation == 1
+    assert run.generation_history == []
+    assert run.command_results[0].state == "passed"
+    assert run.correction_task_id is None
+
+
 def evidence(**updates):
     return RESULT_PREFIX + json.dumps(
         dict(

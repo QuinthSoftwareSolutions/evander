@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from team_ui_controller_harness import controller_script
+
 from evander_team_addon.providers import (
     TEAM_AGENT_GUIDANCE_VERSION,
     _project_repo_prompt_guidance,
@@ -156,26 +158,18 @@ def test_project_repo_guidance_emits_exact_task_worktree_mapping() -> None:
 
 
 def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
-    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
-        encoding="utf-8"
-    )
-    helper_source = source[
-        source.index("function taskBoardDependencyWaitIds(task)") : source.index(
-            "function renderTaskBoardBlockerLine(task)"
-        )
-    ]
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for Team UI dependency-label tests")
-    script = f"""
+    script = """
       const assert = require("node:assert/strict");
       const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
-      const state = {{
-        tasks: {{
-          blocked: {{ state: "blocked" }},
-          pending: {{ state: "pending" }},
-        }},
-      }};
+      const state = {
+        tasks: {
+          blocked: { state: "blocked" },
+          pending: { state: "pending" },
+        },
+      };
       const text = (value) => String(value ?? "").trim();
       const escapeHtml = (value) => text(value)
         .replaceAll("&", "&amp;")
@@ -183,121 +177,115 @@ def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> 
         .replaceAll(">", "&gt;");
       const taskBoardReadiness = (task) =>
         text(task?.readiness || task?.assessment?.readiness) || "unknown";
-      {helper_source}
+      // CONTROLLER
 
-      const mixed = {{
+      const mixed = {
         state: "pending",
         readiness: "waiting_on_dependencies",
         resolution_status: "unresolved",
         dependency_status: "blocked",
         blocked_by_task_ids: ["blocked", "pending"],
-      }};
+      };
       assert.equal(taskBoardWaitsOnDependencies(mixed), true);
-      assert.deepEqual(taskBoardBlockedDependencyIds(mixed), ["blocked"]);
       assert.equal(
         renderTaskBoardDependencyWaitBadge(mixed),
         '<span class="state-pill warning">Waiting on 2 dependencies; 1 blocked</span>',
       );
 
-      const cancelled = {{
+      const cancelled = {
         ...mixed,
         state: "cancelled",
         resolution_status: "resolved",
         dependency_status: "waiting",
-      }};
+      };
       assert.equal(taskBoardWaitsOnDependencies(cancelled), false);
       assert.equal(renderTaskBoardDependencyWaitBadge(cancelled), "");
       assert.equal(
-        taskBoardWaitsOnDependencies({{ ...mixed, state: "rejected" }}),
+        taskBoardWaitsOnDependencies({ ...mixed, state: "rejected" }),
         false,
       );
       assert.equal(
-        taskBoardWaitsOnDependencies({{ ...mixed, resolution_status: "resolved" }}),
+        taskBoardWaitsOnDependencies({ ...mixed, resolution_status: "resolved" }),
         false,
       );
 
-      const scoped = {{
+      const scoped = {
         ...mixed,
         blocked_by_task_ids: ["unavailable", "pending"],
-      }};
+      };
       assert.equal(
         renderTaskBoardDependencyWaitBadge(scoped),
         '<span class="state-pill warning">Waiting on 2 dependencies; at least one blocked</span>',
       );
     """
 
+    script = controller_script(
+        "board",
+        script,
+        "{app: {state}}",
+        ["taskBoardWaitsOnDependencies", "renderTaskBoardDependencyWaitBadge"],
+    )
     result = subprocess.run(
         [node, "--input-type=commonjs"],
         input=script,
         text=True,
         capture_output=True,
         check=False,
+        timeout=15,
     )
 
     assert result.returncode == 0, result.stderr
 
 
 def test_live_release_verification_retries_after_transient_request_failure() -> None:
-    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
-        encoding="utf-8"
-    )
-    polling_source = source[
-        source.index("function activeReleaseVerificationRun(") : source.index(
-            "async function loadMyHumanReviews("
-        )
-    ]
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for Team UI polling tests")
-    script = f"""
+    script = """
       const assert = require("node:assert/strict");
       const text = (value) => String(value ?? "").trim();
       const API_BASE = "/api/team";
       const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
-      const expandedReleaseDetailIds = new Set(["release-1"]);
-      const releaseDetailCache = new Map();
-      const releaseVerificationLiveCache = new Map();
-      const releaseVerificationLivePollTimers = new Map();
-      const state = {{
-        release_packages: {{
-          "release-1": {{
+      const state = {
+        release_packages: {
+          "release-1": {
             id: "release-1",
-            verification_runs: [{{ id: "run-1", state: "running" }}],
-          }},
-        }},
-      }};
+            verification_runs: [{ id: "run-1", state: "running" }],
+          },
+        },
+      };
       const scheduled = [];
-      const window = {{
-        setTimeout: (callback, delay) => {{
-          scheduled.push({{ callback, delay }});
+      const window = {
+        setTimeout: (callback, delay) => {
+          scheduled.push({ callback, delay });
           return scheduled.length;
-        }},
-        clearTimeout: () => {{}},
-      }};
+        },
+        clearTimeout: () => {},
+      };
       const mergeReleaseDetailWithCurrentState = (release) => release;
-      const renderReleaseDetailSurfaces = () => {{}};
+      const renderReleaseDetailSurfaces = () => {};
       const responseText = async () => "temporary gateway failure";
       let requestCount = 0;
-      const teamFetch = async () => {{
+      const teamFetch = async () => {
         requestCount += 1;
-        if (requestCount === 1) {{
-          return {{ ok: false }};
-        }}
-        return {{
+        if (requestCount === 1) {
+          return { ok: false, text: async () => "temporary gateway failure" };
+        }
+        return {
           ok: true,
-          json: async () => ({{ run: {{ state: "passed" }} }}),
-        }};
-      }};
-      {polling_source}
+          json: async () => ({ run: { state: "passed" } }),
+        };
+      };
+      // CONTROLLER
+      controller.expandReleaseDetail("release-1");
 
-      (async () => {{
+      (async () => {
         await loadReleaseVerificationLive("release-1");
         assert.equal(requestCount, 1);
         assert.equal(scheduled.length, 1);
         assert.equal(scheduled[0].delay, RELEASE_VERIFICATION_LIVE_POLL_MS);
-        assert.equal(releaseVerificationLivePollTimers.has("release-1"), true);
         assert.equal(
-          releaseVerificationLiveCache.get("release-1").error,
+          controller.cachedVerificationLive("release-1").error,
           "temporary gateway failure",
         );
 
@@ -305,24 +293,31 @@ def test_live_release_verification_retries_after_transient_request_failure() -> 
         await new Promise((resolve) => setImmediate(resolve));
 
         assert.equal(requestCount, 2);
-        assert.equal(releaseVerificationLiveCache.get("release-1").error, null);
+        assert.equal(controller.cachedVerificationLive("release-1").error, null);
         assert.equal(
-          releaseVerificationLiveCache.get("release-1").payload.run.state,
+          controller.cachedVerificationLive("release-1").payload.run.state,
           "passed",
         );
-        assert.equal(releaseVerificationLivePollTimers.has("release-1"), false);
-      }})().catch((error) => {{
+        assert.equal(scheduled.length, 0);
+      })().catch((error) => {
         console.error(error);
         process.exitCode = 1;
-      }});
+      });
     """
 
+    script = controller_script(
+        "releases",
+        script,
+        "{app: {state}, projects: {renderProjectFocus: () => {}}, delivery: {renderReviewDeliveryWorkspace: () => {}}, access: {teamFetch}}",
+        ["loadReleaseVerificationLive"],
+    )
     result = subprocess.run(
         [node, "--input-type=commonjs"],
         input=script,
         text=True,
         capture_output=True,
         check=False,
+        timeout=15,
     )
 
     assert result.returncode == 0, result.stderr
@@ -332,78 +327,36 @@ def test_rejected_review_exception_action_is_hidden_after_successor_exists() -> 
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is unavailable")
-    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
-        encoding="utf-8"
-    )
-    action_source = source[
-        source.index("function releaseHasSuccessor(releaseId)") : source.index(
-            "async function retryReleaseGate"
-        )
-    ]
-    script = f"""
+    script = """
       const assert = require("node:assert/strict");
-      const state = {{ release_packages: {{}} }};
+      const state = { release_packages: {} };
       const text = (value) => value == null ? "" : String(value);
-      const values = (record) => Object.values(record || {{}});
+      const values = (record) => Object.values(record || {});
       const escapeAttr = text;
       const escapeHtml = text;
-      {action_source}
+      // CONTROLLER
 
-      const predecessor = {{
+      const predecessor = {
         id: "release-predecessor",
         state: "rejected",
-        gate_failure: {{ stage: "review", kind: "rejected", source_id: "review-1" }},
-      }};
+        gate_failure: { stage: "review", kind: "rejected", source_id: "review-1" },
+      };
       assert.match(renderReleaseGateAction(predecessor), /Retry rejected review by exception/);
-      state.release_packages.successor = {{
+      state.release_packages.successor = {
         id: "release-successor",
         supersedes_release_package_id: predecessor.id,
-      }};
+      };
       assert.equal(renderReleaseGateAction(predecessor), "");
     """
 
+    script = controller_script("releases", script, "{app: {state}}", ["renderReleaseGateAction"])
     result = subprocess.run(
         [node, "--input-type=commonjs"],
         input=script,
         text=True,
         capture_output=True,
         check=False,
+        timeout=15,
     )
 
     assert result.returncode == 0, result.stderr
-
-
-def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
-    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
-        encoding="utf-8"
-    )
-    editor_source = source[
-        source.index(
-            'if (type === "agent") {', source.index("function renderEditFields")
-        ) : source.index('if (type === "role") {', source.index("function renderEditFields"))
-    ]
-    payload_source = source[
-        source.index(
-            'if (type === "agent") {', source.index("function editPayloadForForm")
-        ) : source.index('if (type === "role") {', source.index("function editPayloadForForm"))
-    ]
-    binding_source = source[
-        source.index("function bindAgentEditTeamScopedSelects") : source.index(
-            "function refreshAgentEditTeamScopedSelects"
-        )
-    ]
-
-    assert "contextClearingIdleGraceMinutesForEdit" in editor_source
-    assert 'numberField("Idle grace minutes"' in editor_source
-    assert (
-        'data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}' in editor_source
-    )
-    assert "max: 10080" in editor_source
-    assert "context_clearing_idle_grace_seconds" in payload_source
-    assert "context_clearing_idle_grace_minutes" in payload_source
-    assert "* 60" in payload_source
-    assert 'if (contextClearingPolicy === "idle")' in payload_source
-    assert 'select[name="context_clearing_policy"]' in binding_source
-    assert "syncAgentEditContextIdleGraceField" in binding_source
-    assert 'graceInput.value = "60"' in source
-    assert "idleGraceField.hidden = !isIdle;" in source

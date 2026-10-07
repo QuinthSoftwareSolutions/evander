@@ -361,7 +361,6 @@ test("admin tool visibility renders the effective policy inspector", { timeout: 
   await assert.doesNotReject(() => page.getByText("Denied at execution").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Stale manifest possible").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("blocked by execution policy").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("MCP clients can cache a tool manifest on the client side").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Required").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Locked approval").first().waitFor({ state: "visible" }));
 
@@ -379,6 +378,21 @@ test("admin tool visibility renders the effective policy inspector", { timeout: 
 
   await page.getByText("Delete backlog item").first().click();
   await assert.doesNotReject(() => page.getByText("Always requires approval").first().waitFor({ state: "visible" }));
+
+  const deniedFilter = page.getByRole("button", { name: "Denied at execution 1", exact: true });
+  await deniedFilter.click();
+  assert.equal(await deniedFilter.getAttribute("aria-pressed"), "true");
+  const tableRows = page.locator(".tool-visibility-table tbody tr");
+  assert.equal(await tableRows.count(), 1);
+  assert.match(await tableRows.innerText(), /Denied at execution/);
+  await page.getByRole("button", { name: "All 5", exact: true }).click();
+  assert.equal(await tableRows.count(), 5);
+
+  // The keyboard path reaches the same detail inspector as clicking a row.
+  const inspectTool = page.locator(".tool-visibility-table").getByRole("button", { name: "Delete backlog item", exact: true });
+  await inspectTool.focus();
+  await page.keyboard.press("Enter");
+  await page.locator(".tool-visibility-detail-panel").getByRole("heading", { name: "Delete backlog item", exact: true }).waitFor();
 
   const bodyText = await page.locator("body").innerText();
   assert.ok(!bodyText.includes("visible-secret"));

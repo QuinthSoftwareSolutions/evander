@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
+    "teams_call_enabled": "Allow native Teams calls to explicitly mapped assistants in this directory. Disabled by default. Root must also enable calls.",
+    "teams_call_visual_context_enabled": "Include sampled caller camera and shared-screen images with native Teams voice turns. Disabled by default. Requires an image-capable Realtime model and get_voice_query_visual_context granted without approval to the mapped assistant. Query snapshots are temporary and quota bounded.",
+    "teams_call_routes": "Root caller map: tenant_id and caller_user_id are Entra GUIDs. Choose an existing assistant; its permissions independently authorize access. One target per tenant/caller pair. Replacing a session requires updating its route.",
+    "teams_call_max_concurrency": "Maximum concurrent native Teams calls across the control plane. Each assistant accepts one call. Root only; defaults to four.",
     "default_session_ttl_seconds": (
         "Default session lifetime in seconds when a new session is created without an explicit TTL."
     ),
@@ -446,6 +450,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Fixed inbound DID or called-number routes that map a caller policy and projection "
         "prompt to an existing Evander session. Caller and number fields are normalized and "
         "stored host-side only."
+    ),
+    "inbound_phone_caller_maps": (
+        "Root caller map for each called DID. Choose a phone route for its greeting and caller "
+        "access policy, then assign caller numbers to active agent sessions. Unmapped callers "
+        "are rejected, including when a DID has no assignments. Use international numbers "
+        "with country codes. Replacing a session requires updating its assignment."
     ),
     "contacts": (
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "

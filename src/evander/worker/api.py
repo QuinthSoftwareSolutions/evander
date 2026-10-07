@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
@@ -59,11 +60,18 @@ class WorkerAuthMiddleware(BaseHTTPMiddleware):
 
 
 def build_worker_app(daemon: WorkerDaemon) -> Starlette:
+    deployment_revision = os.environ.get("EVANDER_WORKER_DEPLOY_REVISION")
+
     async def health(_: Request) -> JSONResponse:
         return JSONResponse(
             {
                 "status": "ok",
-                "capabilities": {"git_recovery": GIT_RECOVERY_PROTOCOL_VERSION, "git_salvage": 1},
+                "deployment_revision": deployment_revision,
+                "capabilities": {
+                    "git_recovery": GIT_RECOVERY_PROTOCOL_VERSION,
+                    "git_salvage": 1,
+                    "codex_fast_mode": 1,
+                },
             }
         )
 

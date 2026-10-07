@@ -5,6 +5,8 @@ import { fetchJson, formatTimestamp } from "../admin/api";
 import { DownloadIcon, RefreshIcon, UploadIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { RecordInspector } from "../admin/RecordInspector";
+import { FilterDisclosure } from "../admin/FilterDisclosure";
+import { adminHash } from "../../adminRouting";
 
 type PublishedArtifact = {
   key: string;
@@ -100,11 +102,6 @@ function formatBytes(value: number | null | undefined): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
-}
-
-function shortSha(value: string | null | undefined): string {
-  const text = value?.trim() ?? "";
-  return text.length > 12 ? `${text.slice(0, 12)}…` : text || "n/a";
 }
 
 function compactArtifactKey(key: string): string {
@@ -227,6 +224,9 @@ export function ArtifactsPage() {
   const [artifactSpaces, setArtifactSpaces] = useState<ArtifactSpacesResponse | null>(null);
   const [selectedSpacePath, setSelectedSpacePath] = useState<string | null>(null);
   const [expandedSpacePaths, setExpandedSpacePaths] = useState<Set<string>>(() => new Set());
+  const [spacePickerOpen, setSpacePickerOpen] = useState(false);
+  const spacePickerRef = useRef<HTMLDialogElement>(null);
+  const spacePickerTriggerRef = useRef<HTMLButtonElement>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const inspectorTriggerRef = useRef<HTMLElement | null>(null);
@@ -248,6 +248,22 @@ export function ArtifactsPage() {
   const selectedArtifact = resolvedArtifact ?? items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
   const artifactSpaceTree = useMemo(() => buildArtifactSpaceTree(artifactSpaces?.spaces ?? []), [artifactSpaces]);
   const selectedSpaceLabel = selectedSpacePath ?? "All spaces";
+  const selectedSpace = artifactSpaces?.spaces.find((space) => space.path === selectedSpacePath);
+
+  useEffect(() => {
+    if (!spacePickerOpen) return;
+    const dialog = spacePickerRef.current;
+    if (!dialog) return;
+    const trigger = spacePickerTriggerRef.current;
+    dialog.showModal();
+    const selectedButton = dialog.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+    selectedButton?.focus({ preventScroll: true });
+    selectedButton?.scrollIntoView({ block: "nearest" });
+    return () => {
+      dialog.close();
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, [spacePickerOpen]);
 
   async function loadArtifacts(nextCursor = cursor, spacePath = selectedSpacePath) {
     setLoading(true);
@@ -322,6 +338,7 @@ export function ArtifactsPage() {
 
   function selectSpaceFilter(path: string | null) {
     setSelectedSpacePath(path);
+    setSpacePickerOpen(false);
     setCursor(null);
     setPreviousCursors([]);
     setResolvedArtifact(null);
@@ -455,35 +472,26 @@ export function ArtifactsPage() {
             <span className="panel-meta">{artifactSpaces?.count ?? 0}</span>
           </div>
           <button
+            ref={spacePickerTriggerRef}
             type="button"
-            className={`artifact-space-tree-button artifact-space-tree-all${selectedSpacePath === null ? " selected" : ""}`}
-            aria-pressed={selectedSpacePath === null}
-            onClick={() => selectSpaceFilter(null)}
+            className="artifact-space-tree-button artifact-space-picker-trigger selected"
+            aria-label="Choose artifact space"
+            aria-describedby="artifact-space-selected-path"
+            aria-haspopup="dialog"
+            aria-expanded={spacePickerOpen}
+            onClick={() => setSpacePickerOpen(true)}
           >
-            <span className="artifact-space-tree-name">All spaces</span>
-            <span className="artifact-space-tree-path">Unfiltered</span>
+            <span className="artifact-space-picker-selection">
+              <span className="artifact-space-tree-name">{selectedSpace ? artifactSpaceLabel(selectedSpace) : selectedSpaceLabel}</span>
+              <span className="artifact-space-tree-path" id="artifact-space-selected-path">{selectedSpacePath ?? "Unfiltered"}</span>
+            </span>
+            <ChevronRight size={16} aria-hidden="true" />
           </button>
-          {artifactSpacesError ? <div className="callout error-callout">{artifactSpacesError}</div> : null}
-          {artifactSpacesLoading && !artifactSpaces ? (
-            <div className="empty-state artifact-space-empty">Loading spaces...</div>
-          ) : null}
-          {!artifactSpacesLoading && !artifactSpacesError && (artifactSpaces?.spaces.length ?? 0) === 0 ? (
-            <div className="empty-state artifact-space-empty">No artifact spaces.</div>
-          ) : null}
-          {artifactSpaceTree.length > 0 ? (
-            <ArtifactSpaceTree
-              nodes={artifactSpaceTree}
-              selectedPath={selectedSpacePath}
-              expandedPaths={expandedSpacePaths}
-              onToggle={toggleSpacePath}
-              onSelect={selectSpaceFilter}
-              root
-            />
-          ) : null}
         </div>
 
         <div className="sidebar-divider" />
 
+        <form onSubmit={event => { event.preventDefault(); void resolveKey(); }}>
         <label className="field-stack">
           <span>Key</span>
           <input
@@ -495,8 +503,7 @@ export function ArtifactsPage() {
         <div className="inline-actions artifact-lookup-actions">
           <button
             className="admin-action-button compact"
-            type="button"
-            onClick={() => void resolveKey()}
+            type="submit"
             disabled={lookupLoading}
           >
             {lookupLoading ? "Resolving..." : "Resolve key"}
@@ -505,8 +512,10 @@ export function ArtifactsPage() {
             Apply filters
           </button>
         </div>
+        </form>
         {lookupError ? <div className="callout error-callout">{lookupError}</div> : null}
 
+        <FilterDisclosure activeCount={[filters.publishedAfter, filters.publishedBefore, filters.limit !== String(DEFAULT_LIMIT)].filter(Boolean).length}>
         <label className="field-stack">
           <span>Published after</span>
           <input
@@ -534,6 +543,7 @@ export function ArtifactsPage() {
             onChange={(event) => setFilters((current) => ({ ...current, limit: event.target.value }))}
           />
         </label>
+        </FilterDisclosure>
       </section>
 
       <section className="feature-content">
@@ -578,8 +588,6 @@ export function ArtifactsPage() {
                     <th>Published</th>
                     <th>Session</th>
                     <th>Size</th>
-                    <th>Files</th>
-                    <th>SHA-256</th>
                     <th>Download</th>
                   </tr>
                 </thead>
@@ -603,8 +611,6 @@ export function ArtifactsPage() {
                       <td className="artifact-fixed-cell">{formatTimestamp(item.published_at)}</td>
                       <td>{item.session_id}</td>
                       <td className="artifact-fixed-cell">{formatBytes(item.byte_count)}</td>
-                      <td className="artifact-fixed-cell">{item.source_file_count}</td>
-                      <td className="artifact-fixed-cell" title={item.sha256 ?? undefined}>{shortSha(item.sha256)}</td>
                       <td>
                         <div className="feature-toolbar-actions icon-actions artifacts-download-cell">
                           <button
@@ -624,14 +630,14 @@ export function ArtifactsPage() {
                   ))}
                   {loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>
+                      <td className="empty-state-cell" colSpan={5}>
                         Loading artifacts...
                       </td>
                     </tr>
                   ) : null}
                   {!loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>
+                      <td className="empty-state-cell" colSpan={5}>
                         No artifacts matched the current filters.
                       </td>
                     </tr>
@@ -670,14 +676,6 @@ export function ArtifactsPage() {
                     <div className="mobile-record-row">
                       <span>Size</span>
                       <span>{formatBytes(item.byte_count)}</span>
-                    </div>
-                    <div className="mobile-record-row">
-                      <span>Files</span>
-                      <span>{item.source_file_count}</span>
-                    </div>
-                    <div className="mobile-record-row">
-                      <span>SHA-256</span>
-                      <span>{shortSha(item.sha256)}</span>
                     </div>
                   </button>
                   <div className="mobile-record-actions">
@@ -727,7 +725,7 @@ export function ArtifactsPage() {
                     </div>
                     <div>
                       <dt>Session</dt>
-                      <dd>{selectedArtifact.session_id}</dd>
+                      <dd><a href={adminHash("sessions", { session_id: selectedArtifact.session_id })}>{selectedArtifact.session_id}</a></dd>
                     </div>
                     <div>
                       <dt>Backend</dt>
@@ -754,10 +752,13 @@ export function ArtifactsPage() {
                       <dd className="artifact-sha">{selectedArtifact.sha256}</dd>
                     </div>
                   </dl>
+                  <details className="raw-json-panel">
+                  <summary>Metadata</summary>
                   <label className="field-stack artifact-metadata-field">
                     <span>Metadata</span>
                     <textarea readOnly value={JSON.stringify(selectedArtifact.metadata ?? {}, null, 2)} />
                   </label>
+                  </details>
                 </div>
               ) : (
                 <div className="empty-state">No artifact selected.</div>
@@ -766,6 +767,64 @@ export function ArtifactsPage() {
           ) : null}
         </div>
       </section>
+      {spacePickerOpen ? (
+        <dialog
+          ref={spacePickerRef}
+          className="modal-card artifact-space-picker-modal"
+          aria-labelledby="artifact-space-picker-title"
+          aria-describedby="artifact-space-picker-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            setSpacePickerOpen(false);
+          }}
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+              setSpacePickerOpen(false);
+            }
+          }}
+        >
+          <div className="modal-header">
+            <div>
+              <div className="eyebrow">Artifact spaces</div>
+              <h2 id="artifact-space-picker-title">Choose artifact space</h2>
+              <p id="artifact-space-picker-description">Selecting a space includes artifacts in its child spaces.</p>
+            </div>
+            <button type="button" className="admin-action-button compact" onClick={() => setSpacePickerOpen(false)}>
+              Close
+            </button>
+          </div>
+          <div className="modal-body">
+            <button
+              type="button"
+              className={`artifact-space-tree-button artifact-space-tree-all${selectedSpacePath === null ? " selected" : ""}`}
+              aria-pressed={selectedSpacePath === null}
+              onClick={() => selectSpaceFilter(null)}
+            >
+              <span className="artifact-space-tree-name">All spaces</span>
+              <span className="artifact-space-tree-path">Unfiltered</span>
+            </button>
+            {artifactSpacesError ? <div className="callout error-callout">{artifactSpacesError}</div> : null}
+            {artifactSpacesLoading && !artifactSpaces ? (
+              <div className="empty-state artifact-space-empty">Loading spaces...</div>
+            ) : null}
+            {!artifactSpacesLoading && !artifactSpacesError && (artifactSpaces?.spaces.length ?? 0) === 0 ? (
+              <div className="empty-state artifact-space-empty">No artifact spaces.</div>
+            ) : null}
+            {artifactSpaceTree.length > 0 ? (
+              <ArtifactSpaceTree
+                nodes={artifactSpaceTree}
+                selectedPath={selectedSpacePath}
+                expandedPaths={expandedSpacePaths}
+                onToggle={toggleSpacePath}
+                onSelect={selectSpaceFilter}
+                root
+              />
+            ) : null}
+          </div>
+        </dialog>
+      ) : null}
       {uploadDialogOpen ? (
         <div className="modal-backdrop" onClick={closeUploadDialog} role="presentation">
           <section

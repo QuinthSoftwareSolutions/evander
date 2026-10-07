@@ -180,7 +180,8 @@ def test_effect_worker_runs_wal_checkpoint_maintenance_from_worker_cycle(
     completed = Event()
     cycle_calls = []
 
-    def maintenance(config):
+    def maintenance(config, *, run_garbage_collection):
+        assert run_garbage_collection is True
         cycle_calls.append((config.orchestration_store_path, get_ident()))
         completed.set()
         return OrchestrationWalCheckpointResult(attempted=True, wal_size_bytes=128)

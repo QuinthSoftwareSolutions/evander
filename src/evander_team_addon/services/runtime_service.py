@@ -37,6 +37,7 @@ from ..repository import (
 from ..sqlite_store import (
     TeamStateSqliteCommandTransaction,
 )
+from ..sqlite_dispatch_bookkeeping import TeamDispatchBookkeepingScope
 from ..models import (
     SCHEMA_VERSION,
     AgentContextClearingPolicy,
@@ -169,7 +170,7 @@ class TeamRuntimeService:
         self._event_bus_factory = event_bus_factory
 
     def _update_lifecycle_state(self, mutator, *, expected_revision=None) -> TeamState:
-        # Only the known-pure activation/native-thread/governance callbacks use
+        # Only the known-pure activation/governance callbacks use
         # this path. Other APIs retain their transactional callback semantics.
         update = (self._repository.update_prepared if self._repository.maintenance
                   else self._repository.update)
@@ -520,6 +521,7 @@ class TeamRuntimeService:
         agent_id: str,
         dispatch_id: str,
         now: datetime | None = None,
+        state: TeamState | None = None,
     ) -> TeamState:
         """Record that a PREPARING reservation is backed by a durable prompt."""
 
@@ -527,7 +529,7 @@ class TeamRuntimeService:
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
         effective_now = _ensure_utc(now or utc_now())
 
-        def _mutate(state: TeamState) -> TeamState:
+        def _mutate(state: TeamDispatchBookkeepingScope) -> TeamDispatchBookkeepingScope:
             dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
             if dispatch.agent_id != normalized_agent_id:
                 raise ValueError(
@@ -557,7 +559,9 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        return self._update_lifecycle_state(_mutate)
+        return self._repository.update_dispatch_bookkeeping(
+            _mutate, dispatch_ids=[normalized_dispatch_id], snapshot=state,
+        )
 
     def activate_delivered_agent_dispatch(
         self,
@@ -747,7 +751,7 @@ class TeamRuntimeService:
 
     @staticmethod
     def _dispatch_native_thread_update_is_due(
-        state: TeamState,
+        state: TeamState | TeamDispatchBookkeepingScope,
         *,
         dispatch: TeamDispatch,
         thread_id: str | None,
@@ -774,7 +778,7 @@ class TeamRuntimeService:
 
     @staticmethod
     def _record_dispatch_native_thread_in_state(
-        state: TeamState,
+        state: TeamState | TeamDispatchBookkeepingScope,
         *,
         dispatch: TeamDispatch,
         thread_id: str | None,
@@ -832,7 +836,7 @@ class TeamRuntimeService:
         effective_now = _ensure_utc(now or utc_now())
         recorded = False
 
-        def _mutate(state: TeamState) -> TeamState:
+        def _mutate(state: TeamDispatchBookkeepingScope) -> TeamDispatchBookkeepingScope:
             nonlocal recorded
             dispatch = state.dispatches.get(dispatch_id)
             if dispatch is None or dispatch.session_id != session_id:
@@ -846,7 +850,9 @@ class TeamRuntimeService:
             )
             return state
 
-        return self._update_lifecycle_state(_mutate), recorded
+        return self._repository.update_dispatch_bookkeeping(
+            _mutate, dispatch_ids=[dispatch_id],
+        ), recorded
 
     def reconcile_agent_dispatch_native_threads(
         self,
@@ -863,7 +869,10 @@ class TeamRuntimeService:
         """
         effective_now = _ensure_utc(now or utc_now())
 
-        def is_due(current: TeamState, receipt: AgentDispatchNativeThreadReceipt) -> bool:
+        def is_due(
+            current: TeamState | TeamDispatchBookkeepingScope,
+            receipt: AgentDispatchNativeThreadReceipt,
+        ) -> bool:
             dispatch = current.dispatches.get(receipt.dispatch_id)
             if dispatch is None or dispatch.session_id != receipt.session_id:
                 return False
@@ -923,7 +932,7 @@ class TeamRuntimeService:
         if not selected:
             return state, deferred
 
-        def mutate(current: TeamState) -> TeamState:
+        def mutate(current: TeamDispatchBookkeepingScope) -> TeamDispatchBookkeepingScope:
             for receipt in selected:
                 if not is_due(current, receipt):
                     continue
@@ -933,11 +942,13 @@ class TeamRuntimeService:
                 )
             return current
 
-        return self._update_lifecycle_state(mutate), deferred
+        return self._repository.update_dispatch_bookkeeping(
+            mutate, dispatch_ids=[receipt.dispatch_id for receipt in selected], snapshot=state,
+        ), deferred
 
     @staticmethod
     def _apply_dispatch_native_thread_receipt(
-        state: TeamState, *, dispatch: TeamDispatch,
+        state: TeamState | TeamDispatchBookkeepingScope, *, dispatch: TeamDispatch,
         receipt: AgentDispatchNativeThreadReceipt, now: datetime,
     ) -> None:
         """Save the target receipt before its lease/lineage owner can be released."""
@@ -1096,6 +1107,7 @@ class TeamRuntimeService:
         dispatch_id: str,
         granted_tool_names: list[str] | tuple[str, ...],
         now: datetime | None = None,
+        state: TeamState | None = None,
     ) -> TeamState:
         """Open the evidence window only after the policy grant is confirmed."""
 
@@ -1106,7 +1118,7 @@ class TeamRuntimeService:
         }
         effective_now = _ensure_utc(now or utc_now())
 
-        def _mutate(state: TeamState) -> TeamState:
+        def _mutate(state: TeamDispatchBookkeepingScope) -> TeamDispatchBookkeepingScope:
             dispatch = _require_present(
                 state.dispatches,
                 normalized_dispatch_id,
@@ -1144,7 +1156,9 @@ class TeamRuntimeService:
             receipt.grant_confirmed_at = effective_now
             return state
 
-        return self._repository.update(_mutate)
+        return self._repository.update_dispatch_bookkeeping(
+            _mutate, dispatch_ids=[normalized_dispatch_id], snapshot=state,
+        )
 
     def record_agent_role_description_delivered(
         self,
@@ -1164,7 +1178,7 @@ class TeamRuntimeService:
         )
         effective_now = _ensure_utc(now or utc_now())
 
-        def _mutate(state: TeamState) -> TeamState:
+        def _mutate(state: TeamDispatchBookkeepingScope) -> TeamDispatchBookkeepingScope:
             dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
             if dispatch.agent_id != normalized_agent_id:
                 raise ValueError(
@@ -1176,7 +1190,9 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        return self._repository.update(_mutate)
+        return self._repository.update_dispatch_bookkeeping(
+            _mutate, dispatch_ids=[normalized_dispatch_id],
+        )
 
     def renew_agent_dispatch_lease(
         self,

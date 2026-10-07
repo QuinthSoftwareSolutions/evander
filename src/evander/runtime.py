@@ -186,6 +186,24 @@ class RuntimeContext:
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
 
+    @property
+    def inbound_phone_routing_service(self):
+        from evander.admin.services.inbound_phone_routing_service import InboundPhoneRoutingService
+
+        return InboundPhoneRoutingService(self)
+
+    @property
+    def teams_voice_service(self):
+        from evander.admin.services.teams_voice_service import TeamsVoiceService
+
+        return TeamsVoiceService(self)
+
+    @property
+    def voice_visual_store(self):
+        from evander.voice_visuals import VoiceVisualStore
+
+        return VoiceVisualStore(self.config.runtime_dir)
+
     def register_outbound_identity_resolver(
         self, source: str, resolver: OutboundIdentityResolver
     ) -> None:
@@ -516,6 +534,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     runtime_context.policy.set_approval_notification_dispatcher(
         ApprovalNotificationDispatcher(runtime=runtime_context, project_dir=Path.cwd())
     )
+    runtime_context.teams_voice_service.cleanup_visual_context()
     return runtime_context
 
 

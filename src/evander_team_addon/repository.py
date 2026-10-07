@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,13 @@ from .sqlite_store import (
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
     TeamStateReadProjection,
+    TeamDeliverableTriggerSnapshot,
 )
 from .lifecycle_candidates import LifecycleCandidatePage
+from .sqlite_dispatch_bookkeeping import (
+    TeamDispatchBookkeepingConflictError,
+    TeamDispatchBookkeepingScope,
+)
 
 ADDON_ID = "team-addon"
 STATE_FILE = STATE_DB_FILE
@@ -56,8 +62,19 @@ class TeamStateRepository:
     def read(self) -> TeamState:
         return self.store.read_state()
 
+    def deliverable_trigger_snapshot(
+        self,
+        *,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        producer_agent_id: str | None = None,
+    ) -> AbstractContextManager[TeamDeliverableTriggerSnapshot]:
+        return self.store.deliverable_trigger_snapshot(
+            team_id=team_id, project_id=project_id, producer_agent_id=producer_agent_id,
+        )
+
     def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
-        """Return a read-only subset; mutations must always use full state."""
+        """Return a read-only subset; it cannot be passed to generic state writes."""
 
         return self.store.read_projection(collections=collections)
 
@@ -117,6 +134,60 @@ class TeamStateRepository:
         return self.commit_prepared_state_with_command_transaction(
             previous_payload=baseline, candidate=candidate, command_writer=lambda _tx: None,
         )
+
+    def update_dispatch_bookkeeping(
+        self,
+        mutator: Callable[[TeamDispatchBookkeepingScope], object],
+        *,
+        dispatch_ids: Sequence[str],
+        snapshot: TeamState | None = None,
+    ) -> TeamState:
+        """Patch a current snapshot using bounded, relationship-preserving writes.
+
+        A projection remains a projection: it is never persisted as complete
+        state. The store validates only the explicit bookkeeping rows. Stale
+        snapshots are refreshed before the callback runs, with bounded retries.
+        Continued revision churn falls back to current rows under the writer
+        lock and a fresh snapshot, preserving already accepted queued prompts.
+        """
+        # Fail before committing if the supplied projection omitted these fields.
+        if snapshot is not None:
+            snapshot.dispatches
+            snapshot.agent_runtimes
+        for attempt in range(3):
+            try:
+                scope, state = self.store.update_dispatch_bookkeeping(
+                    mutator, dispatch_ids=dispatch_ids,
+                    expected_revision=snapshot.revision if snapshot is not None else None,
+                    include_state=snapshot is None,
+                )
+                break
+            except TeamDispatchBookkeepingConflictError:
+                assert snapshot is not None
+                if attempt == 2:
+                    _, state = self.store.update_dispatch_bookkeeping(
+                        mutator,
+                        dispatch_ids=dispatch_ids,
+                        state_collections=(
+                            sorted(snapshot._loaded_collections)
+                            if isinstance(snapshot, TeamStateReadProjection)
+                            else None
+                        ),
+                    )
+                    assert state is not None
+                    return state
+                snapshot = (self.read_projection(collections=sorted(snapshot._loaded_collections))
+                            if isinstance(snapshot, TeamStateReadProjection) else self.read())
+        if snapshot is None:
+            assert state is not None
+            return state
+        return snapshot.model_copy(update={
+            "schema_version": scope.schema_version,
+            "revision": scope.revision,
+            "updated_at": scope.updated_at,
+            "dispatches": {**snapshot.dispatches, **scope.dispatches},
+            "agent_runtimes": {**snapshot.agent_runtimes, **scope.agent_runtimes},
+        })
 
     def update_with_outbox(
         self,

@@ -33,6 +33,7 @@ DIRECTORY_CONFIG_METADATA_DOMAINS_KEY = "domains"
 DIRECTORY_CONFIG_ROOT_DIRNAME = "directory-config"
 
 DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
+    "events": "events.json",
     "privacy": "privacy.json",
     "policy": "policy.json",
     "providers": "providers.json",
@@ -72,6 +73,7 @@ LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS = frozenset(
 )
 
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
+    "events": frozenset({"events"}),
     "privacy": frozenset({"privacy"}),
     "policy": frozenset(
         {
@@ -208,6 +210,11 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "didww_sip_bridge_token_env",
             "didww_from_number",
             "inbound_phone_routes",
+            "inbound_phone_caller_maps",
+            "teams_call_enabled",
+            "teams_call_visual_context_enabled",
+            "teams_call_routes",
+            "teams_call_max_concurrency",
             "semantic_embedding_dimensions",
             "semantic_embedding_model",
             "semantic_embedding_provider",
@@ -570,6 +577,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
         return {"contacts": {}, "user_contact_links": {}}
     if domain == "connectors":
         return {"auth_profiles": {}, "connectors": {}}
+    if domain == "events":
+        return {"events": {}}
     if domain == "host_directories":
         return {"host_directories": {}}
     if domain == "pr_template":
@@ -578,6 +587,10 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
 
 
 def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if domain == "events":
+        from evander.events.schema import EventDirectoryConfig
+
+        return EventDirectoryConfig.model_validate(payload).model_dump(mode="json")
     if domain == "gateway":
         validated = GatewayConfig.model_validate(payload)
         return validated.model_dump(mode="json")
@@ -673,6 +686,13 @@ class DirectoryConfigStore:
         )
 
     def write(self, reference: str, *, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if domain == "providers" and isinstance(payload, dict):
+            if self._service.show(reference).directory.path != "root" and "inbound_phone_caller_maps" in payload:
+                raise ValueError("Inbound phone caller maps may be configured only in root providers.json")
+            if self._service.show(reference).directory.path != "root" and any(
+                field in payload for field in ("teams_call_routes", "teams_call_max_concurrency")
+            ):
+                raise ValueError("Teams call routing and concurrency may be configured only in root providers.json")
         original_domain = domain
         domain = self._normalize_domain_name(domain)
         directory = None
@@ -748,6 +768,10 @@ class DirectoryConfigStore:
     @classmethod
     def validate_domain_payload(cls, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
         domain = cls._normalize_domain_name(domain)
+        if domain == "events":
+            from evander.events.schema import EventDirectoryConfig
+
+            return EventDirectoryConfig.model_validate(payload).model_dump(mode="json", exclude_unset=True)
         if not isinstance(payload, dict):
             raise ValueError(
                 f"directory config payload for domain {domain!r} must be a JSON object"
@@ -1067,6 +1091,13 @@ class DirectoryConfigResolver:
             # Profiles are live grants, not bootstrap defaults. A loaded GatewayConfig
             # may contain yesterday's root profiles; only current layers may grant them.
             effective["managed_website_sessions"] = {}
+        if domain == "providers":
+            # Routing and enablement are live grants, not cached process defaults.
+            effective["teams_call_routes"] = []
+            effective["teams_call_enabled"] = False
+            effective["teams_call_visual_context_enabled"] = False
+            effective["inbound_phone_caller_maps"] = []
+            effective["inbound_phone_routes"] = []
         provenance: dict[str, DirectoryConfigValueSource] = {}
         if base_config is not None:
             self._mark_provenance(
@@ -1083,6 +1114,12 @@ class DirectoryConfigResolver:
                 continue
             if domain == "providers":
                 overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
+                if directory.path != "root" and "inbound_phone_caller_maps" in overlay:
+                    raise ValueError("Inbound phone caller maps may be configured only in root providers.json")
+                if directory.path != "root" and any(
+                    field in overlay for field in ("teams_call_routes", "teams_call_max_concurrency")
+                ):
+                    raise ValueError("Teams call routing and concurrency may be configured only in root providers.json")
                 if directory.path != "root" and "local_openai_max_concurrency" in overlay:
                     raise ValueError(
                         "local_openai_max_concurrency is host-global and may be configured only "
@@ -1112,7 +1149,9 @@ class DirectoryConfigResolver:
                 ) | frozenset(
                     ("classification", "profiles", profile_id)
                     for profile_id in ((overlay.get("classification") or {}).get("profiles") or {})
-                )) if domain == "providers" else frozenset(),
+                )) if domain == "providers" else frozenset(
+                    ("events", name) for name in (overlay.get("events") or {})
+                ) if domain == "events" else frozenset(),
             )
 
         validation_errors: list[str] = []

@@ -28,6 +28,16 @@ sources and reference their environment-variable names in provider configuration
 
 ### Related feature configuration
 
+Native Teams calls use root-only `teams_call_routes` and `teams_call_max_concurrency`, plus
+directory-scoped `teams_call_enabled` and `teams_call_visual_context_enabled` (both false by default).
+Visual context requires an image-capable Realtime model and an approval-free
+`get_voice_query_visual_context` grant for the mapped assistant. See [Teams assistant calls](teams-calls.md)
+for the explicit map schema, authorization checks, and bridge credentials.
+
+Independent add-ons own their configuration guides. See the
+[WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
+and the [add-on project convention](addons.md#project-ownership).
+
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,
 `allow_baseline_exceptions`, and `command_failure_action`. See
@@ -283,6 +293,30 @@ Readers accept both layouts. The explicit
 converts existing rows in resumable offline batches and creates deferred maintenance indexes.
 Startup performs schema readiness checks without rewriting all retained records. Before running
 an older release, rehydrate referenced records with the documented downgrade command.
+
+The background storage lane advances history indexing and retention every second. Bounded scalar
+and payload garbage collection continues at that cadence while sweep cursors or deletions remain,
+then waits 30 seconds between completed idle sweeps. Garbage-collection failures retain the shorter
+retry cadence. Each scalar table and the payload collector durably retain their own completion
+markers while other components finish. Sweeps that delete data run a clean follow-up before the
+idle pause, including to reclaim payload children orphaned behind the cursor. The next scheduled
+sweep resets the completed markers and checks newly unreferenced data.
+
+The separate execution-history payload retention phase checks at most 1,000 blob keys
+per pass, even when its adaptive deletion limit is one. A durable cursor advances past
+referenced blobs and resumes after restart; a fixed upper key lets the sweep finish
+while new payloads arrive. Reference checks, deletions and progress commit together.
+Newly orphaned blobs behind the cursor, and blobs beyond the upper key, wait for the
+next daily retention sweep.
+
+History indexing prepares fields outside the writer transaction and commits at most 100 fields
+per batch within a 100 ms SQL execution budget. Execution timeouts roll back the batch and persist
+a smaller field limit, down to one; fully used fast batches recover toward 100. An indexing
+execution timeout leaves the remaining maintenance phases eligible to run, then waits one second
+before retrying even if history jobs remain pending at the one-field limit. An occupied writer
+or repository lock yields the rest of that pass to foreground work without reducing the field limit.
+A completed execution-history backfill skips trigger-queue readiness queries;
+unfinished backfill waits for pending and inflight trigger deliveries to finish.
 
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
 keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
@@ -558,6 +592,76 @@ cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger sto
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
 
+The editor's **Trigger manually** action queues only the selected saved, enabled
+`trigger:event` node, using its configured event type without adding a prefix. It
+uses the normal event envelope (`payload` contains the form's JSON object) and
+does not publish to other event listeners. The session-authenticated endpoint is
+`POST /api/workflow-editor/nodes/{node_id}/trigger`; its body requires
+`expected_revision`, a JSON-object `payload`, and a non-empty `request_id` (up to
+128 characters), with optional `workflow_pack` and `correlation_key`. For registered
+events it also requires `schema_revision`, obtained from
+`GET /api/workflow-editor/nodes/{node_id}/event-schema` (with optional `workflow_pack`). It checks
+`workflow_runs.control` in the saved workflow directory and returns HTTP 202 with
+`event_id` and `trace_id`. Retries with the same operator, node, and request ID
+reuse the queued event; use a new request ID for an intentional new run. A fixed
+trigger correlation key is used automatically and conflicting values are rejected.
+Accepted attempts are resolved before checking current workflow and schema revisions, so
+an unchanged retry can recover its original run after a save or lost response.
+Retry payload comparison ignores object-key order and distinguishes booleans from
+numbers; changing the payload while reusing a request ID is rejected.
+Execution uses the existing runtime configuration behavior; the revision check
+does not pin downstream execution to a snapshot. Registered events render structured
+fields; unsupported schema constructs use a JSON sub-editor. Unregistered events
+retain JSON entry with a notice. The server rejects invalid payloads before queuing,
+returning `details.failures` with `code`, JSON Pointer `path`, and `message`. A stale
+schema returns HTTP 409. `POST /api/workflow-editor/nodes/{node_id}/validate-event`
+checks a `payload` and `schema_revision` without queuing. Shared nodes whose directories
+resolve different schemas cannot be manually triggered until the definitions agree.
+
+#### Event definitions
+
+In **Configuration → Automation & Assignment → Events**, directory owners can create
+and override event definitions using the existing privileged-operations unlock and
+revision checks. Definitions live in the `events` directory domain, stored as
+`runtime/directory-config/root/.../events.json`. Core and enabled provider/add-on
+catalog entries provide defaults; root and child definitions override them by event
+type. Each local definition replaces the whole inherited definition. Removing a local
+definition restores inheritance. `GET /api/admin/event-schemas?directory_path=root`
+returns local configuration, effective and inherited entries, and a revision;
+`PUT` accepts `expected_revision` and the complete local `config`.
+
+```json
+{
+  "events": {
+    "custom.answer": {
+      "label": "Answer received",
+      "description": "An operator's answer to a pending request.",
+      "payload_schema": {
+        "type": "object",
+        "properties": {
+          "answer": {"type": "string", "enum": ["yes", "no"]},
+          "count": {"type": "integer", "minimum": 0}
+        },
+        "required": ["answer"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+Schemas use JSON Schema Draft 2020-12 and declare an object payload. Document-local
+references are supported; remote references and unresolved references are rejected
+on save. References resolve within their schema resource, including nested `$id`
+scopes. Manual forms use JSON entry for resources declaring `$id` and references
+with sibling constraints. Standard format checks run during validation. Validation
+does not coerce types, insert defaults, or modify payloads. Form defaults are editable
+initial values.
+Add-ons declare `payload_schema` on their existing `internal_event_catalog_entries`.
+Automatic event publication, scheduling, and external ingress continue to accept
+object payloads without applying these schemas; add an explicit validation gate to
+enforce a contract in a workflow.
+
 `trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
 `stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
 `path_prefix`; the two filters are mutually exclusive. Its payload includes the originating
@@ -738,6 +842,7 @@ Type-specific keys:
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:switch` | `cases` | `default_port`, `outputs` |
 | `gate:validate` | `checks` | `outputs` |
+| `gate:event:validate` | `event_type`, `payload` | `outputs` |
 | `gate:for` | `items` | `outputs` |
 | `gate:while` | `when`, `max_iterations` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
@@ -792,6 +897,16 @@ passes and to `invalid` when any predicate fails. Both routes preserve the upstr
 failed check's `code` and `message`, in configuration order. These four gate-owned fields replace
 incoming fields with the same names. Predicate configuration or runtime evaluation errors use the
 standard `error` lifecycle route instead of being reported as business-validation failures.
+
+`gate:event:validate` resolves its bindable `event_type` and `payload`, then checks the
+body against the effective event schema in its persisted workflow directory. Connecting
+an event trigger to a new validator initializes both bindings. It routes to `valid` or
+`invalid` and preserves the incoming event data, adding `valid`, `event_type`,
+`schema_revision`, `schema_source`, and `failures` (stable `code`, JSON Pointer `path`,
+and `message`). These gate-owned fields replace incoming fields with the same names.
+A missing schema routes to `invalid` with `schema.not_registered`; binding, configuration,
+or schema evaluation errors use the standard `error` route. Execution records retain
+the directory, schema revision, and definition source used for the check.
 
 `gate:while` evaluates its `when` predicate on each activation and routes to `body` while the
 predicate is true and `max_iterations` has not been reached. It routes to `done` when the predicate
@@ -954,7 +1069,9 @@ checkout and the checkout is an ancestor of the cached configured-branch tip. A 
 explicitly advances the worker trust record, allowing an assistant-requested fetch or pull to
 survive even if the control-plane cache has since advanced farther along the same branch. Divergent
 or arbitrary local commits remain rejected. Preparation still validates the repository source,
-clean working tree, detached read-only configuration, and session access. If both the worker
+unchanged tracked and staged files, detached read-only configuration, and session access.
+Unrelated untracked files are preserved and do not block reuse or refresh. A checkout update
+fails if it would overwrite a local untracked file, including an ignored file. If both the worker
 checkout and a cached managed-mirror commit are missing, preparation fails clearly instead of
 silently initializing the mirror from upstream. Materializing a missing worker checkout still uses
 the managed Git read endpoint and therefore its normal freshness enforcement; after that mandatory
@@ -2148,6 +2265,7 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
 | `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Evander session. |
+| `inbound_phone_caller_maps` | root `providers.json` only | Explicit called-DID and caller-number assignments to active agent sessions. Each DID references an existing inbound route for its prompt and caller policy; unmapped callers are rejected. |
 
 ### Inbound phone route keys
 
@@ -2173,6 +2291,15 @@ JSON stores. Accepted inbound calls are first provisioned through
 sanitized status and transcript data back through
 `POST /voice-sessions/{voice_session_id}/bridge-result` so the gateway-owned voice-session store can
 schedule the origin-session reconciliation wake.
+
+`inbound_phone_caller_maps` defaults to `[]`. Each entry contains a normalized `did`, an
+existing `route_id`, and a `callers` array of `{caller_number, session_id, directory_path}`
+assignments. There is one map per DID and one target per normalized caller within that DID.
+An empty `callers` array rejects every caller while retaining caller routing for that DID;
+removing its map restores fixed routing. Configuration changes apply to new calls without
+restart, and existing calls retain their original destination. See
+[caller routing to agent sessions](operations.md#caller-routing-to-agent-sessions) for operator
+instructions and an example.
 
 ### DIDWW SIP bridge service keys
 
@@ -2657,14 +2784,18 @@ and user lookup. Retryable failure of one target does not delay healthy targets.
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
 `target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
 `backoff_seconds` remains reserved for worker-wide configuration or store failures.
-Timeouts, transport failures, and Graph `5xx` responses instead use the shorter
+Background Graph polls hand a timed-out request directly to durable target backoff, without
+retrying the request inside the worker cycle. Interactive Teams requests retain their configured
+retry behavior. Timeouts, transport failures, and Graph `5xx` responses use the shorter
 `target_transient_backoff_initial_seconds` (default `5`) and
 `target_transient_backoff_max_seconds` (default `30`) progression. Graph `429` responses honor
 `Retry-After`, while authentication and other non-transient failures retain the longer cooldown.
 `max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
-polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
-direct-chat discovery remain serial; directories are processed one at a time, so the configured
-limit is global to the worker cycle. Choose a limit that fits the deployment's Graph quota and workload; restart
+polls across the worker (range `1`–`32`, default `4`). Completed target polls are ingested and wake
+the trigger worker while slower targets are still running. An explicit value of `1` selects serial
+polling. Directory selection, sender resolution, and direct-chat discovery remain serial;
+directories are processed one at a time, so the configured limit is global to the worker cycle.
+Choose a limit that fits the deployment's Graph quota and workload; restart
 `evander-teams-ingest.service` after changing this worker setting.
 
 `publish_trigger_events_directly` defaults to `true`. Each Teams ingest cycle captures one compiled

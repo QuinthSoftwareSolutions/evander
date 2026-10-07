@@ -1,0 +1,123 @@
+Operator UX review — 2026-10-01
+
+Scope: Admin Web and the seven standalone add-on interfaces. Findings were
+identified from the current components and checked with synthetic browser data.
+This review does not claim validation against a live deployment or every provider.
+
+Implemented findings
+
+Dashboard: release news preceded operator attention, shortcut icons repeated the
+navigation, and service details required another disclosure. Attention now comes
+first in visual and reading order; service health has one disclosure. A single
+failed service opens directly, and storage warnings reveal and scroll to capacity.
+Healthy empty inventories no longer show partial-data or unavailable warnings.
+
+Agents: long rows of icon-only actions were hard to distinguish. Common actions
+have text; secondary actions have a named menu. Host internals are disclosed.
+
+Sessions: monitoring, model/access forms, schedules, history and JSON competed in
+one long view. Three sections retain mounted drafts, mark unsaved changes, and
+keep Save near the settings header. Access fields have focused groups. Each wake
+schedule has a direct enable/disable action; VM references link to its record.
+
+Workers: settings crowded monitoring and Save was far from its fields. Status
+and logs are separate from settings; drafts survive switching, and Save retains
+the expected revision. Common lifecycle buttons are labeled.
+The inventory can be refreshed before selecting a worker.
+
+Approvals: advanced filters consumed the queue and Review wrapped more panels.
+Secondary filters are disclosed with a clear reset. Review sections are siblings;
+session/VM links open records directly. Payload, reason, warnings and decision
+controls remain visible, including locked and expired states.
+
+Issues and VMs: issue creation required two clicks even for the default VM;
+bootstrap choices were nested inside another create panel. Default creation is
+direct, custom choices remain available, and bootstrap fields are flat. Secondary
+labels/metadata are disclosed.
+
+Artifacts: date filters and checksums crowded the inventory; key lookup required
+a separate click. Enter resolves a key, secondary filters are disclosed, and
+checksum/file details remain in the inspector. Session references link directly.
+
+Tool calls: filters and repeated metadata overwhelmed inspection, and related
+record buttons lost their record IDs. Search/status stay visible; other filters
+are disclosed and reset together. The table is compact and normalized JSON is
+disclosed. Record links preserve run/trace and agent/session identifiers.
+
+Reports and Privacy: report tables duplicated detail fields and privacy's complete
+coverage table preceded routine actions. Tables show comparison fields; remaining
+metrics remain in selected details. Complete dataset coverage is disclosed;
+incomplete coverage opens automatically and readiness blockers remain visible.
+
+Workflow: node creation required kind/family traversal and desktop lacked search.
+Search results are directly clickable, families are flat, current runs precede
+historical lookup, and Save is available in the compact toolbar. Technical run
+IDs are disclosed. Selected pack changes appear next to their history row.
+
+Configuration and MCP policy: save controls were icon-only or duplicated.
+One clearly labeled save action remains. Pricing rules use a searchable collection
+instead of every full editor at once; new/duplicated rules open automatically,
+source indices remain authoritative, and revision readback resets selection.
+Incomplete regex drafts survive rule collapse/filtering, show a validation summary,
+and block Save until corrected.
+
+Users: the editor repeated the whole user catalog and Save preceded assignments.
+Search retains drafts; the catalog is shown once and shared Save includes access.
+
+Add-ons: selected detail repeated the full enablement catalog. A selected-record
+toggle replaces that duplicate while preserving draft/revision save semantics.
+
+Managed Git: operations followed lengthy metadata, registration, identity and
+index history. Operations move to the toolbar; supporting metadata, identity and
+index controls are disclosed. Registration opens when the inventory is empty.
+
+Subscriptions: signed-out accounts required opening detail before Login and
+diagnostics displaced account actions. Login is directly available in its row;
+account actions precede diagnostics, retaining reset confirmation and retry state.
+
+Tool visibility: context/count cards crowded tools and rows lacked keyboard
+inspection. Counts now filter the inventory directly; context is disclosed and
+tool names open details using keyboard-operable buttons.
+
+Connectors, skills and host directories: redundant operation/schema wrappers,
+upload panels and empty diagnostics displaced the current task. Operation details
+are flatter, credentials have a direct link, the skill editor precedes upload,
+and empty host recovery details are disclosed. Active warnings remain visible.
+
+Team: dashboard attention linked to a view and required team/project/record
+selection. Task links select their scoped board and focus the record; inbox
+attention opens the recipient agent.
+
+Bokio and Miro: supporting JSON/history crowded approval payloads and selected
+operation details appeared after the entire activity list. Bokio discloses
+supporting evidence; Miro details appear in their row and readback receives focus.
+
+Reviewed without changing the interaction
+
+Shell navigation, quick page search, notifications, assistant chat, inference-cost
+charts, classification, credential/website/email editors and personal ADO sign-in
+already have focused tasks or intentional authentication boundaries.
+
+Workflow tutorials, generation preview/accept, manual triggers, output copy and
+specialized node execution filters retain their task-specific boundaries. Graph
+metadata still uses Apply then Save to validate/stage the complete graph edit and
+preserve undo. Combining those steps needs a separate atomic persistence design.
+
+Team delivery/evidence history, Figma settings/permissions, Skatteverket settings,
+MSSQL seed tables and WordPress config/change details already use appropriate
+focused views or disclosures. WordPress screenshot review stays expanded for
+visual approval and recovery. Destructive confirmations, preview requirements,
+privilege gates and revision checks remain part of the operator flows.
+
+Verification
+
+Final frontend suites: 179 unit tests and 52 browser tests passed. Browser checks
+include mobile layout, direct record navigation, advanced-filter reset, revision
+and privilege handling, invalid pricing drafts, and preserved session/worker drafts.
+Focused session, worker, approval, agent, issue, workflow and Team smoke checks
+also passed. Production build, shared design asset checks for six add-ons, and
+five Python asset-serving checks passed. Original checkout remains clean.
+
+Release version: 0.78.0 with synchronized package versions and changelog.
+Worktree: /tmp/evander-operator-ux-pass, branch feat/operator-ux-pass.
+No live deployment was changed.

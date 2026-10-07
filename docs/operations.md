@@ -1,5 +1,9 @@
 # Operations
 
+For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
+Its setup verifies recovery before enabling writes, and its directory-scoped workflow
+resumes publication, live checks and conditional restore after a worker restart.
+
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 [systemd services](#systemd-services). For an existing deployment, start with
@@ -12,6 +16,7 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
 | Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
 | Configure communications | [Teams](#microsoft-teams-delegated-auth), [Discord](#host-side-discord-access), and [email](#host-side-email-access) |
+| Call an existing assistant through Teams, with camera or screen context | [Teams assistant calls](teams-calls.md) |
 | Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
 | Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
 
@@ -334,6 +339,47 @@ services. Repeat the same command until its JSON result has `complete: true`, th
 cursor, so an interrupted invocation resumes. Existing maintenance index construction runs before
 the conversion batches and is not limited by `--max-batches`. Use a representative database copy
 to measure this step before scheduling the outage.
+
+To build only deferred maintenance indexes, use:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --indexes-only --apply --offline
+```
+
+Stop every database user and take a verified consistent backup first, as above. This mode builds
+and validates indexes without rewriting operational payloads or retention progress. Its JSON
+result reports `direction: "indexes_only"`, zero processed rows, and `complete: true` when all
+required indexes are ready. It cannot be combined with `--downgrade` or `--max-batches`; completed
+indexes survive an interrupted build and rerunning skips them. Rehearse the build on a representative
+copy to measure the outage, then checkpoint the WAL and check readiness before restarting all
+database users on the same release. A mismatched existing index definition fails validation rather
+than replacing it automatically.
+
+Source retention uses five partial expression indexes for delivered events, completed effects and
+gates, and acknowledged failed effects and gates. Each range yields at most the effective record
+batch limit; the merged batch selects the oldest eligibility timestamps, breaking ties by source
+ID and execution kind. Payload byte accounting looks up only each source's reachable blobs. The
+existing payload byte cap, history indexing requirement, and transactional
+eligibility recheck still apply. Fresh databases create these indexes during initialization; existing
+databases defer source cleanup with `maintenance_indexes_required` until the offline build succeeds.
+Adding these indexes does not require payload conversion, a history rebuild, or `VACUUM`.
+
+Workflow-event, internal-event and published scheduled-event retention uses the existing age
+indexes in timestamp/key order. History field-index batches durably shrink after execution
+timeouts and recover after fast full batches; incomplete generations remain hidden from field
+search. Execution deadlines do not suppress independent maintenance phases and preserve the
+one-second retry pause even at the one-field limit. Writer lock contention still yields the pass
+to foreground work. These changes use existing tables and indexes and can be deployed without
+another offline storage migration.
+
+Execution-history payload cleanup scans at most 1,000 blob keys per retention pass,
+independently of the adaptive deletion limit. It saves the cursor and a fixed upper
+key in the existing retention progress metadata. Reference checks, deletion and
+cursor updates share the writer transaction, so a timeout rolls them all back and
+a restarted worker resumes the committed position. Ranges with no orphans advance
+the cursor instead of rechecking the entire retained prefix. Newly unreferenced
+blobs behind the cursor or beyond the upper key wait for the next daily retention
+sweep. No additional tables, indexes or offline migration are needed.
 
 For rollback to a release that only understands inline operational records, keep all database users
 stopped and run the **new release's CLI** before starting the old executable:
@@ -861,6 +907,19 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- To run an event workflow manually, select its `trigger:event` node and click
+  **Trigger manually** in the inspector. Save or discard any workflow changes first,
+  and enable and save the trigger if it is disabled. Fill the generated event fields;
+  unregistered events retain a JSON editor with a notice. The dialog displays the
+  saved event type and supplies event metadata automatically. A configured correlation key is fixed; otherwise one may
+  be entered. **Trigger node** queues only the selected node and its downstream flow.
+  **Inspect run** opens the queued run when you have run-read access. This action
+  requires `workflow_runs.control` in the workflow's directory. **Validate payload**
+  checks the registered schema without starting a run; submission also validates on
+  the server. **Reload event definition** refreshes a stale schema while retaining
+  entered values. Manage schemas in **Configuration → Automation & Assignment → Events**.
+  Use `gate:event:validate` when automatic workflows should validate event bodies;
+  event publishing itself remains unchanged.
 - Admin Web and workflow API pack mutations write internal change history under
   `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
   `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger
@@ -1949,6 +2008,64 @@ creating the voice-session record. `route_prompt` becomes the projected Realtime
 prompt; `startup_text` is the caller-facing greeting. Raw DID and caller numbers are normalized
 for matching, but only redacted or hashed forms are stored in audit logs and JSON stores.
 
+#### Caller routing to agent sessions
+
+To share one DIDWW number across agent sessions, open **Configuration → root → People &
+Communications → Phone calls → Caller routing**. Unlock operations, add a called number,
+select its existing inbound phone route, then add caller phone numbers and choose their
+agent sessions. The picker lists all active sessions, including issue and worker sessions;
+the destination does not need to be a personal assistant. Save changes to persist the map.
+
+The root `providers.json` representation is:
+
+```json
+{
+  "inbound_phone_caller_maps": [
+    {
+      "did": "+15551230000",
+      "route_id": "ops-main",
+      "callers": [
+        {
+          "caller_number": "+15551230001",
+          "session_id": "agent-session-a",
+          "directory_path": "root/ops"
+        },
+        {
+          "caller_number": "+15551230002",
+          "session_id": "agent-session-b",
+          "directory_path": "root/builds"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each map references one existing `inbound_phone_routes` entry for its voice prompt, greeting
+and caller access policy. Its caller assignments replace that route's default `session_id`
+and directory for mapped calls. The gateway resolves provider and controller settings from
+the selected session's directory and requires that session to remain active in that directory.
+Keep a shared route's prompt appropriate for all destinations. The bridge must have access to
+the controller token environment variable configured in each destination directory, as it does
+for existing fixed routes.
+
+Assignments match both the called DID and caller number. Enter international numbers with
+country codes; formatting and an optional `+` do not affect matching, and the gateway does not
+infer country codes. The same caller can reach different sessions through different DIDs.
+Overlapping caller allowlists do not select a destination; each route's allow/block policy is
+still enforced after the explicit lookup.
+
+Unmapped and withheld callers are rejected. Removing the last caller retains the DID map with
+an empty `callers` list and rejects all calls to that number. Use **Remove called number and
+restore fixed routing** to explicitly disable caller routing for a DID; numbers without a map
+keep their existing fixed routing. A bridge-supplied route ID cannot bypass the map.
+
+Changes apply to new calls without restarting the gateway. Calls already admitted keep their
+original session for delegation and transcript handling. If a destination session is replaced,
+update its assignment; unavailable selections remain visible in the editor rather than being
+silently redirected. Phone numbers remain host-side configuration, while voice stores and audit
+events retain only their redacted or hashed identities.
+
 Configure the OpenAI Realtime key env var and upstream base URL in the DIDWW SIP bridge service
 environment. The gateway does not pass those credential-routing values through each phone-call
 request.
@@ -2065,8 +2182,11 @@ Inbound failure handling is deterministic:
 
 - Route miss or ambiguous DID: the bridge hangs up the inbound Asterisk channel and records a
   sanitized provisioning failure.
-- Unauthorized caller: the gateway returns `403`, no voice-session record is exposed, and the audit
-  log contains only route ids plus redacted/hash identity fields.
+- Missing, invalid, or out-of-scope controller credentials: the gateway returns a generic `401`,
+  including when routing or caller-map lookup fails.
+- Caller policy rejection after controller authentication: the gateway returns `403`, no
+  voice-session record is exposed, and the audit log contains only route ids plus redacted/hash
+  identity fields.
 - Missing or inactive origin session: the gateway rejects the request before exposing a record.
 - ARI bridge or `ExternalMedia` failure after acceptance: the call record ends as `failed`, the
   bridge cleans up the Asterisk channels, and reconciliation is not duplicated.
@@ -3736,8 +3856,10 @@ For persistent read-only assistants, prefer
 effects. By default, the batch effect checks independent managed mirrors concurrently without
 an explicit upstream probe or refresh. It requires a cached branch commit before creating a missing
 worker checkout and otherwise leaves the checkout at its last trusted prepared commit, while still
-enforcing source identity, a clean working tree, detached HEAD, read-only configuration, and session
-access.
+enforcing source identity, unchanged tracked and staged files, detached HEAD, read-only
+configuration, and session access. Unrelated untracked files are preserved and do not block
+preparation. Checkout updates reject conflicting untracked paths, including ignored files,
+without overwriting local work.
 The worker keeps the trusted SHA outside the writable agent home and reports a structured conflict
 when a clean checkout has moved. On that mismatch path only, the control plane uses its local
 managed mirror to require `trusted commit <= checkout HEAD <= cached configured-branch tip`, where

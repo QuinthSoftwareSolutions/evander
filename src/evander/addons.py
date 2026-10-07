@@ -20,7 +20,7 @@ from evander.storage import JsonObjectStore
 
 _ADDON_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _ADDON_PACKAGE_MANIFEST = "addon.json"
-DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src")
+DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src", "packages")
 
 
 class AddonLoaderConfig(BaseModel):
@@ -143,6 +143,7 @@ class AddonRegistration:
     connector_drivers: Mapping[str, Any] = field(default_factory=dict)
     outbound_identity_resolver: OutboundIdentityResolverFactory | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
@@ -160,6 +161,7 @@ class AddonRegistration:
             )
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         object.__setattr__(self, "connector_drivers", dict(self.connector_drivers or {}))
+        object.__setattr__(self, "website_session_adapters", dict(self.website_session_adapters or {}))
         tool_catalog: list[AddonMcpTool] = []
         seen_tool_names: set[str] = set()
         for raw_tool in self.mcp_tool_catalog or ():
@@ -837,6 +839,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             mcp_tool_catalog=value.get("mcp_tool_catalog") or (),
             workflow_providers=value.get("workflow_providers"),
             connector_drivers=value.get("connector_drivers") or {},
+            website_session_adapters=value.get("website_session_adapters") or {},
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
 
@@ -851,6 +854,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         mcp_tool_catalog=getattr(value, "mcp_tool_catalog", ()),
         workflow_providers=getattr(value, "workflow_providers", None),
         connector_drivers=getattr(value, "connector_drivers", {}),
+        website_session_adapters=getattr(value, "website_session_adapters", {}),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )
 

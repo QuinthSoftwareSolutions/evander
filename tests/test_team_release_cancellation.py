@@ -10,6 +10,8 @@ from threading import Barrier
 
 import httpx
 import pytest
+
+from team_ui_controller_harness import controller_script
 from starlette.applications import Starlette
 
 from evander.addons import AddonContext
@@ -567,19 +569,6 @@ def test_cancelled_release_ui_has_no_retry_and_cancel_button_uses_revision():
     node = shutil.which("node")
     if not node:
         pytest.skip("node required for UI behavior test")
-    source = (
-        Path(__file__).resolve().parents[1] / "src/evander_team_addon/ui_static/team-ui.js"
-    ).read_text()
-    controls = source[
-        source.index("function renderReleaseCancellation(") : source.index(
-            "function renderReleaseGateAction("
-        )
-    ]
-    progress = source[
-        source.index("function releaseProgressStages(") : source.index(
-            "function renderReleaseProgress("
-        )
-    ]
     script = (
         """
 const assert = require("node:assert/strict");
@@ -594,20 +583,25 @@ const applyMutationResultPayload = async () => {};
 const API_BASE = "/team";
 const teamFetch = async (url, options) => { sent = {url, ...JSON.parse(options.body)}; return {ok: true, json: async () => ({})}; };
 """
-        + controls
-        + progress
+        + "// CONTROLLER"
         + """
 assert.match(renderReleaseCancellation({id: "release", cancellation_available: true}), /Cancel release/);
 assert.equal(renderReleaseCancellation({id: "release", cancellation_available: false}), "");
 const cancelled = {id: "release", state: "cancelled", cancellation: {actor_id: "operator", reason: "<duplicate>"}};
 assert.doesNotMatch(renderReleaseCancellation(cancelled), /data-release-cancel/);
-assert.match(renderReleaseCancellation(cancelled), /&lt;duplicate>/);
+assert.match(renderReleaseCancellation(cancelled), /&lt;duplicate&gt;/);
 assert.equal(releaseProgressStages(cancelled)[0].label, "Release cancelled");
 (async () => {
   await cancelRelease({dataset: {releaseId: "release"}}, "duplicate");
-  assert.deepEqual(sent, {url: "/team/release-packages/release/cancel", reason: "duplicate", expected_revision: 42});
+  assert.deepEqual(sent, {url: "/api/addons/team-addon/release-packages/release/cancel", reason: "duplicate", expected_revision: 42});
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
+    )
+    script = controller_script(
+        "releases",
+        script,
+        "{app: {state, setStatus}, access: {lockedAttrs, teamFetch}, mutations: {applyMutationResultPayload}}",
+        ["renderReleaseCancellation", "releaseProgressStages", "cancelRelease"],
     )
     result = subprocess.run(
         [node, "--input-type=commonjs"], input=script, text=True, capture_output=True, timeout=15

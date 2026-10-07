@@ -84,6 +84,32 @@ function row(page, displayName) {
   });
 }
 
+test("signed-out profiles start login directly and reveal the pending login code", { timeout: 60_000 }, async (t) => {
+  const selected = profile("connect", "Connect account", 0, { signed_in: false, account_id: null, email: null });
+  const requests = [];
+  const { page, errors } = await fixture(t, async (route) => {
+    const request = route.request();
+    const endpoint = new URL(request.url());
+    assert.equal(endpoint.searchParams.get("directory_path"), "engineering");
+    if (request.method() === "POST") {
+      requests.push(endpoint.pathname);
+      return route.fulfill({ json: { login_id: "login-1", status: "pending", user_code: "CODE-123", verification_url: null } });
+    }
+    return route.fulfill({ json: { profiles: [selected], worker_url: "http://worker.example.test" } });
+  });
+  const selectedRow = row(page, "Connect account");
+  const login = selectedRow.getByRole("button", { name: "Login", exact: true });
+  await login.waitFor();
+  assert.equal(await selectedRow.getAttribute("open"), null);
+  assert.equal(await login.isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await login.click();
+  await selectedRow.getByText("Login: pending. Code CODE-123.", { exact: true }).waitFor();
+  assert.deepEqual(requests, ["/api/admin/codex-subscriptions/connect/device-login"]);
+  assert.notEqual(await selectedRow.getAttribute("open"), null);
+  assert.deepEqual(errors, []);
+});
+
 async function confirmClick(page, button, accept = true) {
   await Promise.all([
     page.waitForEvent("dialog").then((dialog) => accept ? dialog.accept() : dialog.dismiss()),

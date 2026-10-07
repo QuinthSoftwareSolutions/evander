@@ -328,7 +328,7 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
     }
   }
 
-  return <div className="admin-page">
+  return <div className="admin-page collection-page privacy-page">
     <header className="panel">
       <h2>Privacy readiness</h2>
       <p>Scope: <code>{selectedDirectoryPath}</code>. Coverage is technical evidence, not a compliance certification.</p>
@@ -344,9 +344,9 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
         <ul>{state.readiness?.blockers?.map((blocker, index) => <li key={index}>{text(blocker)}</li>)}</ul>
         <p>Revision: <code>{state.revision}</code></p>
       </section>
-      <section className="panel">
-        <h3>Dataset coverage</h3>
-        <div style={{ overflowX: "auto" }}><table>
+      <details className="panel" open={!state.coverage_complete}>
+        <summary>Dataset coverage · {state.inventory?.length ?? 0} datasets</summary>
+        <div style={{ overflowX: "auto" }}><table className="collection-table">
           <thead><tr><th>Dataset</th><th>Status</th><th>Supported operations</th></tr></thead>
           <tbody>{state.inventory?.map((dataset) => <tr key={dataset.dataset_id}>
             <td>{dataset.label ?? dataset.dataset_id}<br /><code>{dataset.dataset_id}</code></td>
@@ -354,37 +354,43 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
             <td>{Object.entries(dataset.capabilities ?? {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "Manual / unsupported"}</td>
           </tr>)}</tbody>
         </table></div>
-      </section>
+      </details>
       <section className="panel">
         <h3>Operator action</h3>
         {!privilegedUnlocked ? <p>Unlock privileged operations before submitting. Authentication and scoped permissions are also required.</p> : null}
         <p>Actions use the displayed revision. A conflict requires refresh and review; nothing is silently retried.</p>
-        <form onSubmit={(event) => { void submit(event); }}>
-          <label htmlFor="privacy-action">Action</label>
-          <select id="privacy-action" value={action} disabled={busy} onChange={(event) => {
-            setAction(event.target.value);
-            setValues(event.target.value === "configure" ? { config: JSON.stringify(state.config ?? {}, null, 2) } : {});
-            setResult(null);
-            setReviewedJob(null);
-          }}>{Object.entries(ACTIONS).map(([name, entry]) => <option key={name} value={name}>{entry.label}</option>)}</select>
-          {definition.fields.map((field) => <div key={field.name}>
-            <label>{field.label}{field.multiline
+        <form className="form-grid" onSubmit={(event) => { void submit(event); }}>
+          <label className="field-stack field-span-2" htmlFor="privacy-action">
+            <span>Action</span>
+            <select id="privacy-action" value={action} disabled={busy} onChange={(event) => {
+              setAction(event.target.value);
+              setValues(event.target.value === "configure" ? { config: JSON.stringify(state.config ?? {}, null, 2) } : {});
+              setResult(null);
+              setReviewedJob(null);
+            }}>{Object.entries(ACTIONS).map(([name, entry]) => <option key={name} value={name}>{entry.label}</option>)}</select>
+          </label>
+          {definition.fields.map((field) => <label className="field-stack field-span-2" key={field.name}>
+            <span>{field.label}</span>{field.multiline
               ? <textarea value={values[field.name] ?? ""} required={field.required} disabled={busy}
                   onChange={(event) => setValues((previous) => ({ ...previous, [field.name]: event.target.value }))} rows={4} />
               : <input value={values[field.name] ?? ""} required={field.required} disabled={busy}
-                  onChange={(event) => setValues((previous) => ({ ...previous, [field.name]: event.target.value }))} />}</label>
-          </div>)}
+                  onChange={(event) => setValues((previous) => ({ ...previous, [field.name]: event.target.value }))} />}
+          </label>)}
           {action === "jobs.approve" ? <>
-            <button type="button" disabled={busy || !permitted || !values.job_id?.trim()} onClick={() => { void inspectJob(); }}>Inspect persisted selection</button>
-            <p>Inspect this exact job before approving. Record fingerprints, policy revision, and cutoff are checked again at execution. Source content is not included here.</p>
-            {reviewedJob ? <div>
+            <div className="action-row compact field-span-2">
+              <button type="button" disabled={busy || !permitted || !values.job_id?.trim()} onClick={() => { void inspectJob(); }}>Inspect persisted selection</button>
+            </div>
+            <p className="field-span-2">Inspect this exact job before approving. Record fingerprints, policy revision, and cutoff are checked again at execution. Source content is not included here.</p>
+            {reviewedJob ? <div className="field-span-2">
               <h4>Persisted selection: {reviewedJob.id}</h4>
               <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(reviewedJob, null, 2)}</pre>
             </div> : null}
-            {!reviewedApproval ? <p>Approval requires a current preview for this exact job ID and directory.</p> : null}
+            {!reviewedApproval ? <p className="field-span-2">Approval requires a current preview for this exact job ID and directory.</p> : null}
           </> : null}
-          <button type="submit" disabled={busy || !privilegedUnlocked || !permitted || !reviewedApproval}>{busy ? "Processing…" : definition.label}</button>
-          {!permitted ? <p>Required permission: <code>{definition.permission}{action === "exports.release" ? " and privacy.export" : ""}</code></p> : null}
+          <div className="action-row compact field-span-2">
+            <button type="submit" disabled={busy || !privilegedUnlocked || !permitted || !reviewedApproval}>{busy ? "Processing…" : definition.label}</button>
+          </div>
+          {!permitted ? <p className="field-span-2">Required permission: <code>{definition.permission}{action === "exports.release" ? " and privacy.export" : ""}</code></p> : null}
         </form>
         {result ? <details open><summary>Action result — review unsupported and pending outcomes</summary>
           <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(result, null, 2)}</pre>
@@ -403,14 +409,16 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
       <section className="panel" aria-label="Stored privacy evidence">
         <h3>Inspect stored evidence</h3>
         <p>Open a record below or enter a known ID to review its saved references and selection in this directory.</p>
-        <form onSubmit={(event) => { event.preventDefault(); void inspectEvidence(evidenceKind, evidenceId); }}>
-          <label>Evidence type<select value={evidenceKind} disabled={busy} onChange={(event) => {
+        <form className="form-grid" onSubmit={(event) => { event.preventDefault(); void inspectEvidence(evidenceKind, evidenceId); }}>
+          <label className="field-stack"><span>Evidence type</span><select value={evidenceKind} disabled={busy} onChange={(event) => {
             setEvidenceKind(event.target.value); setEvidence(null);
           }}>{Object.entries(EVIDENCE_KINDS).map(([kind, entry]) => <option key={kind} value={kind}>{entry.label}</option>)}</select></label>
-          <label>Evidence record ID<input value={evidenceId} required disabled={busy} onChange={(event) => {
+          <label className="field-stack"><span>Evidence record ID</span><input value={evidenceId} required disabled={busy} onChange={(event) => {
             setEvidenceId(event.target.value); setEvidence(null);
           }} /></label>
-          <button type="submit" disabled={busy || !evidenceId.trim() || !state.permissions?.includes(EVIDENCE_KINDS[evidenceKind].permission)}>Read stored evidence</button>
+          <div className="action-row compact field-span-2">
+            <button type="submit" disabled={busy || !evidenceId.trim() || !state.permissions?.includes(EVIDENCE_KINDS[evidenceKind].permission)}>Read stored evidence</button>
+          </div>
         </form>
         {evidence && evidence.scope === selectedDirectoryPath ? <div>
           <h4>Stored evidence: {evidence.id}</h4>

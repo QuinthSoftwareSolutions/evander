@@ -1,0 +1,14 @@
+.workflow-event-field {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+}
+.workflow-event-field > :is(input:not([type="checkbox"]), textarea, select) {
+  box-sizing: border-box;
+  max-width: 100%;
+  width: 100%;
+}
+.workflow-event-field legend { font-weight: 600; }
+.workflow-event-field details { margin-top: 8px; }

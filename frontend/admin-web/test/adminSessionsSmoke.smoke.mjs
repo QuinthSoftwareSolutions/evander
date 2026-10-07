@@ -8,6 +8,14 @@ import { createServer } from "vite";
 
 import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
 
+async function openSessionSection(page, section, subsections = []) {
+  await page.getByRole("navigation", { name: "Session sections" })
+    .getByRole("button", { name: new RegExp(`^${section}`) }).click();
+  for (const subsection of subsections) {
+    await page.getByText(subsection, { exact: true }).click();
+  }
+}
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -398,6 +406,7 @@ test("direct session selection protects unsaved settings and restores cancelled 
   sessionListResponse.status_ids.active.push(second.session_id);
   await page.route("**/api/admin/sessions/session-2", route => route.fulfill(jsonResponse({ ...sessionDetailResponse, session: second })));
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`);
+  await openSessionSection(page, "Model and access");
   const model = page.locator('input[list="session-model-suggestions"]');
   await model.fill("unsaved-model");
   page.once("dialog", dialog => dialog.dismiss());
@@ -457,6 +466,7 @@ test("admin shell sessions page identifies repository grants with repository met
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
   await page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" });
 
   const repositoryAccess = page.locator("details.session-repository-access");
@@ -504,6 +514,7 @@ test("admin shell sessions page exposes model relay as a first-class setting", a
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
   await ensureSectionsExpanded(page);
 
   const modelRelay = page.getByLabel("Model relay");
@@ -578,6 +589,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access", ["Integrations and host access", "File transfer", "Cost category and metadata"]);
 
   const fieldDescription = (labelText) => page.locator(".field-stack").filter({ hasText: labelText });
 
@@ -674,7 +686,9 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       },
     ],
   );
+  await openSessionSection(page, "Wake schedules");
   await assert.doesNotReject(() => page.getByText("No wake schedules configured.").waitFor({ state: "visible" }));
+  await openSessionSection(page, "Model and access");
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
   const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
   const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
@@ -844,6 +858,7 @@ test("admin shell sessions page discards approval settings edits without saving 
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
 
   await ensureSectionsExpanded(page);
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
@@ -898,6 +913,7 @@ test("admin shell sessions page categorizes consultation and connector tools", a
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
   await ensureSectionsExpanded(page);
 
   const agentControlGroup = page.locator("details.session-tool-group").filter({ hasText: "Agent control" });
@@ -946,6 +962,7 @@ test("admin shell sessions page separates Microsoft Teams and Team Add-on tools"
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
   await ensureSectionsExpanded(page);
 
   const teamsGroup = page.locator("details.session-tool-group").filter({ hasText: "Teams" });
@@ -1009,6 +1026,7 @@ test("admin shell sessions page reset clears an existing approval settings overr
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access");
 
   await ensureSectionsExpanded(page);
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
@@ -1066,6 +1084,7 @@ test("admin shell sessions page exposes a tooltip for a disabled notification ta
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Model and access", ["Contacts and communication"]);
 
   await ensureSectionsExpanded(page);
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
@@ -1304,6 +1323,7 @@ test("admin shell sessions page shows wake schedule loading while the selected s
   await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
+  await openSessionSection(page, "Wake schedules");
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Loading wake schedules...").waitFor({ state: "visible" }));

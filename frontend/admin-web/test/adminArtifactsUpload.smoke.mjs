@@ -36,7 +36,7 @@ function artifactRecord(key) {
   };
 }
 
-test("admin shell artifacts upload keeps the success banner visible after the modal closes", async (t) => {
+test("artifacts space picker filters archives and upload keeps its success banner after closing", { timeout: 60_000 }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -54,6 +54,7 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.setDefaultTimeout(7000);
 
   const requestedEndpoints = [];
   const uploadRequests = [];
@@ -267,7 +268,27 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
     undefined,
     { timeout: 5000 },
   );
-  await page.locator(".artifact-space-tree-button", { hasText: "/teams/team" }).click();
+  const spacePickerTrigger = page.getByRole("button", { name: "Choose artifact space", exact: true });
+  const spacePicker = page.getByRole("dialog", { name: "Choose artifact space", exact: true });
+  assert.equal(await spacePicker.count(), 0);
+  await spacePickerTrigger.click();
+  await spacePicker.waitFor({ state: "visible" });
+  assert.equal(await spacePickerTrigger.getAttribute("aria-expanded"), "true");
+  const pickerBounds = await spacePicker.boundingBox();
+  const sidebarBounds = await page.locator(".feature-sidebar").boundingBox();
+  assert.ok(pickerBounds.width > sidebarBounds.width * 2, "space tree should have more room than the sidebar");
+  await page.keyboard.press("Escape");
+  await spacePicker.waitFor({ state: "detached" });
+  assert.equal(await spacePickerTrigger.evaluate((element) => document.activeElement === element), true);
+  assert.equal(await spacePickerTrigger.getAttribute("aria-expanded"), "false");
+  assert.match(await spacePickerTrigger.innerText(), /All spaces/);
+
+  await spacePickerTrigger.click();
+  await spacePicker.getByRole("button", { name: "Expand /teams/team", exact: true }).click();
+  await spacePicker.getByRole("button", { name: "Team /teams/team", exact: true }).click();
+  await spacePicker.waitFor({ state: "detached" });
+  assert.equal(await spacePickerTrigger.evaluate((element) => document.activeElement === element), true);
+  assert.match(await spacePickerTrigger.innerText(), /\/teams\/team/);
   await page.waitForFunction(
     () => document.querySelector(".artifacts-table tbody tr .record-name")?.textContent === "team/backend/report",
     undefined,
@@ -277,7 +298,31 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
     requestedEndpoints.some((endpoint) => endpoint.includes("space_path=%2Fteams%2Fteam")),
     "expected artifact space filter request",
   );
-  await page.locator(".artifact-space-tree-all").click();
+  await spacePickerTrigger.click();
+  const selectedSpaceButton = spacePicker.getByRole("button", { name: "Team /teams/team", exact: true });
+  assert.equal(await selectedSpaceButton.getAttribute("aria-pressed"), "true");
+  assert.equal(await selectedSpaceButton.evaluate((element) => document.activeElement === element), true);
+  assert.equal(await spacePicker.getByRole("button", { name: "Collapse /teams/team", exact: true }).getAttribute("aria-expanded"), "true");
+  assert.equal(await spacePicker.getByRole("button", { name: "Backend /teams/team/projects/backend", exact: true }).isVisible(), true);
+  await spacePicker.getByRole("button", { name: "Close", exact: true }).click();
+  await spacePicker.waitFor({ state: "detached" });
+  assert.match(await spacePickerTrigger.innerText(), /\/teams\/team/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await spacePickerTrigger.click();
+  const narrowBounds = await spacePicker.boundingBox();
+  assert.ok(narrowBounds.x >= 0 && narrowBounds.x + narrowBounds.width <= 391, "picker should fit a narrow screen");
+  assert.ok(narrowBounds.y >= 0 && narrowBounds.y + narrowBounds.height <= 845, "picker should fit the viewport height");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await spacePicker.evaluate((element) => element.contains(document.activeElement)), true);
+  await page.mouse.click(2, 2);
+  await spacePicker.waitFor({ state: "detached" });
+  assert.equal(await spacePickerTrigger.evaluate((element) => document.activeElement === element), true);
+  assert.match(await spacePickerTrigger.innerText(), /\/teams\/team/);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await spacePickerTrigger.click();
+  await spacePicker.getByRole("button", { name: "All spaces Unfiltered", exact: true }).click();
+  await spacePicker.waitFor({ state: "detached" });
   await page.waitForFunction(
     () => document.querySelector(".artifacts-table tbody tr .record-name")?.textContent === "existing/artifact",
     undefined,

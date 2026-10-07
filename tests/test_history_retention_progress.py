@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +11,9 @@ from evander.repositories import execution_history as history
 from evander.repositories.sqlite_runtime import (
     SqliteOperationDeadlineExceeded,
     close_sqlite_runtimes,
+    foreground_storage_wait_budget,
+    is_storage_contention,
+    storage_lock,
 )
 
 
@@ -211,6 +215,139 @@ def test_writer_contention_does_not_reduce_retention_workload(tmp_path):
             "SELECT 1 FROM orchestration_metadata WHERE key='retention_batch_limits'"
         ).fetchone()
     assert _slice(path).compact_executions_deleted == 2
+
+
+def test_repository_lock_contention_does_not_reduce_retention_workload(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=2, fields=20)
+    _start_compact(path)
+    _set_batch_limits(path, records=8, index_rows=32)
+    blocker = threading.Lock()
+    blocker.acquire()
+
+    def blocked(*args, **kwargs):
+        with foreground_storage_wait_budget(0), storage_lock(blocker):
+            pytest.fail("The occupied repository lock must yield")
+
+    monkeypatch.setattr(db, "_delete_compact_history_batch", blocked)
+    try:
+        with pytest.raises(SqliteOperationDeadlineExceeded) as caught:
+            _slice(path)
+        assert is_storage_contention(caught.value)
+    finally:
+        blocker.release()
+    with db.connect_orchestration_db_read_only(path) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_batch_limits'"
+        ).fetchone()
+        assert json.loads(row[0]) == {"records": 8, "index_rows": 32}
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 2
+
+
+def _set_batch_limits(path, *, records=1, index_rows=1):
+    with db.connect_orchestration_db(path) as connection:
+        connection.execute(
+            "INSERT INTO orchestration_metadata VALUES ('retention_batch_limits',?)",
+            (json.dumps({"records": records, "index_rows": index_rows}),),
+        )
+
+
+def test_successful_retention_recovers_record_batches_across_reopen(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=20, fields=1)
+    _start_compact(path)
+    _set_batch_limits(path)
+    # Control adaptation timing independently of SQLite's real transaction deadlines.
+    monkeypatch.setattr(db, "monotonic", lambda: 0.0)
+    deleted = []
+    for _ in range(5):
+        deleted.append(_slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted)
+        close_sqlite_runtimes(path)
+
+    assert deleted == [1, 2, 4, 8, 5]
+    with db.connect_orchestration_db_read_only(path) as connection:
+        assert not connection.execute("SELECT 1 FROM workflow_node_execution_history").fetchone()
+
+
+def test_successful_retention_recovers_dense_index_batches_to_cap(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=1, fields=30000)
+    _start_compact(path)
+    _set_batch_limits(path)
+    monkeypatch.setattr(db, "monotonic", lambda: 0.0)
+    index_batches = []
+    for _ in range(20):
+        result = _slice(path, batch_size=2, time_budget_seconds=5)
+        index_batches.append(result.compact_index_rows_deleted)
+        close_sqlite_runtimes(path)
+        if result.compact_executions_deleted:
+            break
+
+    assert result.compact_executions_deleted == 1
+    assert sum(index_batches) == 30000
+    assert max(index_batches) == 10000
+
+
+def test_slow_success_does_not_increase_retention_limits(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=10, fields=1)
+    _start_compact(path)
+    _set_batch_limits(path)
+    elapsed = iter([0.0, 3.0, 0.0, 3.0])
+    monkeypatch.setattr(db, "monotonic", lambda: next(elapsed))
+    for _ in range(2):
+        assert _slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted == 1
+        close_sqlite_runtimes(path)
+
+    monkeypatch.setattr(db, "monotonic", lambda: 0.0)
+    assert _slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted == 1
+    assert _slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted == 2
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_empty_or_deferred_retention_does_not_increase_limits(tmp_path, monkeypatch, deferred):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=1, fields=1, age_days=40 if deferred else 0)
+    _start_compact(path)
+    _set_batch_limits(path)
+    monkeypatch.setattr(db, "monotonic", lambda: 0.0)
+    if deferred:
+        with db.connect_orchestration_db(path) as connection:
+            connection.execute("DROP INDEX idx_workflow_history_input_blob")
+
+    result = _slice(path, batch_size=8, time_budget_seconds=5)
+    assert result.compact_executions_deleted == 0
+    assert result.compact_index_rows_deleted == 0
+    if deferred:
+        assert result.skipped_reason == "maintenance_indexes_required"
+    with db.connect_orchestration_db_read_only(path) as connection:
+        limits = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_batch_limits'"
+        ).fetchone()[0]
+    assert json.loads(limits) == {"records": 1, "index_rows": 1}
+
+
+def test_retention_growth_does_not_overwrite_concurrent_reduction(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=20, fields=1)
+    _start_compact(path)
+    _set_batch_limits(path, records=4, index_rows=4)
+    monkeypatch.setattr(db, "monotonic", lambda: 0.0)
+    run_slice = db._run_orchestration_retention_slice
+
+    def concurrently_reduced(*args, **kwargs):
+        with db.connect_orchestration_db(path) as connection:
+            connection.execute(
+                "UPDATE orchestration_metadata SET value_json=? WHERE key='retention_batch_limits'",
+                (json.dumps({"records": 1, "index_rows": 1}),),
+            )
+        return run_slice(*args, **kwargs)
+
+    monkeypatch.setattr(db, "_run_orchestration_retention_slice", concurrently_reduced)
+    assert _slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted == 4
+    close_sqlite_runtimes(path)
+    monkeypatch.setattr(db, "_run_orchestration_retention_slice", run_slice)
+    assert _slice(path, batch_size=8, time_budget_seconds=5).compact_executions_deleted == 1
 
 
 def test_partial_retirement_is_hidden_and_updated_record_gets_complete_index(tmp_path):

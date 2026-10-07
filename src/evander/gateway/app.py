@@ -18,8 +18,7 @@ from starlette.routing import Mount, Route
 
 from evander.gateway.server import *  # noqa: F403
 from evander.gateway.server import _MCP_REQUEST_CONTEXT, create_server
-from evander.config import GatewayConfig, InboundPhoneRoute, _normalize_phone_number
-from evander.directories import DirectoryService
+from evander.config import GatewayConfig, _normalize_phone_number
 from evander.gateway.request_context import (
     _string_from_headers,
     _string_from_query_params,
@@ -417,87 +416,25 @@ def create_app(context: RuntimeContext) -> Starlette:
             return None
         return {"redacted": "<redacted>", "sha256": _hash_identity(normalized) or ""}
 
-    def _collect_inbound_phone_routes() -> list[InboundPhoneRoute]:
-        routes: list[InboundPhoneRoute] = []
-        seen_signatures: set[str] = set()
-        directory_service = DirectoryService(context.directories)
-        directory_paths = sorted(
-            {
-                directory_service.show(directory_id).directory.path
-                for directory_id in context.directories.read_all()
-            }
+    def _unauthorized_inbound_phone_call() -> JSONResponse:
+        context.audit.log_decision(
+            event_type="inbound_phone_call_provisioning",
+            decision="denied",
+            reason="Unauthorized",
+            args={},
+            result={},
         )
-        for directory_path in directory_paths:
-            resolved_config = context.provider_config.resolve_for_directory(directory_path)
-            for route in resolved_config.inbound_phone_routes:
-                signature = json.dumps(route.model_dump(mode="json"), sort_keys=True)
-                if signature in seen_signatures:
-                    continue
-                seen_signatures.add(signature)
-                routes.append(route)
-        return routes
-
-    def _resolve_inbound_phone_route(
-        *,
-        route_id: str | None,
-        did: str | None,
-        called_number: str | None,
-    ) -> InboundPhoneRoute:
-        routes = _collect_inbound_phone_routes()
-        if not routes:
-            raise LookupError("No inbound phone routes are configured")
-        matches: list[InboundPhoneRoute] = []
-        route_id_filter = str(route_id or "").strip() or None
-        dialed_numbers = {
-            match_key
-            for number in (did, called_number)
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        dialed_number = next(iter(dialed_numbers), None)
-        for route in routes:
-            if route_id_filter and route.id != route_id_filter:
-                continue
-            route_numbers = {
-                match_key
-                for number in (route.did, route.called_number)
-                if (match_key := _inbound_phone_match_key(number))
-            }
-            if dialed_number and dialed_number not in route_numbers:
-                continue
-            matches.append(route)
-        if not matches:
-            raise LookupError("No inbound phone route matched the request")
-        if len(matches) > 1:
-            raise LookupError("Inbound phone route match is ambiguous")
-        return matches[0]
-
-    def _inbound_phone_route_policy_error(
-        route: InboundPhoneRoute,
-        *,
-        caller_number: str,
-    ) -> str | None:
-        caller_key = _inbound_phone_match_key(caller_number)
-        blocked_callers = {
-            match_key
-            for number in route.blocked_callers
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        allowed_callers = {
-            match_key
-            for number in route.allowed_callers
-            if (match_key := _inbound_phone_match_key(number))
-        }
-        if blocked_callers and caller_key in blocked_callers:
-            return "Caller is blocked for this inbound route"
-        if allowed_callers and caller_key not in allowed_callers:
-            return "Caller is not allowlisted for this inbound route"
-        return None
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     async def create_inbound_phone_call(request: Request) -> JSONResponse:
-        root_token, root_env = _controller_token(context.config)
         request_token = _authorization_bearer_token(request)
-        root_authorized = bool(root_token and request_token == root_token)
+        controller_authorized = False
+        if request_token is None:
+            return _unauthorized_inbound_phone_call()
         try:
+            root_config = context.provider_config.resolve_for_directory("root")
+            root_token, _ = _controller_token(root_config)
+            controller_authorized = bool(root_token and request_token == root_token)
             payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("inbound phone call payload must be an object")
@@ -539,31 +476,23 @@ def create_app(context: RuntimeContext) -> Starlette:
                 raise ValueError("sip_headers must be an object when provided")
             sip_headers = sanitize_voice_metadata(raw_sip_headers or {})
 
-            route = _resolve_inbound_phone_route(
+            binding = context.inbound_phone_routing_service.resolve(
                 route_id=route_id,
-                did=did,
-                called_number=called_number,
+                did=request_number,
+                caller_number=caller_number,
             )
-            route_config = context.provider_config.resolve_for_directory(route.directory_path)
-            route_token, route_env = _controller_token(route_config)
+            route = binding.route
+            route_directory_path = binding.directory_path
+            route_config = context.provider_config.resolve_for_directory(route_directory_path)
+            route_token, _ = _controller_token(route_config)
 
-            if not root_authorized:
+            if not controller_authorized:
                 usable_tokens = [token for token in (root_token, route_token) if token]
-                if usable_tokens:
-                    if request_token not in usable_tokens:
-                        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-                else:
-                    missing_env = root_env or route_env or "VOICE_MEDIA_CONTROLLER_TOKEN"
-                    return JSONResponse(
-                        {
-                            "error": (
-                                f"Voice media controller token env var {missing_env!r} is not set"
-                            )
-                        },
-                        status_code=503,
-                    )
+                if request_token not in usable_tokens:
+                    return _unauthorized_inbound_phone_call()
+                controller_authorized = True
 
-            route_session_id = str(route.session_id or "").strip()
+            route_session_id = binding.session_id
             if not route_session_id:
                 raise ValueError("inbound phone route is missing a session_id")
             route_session = context.session_repository.get_session(route_session_id)
@@ -574,7 +503,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason="route session is unavailable",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -594,7 +523,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason="route session is inactive",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -607,14 +536,14 @@ def create_app(context: RuntimeContext) -> Starlette:
                     {"error": "Configured inbound route session is inactive"},
                     status_code=403,
                 )
-            if str(route_session.directory_path or "").strip() != route.directory_path:
+            if str(route_session.directory_path or "").strip() != route_directory_path:
                 context.audit.log_decision(
                     event_type="inbound_phone_call_provisioning",
                     decision="denied",
                     reason="route session directory mismatch",
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "route_session_directory_path": route_session.directory_path,
                         "did_sha256": _hash_identity(request_number),
@@ -629,7 +558,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     status_code=403,
                 )
 
-            policy_error = _inbound_phone_route_policy_error(
+            policy_error = context.inbound_phone_routing_service.caller_policy_error(
                 route,
                 caller_number=caller_number,
             )
@@ -640,7 +569,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                     reason=policy_error,
                     args={
                         "route_id": route.id,
-                        "route_directory_path": route.directory_path,
+                        "route_directory_path": route_directory_path,
                         "route_session_id": route_session_id,
                         "did_sha256": _hash_identity(request_number),
                         "caller_sha256": _hash_identity(caller_number),
@@ -653,7 +582,7 @@ def create_app(context: RuntimeContext) -> Starlette:
 
             prompt_metadata = {
                 "route_id": route.id,
-                "route_directory_path": route.directory_path,
+                "route_directory_path": route_directory_path,
                 "request_number_sha256": _hash_identity(request_number),
                 "caller_sha256": _hash_identity(caller_number),
                 "asterisk_channel_id": asterisk_channel_id,
@@ -668,7 +597,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 metadata={
                     "direction": "inbound",
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "did_redacted": "<redacted>",
                     "did_sha256": _hash_identity(request_number),
                     "caller_redacted": "<redacted>",
@@ -689,7 +618,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 caller_metadata={
                     "direction": "inbound",
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "did_redacted": "<redacted>",
                     "did_sha256": _hash_identity(request_number),
                     "caller_redacted": "<redacted>",
@@ -709,7 +638,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 "realtime_session_config": realtime_session_config(route_config),
                 "route": {
                     "route_id": route.id,
-                    "directory_path": route.directory_path,
+                    "directory_path": route_directory_path,
                     "session_id": route_session_id,
                     "did": _identity_payload(request_number),
                     "caller": _identity_payload(caller_number),
@@ -727,7 +656,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 decision="allowed",
                 args={
                     "route_id": route.id,
-                    "route_directory_path": route.directory_path,
+                    "route_directory_path": route_directory_path,
                     "route_session_id": route_session_id,
                     "did_sha256": _hash_identity(request_number),
                     "caller_sha256": _hash_identity(caller_number),
@@ -741,34 +670,29 @@ def create_app(context: RuntimeContext) -> Starlette:
                 },
             )
             return JSONResponse(response, status_code=201 if created else 200)
-        except LookupError as exc:
-            context.audit.log_decision(
-                event_type="inbound_phone_call_provisioning",
-                decision="denied",
-                reason=str(exc),
-                args={},
-                result={},
-            )
-            status_code = 409 if "ambiguous" in str(exc).lower() else 404
-            return JSONResponse({"error": str(exc)}, status_code=status_code)
-        except ValueError as exc:
-            context.audit.log_decision(
-                event_type="inbound_phone_call_provisioning",
-                decision="error",
-                reason=str(exc),
-                args={},
-                result={},
-            )
-            return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception as exc:
+            # Routing errors may reveal caller assignments or private configuration.
+            # Only the root or selected destination controller may see those details.
+            if not controller_authorized:
+                return _unauthorized_inbound_phone_call()
+            message = str(exc)
+            if isinstance(exc, PermissionError):
+                decision, status_code = "denied", 403
+            elif isinstance(exc, LookupError):
+                decision = "denied"
+                status_code = 409 if "ambiguous" in message.lower() else 404
+            elif isinstance(exc, ValueError):
+                decision, status_code = "error", 400
+            else:
+                decision, status_code = "error", 500
             context.audit.log_decision(
                 event_type="inbound_phone_call_provisioning",
-                decision="error",
-                reason=str(exc),
+                decision=decision,
+                reason=message,
                 args={},
                 result={},
             )
-            return JSONResponse({"error": str(exc)}, status_code=500)
+            return JSONResponse({"error": message}, status_code=status_code)
 
     def voice_controller_auth_error(request: Request, directory_path: str) -> JSONResponse | None:
         resolved_config = context.provider_config.resolve_for_directory(directory_path)
@@ -791,15 +715,23 @@ def create_app(context: RuntimeContext) -> Starlette:
         if auth_error is not None:
             return auth_error
         try:
-            payload = await request.json()
+            from evander.gateway.voice_visual_uploads import read_voice_query_request
+
+            payload, images = await read_voice_query_request(request)
             if not isinstance(payload, dict):
                 raise ValueError("voice query payload must be an object")
+            if images is not None:
+                query = await run_in_threadpool(
+                    context.teams_voice_service.create_visual_query, record, payload, images,
+                )
+                return JSONResponse(voice_query_payload(query), status_code=201)
             query = VoiceQueryDelegator(
                 store=context.voice_session_store,
                 wake_store=context.wake_store,
             ).create_query_and_wake_origin(
                 voice_session_id,
                 question=str(payload.get("question") or ""),
+                request_id=str(payload.get("request_id") or "").strip() or None,
                 transcript_excerpt=str(payload.get("transcript_excerpt") or "").strip() or None,
                 metadata=payload.get("metadata")
                 if isinstance(payload.get("metadata"), dict)
@@ -832,6 +764,8 @@ def create_app(context: RuntimeContext) -> Starlette:
                 voice_session_id,
                 payload,
             )
+            if updated.channel == "teams_call" and updated.status in {"ended", "failed"}:
+                updated = context.voice_session_reconciler.schedule_reconciliation(voice_session_id)
             return JSONResponse(
                 {
                     "voice_session_id": updated.voice_session_id,
@@ -861,6 +795,19 @@ def create_app(context: RuntimeContext) -> Starlette:
         if query is None:
             return JSONResponse({"error": "Unknown voice query"}, status_code=404)
         return JSONResponse(voice_query_payload(query))
+
+    async def inbound_teams_call(request: Request) -> JSONResponse:
+        auth_error = voice_controller_auth_error(request, "root")
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Teams call payload must be an object")
+            result = await run_in_threadpool(context.teams_voice_service.admit, payload)
+            return JSONResponse(result)
+        except (ValueError, PolicyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     async def timeout_voice_query(request: Request) -> JSONResponse:
         voice_session_id = str(request.path_params.get("voice_session_id") or "").strip()
@@ -898,6 +845,7 @@ def create_app(context: RuntimeContext) -> Starlette:
                 create_inbound_phone_call,
                 methods=["POST"],
             ),
+            Route("/voice-sessions/inbound-teams-calls", inbound_teams_call, methods=["POST"]),
             Route(
                 "/voice-sessions/{voice_session_id}/queries",
                 create_voice_query,

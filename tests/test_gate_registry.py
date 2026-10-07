@@ -84,6 +84,7 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:classifier:switch",
         "gate:throttle",
         "gate:validate",
+        "gate:event:validate",
         "gate:while",
     }
 

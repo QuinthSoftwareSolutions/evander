@@ -12,6 +12,7 @@ the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
 - [Loading and enablement](#loading), [extension contract](#boundary-contract),
   and [private storage](#storage)
 - [Miro](miro-addon.md), [Figma](figma.md),
+  [WordPress](../packages/wordpress-addon/docs/operations.md),
   [Freshservice](#freshservice-add-on-guidance),
   [Azure DevOps activity](#azure-devops-activity-add-on-guidance),
   [Elastic Stack](#elastic-stack-add-on-guidance),
@@ -26,6 +27,35 @@ Detailed operational companions cover [wake decisions](team-addon-wake-decision-
 [context policies](team-context-reduction-runbook.md),
 [release recovery](release-recovery-and-verifier-policy.md), and
 [model and persistence boundaries](team-data-boundaries.md).
+
+## Project ownership
+
+New add-ons are independent projects under `packages/<addon-id>/`. WordPress is
+the first example; existing bundled add-ons keep their current layout until they
+are migrated separately. Each project owns:
+
+```text
+packages/<addon-id>/
+  pyproject.toml             # independent Python distribution and entry point
+  addon.json                # source-project discovery manifest
+  <python_package>/         # runtime code and assets, including its addon.json
+  README.md
+  docs/
+  examples/
+  tests/
+    fixtures/
+```
+
+Add-on-specific Node manifests, lockfiles, deployment examples and other support
+files also live in the project. The core Python distribution does not include
+these projects or register their entry points. Install an add-on separately, then
+enable it through the normal loader and Admin Web controls.
+
+The repository's default pytest collection and complete runner include project
+tests. A project can also run its own suite against an installed Evander. Core
+tests cover generic extension contracts using synthetic add-ons; they must work
+without optional projects installed. Global documentation links to project-owned
+guides, and the repository release notes record shared platform changes.
 
 ## Boundary Contract
 
@@ -44,6 +74,7 @@ Add-ons may register generic integration points:
 - Connector drivers registered by type name and invoked only through the core connector service,
   preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
+- Managed website login adapters that return only origin-scoped temporary browser state
 
 Add-ons must not add domain-specific fields to core models such as
 `SessionManifest`, nor should they require existing workflows, workflow packs,
@@ -57,17 +88,17 @@ Add-on discovery is configured with `addon_loader`:
 {
   "addon_loader": {
     "modules": [],
-    "package_dirs": ["addons", "src"],
+    "package_dirs": ["addons", "src", "packages"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
 }
 ```
 
-Evander scans local add-on package directories. By default, `addons/` and
-`src/` at the project root are scanned. `addons/` is operator-local and ignored
-by Git; `src/` lets bundled add-ons use the same manifest shape as copied
-packages. Each immediate child directory is treated as a package candidate when
+Evander scans local add-on package directories. By default, `addons/`, `src/` and
+`packages/` at the project root are scanned. `addons/` is operator-local and ignored
+by Git; `src/` contains legacy bundled add-ons, and `packages/` contains independent
+add-on projects. Each immediate child directory is treated as a package candidate when
 it contains `addon.json`:
 
 ```json
@@ -1619,6 +1650,39 @@ set:
   around normal Evander `effect:agent:create`, `effect:agent:prompt`, and
   `effect:agent:destroy` nodes.
 - `query:team:state` returns filtered add-on state for workflows or UI.
+
+`query:team:state` can opt into a compact read with `record_fields`, an object
+whose keys are `tasks` and/or `cases` and whose values are nonempty arrays of
+public record field names. For example, a reconciliation query can request:
+
+```json
+{
+  "type": "query:team:state",
+  "config": {
+    "team_id": "example-team",
+    "record_fields": {
+      "tasks": ["id", "state", "owner_agent_id", "case_id", "resolution_status"],
+      "cases": ["id", "status", "source", "source_ref", "task_ids"]
+    }
+  }
+}
+```
+
+The `state` object contains only the selected collections and fields. Existing
+top-level record-map outputs remain available, with unselected maps empty.
+Task and case model fields are supported; tasks also support `assessment`,
+`resolution_status`, `readiness`, `integration_ready`, `invalid_reason_codes`,
+`active_blocker_ids`, `inherited_blockers`, `child_task_ids`, `dependency_status`,
+`blocked_by_task_ids`, `subtask_counts`, `waiting_reason`,
+`assignment_wait_reason`, and `assignment_role_name`. Unknown collections or
+fields are rejected, including after resolving workflow output references.
+Scope intersections and reference filtering match the full query. Assessment
+fields still use global dependencies, even when dependency records fall outside
+the selected agent scope. The read loads only the collections required for
+scope and selected fields, without producing the full state and runtime views
+first. Omit `record_fields` for the existing full output. The legacy
+`include_records` option retains its existing behavior and does not select a
+compact read.
 
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and their workflow-editor catalog entries are registered by the add-on's

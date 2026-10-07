@@ -289,7 +289,7 @@ export function createRunPanelRenderers({
     );
   }
 
-  function renderRunsPanelContent() {
+  function renderRunsPanelContent(compact = true) {
     if (!canReadWorkflowRuns) {
       return (
         <div className="sidebar-section compact-panel-section">
@@ -300,118 +300,20 @@ export function createRunPanelRenderers({
     }
 
     return (
-      <div className="sidebar-section compact-panel-section current-runs-section">
-        <div className="current-runs-summary compact-section-heading">
-          <span className="section-label current-runs-label">Current runs</span>
-          <span className="current-runs-count">{visibleRuns.length}</span>
-        </div>
+      <div className={compact ? "sidebar-section compact-panel-section current-runs-section" : "current-runs-content"}>
+        {compact ? (
+          <div className="current-runs-summary compact-section-heading">
+            <span className="section-label current-runs-label">Current runs</span>
+            <span className="current-runs-count">{visibleRuns.length}</span>
+          </div>
+        ) : null}
         <p className="runtime-summary">
           {visibleRuns.length === 0
             ? "No active or errored workflow runs."
             : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
         </p>
         {runSnapshotError ? <div className="runtime-run-error">{runSnapshotError}</div> : null}
-        <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
-          <select
-            value={runDetailLookupKind}
-            onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
-            aria-label="Run lookup key"
-          >
-            <option value="auto">Auto</option>
-            <option value="run_id">Run ID</option>
-            <option value="event_id">Event ID</option>
-            <option value="trigger_event_id">Trigger event</option>
-            <option value="trace_id">Trace ID</option>
-            <option value="session_id">Session ID</option>
-            <option value="artifact_id">Artifact ID</option>
-          </select>
-          <input
-            value={runDetailLookup}
-            onChange={(event) => setRunDetailLookup(event.target.value)}
-            placeholder="Lookup id"
-            aria-label="Workflow run lookup id"
-          />
-          <button
-            type="submit"
-            className="subtle-button"
-            disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
-          >
-            {runDetailLoading ? "Loading..." : "Inspect"}
-          </button>
-        </form>
-        {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
-        <div className="run-search-panel">
-          <div className="run-search-header">
-            <span className="section-label">Latest runs</span>
-            {runSearchResult ? (
-              <span className="current-runs-count">{runSearchResult.returned}</span>
-            ) : null}
-          </div>
-          <form className="run-search-form" onSubmit={submitWorkflowRunSearch}>
-            <select
-              value={runSearchScope}
-              onChange={(event) => setRunSearchScope(event.target.value)}
-              aria-label="Run search scope"
-            >
-              <optgroup label="Graphs">
-                {runSearchScopeOptions
-                  .filter((option) => option.kind === "graph")
-                  .map((option) => (
-                    <option value={option.value} key={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label="Nodes">
-                {runSearchScopeOptions
-                  .filter((option) => option.kind === "node")
-                  .map((option) => (
-                    <option value={option.value} key={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-              </optgroup>
-            </select>
-            <label className="checkbox-row run-search-checkbox">
-              <input
-                type="checkbox"
-                checked={runSearchWithoutSession}
-                onChange={(event) => setRunSearchWithoutSession(event.target.checked)}
-              />
-              <span>No agent session</span>
-            </label>
-            <label className="checkbox-row run-search-checkbox">
-              <input
-                type="checkbox"
-                checked={runSearchIncludeCompleted}
-                onChange={(event) => setRunSearchIncludeCompleted(event.target.checked)}
-              />
-              <span>Completed</span>
-            </label>
-            <button
-              type="submit"
-              className="subtle-button"
-              disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
-            >
-              {runSearchLoading ? "Loading..." : "Find"}
-            </button>
-          </form>
-          {runSearchError ? <div className="runtime-run-error">{runSearchError}</div> : null}
-          {runSearchResult ? (
-            <div className="runtime-run-meta">
-              {runSearchResult.matched} matched {runSearchResult.filters.graph_name ?? selectedRunSearchScope?.label ?? ""}
-              {runSearchResult.has_more ? `; showing ${runSearchResult.returned}` : ""}
-            </div>
-          ) : null}
-          {runSearchResult && runSearchResult.runs.length === 0 ? (
-            <div className="runtime-run-meta">No matching runs.</div>
-          ) : null}
-          {runSearchResult && runSearchResult.runs.length > 0 ? (
-            <div className="runtime-runs run-search-results">
-              {runSearchResult.runs.map((run) => renderRunSearchResult(run))}
-            </div>
-          ) : null}
-        </div>
+        {runDetailError ? <div className="runtime-run-error" role="alert">{runDetailError}</div> : null}
         <div className="runtime-runs">
           {visibleRuns.map((run: WorkflowRunSummary) => (
             <div key={run.event_id} className="runtime-run-card">
@@ -476,190 +378,124 @@ export function createRunPanelRenderers({
             </div>
           ))}
         </div>
+        <details className="workflow-run-history-search">
+          <summary>Find past runs</summary>
+          <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
+            <select
+              value={runDetailLookupKind}
+              onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
+              aria-label="Run lookup key"
+            >
+              <option value="auto">Auto</option>
+              <option value="run_id">Run ID</option>
+              <option value="event_id">Event ID</option>
+              <option value="trigger_event_id">Trigger event</option>
+              <option value="trace_id">Trace ID</option>
+              <option value="session_id">Session ID</option>
+              <option value="artifact_id">Artifact ID</option>
+            </select>
+            <input
+              value={runDetailLookup}
+              onChange={(event) => setRunDetailLookup(event.target.value)}
+              placeholder="Lookup id"
+              aria-label="Workflow run lookup id"
+            />
+            <button
+              type="submit"
+              className="subtle-button"
+              disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
+            >
+              {runDetailLoading ? "Loading..." : "Inspect"}
+            </button>
+          </form>
+          <div className="run-search-panel">
+            <div className="run-search-header">
+              <span className="section-label">Latest runs</span>
+              {runSearchResult ? (
+                <span className="current-runs-count">{runSearchResult.returned}</span>
+              ) : null}
+            </div>
+            <form className="run-search-form" onSubmit={submitWorkflowRunSearch}>
+              <select
+                value={runSearchScope}
+                onChange={(event) => setRunSearchScope(event.target.value)}
+                aria-label="Run search scope"
+              >
+                <optgroup label="Graphs">
+                  {runSearchScopeOptions
+                    .filter((option) => option.kind === "graph")
+                    .map((option) => (
+                      <option value={option.value} key={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                </optgroup>
+                <optgroup label="Nodes">
+                  {runSearchScopeOptions
+                    .filter((option) => option.kind === "node")
+                    .map((option) => (
+                      <option value={option.value} key={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                </optgroup>
+              </select>
+              <label className="checkbox-row run-search-checkbox">
+                <input
+                  type="checkbox"
+                  checked={runSearchWithoutSession}
+                  onChange={(event) => setRunSearchWithoutSession(event.target.checked)}
+                />
+                <span>No agent session</span>
+              </label>
+              <label className="checkbox-row run-search-checkbox">
+                <input
+                  type="checkbox"
+                  checked={runSearchIncludeCompleted}
+                  onChange={(event) => setRunSearchIncludeCompleted(event.target.checked)}
+                />
+                <span>Completed</span>
+              </label>
+              <button
+                type="submit"
+                className="subtle-button"
+                disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
+              >
+                {runSearchLoading ? "Loading..." : "Find"}
+              </button>
+            </form>
+            {runSearchError ? <div className="runtime-run-error">{runSearchError}</div> : null}
+            {runSearchResult ? (
+              <div className="runtime-run-meta">
+                {runSearchResult.matched} matched {runSearchResult.filters.graph_name ?? selectedRunSearchScope?.label ?? ""}
+                {runSearchResult.has_more ? `; showing ${runSearchResult.returned}` : ""}
+              </div>
+            ) : null}
+            {runSearchResult && runSearchResult.runs.length === 0 ? (
+              <div className="runtime-run-meta">No matching runs.</div>
+            ) : null}
+            {runSearchResult && runSearchResult.runs.length > 0 ? (
+              <div className="runtime-runs run-search-results">
+                {runSearchResult.runs.map((run) => renderRunSearchResult(run))}
+              </div>
+            ) : null}
+          </div>
+        </details>
       </div>
     );
   }
 
-    function renderDesktopRunsPanel() {
-    return (canReadWorkflowRuns ? (
-              <details className="sidebar-section current-runs-section">
-                <summary className="current-runs-summary">
-                  <span className="section-label current-runs-label">Current runs</span>
-                  <span className="current-runs-count">{visibleRuns.length}</span>
-                </summary>
-                <p className="runtime-summary">
-                  {visibleRuns.length === 0
-                    ? "No active or errored workflow runs."
-                    : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
-                </p>
-                {runSnapshotError ? <div className="runtime-run-error">{runSnapshotError}</div> : null}
-                <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
-                  <select
-                    value={runDetailLookupKind}
-                    onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
-                    aria-label="Run lookup key"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="run_id">Run ID</option>
-                    <option value="event_id">Event ID</option>
-                    <option value="trigger_event_id">Trigger event</option>
-                    <option value="trace_id">Trace ID</option>
-                    <option value="session_id">Session ID</option>
-                    <option value="artifact_id">Artifact ID</option>
-                  </select>
-                  <input
-                    value={runDetailLookup}
-                    onChange={(event) => setRunDetailLookup(event.target.value)}
-                    placeholder="Lookup id"
-                    aria-label="Workflow run lookup id"
-                  />
-                  <button
-                    type="submit"
-                    className="subtle-button"
-                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowRunReadLocked}
-                  >
-                    {runDetailLoading ? "Loading..." : "Inspect"}
-                  </button>
-                </form>
-                {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
-                <div className="run-search-panel">
-                  <div className="run-search-header">
-                    <span className="section-label">Latest runs</span>
-                    {runSearchResult ? (
-                      <span className="current-runs-count">{runSearchResult.returned}</span>
-                    ) : null}
-                  </div>
-                  <form className="run-search-form" onSubmit={submitWorkflowRunSearch}>
-                    <select
-                      value={runSearchScope}
-                      onChange={(event) => setRunSearchScope(event.target.value)}
-                      aria-label="Run search scope"
-                    >
-                      <optgroup label="Graphs">
-                        {runSearchScopeOptions
-                          .filter((option) => option.kind === "graph")
-                          .map((option) => (
-                            <option value={option.value} key={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                      </optgroup>
-                      <optgroup label="Nodes">
-                        {runSearchScopeOptions
-                          .filter((option) => option.kind === "node")
-                          .map((option) => (
-                            <option value={option.value} key={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                      </optgroup>
-                    </select>
-                    <label className="checkbox-row run-search-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={runSearchWithoutSession}
-                        onChange={(event) => setRunSearchWithoutSession(event.target.checked)}
-                      />
-                      <span>No agent session</span>
-                    </label>
-                    <label className="checkbox-row run-search-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={runSearchIncludeCompleted}
-                        onChange={(event) => setRunSearchIncludeCompleted(event.target.checked)}
-                      />
-                      <span>Completed</span>
-                    </label>
-                    <button
-                      type="submit"
-                      className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope || workflowRunReadLocked}
-                    >
-                      {runSearchLoading ? "Loading..." : "Find"}
-                    </button>
-                  </form>
-                  {runSearchError ? <div className="runtime-run-error">{runSearchError}</div> : null}
-                  {runSearchResult ? (
-                    <div className="runtime-run-meta">
-                      {runSearchResult.matched} matched {runSearchResult.filters.graph_name ?? selectedRunSearchScope?.label ?? ""}
-                      {runSearchResult.has_more ? `; showing ${runSearchResult.returned}` : ""}
-                    </div>
-                  ) : null}
-                  {runSearchResult && runSearchResult.runs.length === 0 ? (
-                    <div className="runtime-run-meta">No matching runs.</div>
-                  ) : null}
-                  {runSearchResult && runSearchResult.runs.length > 0 ? (
-                    <div className="runtime-runs run-search-results">
-                      {runSearchResult.runs.map((run) => renderRunSearchResult(run))}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="runtime-runs">
-                  {visibleRuns.map((run: WorkflowRunSummary) => (
-                    <div key={run.event_id} className="runtime-run-card">
-                <div className="runtime-run-header">
-                  <div className="runtime-run-event">{run.event_id}</div>
-                        <div
-                          className={`runtime-run-state state-${workflowRunStateClassName(run.run_state, run.delivery_state)}`}
-                        >
-                          {workflowRunStateLabel(run.run_state, run.delivery_state)}
-                        </div>
-                      </div>
-                      <div className="runtime-run-meta">
-                        Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
-                      </div>
-                      {run.run_state === "errored" ? (
-                        <div className="runtime-run-error">
-                          Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
-                          {run.error ? `: ${run.error}` : ""}
-                        </div>
-                      ) : null}
-                      <div className="runtime-run-nodes">
-                        {run.active_nodes.map((activity, index) => (
-                          <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
-                            {summarizeRunNode(activity)}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="runtime-run-actions">
-                        <button
-                          type="button"
-                          className="subtle-button"
-                          onClick={() => inspectWorkflowRun(run.event_id)}
-                          disabled={runDetailLoading || workflowRunReadLocked}
-                        >
-                          Inspect
-                        </button>
-                        {run.run_state === "errored" && run.resumable ? (
-                          <button
-                            type="button"
-                            className="subtle-button"
-                            onClick={() => void resumeWorkflowRun(run.event_id)}
-                            disabled={Boolean(resumingRunIds[run.event_id]) || workflowRunControlLocked}
-                          >
-                            {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="subtle-button runtime-run-clear"
-                          onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
-                          disabled={Boolean(clearingRunIds[run.event_id]) || workflowRunControlLocked}
-                        >
-                          {clearingRunIds[run.event_id]
-                            ? run.run_state === "errored"
-                              ? "Dismissing..."
-                              : "Clearing..."
-                            : run.run_state === "errored"
-                              ? "Dismiss run"
-                              : "Clear run"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-              ) : null);
+  function renderDesktopRunsPanel() {
+    if (!canReadWorkflowRuns) return null;
+    return (
+      <details className="sidebar-section current-runs-section">
+        <summary className="current-runs-summary">
+          <span className="section-label current-runs-label">Current runs</span>
+          <span className="current-runs-count">{visibleRuns.length}</span>
+        </summary>
+        {renderRunsPanelContent(false)}
+      </details>
+    );
   }
 
   return {

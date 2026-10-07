@@ -6,6 +6,8 @@ from evander.admin.services.privacy_service import PrivacyAdminService
 from evander.classification.service import ClassificationService
 from evander.admin.services.credential_admin_service import CredentialAdminService
 from evander.admin.services.repository_index_service import RepositoryIndexService
+from evander.admin.services.teams_voice_service import TeamsVoiceService
+from evander.admin.services.inbound_phone_routing_service import InboundPhoneRoutingService
 
 import os
 import fcntl
@@ -101,6 +103,7 @@ from evander.bootstrap import (
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.connectors.service import ConnectorService, connector_registry_from_catalog
+from evander.admin.services.event_schema_admin_service import EventSchemaAdminService
 from evander.directory_config import DirectoryConfigResolver, DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
 from evander.host_config import DEFAULT_RUNTIME_DIR
@@ -245,6 +248,8 @@ class AdminRuntimeComponents:
     session_admin: SessionAdminService
     wake_schedule_admin: WakeScheduleAdminService
     teams_admin: TeamsAdminService
+    teams_voice_service: TeamsVoiceService
+    inbound_phone_routing_service: InboundPhoneRoutingService
     discord_webhook_admin: DiscordWebhookAdminService
     vm_inventory_admin: VmInventoryAdminService
     worker_control_admin: WorkerControlAdminService
@@ -254,6 +259,8 @@ class AdminRuntimeComponents:
     capacity_health_admin: CapacityHealthAdminService
     credential_admin: CredentialAdminService
     connector_admin: ConnectorAdminService
+    event_schema_admin: EventSchemaAdminService
+    connector_service: ConnectorService
     website_session_admin: WebsiteSessionAdminService
     classification_admin: ClassificationAdminService
     privacy_admin: PrivacyAdminService
@@ -679,6 +686,9 @@ def _build_admin_runtime_components(
         provider_config=runtime.provider_config,
         artifact_store_factory=lambda: CommunicationArtifactStore(config.runtime_dir),
         registry=connector_registry_from_catalog(addon_catalog),
+        session_authorizer=lambda sid: runtime.policy.require_tool(sid, "call_connector"),
+        session_argument_authorizer=runtime.policy.require_tool_arguments,
+        host_services={"managed_git": lambda: managed_git_admin},
     )
     connector_admin = ConnectorAdminService(
         ConnectorAdminDependencies(
@@ -829,6 +839,8 @@ def _build_admin_runtime_components(
         session_admin=session_admin,
         wake_schedule_admin=wake_schedule_admin,
         teams_admin=teams_admin,
+        teams_voice_service=runtime.teams_voice_service,
+        inbound_phone_routing_service=runtime.inbound_phone_routing_service,
         discord_webhook_admin=discord_webhook_admin,
         vm_inventory_admin=vm_inventory_admin,
         worker_control_admin=worker_control_admin,
@@ -840,6 +852,8 @@ def _build_admin_runtime_components(
             provider_config=runtime.provider_config, operations_admin=operations_admin,
             connector_admin=connector_admin, audit=runtime.audit, directories=runtime.directories),
         connector_admin=connector_admin,
+        event_schema_admin=EventSchemaAdminService(workflow_config_admin.event_schemas, directory_admin, host.admin_config_mutation_lock),
+        connector_service=connector_service,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
         ),

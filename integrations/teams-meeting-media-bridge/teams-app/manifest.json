@@ -1,0 +1,25 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.1.0",
+  "id": "00000000-0000-4000-8000-000000000001",
+  "packageName": "com.example.evander.assistant",
+  "developer": {
+    "name": "Your organization",
+    "websiteUrl": "https://example.test",
+    "privacyUrl": "https://example.test/privacy",
+    "termsOfUseUrl": "https://example.test/terms"
+  },
+  "name": { "short": "Assistant", "full": "Personal assistant calls" },
+  "description": { "short": "Talk to your personal assistant", "full": "Call your explicitly assigned personal assistant through Teams." },
+  "icons": { "outline": "outline.png", "color": "color.png" },
+  "accentColor": "#FFFFFF",
+  "bots": [{
+    "botId": "00000000-0000-4000-8000-000000000001",
+    "scopes": ["personal"],
+    "supportsCalling": true,
+    "supportsVideo": true,
+    "isNotificationOnly": false
+  }],
+  "validDomains": ["bridge.example.test"]
+}

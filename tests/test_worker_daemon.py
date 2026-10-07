@@ -116,6 +116,13 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
     assert first.checkout_updated is True
     assert first.configuration_updated is True
 
+    checkout = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "repos" / "repo"
+    sidecar = checkout / "workspace.db-wal"
+    sidecar.write_bytes(b"retained runtime sidecar\n")
+    notes = checkout / "local-notes" / "notes.txt"
+    notes.parent.mkdir()
+    notes.write_text("retained notes\n", encoding="utf-8")
+
     unchanged = daemon.prepare_reference_repo(
         "session-1",
         WorkerReferenceRepoPrepareRequest(
@@ -159,8 +166,10 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
     )
     assert refreshed.checkout_updated is True
     assert refreshed.commit_sha == source_commit()
+    assert (checkout / "README.md").read_text(encoding="utf-8") == "two\n"
+    assert sidecar.read_bytes() == b"retained runtime sidecar\n"
+    assert notes.read_text(encoding="utf-8") == "retained notes\n"
 
-    checkout = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "repos" / "repo"
     generated_helper = checkout / ".evander" / "generated-helper.sh"
     generated_helper.write_text("#!/bin/sh\n", encoding="utf-8")
     unchanged_with_helper = daemon.prepare_reference_repo(
@@ -205,6 +214,131 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
                 configuration_version="1",
             ),
         )
+
+
+@pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+def test_worker_reference_refresh_preserves_files_that_conflict_with_new_tracked_paths(
+    tmp_path: Path,
+    ignored: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args: str, cwd: Path = source) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Worker Test")
+    (source / "README.md").write_text("original reference\n", encoding="utf-8")
+    (source / ".gitignore").write_text("generated/\n" if ignored else "", encoding="utf-8")
+    git("add", "README.md", ".gitignore")
+    git("commit", "-q", "-m", "initial reference")
+    original_commit = git("rev-parse", "HEAD")
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=original_commit,
+        configuration_version="1",
+    )
+    daemon.prepare_reference_repo("session-1", request)
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+    local_file = checkout / "generated" / "report.txt"
+    local_file.parent.mkdir()
+    local_file.write_text("local work to preserve\n", encoding="utf-8")
+    trusted_state_path = paths.root / "reference-repository-state" / "repo.json"
+    trusted_state_before = trusted_state_path.read_bytes()
+
+    upstream_file = source / "generated" / "report.txt"
+    upstream_file.parent.mkdir()
+    upstream_file.write_text("new upstream file\n", encoding="utf-8")
+    (source / "README.md").write_text("updated reference\n", encoding="utf-8")
+    git("add", "-f", "generated/report.txt", "README.md")
+    git("commit", "-q", "-m", "add conflicting path")
+    new_commit = git("rev-parse", "HEAD")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        daemon.prepare_reference_repo(
+            "session-1", request.model_copy(update={"commit_sha": new_commit})
+        )
+
+    assert git("rev-parse", "FETCH_HEAD", cwd=checkout) == new_commit
+    assert git("rev-parse", "HEAD", cwd=checkout) == original_commit
+    assert (checkout / "README.md").read_text(encoding="utf-8") == "original reference\n"
+    assert local_file.read_text(encoding="utf-8") == "local work to preserve\n"
+    assert trusted_state_path.read_bytes() == trusted_state_before
+
+
+@pytest.mark.parametrize("update_existing", [False, True], ids=["reuse", "refresh"])
+def test_worker_reference_prepare_rejects_staged_additions_with_unborn_head(
+    tmp_path: Path,
+    update_existing: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args: str, cwd: Path = source) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Worker Test")
+    (source / "README.md").write_text("trusted reference\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "-q", "-m", "initial reference")
+    commit_sha = git("rev-parse", "HEAD")
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        configuration_version="1",
+        update_existing=update_existing,
+    )
+    daemon.prepare_reference_repo("session-1", request)
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+    trusted_state_path = paths.root / "reference-repository-state" / "repo.json"
+    trusted_state_before = trusted_state_path.read_bytes()
+
+    git("checkout", "--quiet", "--orphan", "local", cwd=checkout)
+    staged_file = checkout / "local-staged.txt"
+    staged_file.write_text("staged local work\n", encoding="utf-8")
+    git("add", "local-staged.txt", cwd=checkout)
+
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo("session-1", request)
+
+    assert git("symbolic-ref", "HEAD", cwd=checkout) == "refs/heads/local"
+    with pytest.raises(subprocess.CalledProcessError):
+        git("rev-parse", "--verify", "HEAD", cwd=checkout)
+    assert git("diff", "--cached", "--name-status", cwd=checkout) == (
+        "A\tREADME.md\nA\tlocal-staged.txt"
+    )
+    assert staged_file.read_text(encoding="utf-8") == "staged local work\n"
+    assert (checkout / "README.md").read_text(encoding="utf-8") == "trusted reference\n"
+    assert trusted_state_path.read_bytes() == trusted_state_before
 
 
 def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
@@ -276,6 +410,8 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
         }
     )
     retained = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    sidecar = checkout / "workspace.db-shm"
+    sidecar.write_bytes(b"retained runtime sidecar\n")
     receipt = json.loads(
         (
             tmp_path
@@ -329,6 +465,7 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
     assert retained.commit_sha == commit_sha
     assert reused.preparation_reused is True
     assert raced_reuse.preparation_reused is True
+    assert sidecar.read_bytes() == b"retained runtime sidecar\n"
     assert receipt["requested_commit_sha"] == "c" * 40
     assert receipt["checkout_commit_sha"] == commit_sha
     assert injected_filter is True
@@ -1069,6 +1206,41 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     )
 
     assert response.status_code == 201
+
+
+def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_WORKER_DEPLOY_REVISION", "loaded-revision")
+    runtime = FakeContainerRuntime()
+    with _client(tmp_path, runtime=runtime) as client:
+        # A later checkout/environment change cannot relabel the running app.
+        monkeypatch.setenv("EVANDER_WORKER_DEPLOY_REVISION", "next-revision")
+        health = client.get("/healthz").json()
+        assert health["deployment_revision"] == "loaded-revision"
+        assert health["capabilities"]["codex_fast_mode"] == 1
+        response = client.post(
+            "/v1/jobs",
+            headers=_auth(),
+            json={
+                "session_id": "fast-assistant",
+                "job_id": "fast-job",
+                "image": "codex:latest",
+                "command": ["true"],
+                "codex_turn": {
+                    "prompt": "Continue",
+                    "model": "gpt-6.1-sol",
+                    "fast_mode": True,
+                    "fast_mode_source": "prompt",
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+        assert len(runtime.started) == 1
+        turn = runtime.started[0][0].codex_turn
+        assert turn is not None
+        assert turn.fast_mode is True
+        assert turn.fast_mode_source == "prompt"
 
 
 @pytest.mark.parametrize("session_id", [".", ".."])

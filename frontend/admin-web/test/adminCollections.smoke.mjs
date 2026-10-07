@@ -38,14 +38,14 @@ test("configuration collections search, sort, edit original records, and preserv
   await rows.first().click();
   assert.equal(await collection.getByLabel("Address",{exact:true}).inputValue(),"channel:changed");
   fixture.setFailSave(true);
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText(/changed on the server/).waitFor();
   assert.equal(await collection.getByLabel("Address",{exact:true}).inputValue(),"channel:changed");
   assert.equal(fixture.writes[0].expected_revision,"r1");
   assert.equal(fixture.writes[0].config.targets[16].id,"renamed-target");
   assert.equal(fixture.writes[0].config.targets[0].id,"discord-18");
   fixture.setFailSave(false);
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText("Saved People & Communications overrides for root.",{exact:true}).waitFor();
   await collection.getByRole("searchbox").fill("no-such-target");
   await page.getByRole("button",{name:"Add target",exact:true}).click();
@@ -111,7 +111,7 @@ test("inherited targets stay searchable and retain override/disable actions", {t
   await local.getByRole("searchbox").fill("inherited-alerts");
   await local.locator(".record-collection-summary").click();
   assert.equal(await local.getByLabel("Disable inherited target",{exact:true}).isChecked(),true);
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText("Saved People & Communications overrides for root/child.",{exact:true}).waitFor();
   assert.equal(fixture.writes.at(-1).config.targets.find(target=>target.id==="inherited-alerts").disabled,true);
 });
@@ -126,7 +126,7 @@ test("read-only collections allow search and inspection while editing remains di
   await collection.locator(".record-collection-summary").click();
   assert.equal(await collection.getByLabel("Target id",{exact:true}).isDisabled(),true);
   assert.equal(await page.getByRole("button",{name:"Add target",exact:true}).isDisabled(),true);
-  assert.equal(await page.getByRole("button",{name:"Save tab",exact:true}).isDisabled(),true);
+  assert.equal(await page.getByRole("button",{name:"Save changes",exact:true}).isDisabled(),true);
   assert.deepEqual(fixture.writes,[]);
 });
 
@@ -149,13 +149,13 @@ test("saving contacts closes the editor when sorted readback changes record inde
   await contacts.locator(".contact-description-field textarea").fill("Amy before save");
 
   fixture.setFailSave(true);
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText(/changed on the server/).waitFor();
   assert.equal(await contacts.getByLabel("Name",{exact:true}).inputValue(),"Amy");
   assert.equal(await contacts.locator(".contact-description-field textarea").inputValue(),"Amy before save");
 
   fixture.setFailSave(false);
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText("Saved People & Communications overrides for root.",{exact:true}).waitFor();
   assert.deepEqual(Object.keys(fixture.writes.at(-1).config.contacts),["zoe","amy"]);
   const saved = await page.request.get(fixture.url + "/api/configuration/state");
@@ -165,7 +165,7 @@ test("saving contacts closes the editor when sorted readback changes record inde
 
   await contacts.locator(".record-collection-summary").filter({hasText:"Amy"}).click();
   await contacts.locator(".contact-description-field textarea").fill("Amy after save");
-  await page.getByRole("button",{name:"Save tab",exact:true}).click();
+  await page.getByRole("button",{name:"Save changes",exact:true}).click();
   await page.getByText("Saved People & Communications overrides for root.",{exact:true}).waitFor();
   assert.equal(fixture.writes.at(-1).config.contacts.amy.description,"Amy after save");
   assert.equal(fixture.writes.at(-1).config.contacts.zoe.description,"Keep Zoe unchanged");

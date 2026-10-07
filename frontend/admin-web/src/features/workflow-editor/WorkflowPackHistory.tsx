@@ -1,4 +1,5 @@
 import {
+  Fragment,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
@@ -143,19 +144,23 @@ export function WorkflowPackHistory({
       ) : (
         <div className="workflow-pack-history-list">
           {workflowPackHistory.map((entry) => (
-            <button
-              key={entry.change_id}
-              type="button"
-              className={`workflow-pack-history-row${workflowPackHistoryDetail?.entry.change_id === entry.change_id ? " selected" : ""}`}
-              onClick={() => void loadWorkflowPackHistoryDetail(entry.change_id)}
-              disabled={workflowPackHistoryDetailLoading}
-            >
-              <span>
-                <strong>{workflowPackHistoryOperationLabel(entry.operation)}</strong>
-                <small>{entry.actor.display_name || entry.actor.login} / {formatRuntimeTimestamp(entry.changed_at)}</small>
-              </span>
-              <span>{workflowPackHistorySummary(entry)}</span>
-            </button>
+            <Fragment key={entry.change_id}>
+              <button
+                type="button"
+                className={`workflow-pack-history-row${workflowPackHistoryDetail?.entry.change_id === entry.change_id ? " selected" : ""}`}
+                onClick={() => void loadWorkflowPackHistoryDetail(entry.change_id)}
+                disabled={workflowPackHistoryDetailLoading}
+              >
+                <span>
+                  <strong>{workflowPackHistoryOperationLabel(entry.operation)}</strong>
+                  <small>{entry.actor.display_name || entry.actor.login} / {formatRuntimeTimestamp(entry.changed_at)}</small>
+                </span>
+                <span>{workflowPackHistorySummary(entry)}</span>
+              </button>
+              {workflowPackHistoryDetail?.entry.change_id === entry.change_id && !workflowPackHistoryDetailLoading
+                ? renderWorkflowPackHistoryDetail()
+                : null}
+            </Fragment>
           ))}
           {workflowPackHistoryNextCursor ? (
             <button
@@ -171,7 +176,7 @@ export function WorkflowPackHistory({
       )}
       {workflowPackHistoryDetailLoading ? (
         <div className="workflow-pack-history-empty">Loading change...</div>
-      ) : renderWorkflowPackHistoryDetail()}
+      ) : null}
     </div>
   );
 }

@@ -8,14 +8,8 @@ import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import {
-  DisableIcon,
-  DestroyIcon,
-  EditIcon,
-  EnableIcon,
-  KillIcon,
   PowerIcon,
   ResumeIcon,
-  SkillIcon,
   SteeringIcon,
   StartIcon,
   StopIcon,
@@ -954,6 +948,7 @@ export function AgentsPage() {
   );
   const [inlineValidation, setInlineValidation] = useState("");
   const logViewRef = useRef<HTMLPreElement | null>(null);
+  const actionMenuRef = useRef<HTMLDetailsElement | null>(null);
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
@@ -1072,6 +1067,15 @@ export function AgentsPage() {
     [items, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedListAgent ? agentKey(selectedListAgent) : null;
+  useEffect(() => {
+    if (actionMenuRef.current) actionMenuRef.current.open = false;
+    const closeOutsideMenu = (event: PointerEvent) => {
+      const menu = actionMenuRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", closeOutsideMenu);
+    return () => document.removeEventListener("pointerdown", closeOutsideMenu);
+  }, [selectedAgentKey]);
   const selectedAgent = useMemo(() => {
     if (selectedAgentDetail && selectedAgentKey === agentKey(selectedAgentDetail)) {
       return selectedListAgent
@@ -2166,6 +2170,11 @@ export function AgentsPage() {
                 </select>
               </label>
             </div>
+            {agentSearch.trim() || backendFilter !== "all" || statusFilter !== "all" ? (
+              <button type="button" onClick={() => { setAgentSearch(""); setBackendFilter("all"); setStatusFilter("all"); }}>
+                Clear filters
+              </button>
+            ) : null}
             <div className="feature-list vm-list agent-list">
               {(["libvirt_vm", "container_worker_vm"] as AgentBackend[]).map((backend) => {
                 const group = groupedItems[backend];
@@ -2265,40 +2274,16 @@ export function AgentsPage() {
                       {selectedExecutionDisplay?.label ?? "Unknown"}
                     </span>
                   </Tooltip>
-                  {canEditCodexUsage ? (
-                    <Tooltip content="Edit this container agent's Codex usage mode.">
-                      <button
-                        type="button"
-                        className={`admin-icon-button${showEditForm ? " primary" : ""}`}
-                        onClick={openEditForm}
-                        disabled={!canMutate}
-                        aria-label="Edit Codex usage"
-                      >
-                        {busyAction === "edit-agent" ? "..." : <EditIcon />}
-                      </button>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip content="Copy managed Codex skills into the selected session.">
-                    <button
-                      type="button"
-                      className={`admin-icon-button${showSkillInstallForm ? " primary" : ""}`}
-                      onClick={openSkillInstallForm}
-                      disabled={!canMutate || !canInstallSkills}
-                      aria-label="Install skills"
-                    >
-                      {busyAction === "install-skills" ? "..." : <SkillIcon />}
-                    </button>
-                  </Tooltip>
                   {showStart ? (
                     <Tooltip content="Start the selected VM.">
                       <button
-                        className="admin-icon-button"
+                        className="admin-icon-button toolbar-labeled-action"
                         type="button"
                         onClick={() => void runAgentAction("start")}
                         disabled={!canMutate}
                         aria-label="Start VM"
                       >
-                        {busyAction === "start" ? "..." : <StartIcon />}
+                        {busyAction === "start" ? "Starting…" : <><StartIcon /> Start VM</>}
                       </button>
                     </Tooltip>
                   ) : null}
@@ -2336,58 +2321,11 @@ export function AgentsPage() {
                       </button>
                     </Tooltip>
                   ) : null}
-                  {showEnable ? (
-                    <Tooltip content="Enable the guest agent.">
-                      <button
-                        className="admin-icon-button"
-                        type="button"
-                        onClick={() => void runAgentAction("enable-agent")}
-                        disabled={!canMutate}
-                        aria-label="Enable agent"
-                      >
-                        <EnableIcon />
-                      </button>
-                    </Tooltip>
-                  ) : null}
-                  {showDisable ? (
-                    <Tooltip content="Disable the guest agent.">
-                      <button
-                        className="admin-icon-button"
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`Disable the agent for ${selectedAgent.target_name}?`)) {
-                            void runAgentAction("disable-agent");
-                          }
-                        }}
-                        disabled={!canMutate}
-                        aria-label="Disable agent"
-                      >
-                        <DisableIcon />
-                      </button>
-                    </Tooltip>
-                  ) : null}
-                  {showKill ? (
-                    <Tooltip content="Force-kill the currently running guest agent process.">
-                      <button
-                        className="admin-icon-button"
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`Kill the running agent on ${selectedAgent.target_name}?`)) {
-                            void runAgentAction("kill-agent", { pid: agentPid });
-                          }
-                        }}
-                        disabled={!canMutate}
-                        aria-label="Kill agent"
-                      >
-                        <KillIcon />
-                      </button>
-                    </Tooltip>
-                  ) : null}
                   {canPromptAgent ? (
                     <Tooltip content="Prompt agent">
                       <button
                         type="button"
-                        className={`admin-icon-button${showPromptForm ? " primary" : ""}`}
+                        className={`admin-icon-button toolbar-labeled-action${showPromptForm ? " primary" : ""}`}
                         onClick={() => {
                           if (showPromptForm) {
                             setShowPromptForm(false);
@@ -2398,45 +2336,132 @@ export function AgentsPage() {
                         disabled={!canMutate}
                         aria-label="Prompt agent"
                       >
-                        <ResumeIcon />
+                        <ResumeIcon /> Prompt
                       </button>
                     </Tooltip>
                   ) : null}
                   <Tooltip content="Queue or review operator steering notes.">
                     <button
                       type="button"
-                      className={`admin-icon-button${showOperatorSteeringDialog ? " primary" : ""}`}
+                      className={`admin-icon-button toolbar-labeled-action${showOperatorSteeringDialog ? " primary" : ""}`}
                       onClick={() => {
                         setShowOperatorSteeringDialog(true);
                         void refreshOperatorSteering();
                       }}
                       aria-label="Operator steering"
                     >
-                      <SteeringIcon />
+                      <SteeringIcon /> Steering
                     </button>
                   </Tooltip>
-                  {showDestroy ? (
-                    <Tooltip
-                      content={
-                        selectedAgent.backend === "container_worker_vm"
-                          ? "Delete the worker target and linked session."
-                          : "Destroy the VM and remove the linked session."
+                  {canEditCodexUsage || canInstallSkills || showEnable || showDisable || showKill || showDestroy ? (
+                  <details ref={actionMenuRef} className="record-action-menu" onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }
+                  }}>
+                    <summary>More actions</summary>
+                    <div className="record-action-menu-content" onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("button")) {
+                        event.currentTarget.parentElement?.removeAttribute("open");
                       }
-                    >
-                      <button
-                        type="button"
-                        className="admin-icon-button danger"
-                        onClick={() => {
-                          if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
-                            void handleDeleteAgent();
+                    }}>
+                      {canEditCodexUsage ? (
+                        <Tooltip content="Edit this container agent's Codex usage mode.">
+                          <button
+                            type="button"
+                            className={`admin-action-button${showEditForm ? " primary" : ""}`}
+                            onClick={openEditForm}
+                            disabled={!canMutate}
+                            aria-label="Edit Codex usage"
+                          >
+                            {busyAction === "edit-agent" ? "Saving…" : "Edit Codex usage"}
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                      {canInstallSkills ? <Tooltip content="Copy managed Codex skills into the selected session.">
+                        <button
+                          type="button"
+                          className={`admin-action-button${showSkillInstallForm ? " primary" : ""}`}
+                          onClick={openSkillInstallForm}
+                          disabled={!canMutate || !canInstallSkills}
+                          aria-label="Install skills"
+                        >
+                          {busyAction === "install-skills" ? "Installing…" : "Install skills"}
+                        </button>
+                      </Tooltip> : null}
+                      {showEnable ? (
+                        <Tooltip content="Enable the guest agent.">
+                          <button
+                            className="admin-action-button"
+                            type="button"
+                            onClick={() => void runAgentAction("enable-agent")}
+                            disabled={!canMutate}
+                            aria-label="Enable agent"
+                          >
+                            Enable agent
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                      {showDisable ? (
+                        <Tooltip content="Disable the guest agent.">
+                          <button
+                            className="admin-action-button"
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Disable the agent for ${selectedAgent.target_name}?`)) {
+                                void runAgentAction("disable-agent");
+                              }
+                            }}
+                            disabled={!canMutate}
+                            aria-label="Disable agent"
+                          >
+                            Disable agent
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                      {showKill ? (
+                        <Tooltip content="Force-kill the currently running guest agent process.">
+                          <button
+                            className="admin-action-button"
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Kill the running agent on ${selectedAgent.target_name}?`)) {
+                                void runAgentAction("kill-agent", { pid: agentPid });
+                              }
+                            }}
+                            disabled={!canMutate}
+                            aria-label="Kill agent"
+                          >
+                            Force-kill agent
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                      {showDestroy ? (
+                        <Tooltip
+                          content={
+                            selectedAgent.backend === "container_worker_vm"
+                              ? "Delete the worker target and linked session."
+                              : "Destroy the VM and remove the linked session."
                           }
-                        }}
-                        disabled={!canMutate}
-                        aria-label="Destroy target"
-                      >
-                        {busyAction === "delete-agent" ? "..." : <DestroyIcon />}
-                      </button>
-                    </Tooltip>
+                        >
+                          <button
+                            type="button"
+                            className="admin-action-button danger"
+                            onClick={() => {
+                              if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
+                                void handleDeleteAgent();
+                              }
+                            }}
+                            disabled={!canMutate}
+                            aria-label="Destroy target"
+                          >
+                            {busyAction === "delete-agent" ? "Destroying…" : "Destroy target"}
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                    </div>
+                  </details>
                   ) : null}
                 </div>
               ) : null}
@@ -2732,7 +2757,7 @@ export function AgentsPage() {
                       </div>
                       <div>
                         <dt>Session</dt>
-                        <dd>{selectedAgent.session_id ?? "None"}</dd>
+                        <dd>{selectedAgent.session_id ? <a href={`#sessions?${new URLSearchParams({ session_id: selectedAgent.session_id })}`}>{selectedAgent.session_id}</a> : "None"}</dd>
                       </div>
                       <div>
                         <dt>Directory</dt>
@@ -2765,11 +2790,11 @@ export function AgentsPage() {
                     </dl>
                   </article>
 
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker session" : "VM host"}</h3>
+                  <details className="panel compact-disclosure">
+                    <summary className="panel-header compact-disclosure-summary">
+                      <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker details" : "VM details"}</h3>
                       <span className="panel-meta">{selectedTargetStateText}</span>
-                    </div>
+                    </summary>
                     <dl className="property-grid">
                       {selectedAgent.backend === "container_worker_vm" ? (
                         <>
@@ -2878,7 +2903,7 @@ export function AgentsPage() {
                         </div>
                       ) : null}
                     </dl>
-                  </article>
+                  </details>
                 </div>
 
                 {selectedPromptQueue.record_count > 0 || selectedPromptQueue.read_error ? (

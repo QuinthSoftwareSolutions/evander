@@ -1,0 +1,4 @@
+include CHANGELOG.md addon.json conftest.py package.json package-lock.json
+recursive-include docs *.md
+recursive-include examples *.json *.conf
+recursive-include tests *.py *.php *.css

@@ -93,6 +93,8 @@ def load_provider_plugins(
 
     if include_entry_points:
         for discovered in _iter_provider_entry_points():
+            if include_builtin and discovered.value == "evander.providers.builtin:register_providers":
+                continue
             registration_specs.append(
                 (f"entry_point:{discovered.value}", _load_registration_from_entry_point(discovered))
             )

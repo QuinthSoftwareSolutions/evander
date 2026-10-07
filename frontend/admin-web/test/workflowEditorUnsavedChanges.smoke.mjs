@@ -483,6 +483,19 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await undoButton.isDisabled(), true);
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
+  const createPanel = page.locator(".workflow-create-section");
+  await createPanel.getByLabel("Search nodes").fill("unknown node type");
+  await createPanel.getByText("No matching nodes.").waitFor({ state: "visible" });
+  await createPanel.getByLabel("Search nodes").fill("agent");
+  const originalNodeCount = await page.locator(".react-flow__node").count();
+  await createPanel.getByRole("button", { name: "Agent", exact: true }).click();
+  await page.waitForFunction((count) => document.querySelectorAll(".react-flow__node").length === count + 1, originalNodeCount);
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1, "adding a search result should stage an unsaved workflow change");
+  await undoButton.click();
+  await page.waitForFunction((count) => document.querySelectorAll(".react-flow__node").length === count, originalNodeCount);
+  await createPanel.getByLabel("Search nodes").fill("");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+
   await Promise.all([
     page.waitForResponse((response) => new URL(response.url()).pathname === "/api/workflow-editor/validate" && response.ok()),
     page.getByRole("button", { name: "Validate" }).first().click(),

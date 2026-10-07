@@ -828,6 +828,62 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
     assert decision_response.json()["request"]["status"] == "denied"
 
 
+def test_admin_web_approvals_index_includes_exhausted_requests(tmp_path: Path) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    _seed_session(service, "approval-session")
+    now = datetime.now(UTC)
+    for request_id, status, age_minutes in [
+        ("exhausted-new", ApprovalStatus.EXHAUSTED, 1),
+        ("approved", ApprovalStatus.APPROVED, 2),
+        ("denied", ApprovalStatus.DENIED, 3),
+        ("pending", ApprovalStatus.PENDING, 4),
+        ("expired", ApprovalStatus.EXPIRED, 5),
+        ("exhausted-old", ApprovalStatus.EXHAUSTED, 6),
+    ]:
+        service.runtime.approvals.put(
+            request_id,
+            ApprovalRequest(
+                request_id=request_id,
+                session_id="approval-session",
+                action_type="run_script",
+                tool_name="run_script",
+                payload_digest="digest",
+                human_summary="Run script",
+                status=status,
+                used_count=1 if status == ApprovalStatus.EXHAUSTED else 0,
+                created_at=now - timedelta(minutes=age_minutes),
+                expires_at=now + timedelta(hours=1),
+            ),
+        )
+    client = TestClient(create_app(service))
+
+    pending_response = client.get("/api/admin/approvals?statuses=pending")
+    assert pending_response.status_code == 200
+    assert [item["request_id"] for item in pending_response.json()["items"]] == ["pending"]
+
+    all_response = client.get("/api/admin/approvals?directory_path=root&direct_only=false")
+    assert all_response.status_code == 200
+    all_payload = all_response.json()
+    assert [item["request_id"] for item in all_payload["items"]] == [
+        "pending",
+        "expired",
+        "denied",
+        "approved",
+        "exhausted-old",
+        "exhausted-new",
+    ]
+    assert all_payload["health"]["total"] == 6
+    assert all_payload["health"]["pending"] == 1
+    assert all_payload["health"]["exhausted"] == 2
+
+    exhausted_response = client.get("/api/admin/approvals?statuses=exhausted")
+    assert exhausted_response.status_code == 200
+    assert [item["request_id"] for item in exhausted_response.json()["items"]] == [
+        "exhausted-old",
+        "exhausted-new",
+    ]
+
+
 def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

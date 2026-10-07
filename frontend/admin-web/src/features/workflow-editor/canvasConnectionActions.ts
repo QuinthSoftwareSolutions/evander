@@ -238,6 +238,13 @@ export function createCanvasConnectionActions({
       ...nextConfig.edges,
       nextEdge,
     ];
+    if (sourceNode?.type === "trigger:event" && targetNode?.type === "gate:event:validate") {
+      const gate = nextConfig.gates.find((node) => node.id === targetId);
+      if (gate && !gate.config.event_type) {
+        gate.config.event_type = `\u0024{{${sourceId}.event_type}}`;
+        gate.config.payload = `\u0024{{${sourceId}.payload}}`;
+      }
+    }
     patchWorkflowDocument(nextConfig, cloneLayout(workflowDocument.layout));
     setSelectedEdgeId(null);
     setError(null);

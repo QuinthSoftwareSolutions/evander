@@ -101,7 +101,8 @@ public sealed record GraphTeamsMediaOptions(
             RequiredInt(configuration, "Graph:PublicPort", "TEAMS_BOT_PUBLIC_PORT"),
             RequiredInt(configuration, "Graph:InternalPort", "TEAMS_BOT_INTERNAL_PORT"),
             Required(configuration, "Graph:CertificateThumbprint", "TEAMS_BOT_CERT_THUMBPRINT"),
-            Required(configuration, "Graph:OnlineMeetingLookupUserId", "TEAMS_ONLINE_MEETING_LOOKUP_USER_ID"),
+            configuration["Graph:OnlineMeetingLookupUserId"]
+                ?? Environment.GetEnvironmentVariable("TEAMS_ONLINE_MEETING_LOOKUP_USER_ID") ?? "",
             OptionalInt(configuration, "Graph:MediaPortRangeStart", "TEAMS_BOT_MEDIA_PORT_RANGE_START"),
             OptionalInt(configuration, "Graph:MediaPortRangeEnd", "TEAMS_BOT_MEDIA_PORT_RANGE_END"));
 

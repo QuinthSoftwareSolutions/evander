@@ -507,7 +507,7 @@ export function IssuesPage() {
     }
   }
 
-  async function handleCreateVm() {
+  async function handleCreateVm(options: VmOptionsState = vmOptions) {
     if (!selectedIssue) return;
     setBusy("create-vm");
     setValidation(null);
@@ -516,7 +516,7 @@ export function IssuesPage() {
         `/api/admin/issues/${encodeURIComponent(selectedIssue.issue_id)}/create-vm`,
         {
           method: "POST",
-          body: JSON.stringify(vmOptionsPayload(vmOptions)),
+          body: JSON.stringify(vmOptionsPayload(options)),
         },
       );
       setStatus(payload.message);
@@ -647,11 +647,18 @@ export function IssuesPage() {
             {!showingForm && selectedIssue ? (
               <div className="feature-toolbar-actions icon-actions">
                 {selectedIssue.can_create_vm ? (
+                  <>
+                  <Tooltip content="Create a VM for this issue using the directory defaults.">
+                    <button type="button" className="primary toolbar-labeled-action"
+                      onClick={() => void handleCreateVm(EMPTY_VM_OPTIONS)} disabled={busy !== null || mutationLocked}>
+                      {busy === "create-vm" ? "Creating…" : "Create VM"}
+                    </button>
+                  </Tooltip>
                   <Tooltip
                     content={
                       creatingVm
                         ? "Close the inline VM creation panel for this issue."
-                        : "Create a VM for the selected issue using the configured bootstrap options."
+                        : "Choose model and optional toolchains before creating the issue VM."
                     }
                   >
                     <button
@@ -661,12 +668,13 @@ export function IssuesPage() {
                         setVmOptions({ ...EMPTY_VM_OPTIONS });
                         setValidation(null);
                       }}
-                      disabled={mutationLocked}
-                      aria-label={creatingVm ? "Cancel VM creation" : "Create VM"}
+                      disabled={busy !== null || mutationLocked}
+                      aria-label={creatingVm ? "Close VM options" : "VM options"}
                     >
                       <CreateVmIcon />
                     </button>
                   </Tooltip>
+                  </>
                 ) : null}
                 {selectedIssue.can_edit ? (
                   <Tooltip content="Edit the selected local issue record and save changes back to disk.">
@@ -871,7 +879,7 @@ export function IssuesPage() {
                     <div className="section-label">
                       {selectedIssueRecord ? `Selected: ${selectedIssueRecord.issue_number}` : "Issue"}
                     </div>
-                    <h2>{selectedIssue.title}</h2>
+                    <h3>Issue details</h3>
                   </div>
                   <span className="status-pill">{activeIssueState}</span>
                 </div>
@@ -939,16 +947,17 @@ export function IssuesPage() {
               </div>
 
               <div className="panel section-panel issue-summary-panel">
-                <div className="panel-heading">
-                  <div>
-                    <div className="section-label">Summary</div>
-                    <h2>Issue summary</h2>
-                  </div>
+                <div className="panel-header">
+                  <h3>Description</h3>
                 </div>
                 <div className="issue-copy-block issue-body-block">
                   {selectedIssueBodyText || issueSummaryText(selectedIssue) || "No summary available."}
                 </div>
                 {selectedIssueMetadata.length > 0 ? (
+                  <details className="compact-disclosure">
+                    <summary className="compact-disclosure-summary">
+                      Additional details ({selectedIssueMetadata.length})
+                    </summary>
                   <dl className="property-grid vm-label-grid issue-metadata-list">
                     {selectedIssueMetadata.map((entry) => (
                       <div key={entry.label}>
@@ -957,6 +966,7 @@ export function IssuesPage() {
                       </div>
                     ))}
                   </dl>
+                  </details>
                 ) : null}
               </div>
             </div>

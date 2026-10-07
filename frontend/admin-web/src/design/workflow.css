@@ -126,6 +126,9 @@
   padding: 6px 0;
   color: var(--ui-text);
 }
+[data-admin-design] .create-group-summary {
+  padding-inline: 12px;
+}
 [data-admin-design] :is(.create-group-count, .create-subgroup-count, .current-runs-count, .workflow-graphs-count) {
   color: var(--ui-muted);
   background: var(--ui-subtle);
@@ -365,4 +368,16 @@
   [data-admin-design] .compact-workflow-sheet-body {
     padding: 16px;
   }
+}
+[data-admin-design] .workflow-node-search {
+  margin-bottom: 12px;
+}
+[data-admin-design] .workflow-node-family > .create-subgroup-summary {
+  cursor: default;
+}
+[data-admin-design] :is(.workflow-run-history-search, .run-detail-link-identifiers) > summary {
+  cursor: pointer;
+  color: var(--ui-accent);
+  font-size: 12px;
+  padding-block: 8px;
 }

@@ -12,6 +12,8 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from heapq import merge
+from itertools import islice
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,15 +22,25 @@ from evander.approval_diagnostics import (
     DEFAULT_SENSITIVE_PAYLOAD_MARKERS,
 )
 from evander.models import DirectoryPath
+from evander.repositories.maintenance_indexes import (
+    RETENTION_SOURCE_INDEXES,
+    MaintenanceIndexesRequired,
+    retention_predicate,
+)
 from evander.repositories.operational_payloads import FORMAT_KEY, load_record
 from evander.repositories.orchestration_db import (
     WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    _maintenance_indexes_ready,
     connect_orchestration_db,
     connect_orchestration_db_read_only,
     datetime_to_storage,
     ensure_orchestration_schema,
     json_dumps,
     json_loads_object,
+)
+from evander.repositories.sqlite_runtime import (
+    SqliteOperationDeadlineExceeded,
+    is_storage_contention,
 )
 
 EXECUTION_HISTORY_BACKFILL_BATCH_SIZE = 250
@@ -613,8 +625,98 @@ def run_pending_history_indexing(
     return {"indexed_values": len(prepared.rows), "completed": int(prepared.exhausted)}
 
 
-def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: int = 100) -> int:
-    """Scan bounded candidate windows, preserving progress through live values."""
+def run_history_indexing_slice(
+    path: Path | str,
+    *,
+    batch_size: int = 100,
+    time_budget_seconds: float = 0.25,
+    writer_time_budget_seconds: float = 0.1,
+    busy_timeout_ms: int = 0,
+) -> dict[str, int]:
+    """Prepare outside the writer and durably adapt its bounded field batch.
+
+    Execution timeouts roll back all values/cursor changes before reducing the
+    limit. Writer contention leaves the limit unchanged. Fast, fully used
+    batches recover their limit in the same transaction as the indexing work.
+    """
+    batch_cap = max(1, min(100, batch_size))
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=0.25, operation="history_index_limit"
+    ) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='history_index_batch_limit'"
+        ).fetchone()
+    expected_limit = row[0] if row else None
+    limit = json_loads_object(expected_limit)
+    effective_batch = min(batch_cap, max(1, int(limit.get("rows", 100))))
+    prepared = prepare_pending_history_indexing(
+        path, batch_size=effective_batch, time_budget_seconds=time_budget_seconds
+    )
+    if prepared is None:
+        return {"indexed_values": 0, "completed": 0}
+    started = time.monotonic()
+    try:
+        with connect_orchestration_db(
+            path,
+            busy_timeout_ms=busy_timeout_ms,
+            deadline_seconds=writer_time_budget_seconds,
+            operation="history_index_batch",
+        ) as connection:
+            indexed = run_pending_history_indexing(
+                connection,
+                batch_size=effective_batch,
+                time_budget_seconds=time_budget_seconds,
+                prepared=prepared,
+            )
+            if (
+                expected_limit is not None
+                and indexed["indexed_values"] >= effective_batch
+                and effective_batch < batch_cap
+                and time.monotonic() - started < writer_time_budget_seconds / 2
+            ):
+                recovered = {**limit, "rows": min(batch_cap, effective_batch * 2)}
+                connection.execute(
+                    """UPDATE orchestration_metadata SET value_json=?
+                    WHERE key='history_index_batch_limit' AND value_json=?""",
+                    (json_dumps(recovered), expected_limit),
+                )
+        return indexed
+    except SqliteOperationDeadlineExceeded as error:
+        if not is_storage_contention(error):
+            # The failed indexing transaction has closed and rolled back. Read
+            # the current limit so a concurrent reduction always wins.
+            with connect_orchestration_db(
+                path,
+                busy_timeout_ms=busy_timeout_ms,
+                deadline_seconds=writer_time_budget_seconds,
+                operation="history_index_backoff",
+            ) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT value_json FROM orchestration_metadata "
+                    "WHERE key='history_index_batch_limit'"
+                ).fetchone()
+                current = json_loads_object(row[0]) if row else {}
+                reduced = {
+                    **current,
+                    "rows": min(max(1, int(current.get("rows", 100))), max(1, effective_batch // 2)),
+                }
+                connection.execute(
+                    """INSERT INTO orchestration_metadata VALUES ('history_index_batch_limit',?)
+                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+                    (json_dumps(reduced),),
+                )
+        raise
+
+
+def collect_superseded_history_values(
+    connection: sqlite3.Connection, *, limit: int = 100, hold_completed: bool = False
+) -> int:
+    """Scan bounded candidate windows, preserving progress through live values.
+
+    Maintenance can hold completed components until it resets the shared sweep.
+    The default keeps the standalone collector's repeating-sweep behavior.
+    """
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     limit = min(limit, 100)
@@ -624,7 +726,9 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
         "SELECT value_json FROM orchestration_metadata WHERE key='history_scalar_gc_cursor'"
     ).fetchone()
     previous = json_loads_object(row[0]) if row else {}
-    progress = dict(previous)
+    progress = dict(previous) if hold_completed else {
+        name: previous[name] for name in ("current", "legacy") if name in previous
+    }
     deleted = 0
     tables = (
         (
@@ -646,6 +750,10 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
         ),
     )
     for name, table, orphan in tables:
+        completed_key = f"{name}_completed"
+        deleted_key = f"{name}_deleted_in_sweep"
+        if hold_completed and progress.get(completed_key) is True:
+            continue
         candidates = [
             item[0]
             for item in connection.execute(
@@ -653,14 +761,23 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
                 (int(progress.get(name, 0)), limit),
             ).fetchall()
         ]
+        component_deleted = 0
         if candidates:
             placeholders = ",".join("?" for _ in candidates)
             cursor = connection.execute(
                 f"DELETE FROM {table} AS v WHERE rowid IN ({placeholders}) AND {orphan}",
                 candidates,
             )
-            deleted += cursor.rowcount
+            component_deleted = cursor.rowcount
+            deleted += component_deleted
         progress[name] = candidates[-1] if len(candidates) == limit else 0
+        if hold_completed:
+            deleted_in_sweep = bool(progress.get(deleted_key) or component_deleted)
+            exhausted = len(candidates) < limit
+            # A completed component waits for its peers. A sweep that deleted
+            # values gets one clean follow-up before it can become idle.
+            progress[completed_key] = exhausted and not deleted_in_sweep
+            progress[deleted_key] = deleted_in_sweep and not exhausted
     if progress != previous and (row is not None or any(progress.values())):
         connection.execute(
             """INSERT INTO orchestration_metadata VALUES ('history_scalar_gc_cursor',?)
@@ -783,17 +900,20 @@ class PreparedRetentionBatch:
     payload_bytes: int
 
 
-def _retention_predicate(kind: str) -> str:
-    if kind in {"trigger", "transport"}:
-        comparison = "LIKE" if kind == "trigger" else "NOT LIKE"
-        return (
-            f"delivery_state='delivered' AND trigger_type {comparison} 'trigger:%' "
-            "AND COALESCE(delivered_at,occurred_at) < :cutoff"
-        )
-    return """((status IN ('succeeded','skipped','dropped')
-                AND COALESCE(finished_at,started_at) < :cutoff)
-        OR (status='failed' AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-            AND COALESCE(dismissed_at,cleared_at,finished_at,started_at) < :cutoff))"""
+def _retention_candidates(connection, *, cutoff, batch_size):
+    if not _maintenance_indexes_ready(connection):
+        raise MaintenanceIndexesRequired("Maintenance indexes must be built offline before retention")
+    streams = [
+        connection.execute(
+            source.selection_sql, {"cutoff": cutoff, "limit": batch_size}
+        ).fetchall()
+        for source in RETENTION_SOURCE_INDEXES
+    ]
+    # Each range yields at most N metadata rows. The union's oldest N must be
+    # among these prefixes; hydrate payloads only after the bounded merge.
+    return list(islice(merge(
+        *streams, key=lambda row: (row["eligibility_at"], row["source_id"], row["execution_kind"])
+    ), batch_size))
 
 
 def _source_payload_bytes(connection, *, kind, source_id):
@@ -803,6 +923,8 @@ def _source_payload_bytes(connection, *, kind, source_id):
         (source_id,),
     ).fetchone()[0]
     if kind != "transport":
+        # Drive lookups from reachable keys. Reordering this join can make
+        # SQLite scan every stored blob even when this source has no references.
         size += connection.execute(
             """WITH RECURSIVE reachable(sha256) AS (
             SELECT sha256 FROM workflow_operational_record_refs
@@ -810,7 +932,7 @@ def _source_payload_bytes(connection, *, kind, source_id):
             UNION SELECT e.child_sha256 FROM workflow_operational_blob_edges e
             JOIN reachable r ON e.parent_sha256=r.sha256)
             SELECT COALESCE(SUM(b.original_bytes),0) FROM reachable r
-            JOIN workflow_operational_blobs b ON b.sha256=r.sha256""",
+            CROSS JOIN workflow_operational_blobs b ON b.sha256=r.sha256""",
             (kind, source_id),
         ).fetchone()[0]
     return size
@@ -821,17 +943,7 @@ def _read_retention_sources(connection, *, cutoff, batch_size, max_payload_bytes
         raise ValueError("batch_size must be between 1 and 10000")
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
-    selections = []
-    for kind, (table, key) in _RETENTION_SOURCE_TABLES.items():
-        timestamp = "occurred_at" if kind in {"trigger", "transport"} else "started_at"
-        selections.append(
-            f"SELECT '{kind}' execution_kind,{key} source_id,"
-            f"{timestamp} sort_at FROM {table} WHERE {_retention_predicate(kind)}"
-        )
-    candidates = connection.execute(
-        " UNION ALL ".join(selections) + " ORDER BY sort_at,execution_kind,source_id LIMIT :limit",
-        {"cutoff": cutoff, "limit": batch_size},
-    ).fetchall()
+    candidates = _retention_candidates(connection, cutoff=cutoff, batch_size=batch_size)
     selected = []
     total_bytes = 0
     for candidate in candidates:
@@ -918,7 +1030,7 @@ def archive_records_for_retention(
         table, key = _RETENTION_SOURCE_TABLES[source.kind]
         current = connection.execute(
             f"SELECT 1 FROM {table} WHERE {key}=:id AND payload_json=:payload "
-            f"AND {_retention_predicate(source.kind)}",
+            f"AND {retention_predicate(source.kind)}",
             {"id": source.source_id, "payload": source.payload_json, "cutoff": cutoff},
         ).fetchone()
         if current is None:

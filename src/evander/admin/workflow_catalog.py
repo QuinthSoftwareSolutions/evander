@@ -766,6 +766,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:classifier:switch": "Use classification to select a described branch and pass the input through.",
     "gate:validate": ("Evaluate named predicates and route with structured validation failures."),
+    "gate:event:validate": "Validate an event body against its directory's registered schema.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
     "gate:throttle": (
@@ -1746,6 +1747,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                    description="Optional cutoff; lower probability routes to the default."),
             _field("outputs", "Outputs", "json", read_only=True,
                    description="Derived from the upstream node and passed through unchanged."),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:event:validate",
+        label="Validate event",
+        input_ports=[WorkflowEditorNodePortDefinition(key="input", label="Input")],
+        output_ports=[WorkflowEditorNodePortDefinition(key="valid", label="Valid"), WorkflowEditorNodePortDefinition(key="invalid", label="Invalid")],
+        fields=[
+            _field("event_type", "Event type", "string", required=True, bindable=True),
+            _field("payload", "Event body", "json", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

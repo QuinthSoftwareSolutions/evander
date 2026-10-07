@@ -27751,6 +27751,43 @@ def test_register_teamless_agent(tmp_path: Path) -> None:
     assert agent.display_name == "Unassigned"
 
 
+@pytest.mark.parametrize("agent_id, can_clear_role", [("backend", False), ("unassigned", True)])
+@pytest.mark.parametrize("role_id", [None, "  "])
+def test_update_agent_clearing_role_respects_team_membership(
+    tmp_path: Path,
+    agent_id: str,
+    can_clear_role: bool,
+    role_id: str | None,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    if agent_id == "unassigned":
+        admin.register_agent(
+            agent_id=agent_id,
+            session_id="session-unassigned",
+            expected_revision=repo.read().revision,
+        )
+    before = repo.read()
+    request = {
+        "agent_id": agent_id,
+        "role_id": role_id,
+        "set_role_id": True,
+        "session_id": f"session-{agent_id}-next",
+        "expected_revision": before.revision,
+    }
+
+    if not can_clear_role:
+        with pytest.raises(ValueError, match="role_id is required"):
+            admin.update_agent(**request)
+        assert repo.read().model_dump(mode="json") == before.model_dump(mode="json")
+    else:
+        admin.update_agent(**request)
+        persisted = TeamStateRepository(tmp_path).read()
+        assert persisted.revision == before.revision + 1
+        assert persisted.agents[agent_id].role_id is None
+        assert persisted.agents[agent_id].session_id == f"session-{agent_id}-next"
+
+
 def test_remove_agent_from_team_blocks_structural_references(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

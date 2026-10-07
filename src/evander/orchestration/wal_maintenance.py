@@ -22,6 +22,7 @@ class OrchestrationWalCheckpointMaintenance:
 
     clock: Callable[[], float] = time.monotonic
     _next_check_at: float = 0.0
+    _next_garbage_collection_at: float = 0.0
     _last_settings: tuple[Any, ...] | None = None
     _executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
     _future: Future | None = field(default=None, init=False, repr=False)
@@ -43,6 +44,7 @@ class OrchestrationWalCheckpointMaintenance:
         self._executor = None
         self._future = None
         self._next_check_at = 0.0
+        self._next_garbage_collection_at = 0.0
 
     def run_if_due(
         self,
@@ -61,10 +63,14 @@ class OrchestrationWalCheckpointMaintenance:
                 )
             finally:
                 self._future = None
-            if result.skipped_reason == "storage_busy":
+            if result.skipped_reason in ("storage_busy", "execution_deadline"):
                 self._next_check_at = self.clock() + 1.0
             elif result.history_index_pending:
                 self._next_check_at = 0.0
+            if result.garbage_collection_pending is False:
+                self._next_garbage_collection_at = self.clock() + 30.0
+            elif result.garbage_collection_pending is True:
+                self._next_garbage_collection_at = self.clock() + 1.0
         settings = (
             Path(worker_config.orchestration_store_path),
             worker_config.orchestration_wal_checkpoint_mode,
@@ -78,6 +84,7 @@ class OrchestrationWalCheckpointMaintenance:
         if settings != self._last_settings:
             self._last_settings = settings
             self._next_check_at = 0.0
+            self._next_garbage_collection_at = 0.0
         if now < self._next_check_at:
             return result
         # History projections and retention progress independently of the
@@ -87,6 +94,10 @@ class OrchestrationWalCheckpointMaintenance:
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="storage-maintenance"
             )
-        self._future = self._executor.submit(run_storage_maintenance, copy.copy(worker_config))
+        self._future = self._executor.submit(
+            run_storage_maintenance,
+            copy.copy(worker_config),
+            run_garbage_collection=now >= self._next_garbage_collection_at,
+        )
         self._future.add_done_callback(self._notify)
         return result

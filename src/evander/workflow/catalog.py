@@ -20,6 +20,15 @@ class WorkflowInternalEventCatalogEntry(BaseModel):
     description: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source: str | None = Field(default=None, exclude_if=lambda value: value is None)
     metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    payload_schema: dict[str, Any] | None = None
+    schema_revision: str | None = None
+
+    @field_validator("payload_schema")
+    @classmethod
+    def validate_payload_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        from evander.events.schema import check_payload_schema
+
+        return check_payload_schema(value) if value is not None else None
 
     @field_validator("event_type", "label", "description", "source", mode="before")
     @classmethod

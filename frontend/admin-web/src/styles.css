@@ -8105,6 +8105,31 @@ select {
   gap: 0.85rem;
 }
 
+.phone-caller-map {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(42, 76, 90, 0.14);
+}
+
+.phone-caller-map legend {
+  padding: 0 0.3rem;
+  font-weight: 650;
+}
+
+.phone-caller-map .field-stack,
+.phone-caller-map select {
+  min-width: 0;
+}
+
+.phone-caller-assignment {
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(42, 76, 90, 0.14);
+}
+
 .website-login-fields { border: 0; padding: 0; min-width: 0; margin-top: 1.4rem; }
 .website-login-fields legend { font-weight: 650; font-size: 1.15rem; margin-bottom: 1rem; }
 .website-login-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; align-items: end; }
@@ -9698,6 +9723,39 @@ select {
   text-transform: uppercase;
 }
 
+.artifact-space-tree-button.artifact-space-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.artifact-space-picker-trigger svg {
+  flex-shrink: 0;
+}
+
+.artifact-space-picker-selection {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.artifact-space-picker-modal {
+  width: min(48rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(100dvh - 2rem));
+  padding: 0;
+  color: inherit;
+}
+
+.artifact-space-picker-modal::backdrop {
+  background: rgba(12, 27, 33, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.artifact-space-picker-modal .modal-header {
+  flex-direction: row;
+}
+
 .artifact-space-tree-list {
   list-style: none;
   margin: 0.2rem 0 0;
@@ -9707,8 +9765,6 @@ select {
 }
 
 .artifact-space-tree-list.root {
-  max-height: 20rem;
-  overflow: auto;
   padding-left: 0;
 }
 
@@ -11829,6 +11885,10 @@ button.mobile-record-card:focus-visible,
 
 :root[data-theme="dark"] .artifact-space-filter-heading {
   color: #a7bac8;
+}
+
+:root[data-theme="dark"] .artifact-space-picker-modal::backdrop {
+  background: rgba(3, 9, 12, 0.58);
 }
 
 :root[data-theme="dark"] .artifact-space-tree-list:not(.root) {

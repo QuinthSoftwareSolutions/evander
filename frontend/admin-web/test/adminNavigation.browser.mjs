@@ -684,10 +684,10 @@ test("subscriptions page shows worker profile identity and capacity", { timeout:
   assert.match(await page.locator(".subscription-profile-summary").filter({ hasText: "Team B" }).innerText(), /Unavailable\s*7-day remaining/);
   await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).click();
   const pageText = await page.locator(".feature-page").innerText();
-  assert.match(pageText, /http:\/\/worker\.test:11888/);
+  assert.doesNotMatch(pageText, /http:\/\/worker\.test:11888/);
   assert.match(pageText, /team-a@example\.test/);
-  assert.match(pageText, /Active jobs\s*2/i);
-  assert.match(pageText, /Queued prompts\s*3/i);
+  const profileSummary = page.locator(".subscription-profile-summary").filter({ hasText: "Team A" });
+  assert.match(await profileSummary.innerText(), /2 active\s*·\s*3 queued/i);
   assert.match(pageText, /Pinned account id\s*account-a/i);
 });
 
@@ -899,6 +899,7 @@ test("managed Git page registers and maintains repositories through the Admin AP
   await page.getByText("Maintenance completed for exampleindustry/Project/Receptionist.", { exact: true }).waitFor({ state: "visible" });
 
   const identityPanel = page.locator(".managed-git-identity-panel");
+  await identityPanel.locator("summary").click();
   await identityPanel.getByLabel("Name").fill("Repository Bot");
   await identityPanel.getByLabel("Email").fill("repository-bot@example.com");
   await identityPanel.getByRole("button", { name: "Save identity", exact: true }).click();
@@ -1094,7 +1095,7 @@ test("configuration navigation focuses sections, searches technical fields, and 
   await assert.doesNotReject(() => page.getByRole("heading", { level: 2, name: "Validation", exact: true }).waitFor({ state: "visible" }));
   assert.match(page.url(), /config_section=validation/);
 
-  await page.getByRole("button", { name: "Save tab" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await page.waitForFunction(() => document.body.textContent?.includes("Saved People & Communications overrides for root."));
   assert.equal(configurationSaveRequests.length, 1);
   assert.equal(configurationSaveRequests[0].tabKey, "people_communications");

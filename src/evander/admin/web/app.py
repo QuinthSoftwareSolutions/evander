@@ -48,6 +48,7 @@ from evander.admin.web.artifacts import artifact_routes
 from evander.admin.web.chat import chat_routes
 from evander.admin.web.codex_auth import codex_auth_routes
 from evander.admin.web.connectors import connector_routes
+from evander.admin.web.event_schemas import event_schema_routes
 from evander.admin.web.discord_webhooks import discord_webhook_routes
 from evander.admin.web.host_directories import host_directory_routes
 from evander.admin.web.privacy import privacy_routes
@@ -121,6 +122,11 @@ class AdminWebAddonServiceAdapter:
     def managed_git_admin(self) -> Any:
         """Expose the managed-Git domain only to trusted in-process add-ons."""
         return self._components.managed_git_admin
+
+    @property
+    def connector_service(self) -> Any:
+        """Expose host connector bindings to trusted in-process domain add-ons."""
+        return self._components.connector_service
 
     def list_agents(self, **kwargs: Any) -> Any:
         return self._components.vm_agent_admin.list_agents(**kwargs)
@@ -756,6 +762,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(addon_routes(service, auth))
     routes.extend(connector_routes(service, auth))
+    routes.extend(event_schema_routes(service, auth))
     routes.extend(discord_webhook_routes(service, auth))
     routes.extend(host_directory_routes(service, auth))
     routes.extend(privacy_routes(service, auth))

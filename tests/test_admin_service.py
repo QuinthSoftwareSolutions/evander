@@ -9184,7 +9184,7 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     )
     assert read_result.config["directories"] == []
     assert read_result.config["backoff_seconds"] == 60.0
-    assert read_result.config["max_concurrent_target_polls"] == 1
+    assert read_result.config["max_concurrent_target_polls"] == 4
     assert read_result.config["publish_trigger_events_directly"] is True
     assert read_result.config["target_transient_backoff_initial_seconds"] == 5.0
     assert read_result.config["target_transient_backoff_max_seconds"] == 30.0
@@ -11554,6 +11554,74 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     assert empty_period.has_more is False
 
 
+def test_workflow_failure_clusters_classifies_and_sorts_before_limiting_results(
+    tmp_path: Path,
+) -> None:
+    write_failure_cluster_config(tmp_path)
+    service = build_admin_runtime(write_config(tmp_path))
+    store = SqliteExecutionStore(tmp_path / "runtime" / "orchestration.db")
+    for execution_id, effect_id, status, hour in [
+        ("old-active", "effect-push-branch", "failed", 9),
+        ("active-first", "effect-active-new", "failed", 10),
+        ("active-second", "effect-active-new", "failed", 11),
+        ("active-third", "effect-active-new", "failed", 12),
+        ("active-latest", "effect-active-new", "failed", 13),
+        ("recent", "effect-recent", "error_routed", 15),
+        ("historical", "effect-historical", "error_routed", 6),
+        ("resolved-failure", "effect-resolved", "failed", 14),
+        ("resolved-success", "effect-resolved", "succeeded", 16),
+    ]:
+        occurred_at = datetime(2026, 6, 12, hour, tzinfo=UTC)
+        store.record_execution(
+            EffectExecutionRecord(
+                execution_id=execution_id,
+                idempotency_key=execution_id,
+                event_id=f"event-{execution_id}",
+                trace_id="trace",
+                source_node_id="trigger-ticket",
+                source_trigger_type="trigger:ticket:created",
+                effect_id=effect_id,
+                effect_type="effect:git:push-branch",
+                status=status,
+                started_at=occurred_at,
+                finished_at=occurred_at,
+                resolved_config_hash="hash",
+                error="Provider is unavailable" if status != "succeeded" else None,
+            )
+        )
+
+    arguments = {
+        "period_start": datetime(2026, 6, 12, 5, tzinfo=UTC),
+        "period_end": datetime(2026, 6, 12, 17, tzinfo=UTC),
+        "recent_threshold_seconds": 3 * 60 * 60,
+    }
+    report = service.workflow_reports_admin.read_workflow_failure_clusters_report(
+        **arguments, limit=10
+    )
+    assert [(cluster.node_id, cluster.state, cluster.count) for cluster in report.clusters] == [
+        ("effect-active-new", "active", 4),
+        ("effect-push-branch", "active", 1),
+        ("effect-recent", "recent", 1),
+        ("effect-resolved", "resolved", 1),
+        ("effect-historical", "historical", 1),
+    ]
+    assert report.has_more is False
+    assert [example.event_id for example in report.clusters[0].examples] == [
+        "event-active-latest",
+        "event-active-third",
+        "event-active-second",
+    ]
+
+    limited = service.workflow_reports_admin.read_workflow_failure_clusters_report(
+        **arguments, limit=2
+    )
+    assert [cluster.node_id for cluster in limited.clusters] == [
+        "effect-active-new",
+        "effect-push-branch",
+    ]
+    assert limited.has_more is True
+
+
 def test_read_workflow_failure_clusters_report_initializes_missing_sqlite_store(
     tmp_path: Path,
 ) -> None:
@@ -12411,6 +12479,115 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     )
     assert active_only_search.matched == 0
     assert active_only_search.runs == []
+
+
+def test_workflow_run_search_enriches_sessions_before_filtering_and_pagination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    workflow_admin = service.workflow_reports_admin
+    runtime_dir = tmp_path / "runtime"
+    stores = {
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "await_agent_store_path": runtime_dir / "await-agent-pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "legacy-await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(
+            graphs=[
+                SimpleNamespace(
+                    id="graph-search", name="Search", node_ids=["effect-search", "gate-search"]
+                )
+            ]
+        ),
+    )
+    now = datetime(2026, 9, 30, 12, tzinfo=UTC)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
+    artifact = CommunicationArtifactStore(runtime_dir).stage(
+        provider="teams",
+        session_id="session-artifact",
+        content=b"search fixture",
+        original_filename="search.txt",
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    service.runtime.approvals.put(
+        "approval-search",
+        ApprovalRequest(
+            request_id="approval-search",
+            session_id="session-approval",
+            action_type="effect:test",
+            payload_digest="search-digest",
+            human_summary="Approve synthetic search work.",
+            payload={},
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        ),
+    )
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    for index, (event_id, trace_id, outputs) in enumerate(
+        [
+            ("evt-artifact", "trace-shared", {"artifact_ids": [artifact.artifact_id]}),
+            ("evt-peer", "trace-shared", {}),
+            ("evt-approval", "trace-approval", {"approval_request_id": "approval-search"}),
+            (
+                "evt-unbound",
+                "trace-unbound",
+                {"artifact_ids": ["comm_00000000000000000000000000000000"]},
+            ),
+        ]
+    ):
+        started_at = now + timedelta(minutes=index)
+        effect_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=f"exec-{event_id}",
+                idempotency_key=f"{event_id}::effect-search",
+                event_id=event_id,
+                trace_id=trace_id,
+                source_node_id="trigger-search",
+                source_trigger_type="trigger:test",
+                effect_id="effect-search",
+                effect_type="effect:test",
+                status="succeeded",
+                started_at=started_at,
+                finished_at=started_at + timedelta(seconds=1),
+                resolved_config_hash="search-hash",
+                resolved_config={},
+                input_payload={},
+                outputs=outputs,
+            )
+        )
+    stores["await_agent_store_path"].write_text(
+        json.dumps(
+            {
+                "await-search": {
+                    "prompt_event_id": "evt-await",
+                    "gate_id": "gate-search",
+                    "session_id": "session-await",
+                    "occurred_at": (now + timedelta(minutes=4)).isoformat(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    search = service.workflow_config_admin.read_workflow_run_search(graph_id="graph-search")
+    runs = {run.event_id: run for run in search.runs}
+    assert search.generated_at == now
+    assert runs["evt-artifact"].session_ids == ["session-artifact"]
+    assert runs["evt-peer"].session_ids == ["session-artifact"]
+    assert runs["evt-approval"].session_ids == ["session-approval"]
+    assert runs["evt-await"].session_ids == ["session-await"]
+    assert runs["evt-await"].run_state == "active"
+    assert runs["evt-unbound"].session_ids == []
+
+    filtered = service.workflow_config_admin.read_workflow_run_search(
+        graph_id="graph-search", without_session=True, limit=1
+    )
+    assert [run.event_id for run in filtered.runs] == ["evt-unbound"]
+    assert filtered.matched == filtered.returned == 1
+    assert filtered.has_more is False
 
 
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_sqlite_stores(

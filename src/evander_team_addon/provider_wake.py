@@ -6,6 +6,7 @@ import os
 from collections.abc import (
     Mapping,
 )
+from dataclasses import dataclass, field
 from datetime import (
     UTC,
     datetime,
@@ -22,10 +23,12 @@ from evander.admin.web.user_store import (
 )
 from evander.effects.providers.base import (
     EffectProviderBase,
+    EffectRuntimeContext,
 )
 from evander.events.models import (
     WorkflowNodeEnvelope,
 )
+from evander.provider_runtime.contracts import AgentResumer
 from evander.runtime_generation import (
     require_current_runtime_generation,
 )
@@ -37,6 +40,7 @@ from .mcp import (
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
 )
 from .models import (
+    TeamState,
     team_session_health_payload,
 )
 from .provider_artifacts import (
@@ -491,422 +495,20 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             except TeamStateConflictError as exc:
                 state = defer_planning_conflict(exc, phase="lease_planning")
                 leases = []
-        dispatches: list[dict[str, Any]] = []
-        prepared_project_repos: list[dict[str, Any]] = []
-        failed_project_repo_preparations: list[dict[str, Any]] = []
-        git_work_contexts: list[dict[str, Any]] = []
-        review_artifact_imports: list[dict[str, Any]] = []
-        review_artifact_import_errors: list[dict[str, Any]] = []
-        preparation_blocker_ids: list[str] = []
-        for lease_index, lease in enumerate(leases):
-            agent = lease["agent"]
-            prompt_submission_attempted = False
-            try:
-                lease = {
-                    **lease,
-                    "session_health": team_session_health_payload(
-                        state,
-                        session_records=session_records,
-                        agent_ids=_prompt_session_health_agent_ids(state, agent),
-                    ),
-                }
-                context_handoff_preparation = lease.get("reason") == "context_handoff"
-                guidance_result = _seed_team_agent_guidance(context, agent=agent)
-                try:
-                    dispatch_scope = (
-                        lease.get("dispatch") if isinstance(lease.get("dispatch"), Mapping) else {}
-                    )
-                    state, project_repos = _prepare_project_repos(
-                        context,
-                        repo=repo,
-                        state=state,
-                        agent=agent,
-                        dispatch_id=lease["dispatch_id"],
-                        tasks=lease.get("tasks"),
-                        project_ids=_string_items(dispatch_scope.get("project_ids")),
-                        review_request_ids=_string_items(dispatch_scope.get("review_request_ids")),
-                    )
-                except TeamStateConflictError:
-                    raise
-                except ReviewRepositoryPreparationError as exc:
-                    state = TeamRuntimeService(repo).fail_agent_dispatch(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        error=f"review repository preparation failed before inference: {exc}",
-                    )
-                    state, created_blocker_ids = _record_review_repository_preparation_blockers(
-                        repo,
-                        review_request_ids=exc.review_request_ids,
-                        error=str(exc),
-                    )
-                    preparation_blocker_ids.extend(created_blocker_ids)
-                    errors.append(
-                        f"{agent['id']}: review repository preparation failed; "
-                        "the affected review attempts were blocked before inference"
-                    )
-                    continue
-                except Exception as exc:
-                    failed_project_repo_preparations.append(
-                        _project_repo_prepare_record(
-                            agent=agent,
-                            dispatch_id=lease["dispatch_id"],
-                            error=str(exc),
-                        )
-                    )
-                    raise
-                if project_repos:
-                    lease = {**lease, "project_repos": project_repos}
-                    if len(project_repos) == 1:
-                        lease["project_repo"] = project_repos[0]
-                for project_repo in project_repos:
-                    conflict_retry_count = int(project_repo.get("state_conflict_retry_count") or 0)
-                    if conflict_retry_count:
-                        transient_conflicts.append(
-                            {
-                                "agent_id": agent["id"],
-                                "session_id": agent["session_id"],
-                                "dispatch_id": lease["dispatch_id"],
-                                "phase": "git_work_context_commit",
-                                "attempt_count": int(
-                                    project_repo.get("state_commit_attempt_count") or 0
-                                ),
-                                "conflict_count": conflict_retry_count,
-                                "resolved": True,
-                                "retry_scheduled": False,
-                            }
-                        )
-                    git_work_contexts.extend(_mapping_items(project_repo.get("git_work_contexts")))
-                    prepared_project_repos.append(
-                        _project_repo_prepare_record(
-                            agent=agent,
-                            dispatch_id=lease["dispatch_id"],
-                            project_repo=project_repo,
-                        )
-                    )
-                tool_grant_result = _set_session_team_mcp_tools(
-                    context,
-                    session_id=agent["session_id"],
-                    tool_names=(
-                        [TEAM_RECORD_CONTEXT_HANDOFF_TOOL]
-                        if context_handoff_preparation
-                        else _ordinary_team_tools_for_agent(agent)
-                    ),
-                    dispatch_id=lease["dispatch_id"],
-                )
-                if tool_grant_result["error"] is not None:
-                    dispatch = state.dispatches[lease["dispatch_id"]]
-                    receipt = dispatch.mcp_capability_receipt
-                    if receipt is not None:
-                        state, finalization = TeamRuntimeService(
-                            repo
-                        ).record_agent_mcp_capability_preparation_failure(
-                            session_id=agent["session_id"],
-                            dispatch_id=lease["dispatch_id"],
-                            agent_id=agent["id"],
-                            diagnostic=(
-                                "MCP policy grant confirmation failed before resume: "
-                                f"{tool_grant_result['error']}"
-                            ),
-                        )
-                        errors.append(f"{agent['id']}: {tool_grant_result['error']}")
-                        dispatches.append(
-                            {
-                                "agent_id": agent["id"],
-                                "session_id": agent["session_id"],
-                                "dispatch_id": lease["dispatch_id"],
-                                "agent_guidance": guidance_result,
-                                "team_mcp_tools": tool_grant_result,
-                                "mcp_capability_receipt": finalization.get(
-                                    "mcp_capability_receipt"
-                                ),
-                                "error": tool_grant_result["error"],
-                            }
-                        )
-                        continue
-                    raise RuntimeError(str(tool_grant_result["error"]))
-                dispatch = state.dispatches[lease["dispatch_id"]]
-                if dispatch.mcp_capability_receipt is not None:
-                    state = TeamRuntimeService(repo).confirm_agent_dispatch_mcp_capability_grant(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        granted_tool_names=tool_grant_result["requested_tools"],
-                    )
-                    lease = {
-                        **lease,
-                        "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
-                    }
-                    leases[lease_index] = lease
-                review_artifacts = _prepare_review_artifacts_for_lease(
-                    context,
-                    lease=lease,
-                )
-                if (
-                    review_artifacts["review_artifact_imports"]
-                    or review_artifacts["review_artifact_import_errors"]
-                ):
-                    lease = {**lease, **review_artifacts}
-                    review_artifact_imports.extend(review_artifacts["review_artifact_imports"])
-                    review_artifact_import_errors.extend(
-                        review_artifacts["review_artifact_import_errors"]
-                    )
-                    leases[lease_index] = lease
-                if review_artifacts["review_artifact_import_errors"]:
-                    grouped_errors = _review_artifact_preparation_errors(
-                        review_artifacts["review_artifact_import_errors"]
-                    )
-                    state = TeamRuntimeService(repo).fail_agent_dispatch(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        error=(
-                            "review artifact preparation failed before inference: "
-                            + "; ".join(
-                                f"{review_id}: {message}"
-                                for review_id, message in grouped_errors.items()
-                            )
-                        ),
-                    )
-                    state, created_blocker_ids = _record_review_artifact_preparation_blockers(
-                        repo,
-                        grouped_errors=grouped_errors,
-                    )
-                    preparation_blocker_ids.extend(created_blocker_ids)
-                    errors.append(
-                        f"{agent['id']}: review artifact preparation failed; "
-                        "the affected review attempts were blocked before inference"
-                    )
-                    continue
-                effective_resume_mode = (
-                    resume_mode
-                    if context_handoff_preparation
-                    else "new_context"
-                    if wake_uses_fresh_context(
-                        lease,
-                        effective_resume_mode=resume_mode,
-                    )
-                    else resume_mode
-                )
-                prompt = _build_prompt(
-                    lease,
-                    effective_resume_mode=effective_resume_mode,
-                )
-                _register_team_dispatch_model_usage_context(
-                    context,
-                    agent=agent,
-                    dispatch_id=lease["dispatch_id"],
-                    effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
-                )
-                resume_thread_id = work_lineage_resume_thread_id(lease)
-                try:
-                    prompt_submission_attempted = True
-                    result = _enqueue_team_agent_prompt(
-                        resumer,
-                        target=agent["session_id"],
-                        prompt=prompt,
-                        resume_mode=effective_resume_mode,
-                        resume_thread_id=resume_thread_id,
-                        dispatch_id=lease["dispatch_id"],
-                    )
-                except Exception as exc:
-                    result_payload = {"success": False, "error": str(exc)}
-                    if not _resume_failure_reports_missing_thread(
-                        result_payload,
-                        resume_thread_id=resume_thread_id,
-                    ):
-                        raise
-                else:
-                    result_payload = _coerce_mapping(result)
-                if _resume_failure_reports_missing_thread(
-                    result_payload,
-                    resume_thread_id=resume_thread_id,
-                ):
-                    state, invalidated = TeamRuntimeService(
-                        repo
-                    ).invalidate_agent_work_lineage_thread_binding(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        resume_thread_id=resume_thread_id or "",
-                    )
-                    retry_allowed = _discard_failed_team_prompt_queue_record(
-                        repo,
-                        result=result_payload,
-                        dispatch_id=lease["dispatch_id"],
-                    )
-                    if invalidated and retry_allowed:
-                        lease = {
-                            **lease,
-                            "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
-                        }
-                        leases[lease_index] = lease
-                        effective_resume_mode = "new_context"
-                        prompt = _build_prompt(
-                            lease,
-                            effective_resume_mode=effective_resume_mode,
-                        )
-                        result = _enqueue_team_agent_prompt(
-                            resumer,
-                            target=agent["session_id"],
-                            prompt=prompt,
-                            resume_mode=effective_resume_mode,
-                            resume_thread_id=None,
-                            dispatch_id=lease["dispatch_id"],
-                        )
-                        result_payload = _coerce_mapping(result)
-                if _result_reports_failure(result_payload):
-                    error = _resume_failure_message(result_payload)
-                    state = _record_wake_failure(
-                        repo,
-                        lease=lease,
-                        error=error,
-                        delivery_not_started=not prompt_submission_attempted,
-                    )
-                    errors.append(f"{agent['id']}: {error}")
-                    continue
-                if bool(result_payload.get("queued")):
-                    state = TeamRuntimeService(repo).mark_agent_dispatch_queued(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                    )
-                    dispatches.append(
-                        {
-                            "agent_id": agent["id"],
-                            "session_id": agent["session_id"],
-                            "dispatch_id": lease["dispatch_id"],
-                            "agent_guidance": guidance_result,
-                            "team_mcp_tools": tool_grant_result,
-                            "result": result_payload,
-                            "queued": True,
-                        }
-                    )
-                    continue
-                state, activation = _activate_delivered_team_prompt(
-                    repo=repo,
-                    dispatch_id=lease["dispatch_id"],
-                    result_payload=result_payload,
-                )
-                lease = {
-                    **lease,
-                    "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
-                    "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
-                }
-                leases[lease_index] = lease
-                delivered_action_feedback_dispatch_ids = list(
-                    activation["delivered_action_feedback_dispatch_ids"]
-                )
-                dispatch_payload = {
-                    "agent_id": agent["id"],
-                    "session_id": agent["session_id"],
-                    "dispatch_id": lease["dispatch_id"],
-                    "agent_guidance": guidance_result,
-                    "team_mcp_tools": tool_grant_result,
-                    "result": result_payload,
-                }
-                if delivered_action_feedback_dispatch_ids:
-                    dispatch_payload["delivered_action_feedback_dispatch_ids"] = (
-                        delivered_action_feedback_dispatch_ids
-                    )
-                if project_repos:
-                    dispatch_payload["project_repos"] = project_repos
-                    if len(project_repos) == 1:
-                        dispatch_payload["project_repo"] = project_repos[0]
-                if lease.get("review_artifact_imports"):
-                    dispatch_payload["review_artifact_imports"] = lease["review_artifact_imports"]
-                if lease.get("review_artifact_import_errors"):
-                    dispatch_payload["review_artifact_import_errors"] = lease[
-                        "review_artifact_import_errors"
-                    ]
-                if activation["context_rotation"] is not None:
-                    dispatch_payload["context_rotation"] = activation["context_rotation"]
-                if activation["context_handoff_preparation"] is not None:
-                    dispatch_payload["context_handoff_preparation"] = activation[
-                        "context_handoff_preparation"
-                    ]
-                dispatches.append(dispatch_payload)
-            except TeamStateConflictError as exc:
-                conflict_record: dict[str, Any] = {
-                    "agent_id": agent["id"],
-                    "session_id": agent["session_id"],
-                    "dispatch_id": lease["dispatch_id"],
-                    "phase": "git_work_context_commit",
-                    "attempt_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
-                    "conflict_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
-                    "expected_revision": exc.expected_revision,
-                    "current_revision": exc.current_revision,
-                    "resolved": False,
-                    "retry_scheduled": False,
-                    "retry_event_ids": [],
-                }
-                try:
-                    state = TeamRuntimeService(repo).release_agent_wake_lease_for_retry(
-                        agent_id=agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        error=(
-                            "repository/worktree preparation state conflict: "
-                            f"expected revision {exc.expected_revision}, current "
-                            f"revision {exc.current_revision}"
-                        ),
-                    )
-                    retry_result: dict[str, Any] = {"events": []}
-                    _append_agent_wake_requested_event(
-                        state,
-                        agent_id=agent["id"],
-                        result=retry_result,
-                        reason="state_conflict_retry",
-                        now=datetime.now(UTC),
-                        delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
-                        idempotency_suffix=f"state-conflict:{lease['dispatch_id']}",
-                    )
-                    scheduled_ids = _publish_team_events(
-                        context,
-                        retry_result["events"],
-                    )
-                    if not scheduled_ids:
-                        raise RuntimeError("transient wake retry event was not scheduled")
-                    retry_event_ids.extend(scheduled_ids)
-                    conflict_record["retry_scheduled"] = True
-                    conflict_record["retry_event_ids"] = scheduled_ids
-                except Exception as retry_exc:
-                    errors.append(
-                        f"{agent['id']}: failed to schedule transient wake retry: {retry_exc}"
-                    )
-                transient_conflicts.append(conflict_record)
-            except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
-                error = str(exc)
-                try:
-                    state = _record_wake_failure(
-                        repo,
-                        lease=lease,
-                        error=error,
-                        delivery_not_started=not prompt_submission_attempted,
-                    )
-                    if isinstance(exc, DependencyGitPreparationError):
-                        state = _record_dependency_git_preparation_blocker(
-                            repo,
-                            lease=lease,
-                            task_id=exc.task_id,
-                            error=error,
-                            conflict=exc.conflict,
-                            cause=exc.cause,
-                            evidence=exc.evidence,
-                        )
-                        preparation_blocker_ids.extend(
-                            _new_preparation_blocker_ids(
-                                state,
-                                task_ids=[exc.task_id],
-                            )
-                        )
-                    elif isinstance(exc, ProjectGitPreparationError):
-                        state, created_blocker_ids = _record_project_git_preparation_blockers(
-                            repo,
-                            lease=lease,
-                            project_id=exc.project_id,
-                            error=error,
-                            cause=exc.cause,
-                            evidence=exc.evidence,
-                        )
-                        preparation_blocker_ids.extend(created_blocker_ids)
-                except Exception as release_exc:  # pragma: no cover - defensive diagnostics
-                    error = f"{error}; failed to release team runtime lease: {release_exc}"
-                errors.append(f"{agent['id']}: {error}")
+        dispatch_batch = _WakeDispatchBatch(
+            context=context,
+            repo=repo,
+            state=state,
+            resumer=resumer,
+            session_records=session_records,
+            resume_mode=resume_mode,
+            effect_definition=self.effect_definition,
+            leases=leases,
+            errors=errors,
+            transient_conflicts=transient_conflicts,
+            retry_event_ids=retry_event_ids,
+        )
+        dispatch_batch.run()
         final_state = repo.read()
         lease_summaries = [
             _team_wake_lease_summary(lease, state=final_state)
@@ -922,13 +524,13 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "leases": lease_summaries,
             "lease_summaries_truncated": len(lease_summaries) < len(leases),
             "chat_dispatches": chat_dispatches,
-            "dispatches": dispatches,
-            "prepared_project_repos": prepared_project_repos,
-            "failed_project_repo_preparations": failed_project_repo_preparations,
-            "git_work_contexts": git_work_contexts,
-            "review_artifact_imports": review_artifact_imports,
-            "review_artifact_import_errors": review_artifact_import_errors,
-            "preparation_blocker_ids": sorted(set(preparation_blocker_ids)),
+            "dispatches": dispatch_batch.dispatches,
+            "prepared_project_repos": dispatch_batch.prepared_project_repos,
+            "failed_project_repo_preparations": dispatch_batch.failed_project_repo_preparations,
+            "git_work_contexts": dispatch_batch.git_work_contexts,
+            "review_artifact_imports": dispatch_batch.review_artifact_imports,
+            "review_artifact_import_errors": dispatch_batch.review_artifact_import_errors,
+            "preparation_blocker_ids": sorted(set(dispatch_batch.preparation_blocker_ids)),
             "transient_conflicts": transient_conflicts,
             "retry_event_ids": retry_event_ids,
             "retry_scheduled_count": len(retry_event_ids),
@@ -954,3 +556,511 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             ),
             "errors": errors,
         }
+
+
+@dataclass
+class _WakeDispatchBatch:
+    """Shared state and output records for one wake invocation's dispatches."""
+
+    context: EffectRuntimeContext
+    repo: TeamStateRepository
+    state: TeamState
+    resumer: AgentResumer
+    session_records: dict[str, Any] | None
+    resume_mode: str
+    effect_definition: object
+    leases: list[dict[str, Any]]
+    errors: list[str]
+    transient_conflicts: list[dict[str, Any]]
+    retry_event_ids: list[str]
+    dispatches: list[dict[str, Any]] = field(default_factory=list)
+    prepared_project_repos: list[dict[str, Any]] = field(default_factory=list)
+    failed_project_repo_preparations: list[dict[str, Any]] = field(default_factory=list)
+    git_work_contexts: list[dict[str, Any]] = field(default_factory=list)
+    review_artifact_imports: list[dict[str, Any]] = field(default_factory=list)
+    review_artifact_import_errors: list[dict[str, Any]] = field(default_factory=list)
+    preparation_blocker_ids: list[str] = field(default_factory=list)
+
+    def run(self) -> None:
+        for lease_index, lease in enumerate(self.leases):
+            _WakeDispatch(batch=self, lease_index=lease_index, lease=lease).run()
+
+
+class _WakeDispatch:
+    """Prepare and deliver one reservation, retaining its failure recovery scope."""
+
+    context_handoff_preparation: bool
+    guidance_result: dict[str, Any]
+    project_repos: list[dict[str, Any]]
+    tool_grant_result: dict[str, Any]
+    effective_resume_mode: str
+    prompt: str
+    resume_thread_id: str | None
+    result_payload: dict[str, Any]
+
+    def __init__(
+        self,
+        *,
+        batch: _WakeDispatchBatch,
+        lease_index: int,
+        lease: dict[str, Any],
+    ) -> None:
+        self.batch = batch
+        self.lease_index = lease_index
+        self.lease = lease
+        self.agent = lease["agent"]
+        self.prompt_submission_attempted = False
+
+    def run(self) -> None:
+        try:
+            self._seed_guidance()
+            if not self._prepare_repositories():
+                return
+            if not self._grant_tools():
+                return
+            if not self._prepare_review_artifacts():
+                return
+            self._prepare_prompt()
+            if not self._submit_prompt():
+                return
+            self._activate_and_record_delivery()
+        except TeamStateConflictError as exc:
+            self._schedule_conflict_retry(exc)
+        except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
+            self._record_failure(exc)
+
+    def _seed_guidance(self) -> None:
+        self.lease = {
+            **self.lease,
+            "session_health": team_session_health_payload(
+                self.batch.state,
+                session_records=self.batch.session_records,
+                agent_ids=_prompt_session_health_agent_ids(self.batch.state, self.agent),
+            ),
+        }
+        self.context_handoff_preparation = self.lease.get("reason") == "context_handoff"
+        self.guidance_result = _seed_team_agent_guidance(self.batch.context, agent=self.agent)
+
+    def _prepare_repositories(self) -> bool:
+        try:
+            dispatch_scope = (
+                self.lease.get("dispatch")
+                if isinstance(self.lease.get("dispatch"), Mapping)
+                else {}
+            )
+            self.batch.state, self.project_repos = _prepare_project_repos(
+                self.batch.context,
+                repo=self.batch.repo,
+                state=self.batch.state,
+                agent=self.agent,
+                dispatch_id=self.lease["dispatch_id"],
+                tasks=self.lease.get("tasks"),
+                project_ids=_string_items(dispatch_scope.get("project_ids")),
+                review_request_ids=_string_items(dispatch_scope.get("review_request_ids")),
+            )
+        except TeamStateConflictError:
+            raise
+        except ReviewRepositoryPreparationError as exc:
+            self.batch.state = TeamRuntimeService(self.batch.repo).fail_agent_dispatch(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                error=f"review repository preparation failed before inference: {exc}",
+            )
+            self.batch.state, created_blocker_ids = _record_review_repository_preparation_blockers(
+                self.batch.repo,
+                review_request_ids=exc.review_request_ids,
+                error=str(exc),
+            )
+            self.batch.preparation_blocker_ids.extend(created_blocker_ids)
+            self.batch.errors.append(
+                f"{self.agent['id']}: review repository preparation failed; "
+                "the affected review attempts were blocked before inference"
+            )
+            return False
+        except Exception as exc:
+            self.batch.failed_project_repo_preparations.append(
+                _project_repo_prepare_record(
+                    agent=self.agent,
+                    dispatch_id=self.lease["dispatch_id"],
+                    error=str(exc),
+                )
+            )
+            raise
+        if self.project_repos:
+            self.lease = {**self.lease, "project_repos": self.project_repos}
+            if len(self.project_repos) == 1:
+                self.lease["project_repo"] = self.project_repos[0]
+        for project_repo in self.project_repos:
+            conflict_retry_count = int(project_repo.get("state_conflict_retry_count") or 0)
+            if conflict_retry_count:
+                self.batch.transient_conflicts.append(
+                    {
+                        "agent_id": self.agent["id"],
+                        "session_id": self.agent["session_id"],
+                        "dispatch_id": self.lease["dispatch_id"],
+                        "phase": "git_work_context_commit",
+                        "attempt_count": int(project_repo.get("state_commit_attempt_count") or 0),
+                        "conflict_count": conflict_retry_count,
+                        "resolved": True,
+                        "retry_scheduled": False,
+                    }
+                )
+            self.batch.git_work_contexts.extend(
+                _mapping_items(project_repo.get("git_work_contexts"))
+            )
+            self.batch.prepared_project_repos.append(
+                _project_repo_prepare_record(
+                    agent=self.agent,
+                    dispatch_id=self.lease["dispatch_id"],
+                    project_repo=project_repo,
+                )
+            )
+        return True
+
+    def _grant_tools(self) -> bool:
+        self.tool_grant_result = _set_session_team_mcp_tools(
+            self.batch.context,
+            session_id=self.agent["session_id"],
+            tool_names=(
+                [TEAM_RECORD_CONTEXT_HANDOFF_TOOL]
+                if self.context_handoff_preparation
+                else _ordinary_team_tools_for_agent(self.agent)
+            ),
+            dispatch_id=self.lease["dispatch_id"],
+        )
+        if self.tool_grant_result["error"] is not None:
+            dispatch = self.batch.state.dispatches[self.lease["dispatch_id"]]
+            receipt = dispatch.mcp_capability_receipt
+            if receipt is not None:
+                self.batch.state, finalization = TeamRuntimeService(
+                    self.batch.repo
+                ).record_agent_mcp_capability_preparation_failure(
+                    session_id=self.agent["session_id"],
+                    dispatch_id=self.lease["dispatch_id"],
+                    agent_id=self.agent["id"],
+                    diagnostic=(
+                        "MCP policy grant confirmation failed before resume: "
+                        f"{self.tool_grant_result['error']}"
+                    ),
+                )
+                self.batch.errors.append(f"{self.agent['id']}: {self.tool_grant_result['error']}")
+                self.batch.dispatches.append(
+                    {
+                        "agent_id": self.agent["id"],
+                        "session_id": self.agent["session_id"],
+                        "dispatch_id": self.lease["dispatch_id"],
+                        "agent_guidance": self.guidance_result,
+                        "team_mcp_tools": self.tool_grant_result,
+                        "mcp_capability_receipt": finalization.get("mcp_capability_receipt"),
+                        "error": self.tool_grant_result["error"],
+                    }
+                )
+                return False
+            raise RuntimeError(str(self.tool_grant_result["error"]))
+        dispatch = self.batch.state.dispatches[self.lease["dispatch_id"]]
+        if dispatch.mcp_capability_receipt is not None:
+            self.batch.state = TeamRuntimeService(
+                self.batch.repo
+            ).confirm_agent_dispatch_mcp_capability_grant(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                granted_tool_names=self.tool_grant_result["requested_tools"],
+                state=self.batch.state,
+            )
+            self.lease = {
+                **self.lease,
+                "dispatch": self.batch.state.dispatches[self.lease["dispatch_id"]].model_dump(
+                    mode="json"
+                ),
+            }
+            self.batch.leases[self.lease_index] = self.lease
+        return True
+
+    def _prepare_review_artifacts(self) -> bool:
+        review_artifacts = _prepare_review_artifacts_for_lease(
+            self.batch.context,
+            lease=self.lease,
+        )
+        if (
+            review_artifacts["review_artifact_imports"]
+            or review_artifacts["review_artifact_import_errors"]
+        ):
+            self.lease = {**self.lease, **review_artifacts}
+            self.batch.review_artifact_imports.extend(review_artifacts["review_artifact_imports"])
+            self.batch.review_artifact_import_errors.extend(
+                review_artifacts["review_artifact_import_errors"]
+            )
+            self.batch.leases[self.lease_index] = self.lease
+        if review_artifacts["review_artifact_import_errors"]:
+            grouped_errors = _review_artifact_preparation_errors(
+                review_artifacts["review_artifact_import_errors"]
+            )
+            self.batch.state = TeamRuntimeService(self.batch.repo).fail_agent_dispatch(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                error=(
+                    "review artifact preparation failed before inference: "
+                    + "; ".join(
+                        f"{review_id}: {message}" for review_id, message in grouped_errors.items()
+                    )
+                ),
+            )
+            self.batch.state, created_blocker_ids = _record_review_artifact_preparation_blockers(
+                self.batch.repo,
+                grouped_errors=grouped_errors,
+            )
+            self.batch.preparation_blocker_ids.extend(created_blocker_ids)
+            self.batch.errors.append(
+                f"{self.agent['id']}: review artifact preparation failed; "
+                "the affected review attempts were blocked before inference"
+            )
+            return False
+        return True
+
+    def _prepare_prompt(self) -> None:
+        self.effective_resume_mode = (
+            self.batch.resume_mode
+            if self.context_handoff_preparation
+            else "new_context"
+            if wake_uses_fresh_context(
+                self.lease,
+                effective_resume_mode=self.batch.resume_mode,
+            )
+            else self.batch.resume_mode
+        )
+        self.prompt = _build_prompt(
+            self.lease,
+            effective_resume_mode=self.effective_resume_mode,
+        )
+        _register_team_dispatch_model_usage_context(
+            self.batch.context,
+            agent=self.agent,
+            dispatch_id=self.lease["dispatch_id"],
+            effect_id=_optional_text(getattr(self.batch.effect_definition, "id", None)),
+        )
+        self.resume_thread_id = work_lineage_resume_thread_id(self.lease)
+
+    def _submit_prompt(self) -> bool:
+        try:
+            self.prompt_submission_attempted = True
+            result = _enqueue_team_agent_prompt(
+                self.batch.resumer,
+                target=self.agent["session_id"],
+                prompt=self.prompt,
+                resume_mode=self.effective_resume_mode,
+                resume_thread_id=self.resume_thread_id,
+                dispatch_id=self.lease["dispatch_id"],
+            )
+        except Exception as exc:
+            self.result_payload = {"success": False, "error": str(exc)}
+            if not _resume_failure_reports_missing_thread(
+                self.result_payload,
+                resume_thread_id=self.resume_thread_id,
+            ):
+                raise
+        else:
+            self.result_payload = _coerce_mapping(result)
+        if _resume_failure_reports_missing_thread(
+            self.result_payload,
+            resume_thread_id=self.resume_thread_id,
+        ):
+            self.batch.state, invalidated = TeamRuntimeService(
+                self.batch.repo
+            ).invalidate_agent_work_lineage_thread_binding(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                resume_thread_id=self.resume_thread_id or "",
+            )
+            retry_allowed = _discard_failed_team_prompt_queue_record(
+                self.batch.repo,
+                result=self.result_payload,
+                dispatch_id=self.lease["dispatch_id"],
+            )
+            if invalidated and retry_allowed:
+                self.lease = {
+                    **self.lease,
+                    "runtime": self.batch.state.agent_runtimes[self.agent["id"]].model_dump(
+                        mode="json"
+                    ),
+                }
+                self.batch.leases[self.lease_index] = self.lease
+                self.effective_resume_mode = "new_context"
+                self.prompt = _build_prompt(
+                    self.lease,
+                    effective_resume_mode=self.effective_resume_mode,
+                )
+                result = _enqueue_team_agent_prompt(
+                    self.batch.resumer,
+                    target=self.agent["session_id"],
+                    prompt=self.prompt,
+                    resume_mode=self.effective_resume_mode,
+                    resume_thread_id=None,
+                    dispatch_id=self.lease["dispatch_id"],
+                )
+                self.result_payload = _coerce_mapping(result)
+        if _result_reports_failure(self.result_payload):
+            error = _resume_failure_message(self.result_payload)
+            self.batch.state = _record_wake_failure(
+                self.batch.repo,
+                lease=self.lease,
+                error=error,
+                delivery_not_started=not self.prompt_submission_attempted,
+            )
+            self.batch.errors.append(f"{self.agent['id']}: {error}")
+            return False
+        if bool(self.result_payload.get("queued")):
+            self.batch.state = TeamRuntimeService(self.batch.repo).mark_agent_dispatch_queued(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                state=self.batch.state,
+            )
+            self.batch.dispatches.append(
+                {
+                    "agent_id": self.agent["id"],
+                    "session_id": self.agent["session_id"],
+                    "dispatch_id": self.lease["dispatch_id"],
+                    "agent_guidance": self.guidance_result,
+                    "team_mcp_tools": self.tool_grant_result,
+                    "result": self.result_payload,
+                    "queued": True,
+                }
+            )
+            return False
+        return True
+
+    def _activate_and_record_delivery(self) -> None:
+        self.batch.state, activation = _activate_delivered_team_prompt(
+            repo=self.batch.repo,
+            dispatch_id=self.lease["dispatch_id"],
+            result_payload=self.result_payload,
+        )
+        self.lease = {
+            **self.lease,
+            "runtime": self.batch.state.agent_runtimes[self.agent["id"]].model_dump(mode="json"),
+            "dispatch": self.batch.state.dispatches[self.lease["dispatch_id"]].model_dump(
+                mode="json"
+            ),
+        }
+        self.batch.leases[self.lease_index] = self.lease
+        delivered_action_feedback_dispatch_ids = list(
+            activation["delivered_action_feedback_dispatch_ids"]
+        )
+        dispatch_payload = {
+            "agent_id": self.agent["id"],
+            "session_id": self.agent["session_id"],
+            "dispatch_id": self.lease["dispatch_id"],
+            "agent_guidance": self.guidance_result,
+            "team_mcp_tools": self.tool_grant_result,
+            "result": self.result_payload,
+        }
+        if delivered_action_feedback_dispatch_ids:
+            dispatch_payload["delivered_action_feedback_dispatch_ids"] = (
+                delivered_action_feedback_dispatch_ids
+            )
+        if self.project_repos:
+            dispatch_payload["project_repos"] = self.project_repos
+            if len(self.project_repos) == 1:
+                dispatch_payload["project_repo"] = self.project_repos[0]
+        if self.lease.get("review_artifact_imports"):
+            dispatch_payload["review_artifact_imports"] = self.lease["review_artifact_imports"]
+        if self.lease.get("review_artifact_import_errors"):
+            dispatch_payload["review_artifact_import_errors"] = self.lease[
+                "review_artifact_import_errors"
+            ]
+        if activation["context_rotation"] is not None:
+            dispatch_payload["context_rotation"] = activation["context_rotation"]
+        if activation["context_handoff_preparation"] is not None:
+            dispatch_payload["context_handoff_preparation"] = activation[
+                "context_handoff_preparation"
+            ]
+        self.batch.dispatches.append(dispatch_payload)
+
+    def _schedule_conflict_retry(self, exc: TeamStateConflictError) -> None:
+        conflict_record: dict[str, Any] = {
+            "agent_id": self.agent["id"],
+            "session_id": self.agent["session_id"],
+            "dispatch_id": self.lease["dispatch_id"],
+            "phase": "git_work_context_commit",
+            "attempt_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+            "conflict_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+            "expected_revision": exc.expected_revision,
+            "current_revision": exc.current_revision,
+            "resolved": False,
+            "retry_scheduled": False,
+            "retry_event_ids": [],
+        }
+        try:
+            self.batch.state = TeamRuntimeService(
+                self.batch.repo
+            ).release_agent_wake_lease_for_retry(
+                agent_id=self.agent["id"],
+                dispatch_id=self.lease["dispatch_id"],
+                error=(
+                    "repository/worktree preparation state conflict: "
+                    f"expected revision {exc.expected_revision}, current "
+                    f"revision {exc.current_revision}"
+                ),
+            )
+            retry_result: dict[str, Any] = {"events": []}
+            _append_agent_wake_requested_event(
+                self.batch.state,
+                agent_id=self.agent["id"],
+                result=retry_result,
+                reason="state_conflict_retry",
+                now=datetime.now(UTC),
+                delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
+                idempotency_suffix=f"state-conflict:{self.lease['dispatch_id']}",
+            )
+            scheduled_ids = _publish_team_events(
+                self.batch.context,
+                retry_result["events"],
+            )
+            if not scheduled_ids:
+                raise RuntimeError("transient wake retry event was not scheduled")
+            self.batch.retry_event_ids.extend(scheduled_ids)
+            conflict_record["retry_scheduled"] = True
+            conflict_record["retry_event_ids"] = scheduled_ids
+        except Exception as retry_exc:
+            self.batch.errors.append(
+                f"{self.agent['id']}: failed to schedule transient wake retry: {retry_exc}"
+            )
+        self.batch.transient_conflicts.append(conflict_record)
+
+    def _record_failure(self, exc: Exception) -> None:
+        error = str(exc)
+        try:
+            self.batch.state = _record_wake_failure(
+                self.batch.repo,
+                lease=self.lease,
+                error=error,
+                delivery_not_started=not self.prompt_submission_attempted,
+            )
+            if isinstance(exc, DependencyGitPreparationError):
+                self.batch.state = _record_dependency_git_preparation_blocker(
+                    self.batch.repo,
+                    lease=self.lease,
+                    task_id=exc.task_id,
+                    error=error,
+                    conflict=exc.conflict,
+                    cause=exc.cause,
+                    evidence=exc.evidence,
+                )
+                self.batch.preparation_blocker_ids.extend(
+                    _new_preparation_blocker_ids(
+                        self.batch.state,
+                        task_ids=[exc.task_id],
+                    )
+                )
+            elif isinstance(exc, ProjectGitPreparationError):
+                self.batch.state, created_blocker_ids = _record_project_git_preparation_blockers(
+                    self.batch.repo,
+                    lease=self.lease,
+                    project_id=exc.project_id,
+                    error=error,
+                    cause=exc.cause,
+                    evidence=exc.evidence,
+                )
+                self.batch.preparation_blocker_ids.extend(created_blocker_ids)
+        except Exception as release_exc:  # pragma: no cover - defensive diagnostics
+            error = f"{error}; failed to release team runtime lease: {release_exc}"
+        self.batch.errors.append(f"{self.agent['id']}: {error}")

@@ -11,13 +11,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
+from evander.repositories.maintenance_indexes import (
+    MAINTENANCE_INDEXES,
+    MaintenanceIndexesRequired,
+)
 from evander.repositories.sqlite_runtime import (
     DEFAULT_BUSY_TIMEOUT_MS,
     MAINTENANCE_TIMEOUT_MS,
     SqliteOperationDeadlineExceeded,
     ensure_sqlite_initialized,
+    is_storage_contention,
     open_sqlite_connection,
 )
 
@@ -29,6 +35,7 @@ SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
 SQLITE_WAL_CHECKPOINT_INTERVAL_SECONDS = 5 * 60
+_HISTORY_PAYLOAD_SCAN_BATCH_SIZE = 1000
 SQLITE_WAL_CHECKPOINT_MODES = {
     "passive": "PASSIVE",
     "full": "FULL",
@@ -77,6 +84,8 @@ class OrchestrationWalCheckpointResult:
     error: str | None = None
     history_index_pending: int = 0
     history_index_oldest_age_seconds: float | None = None
+    # None means collection was skipped; false means both bounded sweeps are idle.
+    garbage_collection_pending: bool | None = None
 
 
 @contextmanager
@@ -561,27 +570,24 @@ def datetime_to_storage(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-_MAINTENANCE_INDEXES = {
-    "idx_workflow_history_input_blob": ("workflow_node_execution_history", "input_blob_sha256"),
-    "idx_workflow_history_output_blob": ("workflow_node_execution_history", "output_blob_sha256"),
-    "idx_internal_delivery_event": ("internal_event_deliveries", "internal_event_row_id"),
-}
-
-
 def _create_maintenance_indexes(connection: sqlite3.Connection) -> None:
-    for name, (table, column) in _MAINTENANCE_INDEXES.items():
-        connection.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({column})")
+    for index in MAINTENANCE_INDEXES:
+        row = connection.execute(
+            "SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name=?", (index.name,)
+        ).fetchone()
+        if row is not None:
+            if row[0] != index.table or not index.matches_definition(row[1]):
+                raise ValueError(f"Maintenance index {index.name} does not match the expected schema")
+            continue
+        connection.execute(index.create_sql)
 
 
 def _maintenance_indexes_ready(connection: sqlite3.Connection) -> bool:
-    for name, (table, column) in _MAINTENANCE_INDEXES.items():
+    for index in MAINTENANCE_INDEXES:
         row = connection.execute(
-            "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?", (name,)
+            "SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name=?", (index.name,)
         ).fetchone()
-        if row is None or row[0] != table:
-            return False
-        columns = [row[2] for row in connection.execute(f"PRAGMA index_info({name})")]
-        if columns != [column]:
+        if row is None or row[0] != index.table or not index.matches_definition(row[1]):
             return False
     return True
 
@@ -609,7 +615,7 @@ def orchestration_maintenance_index_status(path: Path | str) -> dict[str, Any]:
     oldest_at = _datetime_from_storage(oldest)
     return {
         "ready": ready,
-        "required_indexes": list(_MAINTENANCE_INDEXES),
+        "required_indexes": [index.name for index in MAINTENANCE_INDEXES],
         "database_bytes": db_path.stat().st_size,
         "wal_bytes": wal_bytes,
         "history_index_pending": pending,
@@ -810,7 +816,7 @@ def run_orchestration_retention_slice(
     time_budget_seconds: float = 0.25,
     busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
 ) -> OrchestrationRetentionResult:
-    """Resume bounded maintenance, shrinking work after a transaction deadline."""
+    """Resume bounded maintenance, adapting work to transaction deadlines."""
     if retention_days < 0 or compact_history_retention_days < 0:
         raise ValueError("retention days must be non-negative")
     if not 1 <= batch_size <= 10_000:
@@ -828,11 +834,11 @@ def run_orchestration_retention_slice(
             compact_history_retention_days=compact_history_retention_days,
             batch_size=effective_batch, index_batch_size=index_batch,
             time_budget_seconds=time_budget_seconds, busy_timeout_ms=busy_timeout_ms,
+            batch_size_limit=batch_size, batch_limits_json=row[0] if row else None,
         )
     except SqliteOperationDeadlineExceeded as error:
         # Lock contention is not evidence that a deletion batch is too large.
-        cause_code = getattr(error.__cause__, "sqlite_errorcode", 0) or 0
-        if (cause_code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        if is_storage_contention(error):
             raise
         # The failed batch has rolled back. Persist adaptation separately so a
         # new process does not retry the same oversized transaction forever.
@@ -888,6 +894,59 @@ def _delete_compact_history_batch(
     return deleted, removed
 
 
+def _delete_history_payload_batch(
+    connection: sqlite3.Connection,
+    progress: dict[str, Any],
+    *,
+    batch_size: int,
+) -> tuple[int, bool]:
+    """Scan one bounded key range inside the retention writer transaction."""
+    if "blob_high_water" not in progress:
+        row = connection.execute(
+            "SELECT sha256 FROM workflow_execution_payload_blobs ORDER BY sha256 DESC LIMIT 1"
+        ).fetchone()
+        # Fix the sweep boundary so new writes cannot keep extending this phase.
+        progress["blob_high_water"] = row[0] if row else ""
+    after = progress.get("blob_cursor", "")
+    high_water = progress["blob_high_water"]
+    page = [
+        row[0]
+        for row in connection.execute(
+            """SELECT sha256 FROM workflow_execution_payload_blobs
+               WHERE sha256>? AND sha256<=? ORDER BY sha256 LIMIT ?""",
+            (after, high_water, _HISTORY_PAYLOAD_SCAN_BATCH_SIZE),
+        ).fetchall()
+    ]
+    keys = []
+    complete = not page
+    if page:
+        keys = [
+            row[0]
+            for row in connection.execute(
+                """SELECT b.sha256 FROM workflow_execution_payload_blobs b
+                   WHERE b.sha256>? AND b.sha256<=?
+                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.input_blob_sha256=b.sha256)
+                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.output_blob_sha256=b.sha256)
+                   ORDER BY b.sha256 LIMIT ?""",
+                (after, page[-1], batch_size),
+            ).fetchall()
+        ]
+        connection.executemany(
+            "DELETE FROM workflow_execution_payload_blobs WHERE sha256=?",
+            [(key,) for key in keys],
+        )
+        # At the deletion limit, the rest of the range may still have orphans.
+        # Otherwise advance past retained blobs even when nothing was deleted.
+        progress["blob_cursor"] = keys[-1] if len(keys) == batch_size else page[-1]
+        complete = progress["blob_cursor"] >= high_water
+    if complete:
+        progress.pop("blob_cursor", None)
+        progress.pop("blob_high_water", None)
+    return len(keys), complete
+
+
 def _run_orchestration_retention_slice(
     path: Path | str,
     *,
@@ -897,6 +956,8 @@ def _run_orchestration_retention_slice(
     index_batch_size: int = 10000,
     time_budget_seconds: float = 0.25,
     busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
+    batch_size_limit: int = 100,
+    batch_limits_json: str | None = None,
 ) -> OrchestrationRetentionResult:
     """Commit at most one bounded retention batch and durably retain its phase.
 
@@ -904,6 +965,7 @@ def _run_orchestration_retention_slice(
     existing policy; missing legacy FK indexes defer deletion rather than scan
     large child tables while holding the only writer lock.
     """
+    started = monotonic()
     now = datetime.now(UTC)
     today = now.date().isoformat()
     counts: dict[str, Any] = {}
@@ -930,9 +992,14 @@ def _run_orchestration_retention_slice(
     if phase == "sources":
         from evander.repositories.execution_history import prepare_records_for_retention
 
-        prepared_sources = prepare_records_for_retention(
-            path, cutoff=progress["cutoff"], batch_size=batch_size
-        )
+        try:
+            prepared_sources = prepare_records_for_retention(
+                path, cutoff=progress["cutoff"], batch_size=batch_size
+            )
+        except MaintenanceIndexesRequired:
+            return OrchestrationRetentionResult(
+                remaining=True, skipped_reason="maintenance_indexes_required"
+            )
     with connect_orchestration_db(
         path,
         busy_timeout_ms=busy_timeout_ms,
@@ -969,23 +1036,9 @@ def _run_orchestration_retention_slice(
             deleted = len(sources)
             waiting_for_history = _has_pending_retention_sources(connection, progress["cutoff"])
         elif phase == "blobs":
-            keys = [
-                row[0]
-                for row in connection.execute(
-                    """SELECT b.sha256 FROM workflow_execution_payload_blobs b
-                   WHERE NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
-                                     WHERE h.input_blob_sha256=b.sha256)
-                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
-                                     WHERE h.output_blob_sha256=b.sha256)
-                   ORDER BY b.sha256 LIMIT ?""",
-                    (batch_size,),
-                ).fetchall()
-            ]
-            connection.executemany(
-                "DELETE FROM workflow_execution_payload_blobs WHERE sha256=?",
-                [(key,) for key in keys],
+            deleted, blobs_complete = _delete_history_payload_batch(
+                connection, progress, batch_size=batch_size,
             )
-            deleted = len(keys)
             counts["compact_payload_blobs_deleted"] = deleted
         else:
             definitions = {
@@ -994,6 +1047,8 @@ def _run_orchestration_retention_slice(
                     "row_id",
                     "occurred_at < ?",
                     "workflow_events_deleted",
+                    "idx_workflow_events_occurred",
+                    "occurred_at,row_id",
                 ),
                 "compact": (
                     "workflow_node_execution_history",
@@ -1002,12 +1057,16 @@ def _run_orchestration_retention_slice(
                     AND NOT EXISTS (SELECT 1 FROM workflow_history_index_jobs j
                         WHERE j.execution_key=workflow_node_execution_history.execution_key)""",
                     "compact_executions_deleted",
+                    "idx_workflow_node_history_finished",
+                    "finished_at,execution_key",
                 ),
                 "scheduled": (
                     "scheduled_internal_events",
                     "schedule_id",
                     "status='published' AND published_at < ?",
                     "scheduled_internal_events_deleted",
+                    "idx_scheduled_internal_events_published",
+                    "published_at,schedule_id",
                 ),
                 "internal": (
                     "internal_events",
@@ -1019,15 +1078,17 @@ def _run_orchestration_retention_slice(
                         WHERE s.active=1 AND s.event_type=internal_events.event_type
                           AND s.scan_cursor_row_id < internal_events.row_id)""",
                     "internal_events_deleted",
+                    "idx_internal_events_created",
+                    "created_at,row_id",
                 ),
             }
-            table, key, where, result_key = definitions[phase]
+            table, key, where, result_key, index, order = definitions[phase]
             cutoff = progress["compact_cutoff" if phase == "compact" else "cutoff"]
-            order = "finished_at, execution_key" if phase == "compact" else key
             keys = [
                 row[0]
                 for row in connection.execute(
-                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {order} LIMIT ?",
+                    f"SELECT {key} FROM {table} INDEXED BY {index} "
+                    f"WHERE {where} ORDER BY {order} LIMIT ?",
                     (cutoff, batch_size),
                 ).fetchall()
             ]
@@ -1044,6 +1105,7 @@ def _run_orchestration_retention_slice(
         # Advance only after an empty source snapshot, including after CAS skips.
         phase_complete = (
             not prepared_sources.sources if phase == "sources"
+            else blobs_complete if phase == "blobs"
             else not keys if phase == "compact" else deleted < batch_size
         )
         next_index = phases.index(phase) + (phase_complete and not waiting_for_history)
@@ -1062,6 +1124,33 @@ def _run_orchestration_retention_slice(
                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
                 (json_dumps({"date": progress["date"]}),),
             )
+        # Recover only limits fully exercised with time to spare. Empty or
+        # deferred phases do not establish that a larger batch is affordable.
+        if (
+            batch_limits_json is not None
+            and not waiting_for_history
+            and monotonic() - started < time_budget_seconds / 2
+        ):
+            limits = json_loads_object(batch_limits_json)
+            recovered = dict(limits)
+            records_deleted = sum(
+                count for name, count in counts.items() if name != "compact_index_rows_deleted"
+            )
+            if records_deleted >= batch_size and batch_size < batch_size_limit:
+                recovered["records"] = min(batch_size_limit, batch_size * 2)
+            if (
+                counts.get("compact_index_rows_deleted", 0) >= index_batch_size
+                and index_batch_size < 10000
+            ):
+                recovered["index_rows"] = min(10000, index_batch_size * 2)
+            if recovered != limits:
+                # Commit recovery with the cleanup it measured; never overwrite
+                # a reduction persisted by another worker since the initial read.
+                connection.execute(
+                    """UPDATE orchestration_metadata SET value_json=?
+                       WHERE key='retention_batch_limits' AND value_json=?""",
+                    (json_dumps(recovered), batch_limits_json),
+                )
     return OrchestrationRetentionResult(
         **counts,
         remaining=remaining,
@@ -1127,19 +1216,14 @@ def run_orchestration_retention(
             totals[name] += getattr(result, name)
         if result.skipped_reason == "history_index_pending":
             from evander.repositories.execution_history import (
-                prepare_pending_history_indexing,
-                run_pending_history_indexing,
+                run_history_indexing_slice,
             )
 
-            prepared = prepare_pending_history_indexing(path, batch_size=100)
-
-            with connect_orchestration_db(
+            run_history_indexing_slice(
                 path,
                 busy_timeout_ms=100,
-                deadline_seconds=0.25,
-                operation="retention_history_projection",
-            ) as connection:
-                run_pending_history_indexing(connection, prepared=prepared)
+                writer_time_budget_seconds=0.25,
+            )
             continue
         if not result.remaining or result.skipped_reason:
             return OrchestrationRetentionResult(

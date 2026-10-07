@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from .sqlite_codec import (
@@ -10,11 +11,42 @@ from .sqlite_codec import (
     _insert_position_values,
     _json_dumps,
     _json_loads,
+    _utc_datetime_value,
 )
 
 
 class DeliverableStoreMixin:
     """Read/write deliverables rows on a caller-owned transaction."""
+
+    @staticmethod
+    def _deliverable_trigger_sources(
+        connection: sqlite3.Connection,
+        *,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        producer_agent_id: str | None = None,
+    ) -> list[tuple[str, datetime]]:
+        conditions: list[str] = []
+        parameters: list[str] = []
+        for field, value in (
+            ("p.team_id", team_id),
+            ("t.project_id", project_id),
+            ("d.producer_agent_id", producer_agent_id),
+        ):
+            if value is not None:
+                conditions.append(f"{field} = ?")
+                parameters.append(value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        return [
+            (row["id"], _utc_datetime_value(row["created_at"]))
+            for row in connection.execute(
+                "SELECT d.id, d.created_at FROM team_deliverables d "
+                "LEFT JOIN team_tasks t ON t.id = d.task_id "
+                "LEFT JOIN team_projects p ON p.id = t.project_id"
+                + where + " ORDER BY d.id",
+                parameters,
+            )
+        ]
 
     @staticmethod
     def _read_deliverables(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:

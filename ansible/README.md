@@ -54,7 +54,7 @@ The playbook follows the repo-native bootstrap order:
 
 1. On existing installs, write `runtime/deployment-status.json` so Admin Web can show that an
    update is in progress
-2. Install Ubuntu packages, Node/npm, and `uv`
+2. Install Ubuntu packages, Node/npm, and `uv`, and configure daily system log rotation
 3. Install and configure the apt-cacher-ng relay when enabled
 4. Clone or update the repo
 5. Create `.venv` and install the package
@@ -94,6 +94,16 @@ Core defaults:
 - `evander_service_profile`: `full`
 - `evander_run_user_supplementary_groups`: `libvirt`, `kvm` for `full`; empty for
   `control_plane_only`
+- `evander_manage_system_log_rotation`: `true`; manage `/etc/logrotate.d/rsyslog`
+  and enable the existing daily `logrotate.timer` on control-plane hosts. Set it to
+  `false` when system log rotation is managed outside this playbook; this leaves
+  the existing policy in place.
+- `evander_system_log_rotate_count`: `28`; retain about four weeks of daily syslog,
+  auth, kernel, mail, user, and cron archives. Compression is delayed by one rotation
+  so yesterday's archive remains uncompressed. The policy is validated before an
+  atomic update and the previous configuration is backed up. Deployment does not
+  force a rotation or restart rsyslog. Journal retention and runtime audit files
+  are managed separately. The worker playbook does not apply this policy.
 - `evander_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, plus `8081`
   when `evander_services.package_cache` is enabled and `3142` when
   `evander_services.apt_cache` is enabled, and `11881` when

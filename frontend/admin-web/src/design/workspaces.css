@@ -1,6 +1,131 @@
 /* Table workbenches, settings, and expandable records share the same surfaces. */
-[data-admin-design] :is(.config-field-grid, .website-login-grid, .admin-toolbar) > .field-stack {
+[data-admin-design] .addons-detail-grid {
+  align-items: start;
+}
+[data-admin-design] .filter-disclosure {
   min-width: 0;
+  flex-basis: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+[data-admin-design] .filter-disclosure > summary {
+  width: fit-content;
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--ui-accent);
+  font-size: 13px;
+}
+[data-admin-design] .filter-disclosure-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding-top: 8px;
+}
+[data-admin-design] .filter-disclosure-fields > .field-stack {
+  flex: 1 1 160px;
+  min-width: min(160px, 100%);
+  margin: 0;
+}
+[data-admin-design] .filter-disclosure-fields > .checkbox-row {
+  align-self: flex-end;
+  align-items: center;
+  min-height: var(--ui-control-height);
+  margin: 0;
+  padding-block: 0;
+}
+[data-admin-design] .filter-disclosure-fields > .checkbox-row > input {
+  margin: 0;
+}
+[data-admin-design] .record-section-nav {
+  gap: 4px;
+  border-bottom: 1px solid var(--ui-border);
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+[data-admin-design] .record-section-nav > button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-muted);
+}
+[data-admin-design] .record-section-nav > button[aria-pressed="true"] {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .record-action-menu {
+  position: relative;
+}
+[data-admin-design] .record-action-menu > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  border: 1px solid var(--ui-border);
+  font-size: 13px;
+}
+[data-admin-design] .record-action-menu-content {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  width: max-content;
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .feature-toolbar-actions.icon-actions .record-action-menu-content button {
+  width: 100%;
+  height: auto;
+  min-height: var(--ui-control-height);
+  padding: 8px 10px;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-start;
+  text-align: left;
+}
+[data-admin-design] .feature-toolbar-actions.icon-actions button.toolbar-labeled-action {
+  width: auto;
+  min-width: unset;
+  height: auto;
+  min-height: var(--ui-control-height);
+  padding: 6px 10px;
+  display: inline-flex;
+  gap: 6px;
+}
+[data-admin-design] :is(.config-field-grid, .form-grid, .website-login-grid, .admin-toolbar) > .field-stack {
+  min-width: 0;
+  margin-bottom: 0;
+}
+[data-admin-design] .credentials-panel .credential-actions {
+  padding: 0;
+  align-items: center;
+}
+[data-admin-design] :is(.managed-git-index-panel, .managed-git-index-panel fieldset) {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] .managed-git-index-build-meta {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+}
+[data-admin-design] :is(.managed-git-register-form, .managed-git-identity-form) {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+}
+[data-admin-design] .string-list-selector-row.structured-input-map-row {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  align-items: end;
+}
+[data-admin-design] .structured-input-map-row > .inline-actions {
+  padding-top: 0;
+}
+[data-admin-design] .email-mailbox-folder-row {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) auto auto;
+}
+[data-admin-design] .email-mailbox-folder-row > .field-stack {
   margin-bottom: 0;
 }
 [data-admin-design] :is(.website-login-grid, .admin-toolbar, .table-workspace > .feature-sidebar) > :is(.checkbox-row, .checkbox-inline) {
@@ -57,6 +182,7 @@
   border-radius: var(--ui-radius);
   background: var(--ui-surface);
   overflow: hidden;
+  container-type: inline-size;
 }
 [data-admin-design] :is(.subscription-columns, .subscription-profile-summary) {
   display: grid;
@@ -117,6 +243,15 @@
 }
 [data-admin-design] .subscription-profile-body .property-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+@container (max-width: 800px) {
+  [data-admin-design] .subscription-columns {
+    display: none;
+  }
+  [data-admin-design] .subscription-profile-summary {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
 }
 
 [data-admin-design] .table-workspace {
@@ -240,18 +375,28 @@
   display: grid;
   grid-template-columns: 95px minmax(0, 1fr);
   gap: 12px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
 }
-[data-admin-design] .detail-list dt {
+[data-admin-design] .detail-list :is(dt, div > span) {
   font-size: 12px;
   color: var(--ui-muted);
   text-transform: none;
   letter-spacing: 0;
 }
-[data-admin-design] .detail-list dd {
+[data-admin-design] .detail-list :is(dd, div > strong) {
   margin: 0;
   font-size: 13px;
   color: var(--ui-text);
   overflow-wrap: anywhere;
+}
+[data-admin-design] .tool-visibility-count-filters > button[aria-pressed="true"] {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+  border-color: var(--ui-accent);
 }
 [data-admin-design] :is(.tool-call-detail-grid, .tool-call-context-grid) :is(span, strong) {
   color: var(--ui-text);
@@ -594,6 +739,9 @@
   }
 }
 @media (max-width: 960px) {
+  [data-admin-design] :is(.managed-git-index-build-meta, .email-mailbox-folder-row, .string-list-selector-row.structured-input-map-row) {
+    grid-template-columns: minmax(0, 1fr);
+  }
   [data-admin-design] :is(.managed-git-register-form, .managed-git-identity-form) {
     grid-template-columns: minmax(0, 1fr);
   }

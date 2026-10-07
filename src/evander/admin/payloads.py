@@ -123,6 +123,25 @@ class WorkflowEditorDocumentPayload(BaseModel):
     pack_list_revision: str | None = None
 
 
+class WorkflowNodeTriggerRequestPayload(BaseModel):
+    workflow_pack: str | None = None
+    expected_revision: str = Field(min_length=1)
+    payload: dict[str, Any]
+    correlation_key: str | None = None
+    request_id: str = Field(min_length=1, max_length=128)
+    schema_revision: str | None = None
+
+    @field_validator("request_id", "expected_revision", mode="before")
+    @classmethod
+    def strip_required_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class WorkflowNodeTriggerPayload(BaseModel):
+    event_id: str
+    trace_id: str
+
+
 class WorkflowEditorValidationPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config: dict[str, object]

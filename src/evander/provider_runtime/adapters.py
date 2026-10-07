@@ -36,6 +36,8 @@ class AdminRuntimeProviderAdapter:
         self.issue_git_admin = getattr(admin_runtime, "issue_git_admin", None)
         self.managed_git_admin = getattr(admin_runtime, "managed_git_admin", None)
         self.repository_index_admin = getattr(admin_runtime, "repository_index_admin", None)
+        self.connector_service = getattr(admin_runtime, "connector_service", None)
+        self.event_schemas = getattr(getattr(admin_runtime, "workflow_config_admin", None), "event_schemas", None)
 
     def __getattribute__(self, name: str) -> Any:
         conditional_methods = object.__getattribute__(self, "_CONDITIONALLY_BACKED_METHODS")
