@@ -65,6 +65,7 @@ from evander.repositories.orchestration import GateCursorRepository, TriggerPoll
 from evander.repositories.sqlite_runtime import foreground_storage_wait_budget, is_storage_busy
 
 logger = logging.getLogger(__name__)
+_SCHEDULED_PUBLICATION_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -417,15 +418,19 @@ class TriggerOrchestratorWorker:
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> int:
         scheduled_event_store = build_scheduled_internal_event_store(worker_config)
-        due_events = scheduled_event_store.list_due(datetime.now(UTC))
-        if not due_events:
+        # Keep overdue backlogs from monopolizing a cycle. Remaining due events
+        # already force the next cycle's sleep to zero through next_pending_run_at.
+        due_ids = scheduled_event_store.list_due_ids(
+            datetime.now(UTC), limit=_SCHEDULED_PUBLICATION_BATCH_SIZE
+        )
+        if not due_ids:
             return 0
 
         internal_event_bus = build_internal_event_bus(worker_config)
         published_count = 0
-        for scheduled_event in due_events:
+        for schedule_id in due_ids:
             _published_event, created = internal_event_bus.publish_scheduled(
-                scheduled_event.schedule_id
+                schedule_id
             )
             published_count += int(created)
         return published_count

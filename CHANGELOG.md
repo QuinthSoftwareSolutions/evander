@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-07 - Bound platform read and orchestration work (0.80.5)
+
+- Fix ten performance issues across cost attribution updates, Teams notification
+  status, semantic code hits, Team pagination, reporting visibility, supervisory
+  summaries, workflow depth and merge context, scheduled publication, and internal
+  event retries. Preserve scoped visibility, ordering, counts, and durable delivery.
+- Bound expensive payload reads and page projections; replace repeated graph and
+  collection walks with indexed or single-pass algorithms. Add regression checks
+  for work bounds and behavior; see `docs/performance-hotpaths.md` for the findings.
+
 ## 2026-10-02 - Bound execution-history payload cleanup (0.80.4)
 
 - Scan execution-history payloads in bounded key ranges with a durable cursor,

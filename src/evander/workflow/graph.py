@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 from evander.events.models import effective_node_output_schema
@@ -144,19 +144,39 @@ def compute_downstream_depth(
 ) -> int:
     """Return the maximum downstream depth rooted at `node_id`.
 
-    The depth is inclusive: a leaf node has depth 1.
+    The depth is inclusive: a leaf node has depth 1. Shared branches are evaluated
+    once per call, and an explicit stack also supports paths beyond Python's
+    recursion limit. Completed depths never survive a graph edit between calls.
     """
 
-    path = tuple(_path or ())
-    if node_id in path:
+    active = set(_path or ())
+    if node_id in active:
         raise WorkflowGraphCycleError(f"workflow graph contains cycle at {node_id!r}")
-    children = tuple(downstream_index.get(node_id, ()))
-    if not children:
-        return 1
-    next_path = path + (node_id,)
-    return 1 + max(
-        compute_downstream_depth(child, downstream_index, _path=next_path) for child in children
-    )
+    active.add(node_id)
+    depths: dict[str, int] = {}
+    stack: list[tuple[str, Iterator[str], int]] = [
+        (node_id, iter(downstream_index.get(node_id, ())), 1)
+    ]
+    while stack:
+        current, children, depth = stack[-1]
+        try:
+            child = next(children)
+        except StopIteration:
+            depths[current] = depth
+            active.remove(current)
+            stack.pop()
+            if stack:
+                parent, siblings, parent_depth = stack[-1]
+                stack[-1] = (parent, siblings, max(parent_depth, depth + 1))
+            continue
+        if child in active:
+            raise WorkflowGraphCycleError(f"workflow graph contains cycle at {child!r}")
+        if child in depths:
+            stack[-1] = (current, children, max(depth, depths[child] + 1))
+        else:
+            active.add(child)
+            stack.append((child, iter(downstream_index.get(child, ())), 1))
+    return depths[node_id]
 
 
 def _iter_nodes(*node_groups: Iterable[Any] | Mapping[str, Any]) -> Iterable[Any]:

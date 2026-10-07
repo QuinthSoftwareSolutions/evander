@@ -1,5 +1,59 @@
 # Control-plane performance paths
 
+## Additional bounded-work fixes (0.80.5)
+
+This audit identified ten further costs in the current source. The checks use
+synthetic state and deterministic read/iteration bounds; these are not production
+latency measurements.
+
+| Finding | Previous work | Fix and preserved behavior |
+| --- | --- | --- |
+| 1. Cost attribution updates | Read every historical session attribution before a small update. | Look up only requested session IDs in batches of 500; retain duplicate-input handling, unchanged-row detection, and invalidation of old and new Team balances. |
+| 2. Teams notification status | Load and validate every queued notification to calculate depth and age; scan all received times for the latest notification. | Aggregate count/minimum over a covering index and use an indexed maximum; preserve active-state selection, empty queues, and future-time age clamping. |
+| 3. Semantic code hits | Hydrate every matching chunk and its text before sorting and keeping 1,000. | Rank and limit chunk metadata in SQLite before loading at most 1,000 texts; preserve snapshot scope, last occurrence rank for repeated hashes, and path/line ordering. |
+| 4. Team collection pages | Serialize and enrich all matching inbox, blocker, case, deliverable, review, release, and agent records before taking a page. | Apply the existing permission filters and sort, then project only the requested page; retain totals, cursors, offsets, and the 50-record cap. |
+| 5. Team reporting visibility | Walk every reporting chain separately and repeatedly scan project assignments for subordinates. | Index reporting links and assignments once per read-service snapshot; preserve the separate explicit-subordinate and reporting-chain visibility rules, including cycles. |
+| 6. Supervisory overview | Rescan all tasks, blockers, and releases for every visible project, then discard all but eight projects. | Select the eight displayed projects first and aggregate each collection once; preserve visible project totals, omitted counts, and record visibility checks. |
+| 7. Workflow downstream depth | Recursively expand shared descendants once per path, with exponential work on layered branching graphs. | Use an iterative traversal with per-call completed depths; visit each reachable node once, preserve cycle errors, and support paths beyond Python's recursion limit. |
+| 8. Merge-gate context | Repeatedly propagate full dominator sets over the entire graph to identify guaranteed upstream context. | Walk only ancestors and construct their dominator tree in topological order; preserve explicit loop exclusions and the previous fallback for unvalidated cyclic graphs. |
+| 9. Overdue scheduled events | Decode the entire due backlog before publishing, then reread each payload during atomic publication. | Select up to 200 ordered schedule IDs per publication pass (before and after trigger polling); publication still rereads authoritative state atomically, and remaining due work keeps the next cycle immediately runnable. |
+| 10. Internal-event retry pages | Sort and join the complete pending delivery queue despite a page limit. | Order by the equal delivery foreign key so SQLite can use the existing pending index and stop at the limit; preserve event order, retry, and acknowledgement behavior. |
+
+The new Teams indexes are created by the existing store initialization path; the
+first access to an existing database pays the index-build cost. Notification counts
+still visit active index entries. Team pages still filter and sort matching records;
+semantic search still ranks matching chunk metadata. The fixes bound the expensive
+payload and projection work without introducing persistent response caches.
+
+Focused regressions are in `test_storage_performance_paths.py`,
+`test_team_read_performance_paths.py`, `test_workflow_graph.py`, and
+`test_workflow_scaling.py`, alongside the existing domain suites.
+
+Controlled comparisons against the original source showed:
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| One changed attribution among 3,001 stored rows | 3,001 attribution rows read | 1 row read |
+| Two-record Team page with 80 matching records | 80 records projected | 2 records projected |
+| Reporting visibility for a 200-agent chain | 404 assignment-collection scans | 1 scan |
+| Supervisory overview with 30 visible projects | 30 scans of each record collection | 1 scan of each collection |
+| Semantic hits with 2,504 matching chunks | 2,504 hydrated hits | 1,000 hydrated hits and text loads |
+| Ten pending deliveries among 4,000 | 36,206 SQLite VM instructions | 182 instructions |
+
+The new bounded-work checks fail against the original implementations. Existing
+behavior checks also cover partial scheduled-publication failure, permission
+boundaries, graph edits, multiple graph roots, explicit loop returns, and cycles.
+
+Validation on 2026-10-07 used `scripts/run_tests.py --workers 4 --timeout 900`:
+9,697 passed, 97 skipped, and one pre-existing failure across 9,795 collected cases.
+All eight timing tests passed. The skips are the opt-in WordPress browser test
+and Docker integration cases. The failure,
+`test_template_materialization_assigns_forward_child_to_parent_lineage`, also fails
+on unchanged baseline `e23a7616`: its monkeypatch targets the absent
+`admin_service.get_template` attribute. Changed-file Ruff and whitespace checks passed.
+
+## Earlier performance audit (0.59.2)
+
 The 0.59.2 optimizations address the thirteen findings from the September 2026
 performance audit. They preserve the existing API payloads, authorization filters,
 command atomicity, dispatch ownership, and durable cursor/checkpoint behavior.
