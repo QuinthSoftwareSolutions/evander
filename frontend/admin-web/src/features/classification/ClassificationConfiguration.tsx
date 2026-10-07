@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchJson } from "../admin/api";
 import { QuestionsEditor } from "./QuestionsEditor";
 import { EvaluationTest } from "./EvaluationTest";
-import { isEditableConfig, mergeClassification, nextId, profileForProvider, providerSettings, type ClassificationConfig, type ClassificationSnapshot, type Profile, type ProviderSettings } from "./classificationDraft";
+import { isEditableConfig, mergeClassification, nextId, profileForProvider, profileWithDefaults, providerSettings, type ClassificationConfig, type ClassificationSnapshot, type Profile, type ProviderSettings } from "./classificationDraft";
 import "./classification.css";
 
 export function ClassificationConfiguration({directoryPath, disabled, onDirtyChange}: {
@@ -29,8 +29,8 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
   }, [url]);
   const effective = mergeClassification(snapshot?.parent_config ?? {}, draft);
   const profiles = effective.profiles ?? {};
-  const profile = profiles[selected];
-  const profileProviderId = profile?.provider ?? effective.default_provider ?? "jev";
+  const profile = profiles[selected] && profileWithDefaults(profiles[selected]);
+  const profileProviderId = profile?.provider ?? "jev";
   const profileProvider = snapshot?.providers.find(p => p.id === profileProviderId);
   const local = selected in (draft.profiles ?? {});
   const locked = disabled || busy;
@@ -122,7 +122,7 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
           {!snapshot.effective_config.enabled && <p>Save enabled provider settings before testing.</p>}
           {profileProvider?.available === false && <p>{profileProvider.unavailable_reason}</p>}
           <EvaluationTest key={directoryPath + selected} directoryPath={directoryPath} disabled={locked || profile.enabled === false || profileProvider?.available === false || !snapshot.effective_config.enabled}
-            definition={local ? {questions: profile.questions, provider: profileProviderId, model: profile.model ?? undefined} : {profile_id: selected}} />
+            definition={local ? {questions: profile.questions, provider: profileProviderId, model: profile.model} : {profile_id: selected}} />
         </section>}
       </>}
     </>}

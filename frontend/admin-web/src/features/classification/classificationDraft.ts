@@ -16,6 +16,13 @@ export function profileForProvider(profile: Profile, id: string, settings: Provi
   return {...profile, provider: id, model: settings.default_model ?? null, enabled: available ? profile.enabled ?? true : false};
 }
 
+export function profileWithDefaults(profile: Profile): Profile & {provider: string; model: string | null} {
+  const provider = profile.provider ?? "jev";
+  // Match ClassificationProfile: an omitted Jev model is pinned; null uses the provider default.
+  const model = profile.model === undefined ? (provider === "openai_decisions" ? null : "jev-1.13.0") : profile.model;
+  return {...profile, provider, model};
+}
+
 export function mergeClassification(parent: ClassificationConfig, overlay: ClassificationConfig): ClassificationConfig {
   const providers = {...parent.providers};
   for (const [id, settings] of Object.entries(overlay.providers ?? {})) providers[id] = {...providers[id], ...settings};

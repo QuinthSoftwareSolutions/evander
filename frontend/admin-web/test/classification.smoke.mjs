@@ -150,6 +150,45 @@ test("Decisions profiles use OpenAI defaults and evaluate after provider enablem
   assert.deepEqual(errors, []);
 });
 
+test("local sample evaluations honor profile defaults and explicit provider-default models", {timeout: 30000}, async t => {
+  const {page, errors, baseUrl} = await browserFixture(t);
+  const cases = [
+    {id: "implicit", fields: {}, provider: "jev", model: "jev-1.13.0"},
+    {id: "jev_omitted_model", fields: {provider: "jev"}, provider: "jev", model: "jev-1.13.0"},
+    {id: "jev_default_model", fields: {provider: "jev", model: null}, provider: "jev", model: null},
+    {id: "jev_pinned_model", fields: {provider: "jev", model: "jev-profile-pinned"}, provider: "jev", model: "jev-profile-pinned"},
+    {id: "decisions_omitted_model", fields: {provider: "openai_decisions"}, provider: "openai_decisions", model: null},
+    {id: "decisions_default_model", fields: {provider: "openai_decisions", model: null}, provider: "openai_decisions", model: null},
+  ];
+  const config = {profiles: Object.fromEntries(cases.map(({id, fields}) => [id, {...fields, questions}]))};
+  const inherited = {enabled: true, default_provider: "openai_decisions", providers: {
+    jev: {enabled: true, default_model: "jev-directory-default"},
+    openai_decisions: {enabled: true, default_model: "gpt-6-luna"},
+  }};
+  const snapshot = {revision: "r1", config, parent_config: inherited, effective_config: {...inherited, ...config},
+    providers: ["jev", "openai_decisions"].map(id => ({id, available: true,
+      supported_question_types: ["choice", "score", "boolean"], credential_configured: true}))};
+  const samples = [];
+  await page.route("**/api/classification**", async route => {
+    if (route.request().method() === "GET") return route.fulfill({json: snapshot});
+    samples.push(route.request().postDataJSON());
+    return route.fulfill({json: {answers: {}, usage: {}, duration_ms: 1}});
+  });
+  await page.goto(baseUrl + "/classification-fixture");
+  for (const expected of cases) {
+    await page.getByLabel("Profile", {exact: true}).selectOption(expected.id);
+    assert.equal(await page.getByLabel("Profile provider", {exact: true}).inputValue(), expected.provider, expected.id);
+    assert.equal(await page.getByLabel("Profile model", {exact: true}).inputValue(), expected.model ?? "", expected.id);
+    await page.getByText("Test with sample input", {exact: true}).click();
+    await page.getByLabel("Sample input", {exact: true}).fill("A sample request");
+    await page.getByRole("button", {name: "Test evaluation", exact: true}).click();
+    await page.getByLabel("Evaluation result").waitFor();
+    assert.deepEqual(samples.at(-1), {questions, provider: expected.provider, model: expected.model, state: "A sample request"}, expected.id);
+  }
+  assert.equal(samples.length, cases.length);
+  assert.deepEqual(errors, []);
+});
+
 test("workflow inspector saves inline questions and switches to a fixed profile without stale JSON", {timeout: 60000}, async t => {
   const {page, errors, baseUrl} = await browserFixture(t);
   const field = (key, kind) => ({key, label: key === "state" ? "State" : key, kind, required: key === "state", bindable: true, read_only: false, options: [], item_fields: []});

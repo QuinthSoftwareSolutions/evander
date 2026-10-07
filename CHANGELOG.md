@@ -11,6 +11,8 @@
   attempt and retain native OpenAI usage attribution without input or answer content.
 - Scope model pricing rules by API endpoint and include Decisions input-only pricing while
   retaining endpoint qualifiers in Admin Web edits.
+- Keep Admin Web sample evaluations aligned with saved profile defaults, preserving the
+  difference between an omitted model and explicit provider-default selection.
 - Add real-adapter HTTP conformance and shared-path tests plus an explicit provider smoke.
 
 ## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
