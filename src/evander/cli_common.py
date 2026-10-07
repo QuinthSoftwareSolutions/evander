@@ -12,9 +12,30 @@ from typing import Annotated
 import typer
 
 from evander.config import GatewayConfig
+from evander.fast_mode import CodexSpeed, FastModeValue
 from evander.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
+
+
+SpeedOption = Annotated[
+    CodexSpeed | None,
+    typer.Option("--speed", help="Codex speed: standard, fast, or ultrafast; omit to inherit."),
+]
+
+
+def resolve_speed_option(
+    fast_mode: bool | None, speed: CodexSpeed | None
+) -> FastModeValue | None:
+    if speed is None:
+        return fast_mode
+    if fast_mode is not None:
+        raise typer.BadParameter("Use --speed or --fast-mode/--no-fast-mode, exclusively.")
+    return {
+        CodexSpeed.STANDARD: False,
+        CodexSpeed.FAST: True,
+        CodexSpeed.ULTRAFAST: "ultrafast",
+    }[speed]
 
 
 DirectoryOption = Annotated[

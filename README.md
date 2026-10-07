@@ -1297,7 +1297,8 @@ and retries retain the selected effort. See the
 [reasoning effort reference](docs/configuration-reference.md#agent-reasoning-effort).
 
 Codex sessions also have a **Default speed** setting. Set `fast_mode: true` for
-Fast mode on a supported public OpenAI model, `false` for standard speed, or leave
+Fast mode or `fast_mode: "ultrafast"` for Ultrafast on a supported public OpenAI
+model and account, `false` for standard speed, or leave
 a prompt override unset to inherit the session default. Queues and retries retain
 the captured speed. See the
 [Fast mode reference](docs/configuration-reference.md#agent-fast-mode).

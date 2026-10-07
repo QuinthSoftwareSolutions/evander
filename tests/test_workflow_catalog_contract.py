@@ -515,7 +515,13 @@ def test_workflow_catalog_effect_agent_prompt(catalog_payload) -> None:
         for field in agent_prompt["fields"]
     )
     speed = next(field for field in agent_prompt["fields"] if field["key"] == "fast_mode")
-    assert speed["kind"] == "boolean"
+    assert speed["kind"] == "enum"
+    assert {option["value"]: option["label"] for option in speed["options"]} == {
+        "false": "Standard", "true": "Fast", "ultrafast": "Ultrafast",
+    }
+    assert speed["metadata"]["literal_values"] == {
+        "false": False, "true": True, "ultrafast": "ultrafast",
+    }
     assert speed["bindable"] is True
     assert speed["required"] is False
     assert speed["metadata"]["nullable"] is True

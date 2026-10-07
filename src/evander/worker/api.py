@@ -71,6 +71,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                     "git_recovery": GIT_RECOVERY_PROTOCOL_VERSION,
                     "git_salvage": 1,
                     "codex_fast_mode": 1,
+                    "codex_ultrafast_mode": 1,
                 },
             }
         )

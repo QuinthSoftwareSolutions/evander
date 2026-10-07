@@ -1,9 +1,10 @@
 {
-  "version": "openai-anthropic-2026-09-22+gpt-6-sol-luna",
+  "version": "openai-anthropic-2026-09-22+gpt-6-sol-luna+ultrafast-2026-10-07",
   "currency": "usd",
-  "description": "OpenAI and Anthropic text token pricing seed for query-time operational cost estimates. Prices are per 1M tokens. Astra rates verified 2026-09-09; no effective-from limit so all recorded Astra usage is priced retrospectively. Includes GPT-6 Sol and Luna pricing effective September 22, 2026.",
+  "description": "OpenAI and Anthropic text token pricing seed for query-time operational cost estimates. Prices are per 1M tokens. Astra rates verified 2026-09-09; Ultrafast rates verified 2026-10-07. No effective-from limit so all recorded Astra usage is priced retrospectively. Includes GPT-6 Sol and Luna pricing effective September 22, 2026.",
   "sources": [
     "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
     "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
     "https://openai.com/api-fast-mode/",
     "https://developers.openai.com/api/docs/models/gpt-5.5/",
@@ -604,6 +605,25 @@
         "output": "100.00"
       },
       "service_tier": "priority",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-astra:ultrafast:2026-10-07",
+      "provider": "openai",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "75.00",
+        "cached_input": "6.00",
+        "input": "60.00",
+        "output": "300.00"
+      },
+      "service_tier": "ultrafast",
       "long_context": {
         "input_multiplier": "2",
         "input_tokens_over": 272000,

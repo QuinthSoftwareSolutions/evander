@@ -165,7 +165,7 @@ class DiskQuotaTurnProcess(FakeTurnProcess):
 
 
 @pytest.mark.parametrize("effort", ["low", None])
-@pytest.mark.parametrize("fast_mode,tier", [(True, "fast"), (False, "default"), (None, "default")])
+@pytest.mark.parametrize("fast_mode,tier", [(True, "fast"), (False, "default"), ("ultrafast", "ultrafast"), (None, "default")])
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

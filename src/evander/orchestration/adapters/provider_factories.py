@@ -8,6 +8,7 @@ from typing import Any
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.code_consultation_service import BoundCodeConsultationServiceFactory
 from evander.effects.registry import EffectProviderFactory, EffectProviderRegistry
+from evander.fast_mode import FastModeValue
 from evander.gates.registry import GateProviderFactory, GateProviderRegistry
 from evander.orchestration.effect_extensions import (
     AgentPromptDispatchPort,
@@ -159,7 +160,7 @@ class _AdminRuntimeAgentPromptDispatchPort:
         prompt: str,
         model: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         vm_user: str = "agent",

@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
-from evander.fast_mode import FAST_MODE_UNSET, normalize_fast_mode, validate_session_fast_mode
+from evander.fast_mode import FastModeValue, FAST_MODE_UNSET, normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import host_directory_tool_names_for_grants
 from evander.managed_sections import normalize_managed_section_id
 from evander.models import SessionManifest, VmActionResult, VmSummary
@@ -894,7 +894,7 @@ class _LibvirtVmCreationRequest:
     model: str | None
     cost_category: str | None
     reasoning_effort: str | None
-    fast_mode: bool | None | object
+    fast_mode: FastModeValue | None | object
     vm_user: str
     ttl_seconds: int | None
     ttl_hours: int | None
@@ -1324,7 +1324,7 @@ def _libvirt_create_vm(
     model: str | None = None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
-    fast_mode: bool | None | object = FAST_MODE_UNSET,
+    fast_mode: FastModeValue | None | object = FAST_MODE_UNSET,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
