@@ -198,6 +198,9 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 For the opt-in core classification capability, host credential setup, provider enablement,
 and an explicit live smoke command, see [Classification](classification.md). It uses the
 existing gateway, effect orchestrator, and Admin Web processes with no new guest ports.
+OpenAI Decisions uses that same configuration surface with host-owned `OPENAI_API_KEY`,
+model `gpt-6-luna`, and explicit provider enablement. See
+[OpenAI Decisions](classification.md#openai-decisions) for setup and an explicit provider smoke.
 
 Before debugging individual scripts or services, run the consolidated host status command:
 

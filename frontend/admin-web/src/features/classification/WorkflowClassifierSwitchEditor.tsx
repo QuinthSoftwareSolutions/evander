@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 import {fetchJson} from "../admin/api";
 import {EvaluationTest} from "./EvaluationTest";
-import {isRecord, nextId, type ClassificationSnapshot} from "./classificationDraft";
+import {isRecord, nextId, providerSettings, type ClassificationSnapshot} from "./classificationDraft";
 import {classifierSwitchConfig, classifierSwitchProblems} from "./classifierSwitchDraft";
 import "./classification.css";
 
@@ -22,8 +22,10 @@ export function WorkflowClassifierSwitchEditor({value, directoryPath, disabled, 
   const config = classifierSwitchConfig(value);
   const problems = classifierSwitchProblems(config);
   const selectedProvider = typeof value.provider === "string" && value.provider ? value.provider : snapshot?.effective_config.default_provider ?? "jev";
-  const settings = snapshot?.effective_config.providers?.[selectedProvider];
-  const enabled = snapshot?.effective_config.enabled && settings?.enabled !== false;
+  const settings = snapshot ? providerSettings(snapshot.effective_config, snapshot.providers, selectedProvider) : undefined;
+  const provider = snapshot?.providers.find(p => p.id === selectedProvider);
+  const enabled = snapshot?.effective_config.enabled && settings?.enabled !== false && provider?.available !== false;
+  const unsupportedCutoff = value.min_probability != null && provider?.reports_option_probabilities === false;
   function text(key: string) {return typeof value[key] === "string" ? value[key] : "";}
   function changeCase(index: number, patch: Record<string, unknown>) {
     onChange({cases: cases.map((c, i) => i === index ? {...c, ...patch} : c)});
@@ -55,8 +57,10 @@ export function WorkflowClassifierSwitchEditor({value, directoryPath, disabled, 
       <p>Results below the cutoff take the default branch. The cutoff uses option probability.</p>
     </fieldset>
     {problems.map(problem => <p role="alert" key={problem}>{problem}</p>)}
+    {provider?.available === false && <p>{provider.unavailable_reason}</p>}
+    {unsupportedCutoff && <p role="alert">This provider does not supply option probabilities. Disable the probability cutoff to use finite answers.</p>}
     {snapshot && !enabled && <p>Enable classification and the selected provider in this directory before testing.</p>}
     <EvaluationTest key={directoryPath} directoryPath={directoryPath} mode="switch" definition={config}
-      disabled={disabled || !enabled || problems.length > 0} />
+      disabled={disabled || !enabled || unsupportedCutoff || problems.length > 0} />
   </div>;
 }

@@ -1,8 +1,83 @@
 # Classification
 
 Classification is a core Evander capability for evaluating supplied input against named
-questions. Jev, hosted by TypeSafe, is the first provider. Workflows and agents use the same
-service, provider registry, directory configuration, validation, and usage recording.
+questions. Jev, hosted by TypeSafe, and OpenAI Decisions use the same service, provider
+registry, directory configuration, validation, and usage recording across workflows and agents.
+
+## OpenAI Decisions
+
+The `openai_decisions` provider implements the published
+[Decisions API](https://developers.openai.com/api/docs/guides/decisions) through the fixed
+`POST https://api.openai.com/v1/decisions` endpoint with host-owned Bearer authentication.
+The API is in public beta; `gpt-6-luna` is its currently supported model. The adapter uses HTTPX
+and does not require an OpenAI SDK upgrade. Its integration is available in the provider catalog,
+while provider enablement defaults to `false`. Jev remains the directory default.
+
+To use Decisions, provision `OPENAI_API_KEY` through the existing host secret/environment
+mechanism for every gateway, effect orchestrator, or Admin Web process that will call it.
+Restart those processes if their environment changed. Select the directory in Admin Web,
+unlock privileged operations, and enable Decisions through Classification configuration.
+Choose it for individual profiles or inline calls, or set it as the directory default.
+Existing preparation configurations with `default_model: null` must select `gpt-6-luna`.
+Live configuration saves use the existing revision checks.
+
+A minimal directory configuration is:
+
+```json
+{
+  "enabled": true,
+  "default_provider": "openai_decisions",
+  "providers": {
+    "openai_decisions": {
+      "enabled": true,
+      "default_model": "gpt-6-luna",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
+Questions are sent as an ordered array with their Evander IDs in `name`:
+
+| Evander question | Decisions request | Normalized answer |
+| --- | --- | --- |
+| `choice` | `choice` with named `choices` | `choice`, `confidence`, and option `probabilities` |
+| `score` | `score` with ordered `levels` labeled `"0"`, `"1"`, etc. | Fractional `score`, `confidence`, level `probabilities`, and the original `legend` |
+| `boolean` | `predicate`; optional boolean criteria become part of its instructions | `probability_true`, preserving the native probability without thresholding it |
+
+Scores are probability-weighted averages of level indices, not discrete level selections.
+Smart switch probability cutoffs use the selected choice's probability; confidence remains a
+separate metric. A refusal for any question fails the evaluation through the ordinary provider
+error path, so no partial result or fallback branch is produced. Malformed names, types,
+probability distributions, score indices, and token usage fail without retry.
+
+Text state becomes the shared `input` string. JSON state, structured instructions, and option
+or rubric descriptions are serialized as JSON text. The shared classification input currently
+supports text/JSON only: although OpenAI also supports inline image data URLs, this adapter does
+not send image parts or fetch image URLs. Files, audio, tools, and conversation roles are not
+forwarded to Decisions.
+
+The adapter shares the existing bounded transport: request/response byte limits, a total deadline,
+transient retries, privacy checks before every attempt, and redirects disabled. Usage is recorded
+under native provider `openai`, endpoint `decisions`, and the configured host credential name.
+Native token details are retained without recording input or answers in usage metadata. Configure
+cost estimates separately through the model pricing catalog. The bundled seed includes a rule
+scoped to `provider_endpoint_identifier: "decisions"` with $0.10 per million uncached input tokens
+and zero cache-read, cache-write, and output-token charges. Endpoint-specific rules take priority
+over generic model rules. Existing operator catalogs require adding that rule through revisioned
+Admin Web/API saves; source changes do not overwrite a customized runtime catalog. See the
+[official pricing guide](https://developers.openai.com/api/docs/guides/decisions#pricing-and-availability).
+
+To check an enabled Decisions provider explicitly without changing the directory default:
+
+```bash
+./.venv/bin/python scripts/smoke_classification.py --live --provider openai_decisions --runtime-dir runtime --directory-path root
+```
+
+This makes one billable request with synthetic input and does not edit configuration or run
+workflows. Automated coverage uses HTTP transports to exercise the real adapter through Admin Web,
+agent tools, workflow queries, and Smart switches. It does not establish live account access,
+latency, or classification accuracy.
 
 ## Enable and configure
 
@@ -11,8 +86,9 @@ Classification is disabled by default. In Admin Web, select the directory, open
 operations. Configure the provider and enable classification. The credential setting is an
 environment-variable name, not a secret value. Provision `TYPESAFE_API_KEY` through the existing
 host secret/environment mechanism for the gateway, effect orchestrator, and Admin Web processes
-that will call Jev, then restart those processes if their environment changed. No additional
-service, guest port, guest credential, or guest internet access is needed.
+that will call Jev, or `OPENAI_API_KEY` for Decisions. Restart those processes if their
+environment changed. No additional service, guest port, guest credential, or guest internet
+access is needed.
 
 Example `classification` field in the directory's providers configuration:
 
@@ -83,12 +159,13 @@ questions.
 | --- | --- | --- |
 | `choice` | At least two named options in `criteria` | `choice`: one of the supplied option IDs |
 | `score` | At least two ordered levels in `criteria` | `score`: number from zero to the last level index; can be fractional; `legend` maps indices to levels |
-| `boolean` | Optional `criteria` descriptions under `true` and `false` | `probability_true`: number from zero to one |
+| `boolean` | Optional `criteria` descriptions under `true` and `false` | `value`: boolean for finite-answer providers, or `probability_true`: number from zero to one for probability-producing providers |
 
 Every question has `instructions`, which may be text or structured JSON. Answer maps use the
 same question IDs as the request. Jev returns `confidence` and `probabilities` for choice and
 score answers; other providers may omit them. Confidence is a separate provider metric, not the
-winning option's probability. Boolean probabilities are not thresholded by the service. Choose
+winning option's probability. Discrete boolean values are not converted to probabilities.
+Boolean probabilities are not thresholded by the service. Choose
 thresholds explicitly in the consuming workflow or agent. There is no automatic model fallback.
 
 The result also includes `success`, `provider`, upstream `model`, `usage.input_tokens`,
@@ -113,7 +190,9 @@ state to upstream data, and select a profile or edit inline questions. A persist
 ```
 
 Use `${{classify.answers.route.choice}}`, `${{classify.answers.severity.score}}`, and
-`${{classify.answers.urgent.probability_true}}` in downstream gates or effects. The editor offers
+`${{classify.answers.urgent.probability_true}}` in downstream gates or effects. Use
+`${{classify.answers.urgent.value}}` for providers that return a discrete boolean.
+Only bind fields that your selected provider actually returns. The editor offers
 known answer fields as binding suggestions. After a saved profile changes, use **Refresh answer
 suggestions** to update that node's hints. Dynamic definitions retain the generic `answers`
 object contract. Use simple question IDs such as `route` or `is_urgent` for convenient bindings.
@@ -124,7 +203,7 @@ Before a provider request, the effect orchestrator persists the resolved state, 
 provider, model, and profile revision in the query execution record. Restarting a running query
 uses that snapshot. Completed results, including pending completion publication, are reused.
 Directory/provider disablement is rechecked on execution. An interrupted in-flight request can
-be repeated and billed again because Jev does not expose a request-idempotency contract.
+be repeated and billed again; neither adapter assumes an upstream request-idempotency contract.
 Provider/configuration errors take the ordinary query failure path; they are not converted to a
 classification choice.
 
@@ -196,7 +275,8 @@ Mocked tests verify routing and recovery, not the accuracy of the provider on th
 
 Grant `classification_evaluate` and, optionally, `classification_list_profiles` through ordinary
 session tool grants. Tools are available to any granted agent. No grants are added automatically.
-Profile listing is restricted to enabled profiles in the caller's resolved directory. Evaluation
+Profile listing is restricted to enabled profiles with available integrations in the caller's
+resolved directory; unavailable or disabled providers are excluded from discovery. Evaluation
 also uses the authenticated session's directory; callers cannot choose a different directory or
 supply provider credentials.
 
@@ -236,5 +316,7 @@ Automated tests use fake providers and HTTP transports. An explicit live check i
 This makes a billable request with synthetic input using the selected directory's saved settings;
 it neither edits configuration nor runs workflows. Enable/configure the directory first.
 
-Provider contract references: [TypeSafe API](https://docs.typesafe.ai/api),
+Provider contract references: [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions),
+[Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create),
+[TypeSafe API](https://docs.typesafe.ai/api),
 [models](https://docs.typesafe.ai/models), and [confidence](https://docs.typesafe.ai/confidence).

@@ -84,7 +84,8 @@ def register_classification_tools(
         descriptions for choice, an ordered list of levels for score, or optional
         true/false descriptions for boolean. Choice and score require at least two options.
         Supply either questions (named type/instructions/criteria objects) or profile_id.
-        Profile definitions are fixed. Boolean answers return probability_true, not an action.
+        Profile definitions are fixed. Boolean answers contain a discrete value or a
+        probability_true, depending on the provider. Discrete answers do not imply certainty.
         Results include named answers, provider/model, native usage, and duration_ms.
         """
         return await run_in_threadpool(

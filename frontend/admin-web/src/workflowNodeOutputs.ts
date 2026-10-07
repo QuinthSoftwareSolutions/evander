@@ -663,7 +663,10 @@ export function classificationAnswerSchema(questions: unknown): Record<string, u
     if (!isRecord(question)) continue;
     if (!["choice", "score", "boolean"].includes(String(question.type))) continue;
     const fields: Record<string, unknown> = {type: {type: "string"}};
-    if (question.type === "boolean") fields.probability_true = {type: "number"};
+    if (question.type === "boolean") {
+      fields.value = {type: "boolean"};
+      fields.probability_true = {type: "number"};
+    }
     else {
       fields[question.type === "choice" ? "choice" : "score"] = {type: question.type === "choice" ? "string" : "number"};
       fields.confidence = {type: "number"};

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-07 - OpenAI Decisions classification (0.84.0)
+
+- Add an opt-in host-side OpenAI Decisions provider using the published `/v1/decisions`
+  contract and `gpt-6-luna`, shared across workflow queries, Smart switches, agent tools,
+  and Admin Web with host-owned credentials and directory-scoped configuration.
+- Preserve native predicate probabilities, choice distributions, and fractional rubric
+  scores. Reject refusals and malformed answers before downstream workflow actions.
+- Bound HTTP requests, responses, retries, and total deadlines; check privacy before each
+  attempt and retain native OpenAI usage attribution without input or answer content.
+- Scope model pricing rules by API endpoint and include Decisions input-only pricing while
+  retaining endpoint qualifiers in Admin Web edits.
+- Keep Admin Web sample evaluations aligned with saved profile defaults, preserving the
+  difference between an omitted model and explicit provider-default selection.
+- Add real-adapter HTTP conformance and shared-path tests plus an explicit provider smoke.
+
 ## 2026-10-07 - Codex Ultrafast mode (0.83.0)
 
 - Add Ultrafast to session defaults and prompt overrides in Admin Web, workflow

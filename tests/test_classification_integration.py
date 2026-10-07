@@ -15,9 +15,10 @@ from config_helpers import canonical_worker_config, effect_execution_payload, wr
 from evander.admin.composition import build_admin_runtime
 from evander.admin.services.classification_admin_service import ClassificationRevisionConflict
 from evander.admin.web.app import create_app
+from evander.classification.decisions import DecisionsProvider
 from evander.classification.jev import JevProvider
 from evander.classification.service import ClassificationService
-from evander.classification.models import ClassificationError
+from evander.classification.models import DECISIONS_PROVIDER_ID, ClassificationError
 from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
 from evander.directories import DirectoryService, DirectoryStore
 from evander.directory_config import DirectoryConfigStore
@@ -74,7 +75,10 @@ def environment(tmp_path, monkeypatch):
 
     classification = ClassificationService(
         runtime_dir,
-        providers={"jev": JevProvider(transport=httpx.MockTransport(handler))},
+        providers={
+            "jev": JevProvider(transport=httpx.MockTransport(handler)),
+            DECISIONS_PROVIDER_ID: DecisionsProvider(),
+        },
         secret_resolver=lambda _: "fake-classification-key",
     )
     admin.classification_admin.service = classification

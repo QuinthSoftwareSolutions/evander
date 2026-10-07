@@ -2198,6 +2198,19 @@ two transient retries, a 1 MiB request limit, and a 2 MiB response limit. Provid
 inherit by field; each profile ID replaces its entire inherited definition. A disabled profile
 can be represented as `{ "enabled": false }`. Removing a child override restores inheritance.
 
+The `openai_decisions` provider defaults to `enabled: false`,
+`api_key_env: "OPENAI_API_KEY"`, and `default_model: "gpt-6-luna"`. Its available host-side
+integration calls `POST https://api.openai.com/v1/decisions`; Jev remains the directory default.
+Decisions returns choice/score distributions, fractional rubric scores, and predicate
+probabilities mapped to `boolean.probability_true`. Its distributions support Smart switch
+probability cutoffs. Refusals fail the evaluation instead of selecting a branch.
+See [OpenAI Decisions](classification.md#openai-decisions) for configuration and verification.
+
+Model pricing rules may specify `provider_endpoint_identifier` (for example, `decisions`)
+to apply rates only to that API endpoint. Matching endpoint-specific rules take priority over
+generic model rules. Admin Web preserves the endpoint qualifier and both cache-write rates
+when editing a rule; leaving the endpoint blank applies it across endpoints.
+
 Use the structured Classification utility in the Models configuration area, or the revisioned
 `GET/PUT /api/classification?directory_path=...` API. `POST /api/classification/evaluate` accepts
 sample requests and does not persist them. APIs require directory owner permission; saves and

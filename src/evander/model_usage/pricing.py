@@ -50,6 +50,7 @@ class ModelPricingRule:
     long_context_input_tokens_over: int | None = None
     long_context_input_multiplier: Decimal | None = None
     long_context_output_multiplier: Decimal | None = None
+    provider_endpoint_identifier: str | None = None
 
     def matches(
         self,
@@ -58,8 +59,14 @@ class ModelPricingRule:
         model: str,
         occurred_at: datetime,
         service_tier: str | None = None,
+        provider_endpoint_identifier: str | None = None,
     ) -> bool:
         if self.provider != provider:
+            return False
+        if (
+            self.provider_endpoint_identifier is not None
+            and self.provider_endpoint_identifier != provider_endpoint_identifier
+        ):
             return False
         if self.service_tier is not None and self.service_tier != service_tier:
             return False
@@ -359,6 +366,7 @@ def estimate_model_usage_cost(
         model=model,
         occurred_at=occurred_at,
         service_tier=service_tier,
+        provider_endpoint_identifier=event.provider_endpoint_identifier,
     )
     if rule is None:
         occurred_value = occurred_at.isoformat().replace("+00:00", "Z")
@@ -553,6 +561,7 @@ def _parse_pricing_rule(payload: Any, *, default_currency: str) -> ModelPricingR
         output_per_1m_tokens=_required_decimal(rates.get("output"), field_name="output"),
         batch_multiplier=_optional_decimal(payload.get("batch_multiplier")),
         service_tier=_optional_text(payload.get("service_tier")),
+        provider_endpoint_identifier=_optional_text(payload.get("provider_endpoint_identifier")),
         long_context_input_tokens_over=_optional_non_negative_int(
             long_context.get("input_tokens_over")
         ),
@@ -568,6 +577,7 @@ def _match_rule(
     model: str,
     occurred_at: datetime,
     service_tier: str | None,
+    provider_endpoint_identifier: str | None = None,
 ) -> ModelPricingRule | None:
     matches = [
         (rule, model in rule.models)
@@ -577,6 +587,7 @@ def _match_rule(
             model=model,
             occurred_at=occurred_at,
             service_tier=service_tier,
+            provider_endpoint_identifier=provider_endpoint_identifier,
         )
     ]
     if not matches:
@@ -584,6 +595,7 @@ def _match_rule(
     return sorted(
         matches,
         key=lambda match: (
+            1 if match[0].provider_endpoint_identifier is not None else 0,
             1 if match[1] else 0,
             match[0].effective_from or datetime.min.replace(tzinfo=UTC),
             1 if match[0].service_tier is not None else 0,
@@ -600,6 +612,11 @@ def _token_cost(tokens: int, rate_per_1m: Decimal) -> Decimal:
 def _pricing_rule_payload(rule: ModelPricingRule) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": rule.id,
+        **(
+            {"provider_endpoint_identifier": rule.provider_endpoint_identifier}
+            if rule.provider_endpoint_identifier is not None
+            else {}
+        ),
         "provider": rule.provider,
         "models": list(rule.models),
         "model_patterns": list(rule.model_patterns),

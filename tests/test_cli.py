@@ -939,7 +939,9 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     assert directories["root"].parent_id is None
     assert directories["root"].metadata == {}
     pricing_catalog_path = tmp_path / "runtime" / "model-pricing.openai.json"
-    assert pricing_catalog_path.read_bytes() == default_model_pricing_catalog_seed_path().read_bytes()
+    assert (
+        pricing_catalog_path.read_bytes() == default_model_pricing_catalog_seed_path().read_bytes()
+    )
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
@@ -5240,10 +5242,17 @@ def test_session_fast_mode_cli_create_update_clear_and_validate_route(
     base = ["set-session-fast-mode", "--config", str(config_path), "speed-session"]
     enabled = runner.invoke(app, [*base, "--fast-mode"])
     assert enabled.exit_code == 0, enabled.output
-    rejected = runner.invoke(app, [
-        "set-session-model-provider-mode", "--config", str(config_path),
-        "--mode", "local_openai", "speed-session",
-    ])
+    rejected = runner.invoke(
+        app,
+        [
+            "set-session-model-provider-mode",
+            "--config",
+            str(config_path),
+            "--mode",
+            "local_openai",
+            "speed-session",
+        ],
+    )
     assert rejected.exit_code != 0
     saved = json.loads(path.read_text())["speed-session"]
     assert saved["fast_mode"] is True
@@ -5253,7 +5262,11 @@ def test_session_fast_mode_cli_create_update_clear_and_validate_route(
     ultrafast = runner.invoke(app, [*base, "--speed", "ultrafast"])
     assert ultrafast.exit_code == 0, ultrafast.output
     assert json.loads(path.read_text())["speed-session"]["fast_mode"] == "ultrafast"
-    for options in (["--speed", "ultrafast", "--no-fast-mode"], ["--clear", "--speed", "ultrafast"], ["--speed", "unknown"]):
+    for options in (
+        ["--speed", "ultrafast", "--no-fast-mode"],
+        ["--clear", "--speed", "ultrafast"],
+        ["--speed", "unknown"],
+    ):
         assert runner.invoke(app, [*base, *options]).exit_code != 0
         assert json.loads(path.read_text())["speed-session"]["fast_mode"] == "ultrafast"
     disabled = runner.invoke(app, [*base, "--no-fast-mode"])
