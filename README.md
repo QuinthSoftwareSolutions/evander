@@ -41,7 +41,7 @@ Git, and HTTP surfaces.
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
   choice/score/boolean evaluations, Smart switch routing, a structured editor, Jev, and a
-  disabled [OpenAI Decisions integration preparation](docs/classification.md#decisions-preparation)
+  opt-in [OpenAI Decisions](docs/classification.md#openai-decisions)
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and inbound phone calls,
   with [explicit caller routing to agent sessions](docs/operations.md#caller-routing-to-agent-sessions)
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes

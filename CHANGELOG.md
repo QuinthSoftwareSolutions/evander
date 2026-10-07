@@ -2,12 +2,16 @@
 
 ## 2026-10-07 - OpenAI Decisions classification (0.83.0)
 
-- Reserve a disabled Decisions provider across workflows, Smart switches, agent tools, and
-  Admin Web, with explicit availability and provider-specific model/credential defaults.
-- Map finite selections to existing choice and rubric answers plus discrete boolean values,
-  keeping Jev probabilities intact and rejecting incompatible switch cutoffs before dispatch.
-- Verify shared execution, snapshots, inheritance, and OpenAI usage attribution with a synthetic
-  provider. Activation awaits the published API contract, supported transport, and account access.
+- Add an opt-in host-side OpenAI Decisions provider using the published `/v1/decisions`
+  contract and `gpt-6-luna`, shared across workflow queries, Smart switches, agent tools,
+  and Admin Web with host-owned credentials and directory-scoped configuration.
+- Preserve native predicate probabilities, choice distributions, and fractional rubric
+  scores. Reject refusals and malformed answers before downstream workflow actions.
+- Bound HTTP requests, responses, retries, and total deadlines; check privacy before each
+  attempt and retain native OpenAI usage attribution without input or answer content.
+- Scope model pricing rules by API endpoint and include Decisions input-only pricing while
+  retaining endpoint qualifiers in Admin Web edits.
+- Add real-adapter HTTP conformance and shared-path tests plus an explicit provider smoke.
 
 ## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
 

@@ -3196,7 +3196,7 @@ export function ConfigurationScreen() {
                     entries={activeModelPricingDraft.rules}
                     name={(rule, index) => rule.id || `Rule ${index + 1}`}
                     description={(rule) => parseStringListDraftValue(rule.modelsText).join(", ") || rule.modelPatternsText || "No models selected"}
-                    searchText={(rule) => `${rule.provider} ${rule.serviceTier} ${rule.modelPatternsText}`}
+                    searchText={(rule) => `${rule.provider} ${rule.providerEndpointIdentifier} ${rule.serviceTier} ${rule.modelPatternsText}`}
                     category={(rule) => rule.provider}
                     metadata={(rule) => <><span>Input {rule.inputRate || "—"}</span><span>Output {rule.outputRate || "—"}</span></>}
                     isNew={(rule) => !rule.id.trim()}
@@ -3312,6 +3312,26 @@ export function ConfigurationScreen() {
                             />
                           </label>
                           <label className="field-stack">
+                            <span>Cache write rate (5 minutes)</span>
+                            <input
+                              type="text"
+                              value={rule.cacheWrite5mRate}
+                              onChange={(event) => updateModelPricingRule(index, { cacheWrite5mRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="input rate"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Cache write rate (1 hour)</span>
+                            <input
+                              type="text"
+                              value={rule.cacheWrite1hRate}
+                              onChange={(event) => updateModelPricingRule(index, { cacheWrite1hRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="input rate"
+                            />
+                          </label>
+                          <label className="field-stack">
                             <span>Output rate</span>
                             <input
                               type="text"
@@ -3338,6 +3358,16 @@ export function ConfigurationScreen() {
                               onChange={(event) => updateModelPricingRule(index, { serviceTier: event.target.value })}
                               disabled={modelPricingSaving}
                               placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>API endpoint</span>
+                            <input
+                              type="text"
+                              value={rule.providerEndpointIdentifier}
+                              onChange={(event) => updateModelPricingRule(index, { providerEndpointIdentifier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="all endpoints"
                             />
                           </label>
                           <label className="field-stack">

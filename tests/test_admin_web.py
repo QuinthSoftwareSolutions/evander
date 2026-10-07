@@ -11269,6 +11269,10 @@ def test_admin_web_model_pricing_catalog_write_requires_revision(
     assert initial_response.status_code == 200
     initial_revision = initial_response.json()["revision"]
     updated_catalog = _pricing_catalog_payload(version="updated-pricing", model="updated-model")
+    updated_catalog["rules"][0]["provider_endpoint_identifier"] = "decisions"
+    updated_catalog["rules"][0]["rates_per_1m_tokens"].update(
+        cache_write_5m="0", cache_write_1h="0"
+    )
 
     missing_revision = client.put(
         "/api/configuration/model-pricing", json={"catalog": updated_catalog}
@@ -11292,6 +11296,9 @@ def test_admin_web_model_pricing_catalog_write_requires_revision(
     assert payload["path_source"] == "env"
     assert payload["version"] == "updated-pricing"
     assert payload["catalog"]["rules"][0]["models"] == ["updated-model"]
+    assert payload["catalog"]["rules"][0]["provider_endpoint_identifier"] == "decisions"
+    assert payload["catalog"]["rules"][0]["rates_per_1m_tokens"]["cache_write_5m"] == "0"
+    assert payload["catalog"]["rules"][0]["rates_per_1m_tokens"]["cache_write_1h"] == "0"
     assert payload["revision"] != initial_revision
     assert json.loads(catalog_path.read_text(encoding="utf-8")) == payload["catalog"]
 

@@ -95,7 +95,7 @@ class ClassificationProfile(StrictModel):
     @classmethod
     def decisions_model_default(cls, value):
         if isinstance(value, dict) and value.get("provider") == DECISIONS_PROVIDER_ID:
-            # No Decisions model identifier has been published. Never inherit Jev's model.
+            # Use the configured Decisions default rather than inheriting Jev's model.
             return {"model": None, **value}
         return value
 
@@ -118,7 +118,7 @@ class ClassificationProviderSettings(StrictModel):
 
 class DecisionsProviderSettings(ClassificationProviderSettings):
     enabled: bool = False
-    default_model: str | None = Field(default=None, min_length=1)
+    default_model: str | None = Field(default="gpt-6-luna", min_length=1)
     api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 

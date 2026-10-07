@@ -50,13 +50,13 @@ test("malformed advanced configuration cannot enter the structured editor", () =
   assert.ok(configurationDestinationsForTab({key: "models_assistant_knowledge", sections: []}).some(d => d.key === "classification"));
 });
 
-test("pending provider profiles use their own defaults and cannot inherit Jev's model or enablement", () => {
-  const providers = [{id: "openai_decisions", available: false, defaults: {enabled: false, default_model: null, api_key_env: "OPENAI_API_KEY"}}];
+test("Decisions profiles use OpenAI defaults without inheriting Jev's model", () => {
+  const providers = [{id: "openai_decisions", available: true, defaults: {enabled: false, default_model: "gpt-6-luna", api_key_env: "OPENAI_API_KEY"}}];
   const settings = providerSettings({providers: {openai_decisions: {max_retries: 0}}}, providers, "openai_decisions");
-  assert.deepEqual(settings, {enabled: false, default_model: null, api_key_env: "OPENAI_API_KEY", max_retries: 0});
-  const profile = profileForProvider({enabled: true, provider: "jev", model: "jev-1.13.0", questions: {route: {type: "choice"}}}, "openai_decisions", settings, false);
+  assert.deepEqual(settings, {enabled: false, default_model: "gpt-6-luna", api_key_env: "OPENAI_API_KEY", max_retries: 0});
+  const profile = profileForProvider({enabled: true, provider: "jev", model: "jev-1.13.0", questions: {route: {type: "choice"}}}, "openai_decisions", settings, true);
   assert.equal(profile.provider, "openai_decisions");
-  assert.equal(profile.model, null);
-  assert.equal(profile.enabled, false);
+  assert.equal(profile.model, "gpt-6-luna");
+  assert.equal(profile.enabled, true);
   assert.deepEqual(profile.questions, {route: {type: "choice"}});
 });

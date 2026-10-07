@@ -15,6 +15,7 @@ from evander.privacy.providers import check_provider_dispatch
 
 class JevProvider:
     display_name = "Jev (TypeSafe)"
+    error_name = "Jev"
     reports_option_probabilities = True
     usage_endpoint_identifier = "systemone"
     supported_question_types = frozenset({"choice", "score", "boolean"})
@@ -36,14 +37,17 @@ class JevProvider:
         except TimeoutError:
             raise ClassificationError("Classification evaluation deadline exceeded") from None
 
-    async def _evaluate(self, request, settings, api_key, record_attempt):
+    def _request_body(self, request) -> bytes:
         questions = {}
         for key, question in request.questions.items():
             data = question.model_dump(mode="json", exclude_none=True)
             if question.type == "boolean":
                 data["type"] = "noul"
             questions[key] = data
-        body = json_bytes({"state": request.state, "model": request.model, "questions": questions})
+        return json_bytes({"state": request.state, "model": request.model, "questions": questions})
+
+    async def _evaluate(self, request, settings, api_key, record_attempt):
+        body = self._request_body(request)
         if len(body) > settings.max_request_bytes:
             raise ClassificationError("Classification request exceeds max_request_bytes")
         deadline = self.clock() + settings.timeout_seconds
@@ -85,20 +89,22 @@ class JevProvider:
                         delay = _retry_delay(response.headers.get("retry-after"), delay)
                     if http_status != 200:
                         status = "failed"
-                        raise ClassificationError(f"Jev returned HTTP {http_status}")
+                        raise ClassificationError(f"{self.error_name} returned HTTP {http_status}")
                     try:
                         payload = json.loads(content)
                     except (ValueError, UnicodeError):
-                        raise ClassificationError("Jev returned invalid JSON") from None
+                        raise ClassificationError(
+                            f"{self.error_name} returned invalid JSON"
+                        ) from None
                     if not isinstance(payload, dict):
                         payload = {}
-                        raise ClassificationError("Jev returned an invalid response")
+                        raise ClassificationError(f"{self.error_name} returned an invalid response")
                     normalized = self._normalize(request, payload)
                     status = "success"
                     return normalized
                 except httpx.RequestError:
                     retryable = True
-                    error = ClassificationError("Jev connection failed or timed out")
+                    error = ClassificationError(f"{self.error_name} connection failed or timed out")
                 except ClassificationError as exc:
                     error = exc
                 finally:

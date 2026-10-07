@@ -234,6 +234,21 @@ class ClassificationService:
             for key, value in usage.items()
             if key in {"input_tokens", "output_tokens"} and type(value) is int and value >= 0
         }
+        usage_metadata = dict(tokens)
+        for key in ("total_tokens", "compute_units"):
+            if type(usage.get(key)) is int and usage[key] >= 0:
+                usage_metadata[key] = usage[key]
+        for key, fields in (
+            ("input_tokens_details", ("cached_tokens", "cache_write_tokens")),
+            ("output_tokens_details", ("reasoning_tokens",)),
+        ):
+            details = usage.get(key)
+            if isinstance(details, dict):
+                usage_metadata[key] = {
+                    field: details[field]
+                    for field in fields
+                    if type(details.get(field)) is int and details[field] >= 0
+                }
         event = ModelInferenceUsageEvent(
             event_id=f"classification-{uuid4().hex}",
             provider=getattr(provider, "usage_provider", prepared.provider),
@@ -256,7 +271,7 @@ class ClassificationService:
             response_body_sha256=revision_bytes(response_body),
             raw_usage_metadata={
                 "classification_provider": prepared.provider,
-                "usage": tokens,
+                "usage": usage_metadata,
                 "http_status": http_status,
                 "profile_id": prepared.profile_id,
                 "profile_revision": prepared.profile_revision,

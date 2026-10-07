@@ -940,7 +940,7 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     pricing_catalog = json.loads(
         (tmp_path / "runtime" / "model-pricing.openai.json").read_text(encoding="utf-8")
     )
-    assert pricing_catalog["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
+    assert pricing_catalog["version"] == "openai-anthropic-2026-10-07+decisions"
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:

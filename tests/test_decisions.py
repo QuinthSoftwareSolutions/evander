@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import copy
 from datetime import UTC, datetime, timedelta
+import json
+
+import httpx
 
 import pytest
 
 from config_helpers import canonical_worker_config, effect_execution_payload, gate_execution_payload
 from test_classification_integration import call_tool, environment as environment, worker_for
 from evander.classification.decisions import DecisionsProvider
-from evander.classification.finite import finite_questions, normalize_selections
 from evander.classification.models import (
     DECISIONS_PROVIDER_ID,
     ClassificationError,
@@ -16,7 +18,6 @@ from evander.classification.models import (
     PreparedEvaluation,
     Question,
     answer_schema,
-    json_bytes,
     validate_answers,
 )
 from evander.classification.service import ClassificationService
@@ -42,9 +43,20 @@ QUESTIONS = {
     },
 }
 EXPECTED = {
-    "route": {"type": "choice", "choice": "sales"},
-    "severity": {"type": "score", "score": 1.0, "legend": {"0": "Low", "1": "High"}},
-    "urgent": {"type": "boolean", "value": False},
+    "route": {
+        "type": "choice",
+        "choice": "sales",
+        "confidence": 0.2,
+        "probabilities": {"support": 0.2, "sales": 0.8},
+    },
+    "severity": {
+        "type": "score",
+        "score": 0.7,
+        "confidence": 0.4,
+        "probabilities": {"0": 0.3, "1": 0.7},
+        "legend": {"0": "Low", "1": "High"},
+    },
+    "urgent": {"type": "boolean", "probability_true": 0.3},
 }
 
 
@@ -57,9 +69,7 @@ def decisions_settings(**patch):
         {
             "enabled": True,
             "default_provider": DECISIONS_PROVIDER_ID,
-            "providers": {
-                DECISIONS_PROVIDER_ID: {"enabled": True, "default_model": "synthetic-model"}
-            },
+            "providers": {DECISIONS_PROVIDER_ID: {"enabled": True, "default_model": "gpt-6-luna"}},
             **patch,
         }
     )
@@ -71,7 +81,7 @@ def test_decisions_defaults_preserve_jev_and_do_not_materialize_overlay_fields()
     assert defaults.providers["jev"].default_model == "jev-1.13.0"
     assert defaults.providers["jev"].api_key_env == "TYPESAFE_API_KEY"
     decisions = defaults.providers[DECISIONS_PROVIDER_ID]
-    assert decisions.enabled is False and decisions.default_model is None
+    assert decisions.enabled is False and decisions.default_model == "gpt-6-luna"
     assert decisions.api_key_env == "OPENAI_API_KEY"
     overlay = ClassificationSettings.model_validate(
         {
@@ -85,61 +95,29 @@ def test_decisions_defaults_preserve_jev_and_do_not_materialize_overlay_fields()
     assert overlay.profiles["pending"].model is None
 
 
-def test_unavailable_decisions_cannot_dispatch_or_advertise_runnable_profiles():
+def test_disabled_decisions_cannot_dispatch_or_advertise_runnable_profiles():
     service = ClassificationService(secret_resolver=lambda _: pytest.fail("must not read a secret"))
     settings = decisions_settings(
+        providers={DECISIONS_PROVIDER_ID: {}},
         profiles={
             "pending": {
                 "provider": DECISIONS_PROVIDER_ID,
                 "questions": QUESTIONS,
             }
-        }
+        },
     )
     payload = {"state": "sample", "questions": QUESTIONS}
-    with pytest.raises(ClassificationError, match="not available yet"):
+    with pytest.raises(ClassificationError, match="not enabled"):
         service.prepare(settings, payload)
     prepared = PreparedEvaluation(
         state="sample",
         questions=questions(),
         provider=DECISIONS_PROVIDER_ID,
-        model="synthetic-model",
+        model="gpt-6-luna",
     )
-    with pytest.raises(ClassificationError, match="not available yet"):
+    with pytest.raises(ClassificationError, match="not enabled"):
         service.execute(settings, prepared)
     assert service.list_profiles(settings) == {"profiles": []}
-
-
-def test_finite_mapping_preserves_options_and_rubrics_without_synthetic_certainty():
-    source = questions()
-    finite = finite_questions(source)
-    assert finite["route"].options == {"support": "Product issues", "sales": "Purchases"}
-    assert finite["severity"].options == {"0": "Low", "1": "High"}
-    assert finite["urgent"].options == {"true": "The proposition is true.", "false": "Can wait"}
-    assert (
-        normalize_selections(source, {"route": "sales", "severity": "1", "urgent": "false"})
-        == EXPECTED
-    )
-    finite["route"].instructions["task"] = "Changed by a transport"
-    finite["route"].options.clear()
-    assert source["route"].instructions == {"task": "Choose a team"}
-    assert set(source["route"].criteria) == {"support", "sales"}
-
-
-@pytest.mark.parametrize(
-    "selections",
-    [
-        {"route": "sales"},
-        {"route": "sales", "severity": "1", "urgent": "false", "extra": "sales"},
-        {"route": "unknown", "severity": "1", "urgent": "false"},
-        {"route": "sales", "severity": "1.0", "urgent": "false"},
-        {"route": "sales", "severity": "2", "urgent": "false"},
-        {"route": "sales", "severity": "1", "urgent": "yes"},
-        {"route": "sales", "severity": "1", "urgent": True},
-    ],
-)
-def test_finite_mapping_rejects_undeclared_questions_or_answers(selections):
-    with pytest.raises(ClassificationError):
-        normalize_selections(questions(), selections)
 
 
 @pytest.mark.parametrize(
@@ -165,38 +143,58 @@ def test_boolean_value_and_probability_remain_distinct_public_bindings():
     assert fields["probability_true"] == {"type": "number"}
 
 
-class SyntheticDecisionsProvider(DecisionsProvider):
-    """Exercise the internal adapter seam, without assuming any OpenAI HTTP schema."""
+def wire_response(names=("route", "severity", "urgent")):
+    answers = {
+        "route": {
+            "name": "route",
+            "type": "choice",
+            "choice": "sales",
+            "confidence": 0.2,
+            "probabilities": [
+                {"value": "support", "probability": 0.2},
+                {"value": "sales", "probability": 0.8},
+            ],
+        },
+        "severity": {
+            "name": "severity",
+            "type": "score",
+            "score": 0.7,
+            "confidence": 0.4,
+            "probabilities": [
+                {"value": 0, "label": "0", "probability": 0.3},
+                {"value": 1, "label": "1", "probability": 0.7},
+            ],
+        },
+        "urgent": {"name": "urgent", "type": "predicate", "probability": 0.3},
+    }
+    return {
+        "model": "gpt-6-luna",
+        "answers": [answers[name] for name in names],
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 0,
+            "total_tokens": 12,
+            "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        },
+    }
 
-    available = True
-    endpoint = "https://api.openai.com"
 
-    def __init__(self):
-        self.calls = []
+def provider_with_calls():
+    calls = []
 
-    def evaluate(self, request, settings, api_key, record_attempt):
-        self.calls.append(request.model_copy(deep=True))
-        selections = {"route": "sales", "severity": "1", "urgent": "false"}
-        response = {
-            "model": request.model,
-            "answers": normalize_selections(
-                request.questions, {key: selections[key] for key in request.questions}
-            ),
-            "usage": {"input_tokens": 12, "output_tokens": 3},
-        }
-        record_attempt(
-            status="success",
-            payload=response,
-            duration_ms=1,
-            request_body=json_bytes(request.model_dump(mode="json")),
-            response_body=json_bytes(response),
-        )
-        return response
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        return httpx.Response(200, json=wire_response(q["name"] for q in body["questions"]))
+
+    return DecisionsProvider(transport=httpx.MockTransport(handler)), calls
 
 
 @pytest.mark.parametrize("restored", [False, True])
-def test_probability_cutoff_is_rejected_before_finite_provider_call(restored):
-    provider = SyntheticDecisionsProvider()
+@pytest.mark.parametrize("minimum, expected_port", [(0.8, "sales"), (0.81, "support")])
+def test_decisions_probability_cutoff_uses_selected_probability(restored, minimum, expected_port):
+    provider, calls = provider_with_calls()
     service = ClassificationService(
         providers={DECISIONS_PROVIDER_ID: provider}, secret_resolver=lambda _: "synthetic-key"
     )
@@ -205,24 +203,21 @@ def test_probability_cutoff_is_rejected_before_finite_provider_call(restored):
         "instructions": "Route requests",
         "cases": [{"port": "sales", "description": "Purchases"}],
         "default_port": "support",
+        "min_probability": minimum,
     }
+    prepared = prepare_switch(service, decisions_settings(), config)
     if restored:
-        prepared = prepare_switch(service, decisions_settings(), config)
-        prepared.config.min_probability = 0.8
-
-        def action():
-            return execute_switch(service, decisions_settings(), prepared)
-    else:
-
-        def action():
-            return prepare_switch(service, decisions_settings(), {**config, "min_probability": 0.8})
-
-    with pytest.raises(ClassificationError, match="requires option probabilities"):
-        action()
-    assert provider.calls == []
+        prepared = type(prepared).model_validate_json(prepared.model_dump_json())
+    result = execute_switch(service, decisions_settings(), prepared)
+    assert result["selected_choice"] == "sales"
+    assert result["selected_port"] == expected_port
+    assert result["routing_reason"] == (
+        "choice" if expected_port == "sales" else "below_probability"
+    )
+    assert len(calls) == 1
 
 
-def test_pending_provider_catalog_and_saves_retain_inherited_settings(environment):
+def test_decisions_provider_catalog_and_saves_retain_inherited_settings(environment):
     admin, configs, _ = environment
     before = admin.classification_admin.snapshot("root")
     saved = admin.classification_admin.save(
@@ -241,8 +236,8 @@ def test_pending_provider_catalog_and_saves_retain_inherited_settings(environmen
         },
     )
     pending = next(p for p in saved["providers"] if p["id"] == DECISIONS_PROVIDER_ID)
-    assert pending["available"] is False and pending["unavailable_reason"]
-    assert pending["defaults"]["default_model"] is None
+    assert pending["available"] is True and pending["unavailable_reason"] is None
+    assert pending["defaults"]["default_model"] == "gpt-6-luna"
     assert pending["defaults"]["api_key_env"] == "OPENAI_API_KEY"
     assert saved["effective_config"]["profiles"]["pending"]["model"] is None
     child = admin.classification_admin.snapshot("root/team")
@@ -256,13 +251,13 @@ def test_pending_provider_catalog_and_saves_retain_inherited_settings(environmen
     assert child["config"]["providers"] == {DECISIONS_PROVIDER_ID: {"max_retries": 0}}
     settings = child["effective_config"]["providers"][DECISIONS_PROVIDER_ID]
     assert settings["api_key_env"] == "SYNTHETIC_DECISIONS_KEY"
-    assert settings["enabled"] is False and settings["default_model"] is None
+    assert settings["enabled"] is False and settings["default_model"] == "gpt-6-luna"
 
 
 @pytest.fixture
-def finite_environment(environment, monkeypatch):
+def decisions_environment(environment, monkeypatch):
     admin, configs, _ = environment
-    provider = SyntheticDecisionsProvider()
+    provider, calls = provider_with_calls()
     service = admin.classification_admin.service
     service.providers[DECISIONS_PROVIDER_ID] = provider
     configs.write(
@@ -273,12 +268,12 @@ def finite_environment(environment, monkeypatch):
                 "enabled": True,
                 "default_provider": DECISIONS_PROVIDER_ID,
                 "providers": {
-                    DECISIONS_PROVIDER_ID: {"enabled": True, "default_model": "synthetic-model"}
+                    DECISIONS_PROVIDER_ID: {"enabled": True, "default_model": "gpt-6-luna"}
                 },
                 "profiles": {
                     "triage": {
                         "provider": DECISIONS_PROVIDER_ID,
-                        "model": "synthetic-model",
+                        "model": "gpt-6-luna",
                         "questions": QUESTIONS,
                     }
                 },
@@ -288,12 +283,14 @@ def finite_environment(environment, monkeypatch):
     monkeypatch.setattr(
         "evander.gates.providers.classifier_switch.service_for_runtime", lambda _: service
     )
-    return admin, configs, provider
+    return admin, configs, calls
 
 
 @pytest.mark.parametrize("surface", ["admin", "agent", "query", "switch"])
-def test_finite_adapter_uses_every_shared_classification_surface(finite_environment, surface):
-    admin, configs, provider = finite_environment
+def test_decisions_http_adapter_uses_every_shared_classification_surface(
+    decisions_environment, surface
+):
+    admin, configs, calls = decisions_environment
     scope = "root/team"
     payload = {"state": "A new purchase", "profile_id": "triage"}
     if surface == "admin":
@@ -403,12 +400,13 @@ def test_finite_adapter_uses_every_shared_classification_surface(finite_environm
             result = record["resolved_config"]["decision"]
         else:
             result = record["outputs"]
-    assert result["provider"] == DECISIONS_PROVIDER_ID and result["model"] == "synthetic-model"
+    assert result["provider"] == DECISIONS_PROVIDER_ID and result["model"] == "gpt-6-luna"
     assert result["answers"] == ({"route": EXPECTED["route"]} if surface == "switch" else EXPECTED)
-    assert len(provider.calls) == 1
+    assert len(calls) == 1
     event = model_usage_store(admin.config.runtime_dir).list_events()[0]
     assert event.provider == "openai" and event.billing_kind == "api"
     assert event.api_key_name == "OPENAI_API_KEY" and event.input_tokens == 12
+    assert event.output_tokens == 0 and event.provider_endpoint_identifier == "decisions"
     assert event.directory_path == scope
     assert event.raw_usage_metadata["classification_provider"] == DECISIONS_PROVIDER_ID
     assert "A new purchase" not in str(event.model_dump())
