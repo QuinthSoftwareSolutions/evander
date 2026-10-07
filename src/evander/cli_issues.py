@@ -454,6 +454,7 @@ def create_issue_vm(
             help="Codex Fast mode; omit to inherit the session default.",
         ),
     ] = None,
+    speed: cli_common.SpeedOption = None,
     model_provider_mode: Annotated[
         str | None,
         typer.Option(
@@ -484,7 +485,7 @@ def create_issue_vm(
         codex_skills=codex_skill,
         model=model,
         reasoning_effort=reasoning_effort,
-        fast_mode=fast_mode,
+        fast_mode=cli_common.resolve_speed_option(fast_mode, speed),
         model_provider_mode=model_provider_mode,
     )
     cli_common._echo_action_result_or_exit(result)

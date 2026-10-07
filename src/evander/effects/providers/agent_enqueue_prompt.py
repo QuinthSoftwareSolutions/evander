@@ -12,7 +12,7 @@ from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStat
 from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
-from evander.fast_mode import resolve_fast_mode
+from evander.fast_mode import FastModeValue, resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -1585,7 +1585,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str | None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         vm_user: str,

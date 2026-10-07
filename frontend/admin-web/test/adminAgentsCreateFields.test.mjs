@@ -163,7 +163,7 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
 
 test("agent creation preserves explicit standard speed and leaves inheritance unset", () => {
   for (const backend of ["libvirt_vm", "container_worker_vm"]) {
-    for (const [selection, expected] of [["true", true], ["false", false]]) {
+    for (const [selection, expected] of [["true", true], ["false", false], ["ultrafast", "ultrafast"]]) {
       const payload = buildCreatePayload({ ...emptyCreateForm(), backend, fastMode: selection }, "root");
       assert.equal(payload.fast_mode, expected);
     }

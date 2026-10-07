@@ -116,6 +116,9 @@
     - >-
       (evander_worker_health.json | default({})).get('capabilities', {}).get('codex_fast_mode', 0)
       | int >= 1
+    - >-
+      (evander_worker_health.json | default({})).get('capabilities', {}).get('codex_ultrafast_mode', 0)
+      | int >= 1
   retries: 10
   delay: 1
 

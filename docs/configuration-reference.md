@@ -1134,13 +1134,14 @@ ordinary persistent agent's session metadata.
 
 ### Agent Fast mode
 
-`fast_mode` is an optional boolean on sessions, `effect:agent:create`, and both
-agent prompt effects. A non-null prompt value overrides the session for that
-invocation: `true` selects Fast, `false` explicitly selects standard speed, and
-null or omission inherits the session default. Unconfigured sessions use standard
-speed. It does not change the model, reasoning effort, authentication mode, or
-subscription profile. Fast is supported only for Codex on the public OpenAI route;
-other harnesses and private/local/provider routes reject an enabled setting.
+`fast_mode` accepts a boolean, `"ultrafast"`, or null on sessions,
+`effect:agent:create`, and both agent prompt effects. A non-null prompt value
+overrides the session for that invocation: `true` selects Fast, `false` explicitly
+selects Standard, `"ultrafast"` selects Ultrafast, and null or omission inherits the
+session default. Unconfigured sessions use standard speed. It does not change the
+model, reasoning effort, authentication mode, or subscription profile. Fast and
+Ultrafast are supported only for Codex on the public OpenAI route; other harnesses
+and private/local/provider routes reject an enabled setting.
 
 When `effect:agent:create` upserts an existing session, omitting `fast_mode`
 preserves its default, `false` selects standard speed, and null clears the stored
@@ -1157,34 +1158,43 @@ this prompt**. The owner-authorized, privilege-locked
 `PUT /api/admin/sessions/{session_id}/model` accepts `fast_mode` together with
 model and effort settings and validates them before persisting any change.
 An omitted field preserves the stored value; `"fast_mode": null` clears it.
-CLI creation and resume commands accept `--fast-mode` / `--no-fast-mode`:
+CLI creation and resume commands accept `--speed standard|fast|ultrafast`.
+The existing `--fast-mode` / `--no-fast-mode` flags remain supported; use one
+speed option per command:
 
 ```bash
+evander-cli set-session-fast-mode example-session --speed ultrafast
 evander-cli set-session-fast-mode example-session --fast-mode
 evander-cli set-session-fast-mode example-session --no-fast-mode
 evander-cli set-session-fast-mode example-session --clear
 evander-cli resume-agent example-session --message "Review the patch" --reasoning-effort max --fast-mode
 ```
 
-Queue and execution records expose the resolved boolean and `fast_mode_source`
+Queue and execution records expose the resolved boolean or `"ultrafast"` and
+`fast_mode_source`
 (`prompt`, `session`, or `default`). Queued prompts, capacity deferrals, scheduled
 wakes, reduced-context retries, and operator steering retain their captured value;
 changes to the session affect newly submitted prompts. Legacy queue entries without
 a captured source resolve the current session when dispatched.
 
-Codex CLI runs explicitly set `service_tier="fast"` or `"default"` on every turn,
-including resumes. Subscription app-server runs send the same selection through
+Codex CLI runs explicitly set `service_tier="ultrafast"`, `"fast"`, or `"default"`
+on every turn, including resumes. Subscription app-server runs send the same selection through
 thread configuration and `turn/start.serviceTier`, so a prompt override does not
-keep later control-plane turns in Fast mode. Codex maps Fast to priority requests.
+keep later control-plane turns at an overridden speed. Codex maps Fast to priority
+requests.
 Metered relay usage records retain the requested and returned service tiers;
 cost estimates use the returned tier when available, then the requested tier.
 Availability and higher allowance or credit usage depend on the model/account;
 see [official Codex speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
 and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+Ultrafast requires an eligible account and a model advertising that tier; see
+[official Ultrafast guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#ultrafast-mode).
 The native provider remains authoritative about model and account availability.
 
 Upgrade container worker daemons before the control plane: the structured turn
-contract now includes speed and source. Refresh existing VMs with
+contract accepts `"ultrafast"` as well as boolean speed and source. Worker
+`/healthz` advertises `codex_ultrafast_mode: 1`, and deployment verification
+requires it together with the loaded revision. Refresh existing VMs with
 `bootstrap_codex_vm.sh`; new bootstraps start with the standard tier and the host
 sets the requested tier for each run. No live workflow pack is migrated or enabled
 automatically.

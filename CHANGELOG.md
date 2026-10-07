@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-07 - Codex Ultrafast mode (0.83.0)
+
+- Add Ultrafast to session defaults and prompt overrides in Admin Web, workflow
+  nodes, and CLI speed selection while preserving existing boolean Fast settings.
+- Pass the selected tier through VM, container, and subscription runs, including
+  queues, wakes, retries, and steering. Explicit Standard restores the default tier.
+- Advertise worker Ultrafast support and require it during worker deployment
+  verification; account and model eligibility remain provider-controlled.
+
 ## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
 
 - Define event payload schemas in directory configuration and Admin Web, with

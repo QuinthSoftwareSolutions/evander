@@ -1174,10 +1174,11 @@ prompts and retries retain the value captured at submission. See
 [reasoning effort configuration](configuration-reference.md#agent-reasoning-effort)
 for native levels, CLI/API examples, provider support, and worker upgrade order.
 
-Codex Fast mode is configured in **Sessions → Settings → Default speed**, at
-agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
+Codex Fast and Ultrafast modes are configured in **Sessions → Settings → Default
+speed**, at agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
 `fast_mode: false` explicitly restores standard speed even when the session
-default is Fast. Workflow prompt effects accept the same override. It requires
+default is Fast or Ultrafast. Use `fast_mode: "ultrafast"` or `--speed ultrafast`
+to select Ultrafast. Workflow prompt effects accept the same override. It requires
 public OpenAI and a supported model; availability and allowance or credit usage
 come from the configured account. Upgrade container workers before enabling the
 new control-plane fields, and rerun the Codex bootstrap for existing VMs. See

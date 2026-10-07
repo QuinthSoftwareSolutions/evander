@@ -1,5 +1,5 @@
 import { FastModeSelect } from "../admin/FastModeSelect";
-import { fastModeValue } from "../admin/fastMode";
+import { fastModeLabel, fastModeValue } from "../admin/fastMode";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
@@ -702,7 +702,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     session_id: sessionId,
     model: hostString(rawPolicy, "model"),
     reasoning_effort: hostString(rawPolicy, "reasoning_effort"),
-    fast_mode: typeof rawPolicy.fast_mode === "boolean" ? rawPolicy.fast_mode : null,
+    fast_mode: typeof rawPolicy.fast_mode === "boolean" || rawPolicy.fast_mode === "ultrafast" ? rawPolicy.fast_mode : null,
     agent_harness: hostString(rawPolicy, "agent_harness") || undefined,
     effective_model_provider_mode: hostString(rawPolicy, "effective_model_provider_mode") || undefined,
     expires_at: hostString(rawPolicy, "expires_at"),
@@ -2945,7 +2945,7 @@ export function AgentsPage() {
                                   <span>Profile: {record.subscription_profile_id}</span>
                                 ) : null}
                                 {record.fast_mode_source ? (
-                                  <span>Speed: {record.fast_mode ? "Fast" : "Standard"} ({record.fast_mode_source})</span>
+                                  <span>Speed: {fastModeLabel(record.fast_mode)} ({record.fast_mode_source})</span>
                                 ) : null}
                                 {record.reasoning_effort_source ? (
                                   <span>Effort: {record.reasoning_effort ?? "Provider default"} ({record.reasoning_effort_source})</span>

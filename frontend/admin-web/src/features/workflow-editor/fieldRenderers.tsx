@@ -29,6 +29,7 @@ import {
   effectiveAdoQueryMode,
   ensureDirectorySelectOption,
   enumOptionValue,
+  enumLiteralValue,
   fieldSelectionOnly,
   fieldValueMode,
   groupToolOptions,
@@ -853,12 +854,13 @@ export function createFieldRenderers({
                   if (field.key === "query_mode" && isAdoQueryModeNodeType(selectedNodeType)) {
                     updateAdoQueryModeField(event.target.value);
                   } else {
-                    updateKnownField(field.key, event.target.value || undefined);
+                    const nextValue = enumLiteralValue(field, event.target.value);
+                    updateKnownField(field.key, nextValue === "" ? undefined : nextValue);
                   }
                 }}
                 disabled={isDisabled}
               >
-                <option value="">Select</option>
+                <option value="">{String(field.metadata?.unset_label ?? "Select")}</option>
                 {unavailableSubscriptionProfile ? (
                   <option value={literalEnumValue}>
                     {literalEnumValue} (disabled or unavailable)
