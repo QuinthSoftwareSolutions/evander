@@ -24,7 +24,7 @@ from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
-@pytest.mark.parametrize("default", [True, False, None])
+@pytest.mark.parametrize("default", [True, False, "ultrafast", None])
 def test_prompt_speed_override_does_not_change_session_default(tmp_path, default) -> None:
     admin = _AdminServiceStub([], [], [], [], [])
     session = admin._sessions["session-42"]
@@ -35,7 +35,7 @@ def test_prompt_speed_override_does_not_change_session_default(tmp_path, default
         provider_config_resolver=_ContainerResolverStub(GatewayConfig(runtime_dir=tmp_path)),
         admin_service=admin,
     )
-    for override in [True, False, None]:
+    for override in [True, False, "ultrafast", None]:
         factory.build(
             AgentPromptEffectDefinition(
                 id="prompt",
@@ -50,12 +50,13 @@ def test_prompt_speed_override_does_not_change_session_default(tmp_path, default
     assert [(c["fast_mode"], c["fast_mode_source"]) for c in admin.resume_calls] == [
         (True, "prompt"),
         (False, "prompt"),
+        ("ultrafast", "prompt"),
         (
             default if default is not None else False,
             "session" if default is not None else "default",
         ),
     ]
-    assert session.fast_mode is default
+    assert session.fast_mode == default
     assert all(
         c["model"] == "gpt-6.1-sol" and c["reasoning_effort"] == "max" for c in admin.resume_calls
     )
@@ -74,6 +75,7 @@ def test_fast_mode_schema_preserves_false_and_accepts_bindings(schema) -> None:
     }
     assert schema.model_validate(payload).fast_mode is None
     assert schema.model_validate(payload | {"fast_mode": False}).fast_mode is False
+    assert schema.model_validate(payload | {"fast_mode": "ultrafast"}).fast_mode == "ultrafast"
     binding = "${{trigger.fast_mode}}"
     assert schema.model_validate(payload | {"fast_mode": binding}).fast_mode == binding
     with pytest.raises(ValidationError, match="fast_mode"):
@@ -90,9 +92,10 @@ def test_fast_mode_schema_preserves_false_and_accepts_bindings(schema) -> None:
         ("codex", "openrouter"),
     ],
 )
-def test_unsupported_fast_dispatch_is_rejected_before_execution(harness, route) -> None:
+@pytest.mark.parametrize("speed", [True, "ultrafast"])
+def test_unsupported_fast_dispatch_is_rejected_before_execution(harness, route, speed) -> None:
     session = SessionManifest(
-        session_id="test", allowed_tools=[], expires_at=datetime.now(UTC), fast_mode=True
+        session_id="test", allowed_tools=[], expires_at=datetime.now(UTC), fast_mode=speed
     )
     with pytest.raises(ValueError, match="public OpenAI Codex"):
         resolve_fast_mode({}, session=session, harness=harness, route=route)
@@ -130,12 +133,14 @@ def test_container_turns_explicitly_restore_standard_speed_after_fast(resume) ->
             resume_thread_id=resume,
             reasoning_effort="max",
         )
-        for override in [True, None]
+        for override in [True, "ultrafast", None]
     ]
     assert 'service_tier="fast"' in commands[0]
     assert "features.fast_mode=true" in commands[0]
-    assert 'service_tier="default"' in commands[1]
-    assert 'service_tier="fast"' not in commands[1]
+    assert 'service_tier="ultrafast"' in commands[1]
+    assert 'service_tier="default"' in commands[2]
+    assert 'service_tier="fast"' not in commands[2]
+    assert 'service_tier="ultrafast"' not in commands[2]
     assert all('model_reasoning_effort="max"' in command for command in commands)
 
 
@@ -160,6 +165,7 @@ print('{"type":"result","result":"Done"}')
             "-c",
             """set -e
 source "$1"
+AGENT_FAST_MODE=ultrafast agent_runner_codex_resume_last --model gpt-6-astra Continue
 AGENT_FAST_MODE=true agent_runner_codex_resume_last --model gpt-6.1-sol Continue
 AGENT_FAST_MODE=false agent_runner_codex_resume_last --model gpt-6.1-sol Continue
 """,
@@ -178,13 +184,14 @@ AGENT_FAST_MODE=false agent_runner_codex_resume_last --model gpt-6.1-sol Continu
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    fast, standard = [json.loads(line) for line in args_log.read_text().splitlines()]
+    ultrafast, fast, standard = [json.loads(line) for line in args_log.read_text().splitlines()]
+    assert 'service_tier="ultrafast"' in ultrafast
     assert 'service_tier="fast"' in fast
     assert 'service_tier="default"' in standard
     assert 'service_tier="fast"' not in standard
 
 
-@pytest.mark.parametrize("default", [True, False, None])
+@pytest.mark.parametrize("default", [True, False, "ultrafast", None])
 def test_workflow_creation_persists_and_reuses_session_speed(
     tmp_path, monkeypatch, default
 ) -> None:
@@ -206,9 +213,9 @@ def test_workflow_creation_persists_and_reuses_session_speed(
         execution_backend="container_worker_vm",
     )
     factory.build(AgentCreateEffectDefinition(**fields, fast_mode=default)).execute()
-    assert repository.get_session("speed-session").fast_mode is default
+    assert repository.get_session("speed-session").fast_mode == default
     factory.build(AgentCreateEffectDefinition(**fields)).execute()
-    assert repository.get_session("speed-session").fast_mode is default
+    assert repository.get_session("speed-session").fast_mode == default
     factory.build(AgentCreateEffectDefinition(**fields, fast_mode=False)).execute()
     assert repository.get_session("speed-session").fast_mode is False
     factory.build(AgentCreateEffectDefinition(**fields, fast_mode=None)).execute()

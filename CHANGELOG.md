@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-07 - OpenAI Decisions classification (0.83.0)
+## 2026-10-07 - OpenAI Decisions classification (0.84.0)
 
 - Add an opt-in host-side OpenAI Decisions provider using the published `/v1/decisions`
   contract and `gpt-6-luna`, shared across workflow queries, Smart switches, agent tools,
@@ -14,6 +14,17 @@
 - Keep Admin Web sample evaluations aligned with saved profile defaults, preserving the
   difference between an omitted model and explicit provider-default selection.
 - Add real-adapter HTTP conformance and shared-path tests plus an explicit provider smoke.
+
+## 2026-10-07 - Codex Ultrafast mode (0.83.0)
+
+- Add Ultrafast to session defaults and prompt overrides in Admin Web, workflow
+  nodes, and CLI speed selection while preserving existing boolean Fast settings.
+- Pass the selected tier through VM, container, and subscription runs, including
+  queues, wakes, retries, and steering. Explicit Standard restores the default tier.
+- Advertise worker Ultrafast support and require it during worker deployment
+  verification; account and model eligibility remain provider-controlled.
+- Seed GPT-6 Astra Ultrafast pricing, including cache and long-context rates,
+  and document how to update existing operator catalogs for accurate estimates.
 
 ## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
 

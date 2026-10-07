@@ -143,7 +143,7 @@ The worker playbook compares the running daemon's startup revision with the depl
 checkout. It restarts the daemon when they differ, including after code-only upgrades or an
 interrupted deployment that already wrote the new environment file. Repeating a completed
 deployment leaves a matching daemon running. Verification requires `/healthz` to report the
-deployed revision and the Codex Fast mode capability, so an older process returning HTTP 200
+deployed revision and the Codex Fast and Ultrafast mode capabilities, so an older process returning HTTP 200
 cannot make the deployment pass. Deploy workers before enabling new control-plane turn fields.
 
 Both build scripts first reconcile `evander-runner-base:latest`, which owns their common Ubuntu and

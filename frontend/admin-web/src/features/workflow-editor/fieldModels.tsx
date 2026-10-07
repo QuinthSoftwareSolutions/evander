@@ -495,9 +495,18 @@ export function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unkn
 }
 
 export function enumOptionValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
-  const stringValue = typeof value === "string" ? value : "";
+  const literalValues = field.metadata?.literal_values as Record<string, unknown> | undefined;
+  const stringValue = literalValues
+    ? Object.keys(literalValues).find((key) => literalValues[key] === value) ?? ""
+    : typeof value === "string" ? value : "";
   if (!stringValue) return "";
   return field.options.some((option) => option.value === stringValue) ? stringValue : "";
+}
+
+export function enumLiteralValue(field: WorkflowEditorFieldDefinition, selection: string): unknown {
+  if (!selection) return field.metadata?.nullable === true ? undefined : "";
+  const literalValues = field.metadata?.literal_values as Record<string, unknown> | undefined;
+  return literalValues ? literalValues[selection] : selection;
 }
 
 export function enumLiteralFallbackValue(field: WorkflowEditorFieldDefinition, value: unknown): string {

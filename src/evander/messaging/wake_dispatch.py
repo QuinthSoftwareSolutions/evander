@@ -43,7 +43,7 @@ from evander.execution import (
 from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
-from evander.fast_mode import resolve_fast_mode
+from evander.fast_mode import FastModeValue, resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -636,7 +636,7 @@ class HostWakeDispatcher:
             "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id),
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
-            "AGENT_FAST_MODE": "true" if speed.value else "false",
+            "AGENT_FAST_MODE": speed.env_value,
         }
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider
@@ -1304,7 +1304,7 @@ class HostWakeDispatcher:
         prompt: str = "",
         model: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         model_provider_mode: str | None = None,
@@ -1359,7 +1359,7 @@ class HostWakeDispatcher:
         prompt: str = "",
         model: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         model_provider_mode: str | None = None,

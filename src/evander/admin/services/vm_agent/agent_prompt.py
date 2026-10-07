@@ -12,6 +12,7 @@ from evander.admin.services.vm_agent.common import (
     timedelta,
 )
 from evander.agent_threads import usable_agent_thread_id
+from evander.fast_mode import FastModeValue
 from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
 
 
@@ -23,7 +24,7 @@ class VmAgentPromptMixin:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         vm_user: str = "agent",

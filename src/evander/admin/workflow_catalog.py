@@ -456,15 +456,19 @@ def _reasoning_effort_field() -> WorkflowEditorFieldDefinition:
 def _fast_mode_field() -> WorkflowEditorFieldDefinition:
     return _field(
         "fast_mode",
-        "Fast mode",
-        "boolean",
+        "Speed",
+        "enum",
         bindable=True,
-        description="Codex speed: true selects Fast, false selects standard; omit/null inherits the session default. Fast availability and usage depend on the model and account.",
+        description='Codex speed: true selects Fast, false selects Standard, "ultrafast" selects Ultrafast; omit/null inherits the session default. Availability and usage depend on the model and account.',
+        options=[
+            _field_option("false", "Standard"),
+            _field_option("true", "Fast"),
+            _field_option("ultrafast", "Ultrafast"),
+        ],
         metadata={
             "nullable": True,
             "unset_label": "Session default",
-            "true_label": "Fast",
-            "false_label": "Standard",
+            "literal_values": {"false": False, "true": True, "ultrafast": "ultrafast"},
         },
     )
 

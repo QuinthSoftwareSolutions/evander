@@ -716,6 +716,18 @@ catalog before writing and writes atomically to either
 `EVANDER_MODEL_PRICING_PATH` or the configured runtime directory's default
 `model-pricing.openai.json` path.
 
+When upgrading to Ultrafast, add a tier-specific rule to each existing active
+catalog through that panel; updating the example seed or running `init-state`
+does not update an existing operator catalog. The seed includes GPT-6 Astra with
+`service_tier: "ultrafast"`: per 1M tokens, input $60, cached input $6, cache
+writes $75, and output $300. For requests exceeding 272,000 input tokens, those
+rates become $120, $12, $150, and $450 respectively. Preserve other rules, add the
+[published Ultrafast pricing source](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast),
+and update the catalog version when saving. These Astra rules have no date limit
+so recorded usage is repriced at query time. Add Ultrafast rules for other models
+only when their rates are published; an untiered rule falls back to Standard
+pricing and cannot represent an Ultrafast estimate accurately.
+
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
@@ -1177,10 +1189,11 @@ prompts and retries retain the value captured at submission. See
 [reasoning effort configuration](configuration-reference.md#agent-reasoning-effort)
 for native levels, CLI/API examples, provider support, and worker upgrade order.
 
-Codex Fast mode is configured in **Sessions → Settings → Default speed**, at
-agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
+Codex Fast and Ultrafast modes are configured in **Sessions → Settings → Default
+speed**, at agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
 `fast_mode: false` explicitly restores standard speed even when the session
-default is Fast. Workflow prompt effects accept the same override. It requires
+default is Fast or Ultrafast. Use `fast_mode: "ultrafast"` or `--speed ultrafast`
+to select Ultrafast. Workflow prompt effects accept the same override. It requires
 public OpenAI and a supported model; availability and allowance or credit usage
 come from the configured account. Upgrade container workers before enabling the
 new control-plane fields, and rerun the Codex bootstrap for existing VMs. See

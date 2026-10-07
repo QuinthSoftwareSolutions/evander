@@ -27,7 +27,7 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
-from evander.fast_mode import resolve_fast_mode, validate_session_fast_mode
+from evander.fast_mode import FastModeValue, resolve_fast_mode, validate_session_fast_mode
 from evander.host_directories.models import normalize_host_directory_grants
 from evander.models import (
     EmailMailboxAccess,
@@ -537,7 +537,7 @@ def build_container_session_manifest(
     model: str | None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
-    fast_mode: bool | None = None,
+    fast_mode: FastModeValue | None = None,
     codex_auth_mode: CodexAuthMode | None = None,
     subscription_profile_id: str | None = None,
     ttl_hours: int | None,
@@ -1127,7 +1127,7 @@ def container_prompt_command(
     model: str,
     reasoning_effort: str | None = None,
     reasoning_effort_source: str | None = None,
-    fast_mode: bool | None = None,
+    fast_mode: FastModeValue | None = None,
     fast_mode_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None = None,
@@ -1225,7 +1225,7 @@ def container_codex_turn_spec(
     model: str,
     reasoning_effort: str | None = None,
     reasoning_effort_source: str | None = None,
-    fast_mode: bool | None = None,
+    fast_mode: FastModeValue | None = None,
     fast_mode_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None,
