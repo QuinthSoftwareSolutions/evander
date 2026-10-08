@@ -45,6 +45,45 @@ def test_compute_downstream_depth_raises_on_cycle() -> None:
         compute_downstream_depth("a", downstream)
 
 
+def test_downstream_depth_visits_shared_branches_once_and_observes_edits() -> None:
+    class CountingGraph(dict):
+        reads = 0
+
+        def get(self, key, default=None):
+            self.reads += 1
+            assert self.reads <= 41, "shared downstream branches were expanded repeatedly"
+            return super().get(key, default)
+
+    downstream = CountingGraph({"root": ("a0", "b0")})
+    for level in range(20):
+        children = (f"a{level + 1}", f"b{level + 1}") if level < 19 else ()
+        downstream[f"a{level}"] = children
+        downstream[f"b{level}"] = children
+
+    assert compute_downstream_depth("root", downstream) == 21
+    assert downstream.reads == 41
+    downstream["root"] = ("a19",)
+    downstream.reads = 0
+    assert compute_downstream_depth("root", downstream) == 2
+
+
+def test_downstream_depth_handles_long_paths_without_python_recursion() -> None:
+    downstream = {str(index): (str(index + 1),) for index in range(2000)}
+
+    assert compute_downstream_depth("0", downstream) == 2001
+    downstream["2000"] = ("1000",)
+    with pytest.raises(WorkflowGraphCycleError, match="'1000'"):
+        compute_downstream_depth("0", downstream)
+
+
+def test_downstream_depth_handles_shared_iterators_and_ancestor_cycles() -> None:
+    downstream = {"a": iter(("b", "c")), "b": iter(("c",)), "c": iter(("d",))}
+
+    assert compute_downstream_depth("a", downstream) == 4
+    with pytest.raises(WorkflowGraphCycleError, match="'ancestor'"):
+        compute_downstream_depth("a", {"a": ("ancestor",)}, _path=("ancestor",))
+
+
 def test_declared_output_index_and_schema_intersection_cover_nodes_and_raw_maps() -> None:
     nodes = [
         {

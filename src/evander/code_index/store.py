@@ -404,14 +404,25 @@ class IndexStore:
         if not hashes:
             return []
         with self.connect() as db:
+            # Duplicate hashes use their last rank, matching the semantic search input.
+            # A JSON parameter avoids SQLite's variable limit for large candidate sets.
             rows = db.execute(
-                "SELECT c.*,t.text FROM chunks c JOIN contents t ON t.hash=c.hash WHERE c.snapshot=? AND c.hash IN ("
-                + ",".join("?" for _ in hashes)
-                + ") ORDER BY c.path,c.line",
-                (snapshot, *hashes),
+                """WITH requested AS (
+                    SELECT value AS hash, MAX(CAST(key AS INTEGER)) AS position
+                    FROM json_each(?) GROUP BY value
+                ), ranked AS MATERIALIZED (
+                    SELECT c.id,c.path,c.line,requested.position FROM requested
+                    JOIN chunks c ON c.hash=requested.hash AND c.snapshot=?
+                    JOIN contents present ON present.hash=c.hash
+                    ORDER BY requested.position,c.path,c.line LIMIT 1000
+                )
+                SELECT c.*,t.text FROM ranked
+                JOIN chunks c ON c.id=ranked.id
+                JOIN contents t ON t.hash=c.hash
+                ORDER BY ranked.position,ranked.path,ranked.line""",
+                (json.dumps(hashes), snapshot),
             ).fetchall()
-        rank = {value: i for i, value in enumerate(hashes)}
-        return sorted((dict(row) for row in rows), key=lambda row: rank[row["hash"]])[:1000]
+        return [dict(row) for row in rows]
 
     def navigate(
         self, snapshot: str, symbol: str, kind: str, *, limit: int, offset: int

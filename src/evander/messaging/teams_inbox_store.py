@@ -649,14 +649,13 @@ class TeamsInboxStore:
                     (owner_id,),
                 ).fetchall()
             ]
-            queue_rows = connection.execute(
+            queue_summary = connection.execute(
                 """
-                SELECT payload_json
+                SELECT COUNT(*) AS depth, MIN(received_at) AS oldest_received_at
                 FROM teams_inbox_notification_queue
                 WHERE state IN ('pending', 'retry', 'leased')
-                ORDER BY received_at
                 """
-            ).fetchall()
+            ).fetchone()
             last_received = connection.execute(
                 "SELECT MAX(received_at) AS value FROM teams_inbox_notification_queue"
             ).fetchone()["value"]
@@ -691,10 +690,7 @@ class TeamsInboxStore:
                 if not enabled or str(row["health"]) != "active"
             }
         )
-        queue = [
-            TeamsNotificationQueueEntry.model_validate_json(row["payload_json"])
-            for row in queue_rows
-        ]
+        oldest_received_at = queue_summary["oldest_received_at"]
         degraded_reasons = sorted(
             {
                 self._sanitize_error(item.last_error or item.health)
@@ -712,10 +708,13 @@ class TeamsInboxStore:
             "active_subscriptions": len(active),
             "expiring_subscriptions": len(expiring),
             "targets_on_fast_fallback": fallback_targets,
-            "queue_depth": len(queue),
+            "queue_depth": int(queue_summary["depth"]),
             "oldest_queue_age_seconds": (
-                max(0.0, (current - self._ensure_utc(queue[0].received_at)).total_seconds())
-                if queue
+                max(
+                    0.0,
+                    (current - datetime.fromisoformat(oldest_received_at)).total_seconds(),
+                )
+                if oldest_received_at is not None
                 else None
             ),
             "last_notification_at": last_received,
@@ -1115,6 +1114,10 @@ class TeamsInboxStore:
                     ON teams_inbox_notification_queue(state, next_attempt_at, leased_until);
                 CREATE INDEX IF NOT EXISTS idx_teams_inbox_notification_queue_retention
                     ON teams_inbox_notification_queue(state, completed_at);
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_notification_queue_status
+                    ON teams_inbox_notification_queue(state, received_at);
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_notification_queue_received
+                    ON teams_inbox_notification_queue(received_at);
                 """
             )
 

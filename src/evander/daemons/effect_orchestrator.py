@@ -9,6 +9,7 @@ import os
 import random
 import sqlite3
 import time
+from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
@@ -4081,6 +4082,67 @@ def _gate_completion_preserved_context_node_ids(
 
 
 def _guaranteed_context_node_ids(*, graph: ExecutionGraph, node_id: str) -> set[str]:
+    if node_id not in graph.nodes_by_id:
+        return set()
+
+    # Only ancestors can dominate this node. Walk their indexed incoming edges,
+    # excluding explicit loop returns just as the graph compiler does.
+    predecessors: dict[str, set[str]] = {}
+    successors: dict[str, list[str]] = {}
+    pending = [node_id]
+    while pending:
+        current = pending.pop()
+        if current in predecessors:
+            continue
+        preds = {
+            _edge_source_id(edge)
+            for edge in graph.inbound_index.get(current, ())
+            if not _edge_allows_cycle(edge)
+            and _edge_source_id(edge) in graph.nodes_by_id
+        }
+        predecessors[current] = preds
+        for predecessor in preds:
+            successors.setdefault(predecessor, []).append(current)
+        pending.extend(preds)
+
+    # In a DAG, a node's immediate dominator is the common ancestor of its
+    # predecessors in the dominator tree. Store that tree instead of an entire
+    # set of dominators for every node; chains then take linear space and work.
+    remaining = {current: len(preds) for current, preds in predecessors.items()}
+    ready = deque(current for current, count in remaining.items() if count == 0)
+    parents: dict[str | None, str | None] = {None: None}
+    depths: dict[str | None, int] = {None: 0}
+    while ready:
+        current = ready.popleft()
+        preds = iter(predecessors[current])
+        shared = next(preds, None)
+        for predecessor in preds:
+            other: str | None = predecessor
+            while shared != other:
+                if depths[shared] >= depths[other]:
+                    shared = parents[shared]
+                else:
+                    other = parents[other]
+        parents[current] = shared
+        depths[current] = depths[shared] + 1
+        for successor in successors.get(current, ()):
+            remaining[successor] -= 1
+            if remaining[successor] == 0:
+                ready.append(successor)
+
+    if node_id not in parents:
+        # Compiled graphs reject unmarked cycles. Keep the prior behavior for
+        # callers supplying an unvalidated graph rather than changing results.
+        return _cyclic_guaranteed_context_node_ids(graph=graph, node_id=node_id)
+    result: set[str] = set()
+    current = parents[node_id]
+    while current is not None:
+        result.add(current)
+        current = parents[current]
+    return result
+
+
+def _cyclic_guaranteed_context_node_ids(*, graph: ExecutionGraph, node_id: str) -> set[str]:
     node_ids = set(graph.nodes_by_id)
     if node_id not in node_ids:
         return set()
