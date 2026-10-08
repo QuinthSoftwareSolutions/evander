@@ -204,23 +204,22 @@ class ApprovalAuditAdminService:
     ) -> list[dict[str, Any]]:
         if not self.config.audit_log_path.exists():
             return []
+        matches: list[dict[str, Any]] = []
         try:
-            lines = self.config.audit_log_path.read_text(encoding="utf-8").splitlines()
+            for raw_line in iter_file_lines_reverse(self.config.audit_log_path, errors="strict"):
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and approval_audit_payload_matches_request(
+                    payload, request
+                ):
+                    matches.append(payload)
+                if len(matches) >= limit:
+                    break
         except (OSError, UnicodeError) as exc:
             LOGGER.error("Approval audit log read failed (%s)", type(exc).__name__)
             return []
-        matches: list[dict[str, Any]] = []
-        for raw_line in reversed(lines):
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and approval_audit_payload_matches_request(
-                payload, request
-            ):
-                matches.append(payload)
-            if len(matches) >= limit:
-                break
         matches.reverse()
         return matches
 
@@ -1134,7 +1133,9 @@ def tool_call_recent_scan_max_lines(limit: int) -> int:
     return max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, max(1, int(limit)) * 25))
 
 
-def iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:
+def iter_file_lines_reverse(
+    path: Path, *, block_size: int = 64 * 1024, errors: str = "replace"
+) -> Iterator[str]:
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
@@ -1148,9 +1149,9 @@ def iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Itera
             buffer = lines[0]
             for raw_line in reversed(lines[1:]):
                 if raw_line:
-                    yield raw_line.decode("utf-8", errors="replace")
+                    yield raw_line.decode("utf-8", errors=errors)
         if buffer:
-            yield buffer.decode("utf-8", errors="replace")
+            yield buffer.decode("utf-8", errors=errors)
 
 
 def tool_call_audit_entry_matches_filters(

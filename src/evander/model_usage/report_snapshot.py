@@ -90,12 +90,16 @@ class CostReportSnapshot:
     def event_ids_for(self, *, field: str, values: Iterable[str]) -> set[str]:
         if field not in {"session_id", "dispatch_id"}:
             raise ValueError("unsupported cost report lookup")
+        unique_values = list(dict.fromkeys(values))
         result: set[str] = set()
-        for value in values:
+        for offset in range(0, len(unique_values), 400):
+            chunk = unique_values[offset : offset + 400]
+            placeholders = ",".join("?" for _ in chunk)
             result.update(
                 row["event_id"]
                 for row in self.connection.execute(
-                    f"SELECT event_id FROM model_usage_events WHERE {field} = ?", (value,)
+                    f"SELECT event_id FROM model_usage_events WHERE {field} IN ({placeholders})",
+                    chunk,
                 )
             )
         return result

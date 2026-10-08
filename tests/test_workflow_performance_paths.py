@@ -385,7 +385,7 @@ def test_index_v1_migration_reclaims_existing_orphans_by_fts_rowid(tmp_path):
         db.execute("INSERT INTO content_search(rowid,hash,terms) VALUES(99,'orphan','text')")
     assert store.collect_content_garbage() == 1
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
         assert db.execute("SELECT COUNT(*) FROM content_search").fetchone()[0] == 0
 
 

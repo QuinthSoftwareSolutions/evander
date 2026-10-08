@@ -113,10 +113,11 @@ def list_memory_records(
     tag_filter = {_required_text(value, "tags_any").casefold() for value in tags_any or []}
     normalized_query = _optional_text(query_text)
     query_lower = normalized_query.casefold() if normalized_query is not None else None
+    visibility = _MemoryVisibility(state, actor)
     rows = [
         memory
         for memory in state.memories.values()
-        if memory_visible_to_actor(state, memory, actor=actor)
+        if visibility.visible(memory)
         and _memory_matches_scope(
             memory,
             team_id=team_id,
@@ -284,11 +285,12 @@ class TeamMemorySemanticService:
                 continue
             scores_by_memory_id.setdefault(memory_id, point.score)
         records: list[dict[str, Any]] = []
+        visibility = _MemoryVisibility(state, actor)
         for memory_id, score in scores_by_memory_id.items():
             memory = state.memories.get(memory_id)
             if memory is None:
                 continue
-            if not memory_visible_to_actor(state, memory, actor=actor):
+            if not visibility.visible(memory):
                 continue
             if not _memory_matches_scope(
                 memory,
@@ -363,16 +365,33 @@ def memory_visible_to_actor(
     *,
     actor: PersistentAgent | None,
 ) -> bool:
-    if actor is None:
+    return _MemoryVisibility(state, actor).visible(memory)
+
+
+class _MemoryVisibility:
+    """Resolve authorization lazily once for one memory read and state view."""
+
+    def __init__(self, state: TeamState, actor: PersistentAgent | None) -> None:
+        self._state = state
+        self._actor = actor
+        self._team_ids: set[str] | None = None
+        self._project_ids: set[str] | None = None
+
+    def visible(self, memory: TeamMemoryRecord) -> bool:
+        actor = self._actor
+        if actor is None:
+            return True
+        if self._team_ids is None:
+            self._team_ids = _visible_team_ids(self._state, actor)
+        if memory.team_id not in self._team_ids:
+            return False
+        if memory.scope == TeamMemoryScope.AGENT_PRIVATE:
+            return memory.agent_id == actor.id
+        if memory.scope == TeamMemoryScope.PROJECT and memory.project_id is not None:
+            if self._project_ids is None:
+                self._project_ids = _visible_project_ids(self._state, actor)
+            return memory.project_id in self._project_ids
         return True
-    visible_team_ids = _visible_team_ids(state, actor)
-    if memory.team_id not in visible_team_ids:
-        return False
-    if memory.scope == TeamMemoryScope.AGENT_PRIVATE:
-        return memory.agent_id == actor.id
-    if memory.scope == TeamMemoryScope.PROJECT and memory.project_id is not None:
-        return memory.project_id in _visible_project_ids(state, actor)
-    return True
 
 
 def _visible_team_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
