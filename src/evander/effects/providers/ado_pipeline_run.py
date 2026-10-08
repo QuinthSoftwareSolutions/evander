@@ -187,18 +187,13 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
                     if str(build.get("status")).lower() == "completed":
                         continue
                     run_id = positive_id(build.get("id"), "active run id")
-                    supplied = build.get("templateParameters")
-                    if not isinstance(supplied, Mapping) or any(
-                        key not in supplied for key in parameters
-                    ):
-                        run, _ = client.get(f"pipelines/{pipeline_id}/runs/{run_id}")
-                        supplied = run.get("templateParameters")
-                    if not isinstance(supplied, Mapping) or any(
-                        key not in supplied for key in parameters
-                    ):
-                        raise RuntimeError(
-                            "Could not determine the target of an active deployment; no run queued"
-                        )
+                    supplied = self._resolve_active_run_parameters(
+                        client,
+                        pipeline_id=pipeline_id,
+                        run_id=run_id,
+                        build=build,
+                        required_parameters=parameters,
+                    )
                     if all(str(supplied[key]) == str(value) for key, value in parameters.items()):
                         raise EffectProviderExecutionError(
                             "A matching deployment is already queued or running; no run queued",
@@ -217,6 +212,29 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
                         "Active deployment pagination could not be completed; no run queued"
                     )
                 seen.add(continuation)
+
+    @staticmethod
+    def _resolve_active_run_parameters(
+        client: AdoBuildClient,
+        *,
+        pipeline_id: int,
+        run_id: int,
+        build: Mapping[str, Any],
+        required_parameters: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        supplied = build.get("templateParameters")
+        if not isinstance(supplied, Mapping) or any(
+            key not in supplied for key in required_parameters
+        ):
+            run, _ = client.get(f"pipelines/{pipeline_id}/runs/{run_id}")
+            supplied = run.get("templateParameters")
+        if not isinstance(supplied, Mapping) or any(
+            key not in supplied for key in required_parameters
+        ):
+            raise RuntimeError(
+                "Could not determine the target of an active deployment; no run queued"
+            )
+        return supplied
 
     def _resolve_directory_config(self, directory_path: str) -> Any:
         context = self._context()

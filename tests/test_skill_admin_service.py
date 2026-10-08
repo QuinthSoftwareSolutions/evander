@@ -184,6 +184,42 @@ def test_skill_admin_service_serializes_replacements_for_the_same_skill(
     assert repository.get_skill("skill-a").content == "# Second\n"
 
 
+def test_skill_replacement_remains_saved_when_session_discovery_fails(tmp_path: Path) -> None:
+    repository = SkillLibraryRepository(tmp_path)
+    service = SkillAdminService(repository)
+    service.create_skill({"name": "skill-a", "content": "# Original\n"})
+    failure = RuntimeError("session inventory unavailable")
+
+    def unavailable_sessions() -> list[object]:
+        raise failure
+
+    def unexpected_install(*args, **kwargs):
+        pytest.fail("Installation must not start when session discovery fails")
+
+    service.configure_agent_skill_propagation(
+        list_active_sessions=unavailable_sessions,
+        install_agent_skills=unexpected_install,
+        is_container_session=lambda _session: False,
+    )
+
+    with pytest.raises(SkillPropagationError) as exc_info:
+        service.create_skill({"name": "skill-a", "content": "# Updated\n", "replace": True})
+
+    assert repository.get_skill("skill-a").content == "# Updated\n"
+    assert exc_info.value.__cause__ is failure
+    assert exc_info.value.details == {
+        "skill_name": "skill-a",
+        "replacement_saved": True,
+        "target_count": None,
+        "updated_session_ids": [],
+        "failures": [{
+            "stage": "discover_sessions",
+            "error_class": "RuntimeError",
+            "error": "session inventory unavailable",
+        }],
+    }
+
+
 def test_skill_admin_service_blocks_delete_when_workflow_references_skill(
     tmp_path: Path,
 ) -> None:

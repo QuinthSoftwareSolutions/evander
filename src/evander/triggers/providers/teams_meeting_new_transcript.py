@@ -167,17 +167,7 @@ def _acknowledge_sequence(
     meeting_id: str,
     sequence: int,
 ) -> dict[str, object]:
-    raw_sequences = state.get("last_sequences_by_meeting")
-    if isinstance(raw_sequences, dict):
-        sequences = {
-            str(existing_meeting_id): int(existing_sequence)
-            for existing_meeting_id, existing_sequence in raw_sequences.items()
-            if str(existing_meeting_id).strip()
-            and isinstance(existing_sequence, int)
-            and existing_sequence >= 0
-        }
-    else:
-        sequences = _last_sequences_by_meeting(state)
+    sequences = _last_sequences_by_meeting(state)
     sequences[meeting_id] = max(sequences.get(meeting_id, 0), sequence)
     state["last_sequences_by_meeting"] = sequences
     return state

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-08 - Consolidate internal control-plane helpers (0.86.1)
+
+- Share artifact read selection and audit-line decoding, and separate active-session
+  discovery from skill propagation.
+- Consolidate local-ticket trigger polling, strict timestamp parsing, and Teams
+  meeting cursor normalization.
+- Extract shared HTTP address checks, VM copy permission handling, and Azure DevOps
+  pipeline template-parameter resolution.
+- Share streaming and non-streaming relay usage metadata construction while preserving
+  payloads, request correlation, validation, and side-effect ordering.
+
 ## 2026-10-08 - Delete comments and resolve PR threads (0.86.0)
 
 - Add session-scoped tools to delete individual Azure DevOps work-item comments and

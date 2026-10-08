@@ -1,4 +1,3 @@
-
 from gateway_tool_support import call_tool
 import json
 from datetime import UTC, datetime, timedelta
@@ -9,6 +8,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
+from evander.events.models import TriggerEvent
 from evander.gateway import create_server
 from evander.models import SessionManifest, ToolName
 from evander.orchestration.host_polling import single_instance_lock
@@ -643,3 +643,58 @@ def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(
         (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
     )
     assert cursor_payload["meeting-trigger"] == {"last_sequences_by_meeting": {"meeting-1": 600}}
+
+
+@pytest.mark.parametrize(
+    "initial_state",
+    [
+        {
+            "last_sequences_by_meeting": {
+                "meeting-1": 4,
+                "meeting-2": 9,
+                "": 12,
+                "invalid": "13",
+                "negative": -1,
+            }
+        },
+        {
+            "emitted_event_ids": [
+                "meeting-1:4",
+                "meeting-2:3",
+                "meeting-2:9",
+                ":12",
+                "invalid:text",
+                "negative:-1",
+            ]
+        },
+    ],
+)
+def test_meeting_acknowledgement_preserves_other_meetings_and_normalizes_legacy_state(
+    tmp_path: Path,
+    initial_state: dict[str, object],
+) -> None:
+    cursor_store = TriggerCursorStore(tmp_path / "trigger-cursors-teams-meeting.json")
+    cursor_store.put("meeting-trigger", initial_state)
+    provider = TeamsMeetingNewTranscriptTriggerProvider()
+    provider.initialize(
+        TeamsMeetingNewTranscriptTriggerDefinition(
+            id="meeting-trigger",
+            display_name="Meeting transcript",
+            type="trigger:teams-meeting:new-transcript",
+        ),
+        TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=tmp_path)),
+    )
+    for sequence, expected_sequence in [(2, 4), (5, 5)]:
+        provider.acknowledge_published_event(
+            TriggerEvent(
+                event_id=f"meeting-trigger:meeting-1:{sequence}",
+                trigger_id="meeting-trigger",
+                trigger_type="trigger:teams-meeting:new-transcript",
+                occurred_at=datetime(2026, 5, 2, tzinfo=UTC),
+                payload={"meeting_id": "meeting-1", "transcript": {"sequence": sequence}},
+            )
+        )
+        assert cursor_store.get("meeting-trigger")["last_sequences_by_meeting"] == {
+            "meeting-1": expected_sequence,
+            "meeting-2": 9,
+        }
