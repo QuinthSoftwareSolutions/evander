@@ -1884,6 +1884,10 @@ def test_update_pull_request_schema_advertises_azure_devops_aliases(tmp_path: Pa
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["azure_devops", "azure-devops", "ado"]
     assert "description" in update_tool.parameters["properties"]
+    artifacts_schema = update_tool.parameters["properties"]["artifact_ids"]
+    assert {"type": "array", "items": {"type": "string"}} in artifacts_schema["anyOf"]
+    assert "artifact_ids" not in update_tool.parameters["required"]
+    assert update_tool.parameters["properties"]["request_id"]["default"] is None
 
 
 def test_mssql_tools_call_container_worker_backend_and_redact_audit(

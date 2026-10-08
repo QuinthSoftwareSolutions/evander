@@ -253,6 +253,8 @@ def register_pr_tools(
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
         expected_statuses: list[str] | None = None,
+        artifact_ids: list[str] | None = None,
+        request_id: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -262,6 +264,11 @@ def register_pr_tools(
         Omitted fields remain unchanged. ``description`` replaces the complete PR description;
         pass an empty string to clear it. Use ``expected_statuses`` to skip the mutation when the
         PR is no longer in an expected state, such as ``active``.
+
+        ``artifact_ids`` are session-owned files from ``communication_stage_workspace_file``
+        or inbound downloads. Files are uploaded directly to the PR and their Markdown links
+        appended to ``description``, or to the existing description when it is omitted.
+        File sending must be enabled; supply ``request_id`` when file-send approval is required.
         """
         resolved_session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
@@ -278,24 +285,37 @@ def register_pr_tools(
             add_tags=add_tags or [],
             remove_tags=remove_tags or [],
             expected_statuses=expected_statuses or [],
+            artifact_ids=artifact_ids or [],
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
         args = request.model_dump(mode="json")
         try:
-            context.policy.require_tool(resolved_session_id, ToolName.UPDATE_PULL_REQUEST)
+            session = context.policy.require_tool(resolved_session_id, ToolName.UPDATE_PULL_REQUEST)
+            artifacts = ado_artifacts_for_ids(session, request.artifact_ids)
+            if request.artifact_ids:
+                args["artifacts"] = artifact_audit_summaries(request.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=ado_artifact_approval_payload(request),
+                )
+            update_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "project": request.project,
+                "title": request.title,
+                "description": request.description,
+                "status": request.status,
+                "add_tags": request.add_tags,
+                "remove_tags": request.remove_tags,
+                "expected_statuses": request.expected_statuses,
+            }
+            if artifacts:
+                update_kwargs["attachments"] = artifacts
             response = context.pr_query_service_for_session(
                 resolved_session_id
-            ).update_pull_request(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                project=request.project,
-                title=request.title,
-                description=request.description,
-                status=request.status,
-                add_tags=request.add_tags,
-                remove_tags=request.remove_tags,
-                expected_statuses=request.expected_statuses,
-            )
+            ).update_pull_request(**update_kwargs)
             result = response.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -309,6 +329,7 @@ def register_pr_tools(
                     "skipped": response.skipped,
                     "status": response.status,
                     "tags": response.tags,
+                    "uploaded_attachment_count": len(response.uploaded_attachments),
                 },
             )
             return result

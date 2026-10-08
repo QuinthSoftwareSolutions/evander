@@ -1981,6 +1981,17 @@ class UpdatePullRequestRequest(BaseModel):
     add_tags: list[str] = Field(default_factory=list)
     remove_tags: list[str] = Field(default_factory=list)
     expected_statuses: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
 
     @field_validator("add_tags", "remove_tags", "expected_statuses", mode="before")
     @classmethod
@@ -2012,6 +2023,7 @@ class UpdatePullRequestRequest(BaseModel):
             and self.status is None
             and not self.add_tags
             and not self.remove_tags
+            and not self.artifact_ids
         ):
             raise ValueError("at least one pull request update field is required")
         tag_overlap = {tag.casefold() for tag in self.add_tags} & {
@@ -2037,6 +2049,7 @@ class UpdatePullRequestResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     added_tags: list[str] = Field(default_factory=list)
     removed_tags: list[str] = Field(default_factory=list)
+    uploaded_attachments: list[dict[str, Any]] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
