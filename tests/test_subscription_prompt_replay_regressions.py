@@ -3,13 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.execution import ExecutionStatusKind
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
 
-def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path) -> None:
+@pytest.mark.parametrize("speed", [False, True, "ultrafast"])
+def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path, speed) -> None:
     retry_at = datetime.now(UTC) + timedelta(minutes=10)
     record = SimpleNamespace(
         effect_id="effect-prompt",
@@ -51,7 +54,7 @@ def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path) -> N
             "execution_id": "worker-execution-1",
             "reasoning_effort": "low",
             "reasoning_effort_source": "session",
-            "fast_mode": False,
+            "fast_mode": speed,
             "fast_mode_source": "prompt",
         },
     )
@@ -91,7 +94,7 @@ def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path) -> N
     assert queued is not None
     assert queued.reasoning_effort == "low"
     assert queued.reasoning_effort_source == "session"
-    assert queued.fast_mode is False
+    assert queued.fast_mode == speed
     assert queued.fast_mode_source == "prompt"
     assert queued.dispatch_id == "dispatch-1"
     assert queued.subscription_profile_id == "team-a"

@@ -11,6 +11,7 @@ from pydantic import Field as PydanticField
 
 from evander.models import (
     CancelScheduledWakeResponse,
+    DeletePrCommentRequest,
     DownloadPrFeedbackAttachmentRequest,
     DownloadPrFeedbackAttachmentResponse,
     GetPullRequestRequest,
@@ -22,6 +23,7 @@ from evander.models import (
     PostPrFeedbackReplyRequest,
     PostPrInlineCommentRequest,
     RequestPrReviewRequest,
+    ResolvePrCommentRequest,
     RunScriptRequest,
     RunScriptResponse,
     ScheduleResumeRequest,
@@ -253,6 +255,8 @@ def register_pr_tools(
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
         expected_statuses: list[str] | None = None,
+        artifact_ids: list[str] | None = None,
+        request_id: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -262,6 +266,11 @@ def register_pr_tools(
         Omitted fields remain unchanged. ``description`` replaces the complete PR description;
         pass an empty string to clear it. Use ``expected_statuses`` to skip the mutation when the
         PR is no longer in an expected state, such as ``active``.
+
+        ``artifact_ids`` are session-owned files from ``communication_stage_workspace_file``
+        or inbound downloads. Files are uploaded directly to the PR and their Markdown links
+        appended to ``description``, or to the existing description when it is omitted.
+        File sending must be enabled; supply ``request_id`` when file-send approval is required.
         """
         resolved_session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
@@ -278,24 +287,37 @@ def register_pr_tools(
             add_tags=add_tags or [],
             remove_tags=remove_tags or [],
             expected_statuses=expected_statuses or [],
+            artifact_ids=artifact_ids or [],
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
         args = request.model_dump(mode="json")
         try:
-            context.policy.require_tool(resolved_session_id, ToolName.UPDATE_PULL_REQUEST)
+            session = context.policy.require_tool(resolved_session_id, ToolName.UPDATE_PULL_REQUEST)
+            artifacts = ado_artifacts_for_ids(session, request.artifact_ids)
+            if request.artifact_ids:
+                args["artifacts"] = artifact_audit_summaries(request.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=ado_artifact_approval_payload(request),
+                )
+            update_kwargs: dict[str, Any] = {
+                "provider": request.provider,
+                "repo": request.repo,
+                "pr_id": request.pr_id,
+                "project": request.project,
+                "title": request.title,
+                "description": request.description,
+                "status": request.status,
+                "add_tags": request.add_tags,
+                "remove_tags": request.remove_tags,
+                "expected_statuses": request.expected_statuses,
+            }
+            if artifacts:
+                update_kwargs["attachments"] = artifacts
             response = context.pr_query_service_for_session(
                 resolved_session_id
-            ).update_pull_request(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                project=request.project,
-                title=request.title,
-                description=request.description,
-                status=request.status,
-                add_tags=request.add_tags,
-                remove_tags=request.remove_tags,
-                expected_statuses=request.expected_statuses,
-            )
+            ).update_pull_request(**update_kwargs)
             result = response.model_dump(mode="json")
             audit_success(
                 resolved_session_id,
@@ -309,6 +331,7 @@ def register_pr_tools(
                     "skipped": response.skipped,
                     "status": response.status,
                     "tags": response.tags,
+                    "uploaded_attachment_count": len(response.uploaded_attachments),
                 },
             )
             return result
@@ -1117,6 +1140,118 @@ def register_pr_tools(
                 error_class="unexpected_error",
             )
             raise
+
+    def _manage_pr_comment(
+        request: DeletePrCommentRequest | ResolvePrCommentRequest, tool_name: ToolName
+    ) -> dict[str, Any]:
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(request.session_id, tool_name)
+            service = context.pr_publish_service_for_session(request.session_id)
+            operation = (
+                service.delete_comment
+                if isinstance(request, DeletePrCommentRequest)
+                else service.resolve_comment
+            )
+            result = operation(**request.model_dump(exclude={"session_id"}))
+            audit_success(request.session_id, tool_name, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, tool_name, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                tool_name,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                tool_name,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def delete_pr_comment(
+        provider: str,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: Literal["thread_comment", "issue_comment", "review_comment"] | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Delete one PR comment. Use IDs and feedback_kind from list_all_feedback.
+
+        Azure DevOps requires thread_id and comment_id. GitHub requires comment_id and
+        feedback_kind=issue_comment (conversation) or review_comment (inline review).
+        GitHub verifies the comment belongs to this PR before deleting it.
+        """
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        return _manage_pr_comment(
+            DeletePrCommentRequest(
+                session_id=resolved_session_id,
+                provider=normalize_pr_feedback_provider(provider),
+                repo=repo.strip(),
+                pr_id=pr_id.strip(),
+                comment_id=comment_id.strip(),
+                thread_id=(
+                    thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+                ),
+                feedback_kind=feedback_kind,
+            ),
+            ToolName.DELETE_PR_COMMENT,
+        )
+
+    @server.tool()
+    def resolve_pr_comment(
+        provider: str,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the entire PR comment thread, including its replies.
+
+        Azure DevOps requires thread_id from list_all_feedback and sets status to fixed.
+        For GitHub, pass a review comment_id from feedback or a GraphQL review thread_id.
+        GitHub feedback's thread_id is a review ID; use comment_id for those records.
+        GitHub conversation comments and review summaries cannot be resolved as threads.
+        """
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        return _manage_pr_comment(
+            ResolvePrCommentRequest(
+                session_id=resolved_session_id,
+                provider=normalize_pr_feedback_provider(provider),
+                repo=repo.strip(),
+                pr_id=pr_id.strip(),
+                thread_id=(
+                    thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+                ),
+                comment_id=(
+                    comment_id.strip() if isinstance(comment_id, str) and comment_id.strip() else None
+                ),
+            ),
+            ToolName.RESOLVE_PR_COMMENT,
+        )
 
     @server.tool()
     def post_pr_comment(

@@ -8,6 +8,7 @@ from typing import Any
 from evander.workflow.packs import WorkflowPackGraph
 
 STATE_NODE_TYPES = frozenset({"effect:state:update", "query:state:get"})
+DIRECTORY_SCOPED_NODE_TYPES = STATE_NODE_TYPES | {"gate:event:validate"}
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,8 @@ def resolve_workflow_graph_metadata(
 ) -> dict[str, ResolvedWorkflowGraphMetadata]:
     """Resolve persisted graph metadata for runtime nodes.
 
-    Exact graph metadata is preserved for any connected component, but only state-node
-    components are required to have persisted metadata.
+    Exact graph metadata is preserved for any connected component. Components containing
+    directory-scoped nodes must have persisted metadata.
     """
 
     normalized_nodes = _normalize_node_map(nodes_by_id)
@@ -53,12 +54,12 @@ def resolve_workflow_graph_metadata(
     node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata] = {}
     for component in components:
         component_key = frozenset(component)
-        state_node_ids = [
+        scoped_node_ids = [
             node_id
             for node_id in component
-            if _node_type(normalized_nodes[node_id]) in STATE_NODE_TYPES
+            if _node_type(normalized_nodes[node_id]) in DIRECTORY_SCOPED_NODE_TYPES
         ]
-        if not state_node_ids:
+        if not scoped_node_ids:
             continue
 
         overlapping_graphs = _graphs_overlapping_component(normalized_graphs, component_key)
@@ -67,7 +68,7 @@ def resolve_workflow_graph_metadata(
             for graph in overlapping_graphs
             if _normalized_node_id_set(graph.node_ids) != component_key
         ]
-        state_node_id = state_node_ids[0]
+        scoped_node_id = scoped_node_ids[0]
         if invalid_overlaps:
             invalid_graph = invalid_overlaps[0]
             graph_node_ids = _normalized_node_id_set(invalid_graph.node_ids)
@@ -78,18 +79,18 @@ def resolve_workflow_graph_metadata(
                 unknown_list = ", ".join(unknown_node_ids)
                 raise ValueError(
                     f"Workflow graph {invalid_graph.id} references unknown node IDs: {unknown_list}; "
-                    f"persisted workflow graph metadata is required for workflow node {state_node_id}."
+                    f"persisted workflow graph metadata is required for workflow node {scoped_node_id}."
                 )
             raise ValueError(
                 f"Workflow graph {invalid_graph.id} node_ids must exactly match the connected component "
-                f"for workflow node {state_node_id}; persisted workflow graph metadata is required."
+                f"for workflow node {scoped_node_id}; persisted workflow graph metadata is required."
             )
 
         metadata = exact_metadata_by_component.get(component_key)
         if metadata is None:
             raise ValueError(
                 "Workflow node "
-                f"{state_node_id} requires persisted workflow graph metadata for its connected component."
+                f"{scoped_node_id} requires persisted workflow graph metadata for its connected component."
             )
 
         for node_id in component:

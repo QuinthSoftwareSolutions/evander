@@ -45,6 +45,10 @@ The assistant-level routing corpus has a separate opt-in check: `./.venv/bin/pyt
 scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root`. It makes
 one billable call per labeled sample and does not edit workflows or assistant settings.
 See [Classification](classification.md) for profile setup and verification details.
+For an enabled OpenAI Decisions provider, pass `--provider openai_decisions` to
+`scripts/smoke_classification.py --live` to use it without changing the directory default.
+Provision host credentials and model `gpt-6-luna` first. Automated HTTP transport checks do not
+establish account access or provider accuracy; see [OpenAI Decisions](classification.md#openai-decisions).
 
 ## Optional Codex Subscription Egress Smoke
 

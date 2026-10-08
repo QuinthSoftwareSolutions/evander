@@ -250,7 +250,7 @@ def _derive_workflow_node_output_schema(
             if upstream_ids
             else {}
         )
-    elif node_type == "gate:validate":
+    elif node_type in {"gate:validate", "gate:event:validate"}:
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
         schema = (
             _derive_workflow_node_output_schema(

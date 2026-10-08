@@ -18,6 +18,7 @@ from evander.model_usage.pricing import (
     extract_cached_input_tokens,
     load_model_pricing_catalog,
     load_model_pricing_catalog_payload,
+    model_pricing_catalog_payload,
     seed_default_model_pricing_catalog,
 )
 
@@ -79,6 +80,68 @@ def _seed_catalog():
 
 
 @pytest.mark.parametrize(
+    "endpoint, expected_rule, expected_total",
+    [
+        ("decisions", "openai:gpt-6-luna:decisions:2026-10-06", Decimal("0.00085")),
+        ("responses", "openai:gpt-6-luna:text:2026-09-22", Decimal("0.0009225")),
+    ],
+)
+def test_decisions_pricing_is_endpoint_scoped_and_survives_catalog_edits(
+    endpoint, expected_rule, expected_total
+):
+    event = _event(
+        model="gpt-6-luna",
+        input_tokens=10000,
+        output_tokens=0,
+        total_tokens=10000,
+        occurred_at=datetime(2026, 10, 7, 12, 0, tzinfo=UTC),
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens_details": {
+                    "cached_tokens": 1000,
+                    "cache_write_tokens": 500,
+                }
+            }
+        },
+    ).model_copy(update={"provider_endpoint_identifier": endpoint})
+    payload = model_pricing_catalog_payload(_seed_catalog())
+    catalog = load_model_pricing_catalog_payload(payload)
+    estimate = estimate_model_usage_cost(event, catalog)
+    assert estimate.status == "estimated" and estimate.pricing_rule_id == expected_rule
+    assert estimate.estimated_total == expected_total
+    if endpoint == "decisions":
+        assert estimate.cached_input_cost == estimate.cache_write_cost == estimate.output_cost == 0
+
+
+def test_endpoint_pricing_takes_priority_over_newer_generic_model_rules():
+    payload = _pricing_catalog_payload(version="endpoint-rules", model="gpt-6-luna")
+    payload["rules"][0]["effective_from"] = "2026-10-07T00:00:00Z"
+    payload["rules"].append(
+        {
+            "id": "decisions-only",
+            "provider": "openai",
+            "models": ["gpt-6-luna"],
+            "provider_endpoint_identifier": "decisions",
+            "effective_from": "2026-10-06T00:00:00Z",
+            "rates_per_1m_tokens": {"input": "0.10", "output": "0"},
+        }
+    )
+    event = _event(
+        model="gpt-6-luna",
+        input_tokens=1000,
+        output_tokens=0,
+        occurred_at=datetime(2026, 10, 7, 12, 0, tzinfo=UTC),
+    )
+    catalog = load_model_pricing_catalog_payload(payload)
+    decisions = estimate_model_usage_cost(
+        event.model_copy(update={"provider_endpoint_identifier": "decisions"}), catalog
+    )
+    assert decisions.pricing_rule_id == "decisions-only"
+    assert decisions.estimated_total == Decimal("0.0001")
+    assert estimate_model_usage_cost(event, catalog).estimated_total == Decimal("0.001")
+
+
+@pytest.mark.parametrize(
     ("model", "rule_id", "expected_total"),
     [
         ("gpt-6-sol", "openai:gpt-6-sol:text:2026-09-22", Decimal("0.012")),
@@ -101,6 +164,79 @@ def test_seed_catalog_prices_current_gpt6_models(
     assert estimate.status == "estimated"
     assert estimate.pricing_rule_id == rule_id
     assert estimate.estimated_total == expected_total
+
+
+@pytest.mark.parametrize(
+    ("requested_tier", "returned_tier", "expected_rule_id", "expected_total"),
+    [
+        ("ultrafast", None, "openai:gpt-6-astra:ultrafast:2026-10-07", "0.36"),
+        (None, "ultrafast", "openai:gpt-6-astra:ultrafast:2026-10-07", "0.36"),
+        ("ultrafast", "default", "openai:gpt-6-astra:text:2026-09-09", "0.06"),
+        ("ultrafast", "priority", "openai:gpt-6-astra:priority:2026-09-09", "0.12"),
+    ],
+)
+def test_seed_catalog_prices_astra_ultrafast_using_recorded_tier(
+    requested_tier: str | None,
+    returned_tier: str | None,
+    expected_rule_id: str,
+    expected_total: str,
+) -> None:
+    event = _event(
+        model="gpt-6-astra",
+        input_tokens=1000,
+        output_tokens=1000,
+        total_tokens=2000,
+        # Pricing verification must not exclude previously recorded tier usage.
+        occurred_at=datetime(2026, 10, 6, tzinfo=UTC),
+        raw_usage_metadata={
+            "request_metadata": {"service_tier": requested_tier},
+            "response_metadata": {"service_tier": returned_tier},
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == expected_rule_id
+    assert estimate.estimated_total == Decimal(expected_total)
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "expected_costs"),
+    [
+        (1000, ("0.042", "0.0012", "0.0075", "0.3", "0.3507")),
+        (272000, ("16.302", "0.0012", "0.0075", "0.3", "16.6107")),
+        (272001, ("32.60412", "0.0024", "0.015", "0.45", "33.07152")),
+    ],
+)
+def test_seed_catalog_prices_astra_ultrafast_cache_and_long_context(
+    input_tokens: int, expected_costs: tuple[str, ...]
+) -> None:
+    event = _event(
+        model="gpt-6-astra",
+        input_tokens=input_tokens,
+        output_tokens=1000,
+        total_tokens=input_tokens + 1000,
+        occurred_at=datetime(2026, 10, 7, tzinfo=UTC),
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens_details": {"cached_tokens": 200, "cache_write_tokens": 100},
+            },
+            "request_metadata": {"service_tier": "ultrafast"},
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == "openai:gpt-6-astra:ultrafast:2026-10-07"
+    assert (
+        estimate.input_cost,
+        estimate.cached_input_cost,
+        estimate.cache_write_cost,
+        estimate.output_cost,
+        estimate.estimated_total,
+    ) == tuple(Decimal(cost) for cost in expected_costs)
 
 
 def test_openai_pricing_estimates_cached_input_costs() -> None:
@@ -163,8 +299,11 @@ def test_openrouter_provider_reported_cost_is_authoritative_and_distinct() -> No
 @pytest.mark.parametrize("cost", [0, "0.1234"])
 @pytest.mark.parametrize("usage_status", ["available", "usage_unavailable"])
 def test_openrouter_reported_cost_needs_no_catalog(cost, usage_status):
-    event = _event(provider="openrouter", raw_usage_metadata={"usage": {"cost": cost}},
-                   normalized_usage_status=usage_status)
+    event = _event(
+        provider="openrouter",
+        raw_usage_metadata={"usage": {"cost": cost}},
+        normalized_usage_status=usage_status,
+    )
     estimate = estimate_model_usage_cost(event, None)
     assert estimate.reported_total == Decimal(str(cost))
     assert estimate.estimated_total is None
@@ -446,8 +585,7 @@ def test_default_model_pricing_catalog_path_uses_runtime_state(tmp_path, monkeyp
 def test_seed_default_model_pricing_catalog_preserves_operator_edits(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     catalog_path = seed_default_model_pricing_catalog(tmp_path)
-    seeded_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert seeded_payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
+    assert catalog_path.read_bytes() == default_model_pricing_catalog_seed_path().read_bytes()
 
     operator_payload = _pricing_catalog_payload(
         version="operator-pricing",
@@ -497,8 +635,7 @@ def test_seed_default_model_pricing_catalog_ignores_pristine_legacy_seed(
         legacy_catalog_path=legacy_catalog_path,
     )
 
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
+    assert catalog_path.read_bytes() == default_model_pricing_catalog_seed_path().read_bytes()
 
 
 def test_openai_pricing_prefers_service_tier_specific_rules() -> None:

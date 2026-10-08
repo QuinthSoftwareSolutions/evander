@@ -125,6 +125,9 @@ export function createDefaultNode(kind: WorkflowNodeKind, type: string, id: stri
   if (kind === "gate" && type === "gate:filter") {
     return workflowNode(id, "New filter", type, {}, {});
   }
+  if (kind === "gate" && type === "gate:event:validate") {
+    return workflowNode(id, "Validate event", type, { event_type: "", payload: {} });
+  }
   if (kind === "gate" && type === "gate:map") {
     return workflowNode(id, "New map", type, {
       template: {}

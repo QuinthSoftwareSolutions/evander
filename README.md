@@ -40,8 +40,10 @@ Git, and HTTP surfaces.
 - Session cost categories with per-prompt overrides, a dashboard cost chart, and
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
-  choice/score/boolean evaluations, Smart switch routing, a structured editor, and Jev as the first provider
-- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
+  choice/score/boolean evaluations, Smart switch routing, a structured editor, Jev, and a
+  opt-in [OpenAI Decisions](docs/classification.md#openai-decisions)
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and inbound phone calls,
+  with [explicit caller routing to agent sessions](docs/operations.md#caller-routing-to-agent-sessions)
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
@@ -469,6 +471,12 @@ Workflow-specific payloads are intentionally not schema-validated by the HTTP AP
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
 example `${{trigger-external-deploy.payload.target}}`.
 
+Directory owners can register JSON Schemas under **Configuration → Automation & Assignment →
+Events**. The manual `trigger:event` action generates fields from the effective schema and
+validates submissions before queuing. Use `gate:event:validate` to explicitly validate
+automatic event bodies and branch through `valid` or `invalid`. Definitions inherit by
+event type, with whole-definition local overrides; see [Event definitions](docs/configuration-reference.md#event-definitions).
+
 ### Signed Workflow Webhooks
 
 For public inbound workflows, configure `trigger:http:webhook` and POST to
@@ -858,6 +866,9 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   provider adapter (no guest PAT required).
 - Use `post_ado_backlog_comment` to add an Azure DevOps backlog comment, including staged image
   artifacts when outbound communication file send is enabled for the session.
+- Use `delete_ado_backlog_comment(id, comment_id, project?)` to delete one Azure DevOps
+  work-item comment. Read comment IDs with `get_ado_backlog_item` and grant the delete tool
+  explicitly in the session's `allowed_tools`.
 - Use `update_ado_backlog_text` to update the work item description or acceptance criteria and
   append staged artifact links/images to those fields.
 - Use `update_ado_backlog_title` to rename an Azure DevOps backlog item by numeric work-item id;
@@ -1125,9 +1136,12 @@ Use this when you want the guest to wake only for new review feedback and post t
    Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
    Use `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
-   remove_tags?, expected_statuses?, project?)` for an explicitly authorized Azure DevOps
-   metadata update. `description` replaces the complete PR description; omit it to leave the
-   description unchanged and use `expected_statuses=["active"]` to guard against stale requests.
+   remove_tags?, expected_statuses?, project?, artifact_ids?, request_id?)` for an explicitly
+   authorized Azure DevOps metadata update. `description` replaces the complete PR description;
+   omit it to leave the description unchanged unless attaching files. Pass staged `artifact_ids` to upload files
+   directly to the PR and append their Markdown image/download links to the supplied description,
+   or to its current text when `description` is omitted. Use `expected_statuses=["active"]`
+   to guard against stale requests.
    For full thread history, including already-consumed items and agent-authored replies suppressed
    from wake/unread checks, call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list`, `effect:pull-request:update`, and
@@ -1252,6 +1266,8 @@ orchestrator drive the disposable review VM workflow.
 - New MCP tools:
   - `request_pr_review`
   - `post_pr_comment`
+  - `delete_pr_comment`
+  - `resolve_pr_comment`
   - `post_pr_inline_comment`
   - `submit_pr_review`
 - New trigger:
@@ -1262,6 +1278,15 @@ orchestrator drive the disposable review VM workflow.
 `request_pr_review` normalizes the PR target, resolves provider metadata (title, URL, base/head
 refs and commits), and writes a durable request record into the host review-request inbox. The
 trigger provider polls that inbox and emits a `review_request` payload for workflow consumption.
+
+Use `delete_pr_comment(provider, repo, pr_id, comment_id, ...)` to delete one PR comment.
+Azure DevOps also requires `thread_id`; GitHub requires `feedback_kind` of `issue_comment`
+or `review_comment`. Use the IDs returned by `list_all_feedback`.
+Use `resolve_pr_comment(provider, repo, pr_id, ...)` to resolve the entire comment thread:
+pass `thread_id` for Azure DevOps, or a review `comment_id` for GitHub. GitHub also accepts
+a GraphQL review-thread ID. Grant these tools explicitly; normal directory and session
+approval policies apply.
+
 Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_review` with
 `comments=[{"path": "...", "line": 123, "body": "..."}]` for batched inline findings. Do not
 write the file path and line number into the comment body; the tool attaches the provider-native
@@ -1270,6 +1295,15 @@ line context.
 For Azure DevOps PRs, PR comment/reply/review tools accept staged `artifact_ids`. The gateway
 uploads each artifact to the PR attachments API and appends Markdown image/link references to the
 posted text.
+
+`update_pull_request` also accepts staged `artifact_ids` for description attachments. The
+gateway uploads files and appends their image/download links directly to the description.
+For example, stage `/home/agent/repo/review.csv` with `communication_stage_workspace_file`,
+then call `update_pull_request(provider="azure_devops", repo="example-repo", pr_id="17",
+artifact_ids=["<returned-artifact-id>"], expected_statuses=["active"])`. Its response includes
+`uploaded_attachments` with the provider download URLs. File sending must be enabled and the
+artifacts must belong to the caller; MIME, extension, size, and exact file-send approval policies
+apply. Supplying `description` replaces the existing text before the links are appended.
 
 ### Typical workflow shape
 
@@ -1290,7 +1324,8 @@ and retries retain the selected effort. See the
 [reasoning effort reference](docs/configuration-reference.md#agent-reasoning-effort).
 
 Codex sessions also have a **Default speed** setting. Set `fast_mode: true` for
-Fast mode on a supported public OpenAI model, `false` for standard speed, or leave
+Fast mode or `fast_mode: "ultrafast"` for Ultrafast on a supported public OpenAI
+model and account, `false` for standard speed, or leave
 a prompt override unset to inherit the session default. Queues and retries retain
 the captured speed. See the
 [Fast mode reference](docs/configuration-reference.md#agent-fast-mode).

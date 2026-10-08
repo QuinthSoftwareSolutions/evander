@@ -27,6 +27,7 @@ import { isRecord } from "./editorValues";
 import {
   createStringMapDraftRow,
   enumLiteralFallbackValue,
+  enumLiteralValue,
   fieldValueMode,
   isExactBindingValue,
   parseJsonDraft,
@@ -289,7 +290,7 @@ export function createNodeFieldActions({
     if (nextMode === "bind") {
       updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
     } else {
-      updateKnownField(field.key, enumLiteralFallbackValue(field, value));
+      updateKnownField(field.key, enumLiteralValue(field, enumLiteralFallbackValue(field, value)));
     }
   }
 

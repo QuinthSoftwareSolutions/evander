@@ -1,3 +1,4 @@
+import type { FastMode } from "./fastMode";
 import type { ReasoningEffortCatalog } from "./reasoningEffort";
 export type AdminView =
   | "workflow"
@@ -165,7 +166,7 @@ export type AgentCapabilities = {
 
 export type AgentPromptQueueRecord = {
   reasoning_effort?: string | null;
-  fast_mode?: boolean | null;
+  fast_mode?: FastMode | null;
   reasoning_effort_source?: "prompt" | "session" | "default" | null;
   fast_mode_source?: "prompt" | "session" | "default" | null;
   queue_key: string;
@@ -246,7 +247,7 @@ export type AgentCreateRequest = {
   directory_path?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
-  fast_mode?: boolean | null;
+  fast_mode?: FastMode | null;
   ttl_seconds?: number | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
@@ -399,7 +400,7 @@ export type AgentCreateOptionsResponse = {
 export type AgentPolicyUpdateRequest = {
   model?: string | null;
   reasoning_effort?: string | null;
-  fast_mode?: boolean | null;
+  fast_mode?: FastMode | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
   web_search_enabled?: boolean;
@@ -439,7 +440,7 @@ export type AgentSessionPolicy = {
   agent_harness?: string;
   effective_model_provider_mode?: string;
   reasoning_effort?: string | null;
-  fast_mode?: boolean | null;
+  fast_mode?: FastMode | null;
   session_id: string;
   model: string | null;
   expires_at: string | null;

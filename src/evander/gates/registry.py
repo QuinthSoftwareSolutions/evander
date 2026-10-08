@@ -81,6 +81,7 @@ class GateProviderFactory:
             provider_config=gate_provider_config_blob(resolved_config),
             provider_config_resolver=self.provider_config_resolver,
             vm_inventory=self._gate_adapter,
+            event_schemas=getattr(self.admin_service, "event_schemas", None),
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},

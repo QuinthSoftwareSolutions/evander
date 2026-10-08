@@ -594,22 +594,73 @@ caller-supplied event names under the reserved `external.` prefix, so a POST wit
 
 The editor's **Trigger manually** action queues only the selected saved, enabled
 `trigger:event` node, using its configured event type without adding a prefix. It
-uses the normal event envelope (`payload` contains the entered JSON object) and
+uses the normal event envelope (`payload` contains the form's JSON object) and
 does not publish to other event listeners. The session-authenticated endpoint is
 `POST /api/workflow-editor/nodes/{node_id}/trigger`; its body requires
 `expected_revision`, a JSON-object `payload`, and a non-empty `request_id` (up to
-128 characters), with optional `workflow_pack` and `correlation_key`. It checks
+128 characters), with optional `workflow_pack` and `correlation_key`. For registered
+events it also requires `schema_revision`, obtained from
+`GET /api/workflow-editor/nodes/{node_id}/event-schema` (with optional `workflow_pack`). It checks
 `workflow_runs.control` in the saved workflow directory and returns HTTP 202 with
 `event_id` and `trace_id`. Retries with the same operator, node, and request ID
 reuse the queued event; use a new request ID for an intentional new run. A fixed
 trigger correlation key is used automatically and conflicting values are rejected.
-Accepted attempts are resolved before checking the current workflow revision, so
+Accepted attempts are resolved before checking current workflow and schema revisions, so
 an unchanged retry can recover its original run after a save or lost response.
 Retry payload comparison ignores object-key order and distinguishes booleans from
 numbers; changing the payload while reusing a request ID is rejected.
 Execution uses the existing runtime configuration behavior; the revision check
-does not pin downstream execution to a snapshot. Event catalog entries currently
-provide names and descriptions rather than payload validation schemas.
+does not pin downstream execution to a snapshot. Registered events render structured
+fields; unsupported schema constructs use a JSON sub-editor. Unregistered events
+retain JSON entry with a notice. The server rejects invalid payloads before queuing,
+returning `details.failures` with `code`, JSON Pointer `path`, and `message`. A stale
+schema returns HTTP 409. `POST /api/workflow-editor/nodes/{node_id}/validate-event`
+checks a `payload` and `schema_revision` without queuing. Shared nodes whose directories
+resolve different schemas cannot be manually triggered until the definitions agree.
+
+#### Event definitions
+
+In **Configuration → Automation & Assignment → Events**, directory owners can create
+and override event definitions using the existing privileged-operations unlock and
+revision checks. Definitions live in the `events` directory domain, stored as
+`runtime/directory-config/root/.../events.json`. Core and enabled provider/add-on
+catalog entries provide defaults; root and child definitions override them by event
+type. Each local definition replaces the whole inherited definition. Removing a local
+definition restores inheritance. `GET /api/admin/event-schemas?directory_path=root`
+returns local configuration, effective and inherited entries, and a revision;
+`PUT` accepts `expected_revision` and the complete local `config`.
+
+```json
+{
+  "events": {
+    "custom.answer": {
+      "label": "Answer received",
+      "description": "An operator's answer to a pending request.",
+      "payload_schema": {
+        "type": "object",
+        "properties": {
+          "answer": {"type": "string", "enum": ["yes", "no"]},
+          "count": {"type": "integer", "minimum": 0}
+        },
+        "required": ["answer"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+Schemas use JSON Schema Draft 2020-12 and declare an object payload. Document-local
+references are supported; remote references and unresolved references are rejected
+on save. References resolve within their schema resource, including nested `$id`
+scopes. Manual forms use JSON entry for resources declaring `$id` and references
+with sibling constraints. Standard format checks run during validation. Validation
+does not coerce types, insert defaults, or modify payloads. Form defaults are editable
+initial values.
+Add-ons declare `payload_schema` on their existing `internal_event_catalog_entries`.
+Automatic event publication, scheduling, and external ingress continue to accept
+object payloads without applying these schemas; add an explicit validation gate to
+enforce a contract in a workflow.
 
 `trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
 `stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
@@ -791,6 +842,7 @@ Type-specific keys:
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:switch` | `cases` | `default_port`, `outputs` |
 | `gate:validate` | `checks` | `outputs` |
+| `gate:event:validate` | `event_type`, `payload` | `outputs` |
 | `gate:for` | `items` | `outputs` |
 | `gate:while` | `when`, `max_iterations` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
@@ -845,6 +897,16 @@ passes and to `invalid` when any predicate fails. Both routes preserve the upstr
 failed check's `code` and `message`, in configuration order. These four gate-owned fields replace
 incoming fields with the same names. Predicate configuration or runtime evaluation errors use the
 standard `error` lifecycle route instead of being reported as business-validation failures.
+
+`gate:event:validate` resolves its bindable `event_type` and `payload`, then checks the
+body against the effective event schema in its persisted workflow directory. Connecting
+an event trigger to a new validator initializes both bindings. It routes to `valid` or
+`invalid` and preserves the incoming event data, adding `valid`, `event_type`,
+`schema_revision`, `schema_source`, and `failures` (stable `code`, JSON Pointer `path`,
+and `message`). These gate-owned fields replace incoming fields with the same names.
+A missing schema routes to `invalid` with `schema.not_registered`; binding, configuration,
+or schema evaluation errors use the standard `error` route. Execution records retain
+the directory, schema revision, and definition source used for the check.
 
 `gate:while` evaluates its `when` predicate on each activation and routes to `body` while the
 predicate is true and `max_iterations` has not been reached. It routes to `done` when the predicate
@@ -1072,13 +1134,14 @@ ordinary persistent agent's session metadata.
 
 ### Agent Fast mode
 
-`fast_mode` is an optional boolean on sessions, `effect:agent:create`, and both
-agent prompt effects. A non-null prompt value overrides the session for that
-invocation: `true` selects Fast, `false` explicitly selects standard speed, and
-null or omission inherits the session default. Unconfigured sessions use standard
-speed. It does not change the model, reasoning effort, authentication mode, or
-subscription profile. Fast is supported only for Codex on the public OpenAI route;
-other harnesses and private/local/provider routes reject an enabled setting.
+`fast_mode` accepts a boolean, `"ultrafast"`, or null on sessions,
+`effect:agent:create`, and both agent prompt effects. A non-null prompt value
+overrides the session for that invocation: `true` selects Fast, `false` explicitly
+selects Standard, `"ultrafast"` selects Ultrafast, and null or omission inherits the
+session default. Unconfigured sessions use standard speed. It does not change the
+model, reasoning effort, authentication mode, or subscription profile. Fast and
+Ultrafast are supported only for Codex on the public OpenAI route; other harnesses
+and private/local/provider routes reject an enabled setting.
 
 When `effect:agent:create` upserts an existing session, omitting `fast_mode`
 preserves its default, `false` selects standard speed, and null clears the stored
@@ -1095,34 +1158,46 @@ this prompt**. The owner-authorized, privilege-locked
 `PUT /api/admin/sessions/{session_id}/model` accepts `fast_mode` together with
 model and effort settings and validates them before persisting any change.
 An omitted field preserves the stored value; `"fast_mode": null` clears it.
-CLI creation and resume commands accept `--fast-mode` / `--no-fast-mode`:
+CLI creation and resume commands accept `--speed standard|fast|ultrafast`.
+The existing `--fast-mode` / `--no-fast-mode` flags remain supported; use one
+speed option per command:
 
 ```bash
+evander-cli set-session-fast-mode example-session --speed ultrafast
 evander-cli set-session-fast-mode example-session --fast-mode
 evander-cli set-session-fast-mode example-session --no-fast-mode
 evander-cli set-session-fast-mode example-session --clear
 evander-cli resume-agent example-session --message "Review the patch" --reasoning-effort max --fast-mode
 ```
 
-Queue and execution records expose the resolved boolean and `fast_mode_source`
+Queue and execution records expose the resolved boolean or `"ultrafast"` and
+`fast_mode_source`
 (`prompt`, `session`, or `default`). Queued prompts, capacity deferrals, scheduled
 wakes, reduced-context retries, and operator steering retain their captured value;
 changes to the session affect newly submitted prompts. Legacy queue entries without
 a captured source resolve the current session when dispatched.
 
-Codex CLI runs explicitly set `service_tier="fast"` or `"default"` on every turn,
-including resumes. Subscription app-server runs send the same selection through
+Codex CLI runs explicitly set `service_tier="ultrafast"`, `"fast"`, or `"default"`
+on every turn, including resumes. Subscription app-server runs send the same selection through
 thread configuration and `turn/start.serviceTier`, so a prompt override does not
-keep later control-plane turns in Fast mode. Codex maps Fast to priority requests.
+keep later control-plane turns at an overridden speed. Codex maps Fast to priority
+requests.
 Metered relay usage records retain the requested and returned service tiers;
 cost estimates use the returned tier when available, then the requested tier.
+The seed includes GPT-6 Astra Ultrafast rates. Existing operator catalogs require
+the tier-specific rule to be added separately; see
+[pricing catalog upgrade guidance](operations.md#model-usage-querying).
 Availability and higher allowance or credit usage depend on the model/account;
 see [official Codex speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
 and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+Ultrafast requires an eligible account and a model advertising that tier; see
+[official Ultrafast guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#ultrafast-mode).
 The native provider remains authoritative about model and account availability.
 
 Upgrade container worker daemons before the control plane: the structured turn
-contract now includes speed and source. Refresh existing VMs with
+contract accepts `"ultrafast"` as well as boolean speed and source. Worker
+`/healthz` advertises `codex_ultrafast_mode: 1`, and deployment verification
+requires it together with the loaded revision. Refresh existing VMs with
 `bootstrap_codex_vm.sh`; new bootstraps start with the standard tier and the host
 sets the requested tier for each run. No live workflow pack is migrated or enabled
 automatically.
@@ -1481,6 +1556,16 @@ unconditional retry. Omitting it sends an unconditional update. Grant the tool e
 `allowed_tools`; normal `approval_required_tools`, `mcp_tool_policies`, and tool-argument policies
 apply. Existing sessions and provisioning defaults are not automatically granted this tool.
 
+The session-scoped `delete_ado_backlog_comment` tool accepts positive numeric `id` and
+`comment_id`, plus optional `project`, and uses the directory's `azure_devops_pat_env` credential.
+`delete_pr_comment` and `resolve_pr_comment` use `azure_devops_pr_pat_env` for Azure DevOps PRs
+or `github_token_env` for GitHub PRs. All three tools need explicit `allowed_tools` grants;
+normal `approval_required_tools`, `mcp_tool_policies`, and tool argument policies apply.
+Azure DevOps PR deletion requires both comment and thread IDs; resolution requires the thread
+ID. GitHub deletion requires the comment kind, and resolution accepts a review comment ID or
+a GraphQL review-thread ID. See [comment maintenance](operations.md#host-side-contract) for
+arguments and provider behavior. Existing sessions are not automatically granted these tools.
+
 The session-scoped `update_pull_request` MCP tool exposes Azure DevOps PR title, description,
 status, and tag updates to explicitly authorized agents. It accepts `azure_devops`,
 `azure-devops`, or `ado`, always resolves the organization and PAT from the caller's directory,
@@ -1488,6 +1573,16 @@ and permits only the project selector to be supplied by the caller. Omitted meta
 unchanged; an empty `description` clears the full description, and `expected_statuses` skips the
 mutation if the current provider status is no longer expected. The normal `allowed_tools`,
 `approval_required_tools`, `mcp_tool_policies`, and tool-argument policy controls apply.
+
+For direct PR-description file attachments, `update_pull_request` accepts `artifact_ids` from
+`communication_stage_workspace_file` or inbound file downloads. The gateway uploads the caller's
+artifacts to Azure DevOps and appends their Markdown image/download links to the supplied
+description, or to its current text if omitted. Enable `communication_file_send_enabled` and
+grant `communication_stage_workspace_file` for agent-created files. The existing
+`communication_file_max_bytes`, `communication_file_allowed_mime_types`,
+`communication_file_allowed_extensions`, and `communication_file_blocked_extensions` settings
+apply. If `communication_file_require_approval_for_send` is enabled, pass an approved `request_id`
+bound to that exact update payload. No session or directory grants are added automatically.
 
 `query:pull-request:get`, `query:pull-request:work-items`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`,
@@ -2123,6 +2218,19 @@ two transient retries, a 1 MiB request limit, and a 2 MiB response limit. Provid
 inherit by field; each profile ID replaces its entire inherited definition. A disabled profile
 can be represented as `{ "enabled": false }`. Removing a child override restores inheritance.
 
+The `openai_decisions` provider defaults to `enabled: false`,
+`api_key_env: "OPENAI_API_KEY"`, and `default_model: "gpt-6-luna"`. Its available host-side
+integration calls `POST https://api.openai.com/v1/decisions`; Jev remains the directory default.
+Decisions returns choice/score distributions, fractional rubric scores, and predicate
+probabilities mapped to `boolean.probability_true`. Its distributions support Smart switch
+probability cutoffs. Refusals fail the evaluation instead of selecting a branch.
+See [OpenAI Decisions](classification.md#openai-decisions) for configuration and verification.
+
+Model pricing rules may specify `provider_endpoint_identifier` (for example, `decisions`)
+to apply rates only to that API endpoint. Matching endpoint-specific rules take priority over
+generic model rules. Admin Web preserves the endpoint qualifier and both cache-write rates
+when editing a rule; leaving the endpoint blank applies it across endpoints.
+
 Use the structured Classification utility in the Models configuration area, or the revisioned
 `GET/PUT /api/classification?directory_path=...` API. `POST /api/classification/evaluate` accepts
 sample requests and does not persist them. APIs require directory owner permission; saves and
@@ -2195,6 +2303,7 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
 | `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Evander session. |
+| `inbound_phone_caller_maps` | root `providers.json` only | Explicit called-DID and caller-number assignments to active agent sessions. Each DID references an existing inbound route for its prompt and caller policy; unmapped callers are rejected. |
 
 ### Inbound phone route keys
 
@@ -2220,6 +2329,15 @@ JSON stores. Accepted inbound calls are first provisioned through
 sanitized status and transcript data back through
 `POST /voice-sessions/{voice_session_id}/bridge-result` so the gateway-owned voice-session store can
 schedule the origin-session reconciliation wake.
+
+`inbound_phone_caller_maps` defaults to `[]`. Each entry contains a normalized `did`, an
+existing `route_id`, and a `callers` array of `{caller_number, session_id, directory_path}`
+assignments. There is one map per DID and one target per normalized caller within that DID.
+An empty `callers` array rejects every caller while retaining caller routing for that DID;
+removing its map restores fixed routing. Configuration changes apply to new calls without
+restart, and existing calls retain their original destination. See
+[caller routing to agent sessions](operations.md#caller-routing-to-agent-sessions) for operator
+instructions and an example.
 
 ### DIDWW SIP bridge service keys
 

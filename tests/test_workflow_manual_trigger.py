@@ -20,7 +20,7 @@ from evander.workflow.state_store import WorkflowStateStore
 @pytest.fixture
 def manual_trigger(tmp_path, monkeypatch):
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "none")
-    service = build_admin_runtime(write_runtime_config(tmp_path))
+    service = build_admin_runtime(write_runtime_config(tmp_path, enable_directory_scoped_config=True))
     config = canonical_workflow_payload({
         "runtime_dir": str(tmp_path / "runtime"),
         "triggers": [
@@ -62,6 +62,59 @@ def _request(service, **changes):
 
 def _queue(service):
     return SqliteTriggerEventQueue(service.config.runtime_dir / "orchestration.db")
+
+
+def _register_answer_schema(service, schema=None):
+    snapshot = service.event_schema_admin.snapshot("root")
+    return service.event_schema_admin.save("root", expected_revision=snapshot["revision"], config={"events": {"custom.operator_event": {"label": "Answer", "payload_schema": schema or {"type": "object", "properties": {"answer": {"type": "string", "enum": ["yes", "no"]}}, "required": ["answer"], "additionalProperties": False}}}})
+
+
+def test_manual_schema_validation_rejects_before_queueing_and_recovers_after_schema_change(manual_trigger):
+    service, _app, client = manual_trigger
+    _register_answer_schema(service)
+    definition = client.get("/api/workflow-editor/nodes/alpha/event-schema").json()
+    assert definition["directory_paths"] == ["root"]
+    body = _request(service, schema_revision=definition["schema_revision"], payload={"answer": 3})
+    rejected = client.post("/api/workflow-editor/nodes/alpha/trigger", json=body)
+    assert rejected.status_code == 400
+    assert rejected.json()["details"]["failures"][0]["path"] == "/answer"
+    assert not _queue(service).list_pending()
+    body["payload"] = {"answer": "yes"}
+    accepted = client.post("/api/workflow-editor/nodes/alpha/trigger", json=body)
+    assert accepted.status_code == 202, accepted.text
+    _register_answer_schema(service, {"type": "object", "required": ["new"]})
+    retry = client.post("/api/workflow-editor/nodes/alpha/trigger", json=body)
+    assert retry.json() == accepted.json()
+    stale = client.post("/api/workflow-editor/nodes/alpha/trigger", json={**body, "request_id": "fresh"})
+    assert stale.status_code == 409
+    assert len(_queue(service).list_pending()) == 1
+
+
+def test_event_configuration_revision_conflicts_and_invalid_schemas_do_not_write(manual_trigger):
+    service, _app, client = manual_trigger
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    before = client.get("/api/admin/event-schemas").json()
+    _register_answer_schema(service)
+    stale = client.put("/api/admin/event-schemas", json={"expected_revision": before["revision"], "config": {}})
+    assert stale.status_code == 409
+    after = client.get("/api/admin/event-schemas").json()
+    malformed = client.put("/api/admin/event-schemas", json={"expected_revision": after["revision"], "config": {"events": {"custom.operator_event": {"label": "Invalid", "payload_schema": {"type": "array"}}}}})
+    assert malformed.status_code == 400
+    assert client.get("/api/admin/event-schemas").json() == after
+
+
+def test_event_schema_save_rejects_a_changed_inherited_baseline(manual_trigger):
+    from evander.admin.services.event_schema_admin_service import EventSchemaRevisionConflict
+
+    service, _app, _client = manual_trigger
+    _register_answer_schema(service)
+    assert service.directory_admin.create_child(parent="root", name="child").ok
+    child = service.event_schema_admin.snapshot("root/child")
+    overridden = service.event_schema_admin.save("root/child", expected_revision=child["revision"], config={"events": {"custom.operator_event": {"label": "Child", "payload_schema": {"type": "object"}}}})
+    _register_answer_schema(service, {"type": "object", "required": ["new"]})
+    with pytest.raises(EventSchemaRevisionConflict):
+        service.event_schema_admin.save("root/child", expected_revision=overridden["revision"], config={})
+    assert service.event_schema_admin.snapshot("root/child")["config"] == overridden["config"]
 
 
 def test_manual_event_runs_only_selected_node_with_normal_envelope(manual_trigger, monkeypatch):
@@ -275,6 +328,10 @@ def test_manual_event_requires_authenticated_directory_controller(manual_trigger
         assert client.post("/api/auth/login", json={"username": "viewer", "password": "viewer-password"}).status_code == 200
         denied = client.post("/api/workflow-editor/nodes/alpha/trigger", json=_request(service))
         assert denied.status_code == 403
+        assert client.get("/api/workflow-editor/nodes/alpha/event-schema").status_code == 403
+        assert client.post("/api/workflow-editor/nodes/alpha/validate-event", json={"payload": {}}).status_code == 403
+        assert client.get("/api/admin/event-schemas").status_code == 403
+        assert client.put("/api/admin/event-schemas", json={"config": {}}).status_code == 403
         assert _queue(service).list_pending() == []
         assert client.post("/api/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         assert client.post("/api/workflow-editor/nodes/alpha/trigger", json=_request(service)).status_code == 202

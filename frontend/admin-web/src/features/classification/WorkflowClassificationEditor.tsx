@@ -25,6 +25,8 @@ export function WorkflowClassificationEditor({value, directoryPath, nodeId, disa
   const profileId = typeof value.profile_id === "string" ? value.profile_id : "";
   useEffect(() => () => {refreshGeneration.current += 1;}, [directoryPath, nodeId, profileId]);
   const questions = profileId ? profiles[profileId]?.questions : value.questions;
+  const selectedProvider = (profileId ? profiles[profileId]?.provider : String(value.provider || "")) || snapshot?.effective_config.default_provider || "jev";
+  const provider = snapshot?.providers.find(p => p.id === selectedProvider);
   async function refreshAnswers() {
     const generation = ++refreshGeneration.current;
     try {
@@ -53,8 +55,9 @@ export function WorkflowClassificationEditor({value, directoryPath, nodeId, disa
         <label className="field-stack"><span>Model (optional)</span><input disabled={disabled} value={String(value.model ?? "")} placeholder="Provider default" onChange={e => onChange({model: e.target.value || undefined})} /></label>
         <QuestionsEditor value={value.questions} disabled={disabled} onChange={questions => onChange({questions}, classificationAnswerSchema(questions))} />
       </>}
-    {isRecord(questions) && <details><summary>Answer bindings</summary>{Object.entries(questions).filter(([, q]) => isRecord(q)).map(([id, q]) => <div key={id}><code>{"${{" + nodeId + ".answers." + id + "." + ((q as {type: string}).type === "boolean" ? "probability_true" : (q as {type: string}).type === "score" ? "score" : "choice") + "}}"}</code></div>)}</details>}
-    <EvaluationTest key={directoryPath + nodeId} directoryPath={directoryPath} disabled={disabled}
+    {isRecord(questions) && <details><summary>Answer bindings</summary><p>Boolean answers provide value or probability_true depending on the provider.</p>{Object.entries(questions).filter(([, q]) => isRecord(q)).flatMap(([id, q]) => ((q as {type: string}).type === "boolean" ? ["value", "probability_true"] : [(q as {type: string}).type === "score" ? "score" : "choice"]).map(field => <div key={id + field}><code>{"${{" + nodeId + ".answers." + id + "." + field + "}}"}</code></div>))}</details>}
+    {provider?.available === false && <p>{provider.unavailable_reason}</p>}
+    <EvaluationTest key={directoryPath + nodeId} directoryPath={directoryPath} disabled={disabled || provider?.available === false}
       definition={profileId ? {profile_id: profileId} : {questions: value.questions, provider: value.provider, model: value.model}} />
   </div>;
 }

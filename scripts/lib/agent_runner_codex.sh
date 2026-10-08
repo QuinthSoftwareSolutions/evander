@@ -281,7 +281,7 @@ for raw_line in sys.stdin:
 
 agent_runner_codex_validate_web_search_mode() {
   case "${AGENT_FAST_MODE:-}" in
-    ""|true|false) ;;
+    ""|true|false|ultrafast) ;;
     *) echo "Unsupported AGENT_FAST_MODE '${AGENT_FAST_MODE}'." >&2; return 1 ;;
   esac
   case "${AGENT_REASONING_EFFORT:-}" in
@@ -306,11 +306,17 @@ agent_runner_codex_supports_feature() {
 
 agent_runner_codex_config_args() {
   agent_runner_codex_validate_web_search_mode || return 1
-  if [[ "${AGENT_FAST_MODE:-false}" == "true" ]]; then
-    printf '%s\0%s\0' "-c" 'service_tier="fast"' "-c" 'features.fast_mode=true'
-  else
-    printf '%s\0%s\0' "-c" 'service_tier="default"'
-  fi
+  case "${AGENT_FAST_MODE:-false}" in
+    ultrafast)
+      printf '%s\0%s\0' "-c" 'service_tier="ultrafast"' "-c" 'features.fast_mode=true'
+      ;;
+    true)
+      printf '%s\0%s\0' "-c" 'service_tier="fast"' "-c" 'features.fast_mode=true'
+      ;;
+    *)
+      printf '%s\0%s\0' "-c" 'service_tier="default"'
+      ;;
+  esac
   printf '%s\0%s\0' "-c" "model_reasoning_effort=\"${AGENT_REASONING_EFFORT:-high}\""
   if [[ -n "${AGENT_REASONING_EFFORT:-}" && "${AGENT_REASONING_EFFORT_SOURCE:-}" != "default" ]]; then
     printf '%s\0%s\0' "-c" "model_supports_reasoning_summaries=true"

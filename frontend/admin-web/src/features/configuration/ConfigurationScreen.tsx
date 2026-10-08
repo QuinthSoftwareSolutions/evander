@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
 import { TeamsCallRoutesEditor } from "./TeamsCallRoutesEditor";
+import { PhoneCallerMapsEditor } from "./PhoneCallerMapsEditor";
 import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
+import { EventsConfiguration } from "./EventsConfiguration";
 import { CredentialsConfiguration } from "./CredentialsConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
@@ -963,6 +965,7 @@ export function ConfigurationScreen() {
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [websiteLoginsDirty, setWebsiteLoginsDirty] = useState(false);
   const [classificationDirty, setClassificationDirty] = useState(false);
+  const [eventsDirty, setEventsDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
@@ -1215,7 +1218,7 @@ export function ConfigurationScreen() {
       if (
         state !== null
         && globalSelectedDirectoryPath !== selectedDirectoryPath
-        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty || credentialsDirty)
+        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty || eventsDirty || credentialsDirty)
         && !window.confirm("Discard unsaved configuration edits and switch directories?")
       ) {
         setGlobalSelectedDirectoryPath(selectedDirectoryPath);
@@ -1299,6 +1302,8 @@ export function ConfigurationScreen() {
     fieldName?: string | null,
   ) {
     if (!tabKey || !destinationKey) return;
+    if (eventsDirty && destinationKey !== "events" && !window.confirm("Discard unsaved event definitions?")) return;
+    if (destinationKey !== "events") setEventsDirty(false);
     if (credentialsDirty && destinationKey !== "credentials" && !window.confirm("Discard unsaved credential changes?")) return;
     if (destinationKey !== "credentials") setCredentialsDirty(false);
     if (websiteLoginsDirty && destinationKey !== "website-logins"
@@ -2684,6 +2689,11 @@ export function ConfigurationScreen() {
   ) {
     const disabled = inheritedOrCleared || loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
     const inputProps = { "aria-label": field.label };
+    if (field.field_name === "inbound_phone_caller_maps") {
+      return <PhoneCallerMapsEditor value={String(fieldState.value)} disabled={disabled || mutationLocked}
+        sessions={field.session_options ?? []} routes={field.phone_route_options ?? []}
+        onChange={(value) => updateFieldState(field.field_name, { include: true, clear: false, value })} />;
+    }
     if (field.field_name === "teams_call_routes") {
       return <TeamsCallRoutesEditor value={String(fieldState.value)} disabled={disabled}
         assistants={field.assistant_options ?? []}
@@ -3186,7 +3196,7 @@ export function ConfigurationScreen() {
                     entries={activeModelPricingDraft.rules}
                     name={(rule, index) => rule.id || `Rule ${index + 1}`}
                     description={(rule) => parseStringListDraftValue(rule.modelsText).join(", ") || rule.modelPatternsText || "No models selected"}
-                    searchText={(rule) => `${rule.provider} ${rule.serviceTier} ${rule.modelPatternsText}`}
+                    searchText={(rule) => `${rule.provider} ${rule.providerEndpointIdentifier} ${rule.serviceTier} ${rule.modelPatternsText}`}
                     category={(rule) => rule.provider}
                     metadata={(rule) => <><span>Input {rule.inputRate || "—"}</span><span>Output {rule.outputRate || "—"}</span></>}
                     isNew={(rule) => !rule.id.trim()}
@@ -3302,6 +3312,26 @@ export function ConfigurationScreen() {
                             />
                           </label>
                           <label className="field-stack">
+                            <span>Cache write rate (5 minutes)</span>
+                            <input
+                              type="text"
+                              value={rule.cacheWrite5mRate}
+                              onChange={(event) => updateModelPricingRule(index, { cacheWrite5mRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="input rate"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>Cache write rate (1 hour)</span>
+                            <input
+                              type="text"
+                              value={rule.cacheWrite1hRate}
+                              onChange={(event) => updateModelPricingRule(index, { cacheWrite1hRate: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="input rate"
+                            />
+                          </label>
+                          <label className="field-stack">
                             <span>Output rate</span>
                             <input
                               type="text"
@@ -3328,6 +3358,16 @@ export function ConfigurationScreen() {
                               onChange={(event) => updateModelPricingRule(index, { serviceTier: event.target.value })}
                               disabled={modelPricingSaving}
                               placeholder="optional"
+                            />
+                          </label>
+                          <label className="field-stack">
+                            <span>API endpoint</span>
+                            <input
+                              type="text"
+                              value={rule.providerEndpointIdentifier}
+                              onChange={(event) => updateModelPricingRule(index, { providerEndpointIdentifier: event.target.value })}
+                              disabled={modelPricingSaving}
+                              placeholder="all endpoints"
                             />
                           </label>
                           <label className="field-stack">
@@ -3414,6 +3454,7 @@ export function ConfigurationScreen() {
                     const isEmailMailboxFolderPolicy = isEmailMailboxFolderPolicyField(field);
                     const isEmailMailboxAllowlist = isEmailMailboxAllowlistField(field);
                     const isApprovalNotificationTargetList = isApprovalNotificationTargetField(field);
+                    const isPhoneCallerMapField = field.field_name === "inbound_phone_caller_maps";
                     const inheritedCommunicationTargets = isCommunicationTargetsField
                       ? communicationTargetEntriesFromConfig(snapshot?.parent_defaults.config?.[field.field_name])
                       : [];
@@ -3422,7 +3463,7 @@ export function ConfigurationScreen() {
                         key={field.field_name}
                         id={configurationFieldDomId(selectedTab, field.field_name)}
                         tabIndex={-1}
-                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : isPhoneCallerMapField ? " complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
                       >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">
@@ -3543,6 +3584,10 @@ export function ConfigurationScreen() {
           </article>
         ) : null}
 
+        {selectedUtility === "events" ? <EventsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setEventsDirty} /> : null}
         {selectedUtility === "classification" ? <ClassificationConfiguration
           key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
           disabled={mutationLocked || !state?.directory_scoped_config_enabled}

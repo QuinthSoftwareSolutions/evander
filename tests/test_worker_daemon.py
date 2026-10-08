@@ -1208,8 +1208,9 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     assert response.status_code == 201
 
 
+@pytest.mark.parametrize("speed", [True, "ultrafast"])
 def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, speed,
 ) -> None:
     monkeypatch.setenv("EVANDER_WORKER_DEPLOY_REVISION", "loaded-revision")
     runtime = FakeContainerRuntime()
@@ -1219,6 +1220,7 @@ def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
         health = client.get("/healthz").json()
         assert health["deployment_revision"] == "loaded-revision"
         assert health["capabilities"]["codex_fast_mode"] == 1
+        assert health["capabilities"]["codex_ultrafast_mode"] == 1
         response = client.post(
             "/v1/jobs",
             headers=_auth(),
@@ -1230,7 +1232,7 @@ def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
                 "codex_turn": {
                     "prompt": "Continue",
                     "model": "gpt-6.1-sol",
-                    "fast_mode": True,
+                    "fast_mode": speed,
                     "fast_mode_source": "prompt",
                 },
             },
@@ -1239,7 +1241,7 @@ def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
         assert len(runtime.started) == 1
         turn = runtime.started[0][0].codex_turn
         assert turn is not None
-        assert turn.fast_mode is True
+        assert turn.fast_mode == speed
         assert turn.fast_mode_source == "prompt"
 
 

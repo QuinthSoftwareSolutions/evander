@@ -2621,11 +2621,23 @@ def test_session_model_settings_update_is_authorized_atomic_and_clearable(
     saved = service.runtime.session_repository.get_session("effort-session")
     assert (saved.model, saved.reasoning_effort) == ("gpt-6-luna", "low")
 
+    ultrafast = owner.put(endpoint, json={"fast_mode": "ultrafast", "model": "gpt-6-astra"})
+    assert ultrafast.status_code == 200
+    assert ultrafast.json()["session"]["fast_mode"] == "ultrafast"
+    rejected = owner.put(endpoint, json={"model": "gpt-6-luna", "fast_mode": "unknown"})
+    assert rejected.status_code == 400
+    saved = service.runtime.session_repository.get_session("effort-session")
+    assert (saved.model, saved.fast_mode) == ("gpt-6-astra", "ultrafast")
+    assert owner.patch(
+        "/api/admin/sessions/effort-session", json={"model_provider_mode": "local_openai"}
+    ).status_code == 400
+
     # Omission preserves the default, while explicit null clears it.
     assert owner.put(endpoint, json={"model": "gpt-6-sol"}).status_code == 200
     assert (
         service.runtime.session_repository.get_session("effort-session").reasoning_effort == "low"
     )
+    assert service.runtime.session_repository.get_session("effort-session").fast_mode == "ultrafast"
     assert (
         owner.put(endpoint, json={"reasoning_effort": None, "fast_mode": None}).status_code == 200
     )

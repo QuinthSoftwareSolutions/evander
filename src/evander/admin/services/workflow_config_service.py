@@ -80,6 +80,7 @@ from evander.events.internal import (
     validate_internal_event_type,
 )
 from evander.events.models import TriggerEvent
+from evander.events.schema import EventPayloadInvalid, EventSchemaService, validate_payload
 from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
@@ -165,6 +166,7 @@ class WorkflowConfigAdminService:
         self._managed_git_admin = dependencies.managed_git_admin
         self._teams_admin = dependencies.teams_admin
         self._codex_auth_admin: Any | None = None
+        self.event_schemas = EventSchemaService(self.config, self._event_schema_defaults)
         history_runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=self.config.runtime_dir,
@@ -183,6 +185,47 @@ class WorkflowConfigAdminService:
 
     def admin_config_mutation_lock(self) -> ContextManager[None]:
         return self._admin_config_mutation_lock()
+
+    def _event_schema_defaults(self) -> list[WorkflowInternalEventCatalogEntry]:
+        return self._load_workflow_provider_catalog(
+            self._read_worker_provider_loader_config("trigger-orchestrator")
+        ).internal_event_catalog_entries
+
+    def _manual_event_definition(
+        self, document: WorkflowEditorDocumentPayload, node_id: str
+    ) -> dict[str, Any]:
+        node = self._workflow_editor_nodes_by_id(document.config).get(node_id)
+        if node is None or node.get("type") != "trigger:event":
+            raise ValueError("Saved event trigger not found")
+        directories = sorted(
+            {graph.directory_path for graph in document.graphs if node_id in graph.node_ids}
+            or {"root"}
+        )
+        event_type = str(node.get("config", {}).get("event_type") or "")
+        definitions = [
+            self.event_schemas.definition(directory, event_type) for directory in directories
+        ]
+        if len({definition["schema_revision"] for definition in definitions}) != 1:
+            raise ValueError(
+                "This node belongs to directories with different event schemas. "
+                "Align their definitions before triggering it manually."
+            )
+        return {**definitions[0], "directory_paths": directories}
+
+    def read_manual_event_definition(
+        self,
+        node_id: str,
+        *,
+        workflow_pack: str | None,
+        authorize_directory: Callable[[str], None],
+    ) -> dict[str, Any]:
+        document = self.read_workflow_editor_document(workflow_pack=workflow_pack)
+        directories = {
+            graph.directory_path for graph in document.graphs if node_id in graph.node_ids
+        } or {"root"}
+        for directory in sorted(directories):
+            authorize_directory(directory)
+        return self._manual_event_definition(document, node_id)
 
     def stable_json_revision(self, payload: object) -> str:
         return self._stable_json_revision(payload)
@@ -663,6 +706,20 @@ class WorkflowConfigAdminService:
                 raise ValueError("Only trigger:event nodes can be triggered manually")
             if not document.config_exists or not workflow_node_is_enabled(node):
                 raise ValueError("Manual triggering requires a saved, enabled trigger")
+
+            definition = self._manual_event_definition(document, node_id)
+            if (
+                request.schema_revision is not None
+                or definition.get("payload_schema") is not None
+            ) and request.schema_revision != definition["schema_revision"]:
+                raise AdminRevisionConflict(
+                    "Event schema changed. Reload the form before triggering the node.",
+                    details={"schema_revision": definition["schema_revision"]},
+                )
+            if definition.get("payload_schema") is not None:
+                failures = validate_payload(definition["payload_schema"], request.payload)
+                if failures:
+                    raise EventPayloadInvalid(failures)
 
             worker_config = load_trigger_orchestrator_worker_global_config(
                 self.project_dir, base_config=self.config
@@ -2303,13 +2360,12 @@ class WorkflowConfigAdminService:
         provider_catalog = self._load_workflow_provider_catalog(
             self._read_worker_provider_loader_config("trigger-orchestrator")
         )
-        internal_event_catalog_entries = sorted(
-            (
-                entry.model_copy(deep=True)
-                for entry in provider_catalog.internal_event_catalog_entries
-            ),
-            key=lambda entry: (entry.source or "", entry.event_type),
-        )
+        internal_event_catalog_entries = [
+            WorkflowInternalEventCatalogEntry.model_validate(entry)
+            for entry in self.event_schemas.catalog(
+                self._normalize_directory_reference(directory_path)
+            )
+        ]
         internal_event_options = _internal_event_field_options(internal_event_catalog_entries)
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         seen_node_types: set[str] = set()

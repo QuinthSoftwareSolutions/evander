@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 QuestionType = Literal["choice", "score", "boolean"]
+DECISIONS_PROVIDER_ID = "openai_decisions"
 
 
 class ClassificationError(ValueError):
@@ -87,8 +88,16 @@ class ClassificationProfile(StrictModel):
     description: str = ""
     enabled: bool = True
     provider: str = Field(default="jev", min_length=1)
-    model: str = Field(default="jev-1.13.0", min_length=1)
+    model: str | None = Field(default="jev-1.13.0", min_length=1)
     questions: dict[str, Question] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def decisions_model_default(cls, value):
+        if isinstance(value, dict) and value.get("provider") == DECISIONS_PROVIDER_ID:
+            # Use the configured Decisions default rather than inheriting Jev's model.
+            return {"model": None, **value}
+        return value
 
     @model_validator(mode="after")
     def validate_enabled(self) -> ClassificationProfile:
@@ -99,7 +108,7 @@ class ClassificationProfile(StrictModel):
 
 class ClassificationProviderSettings(StrictModel):
     enabled: bool = True
-    default_model: str = Field(default="jev-1.13.0", min_length=1)
+    default_model: str | None = Field(default="jev-1.13.0", min_length=1)
     api_key_env: str = Field(default="TYPESAFE_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     timeout_seconds: float = Field(default=30.0, gt=0, le=300, allow_inf_nan=False)
     max_retries: int = Field(default=2, ge=0, le=5)
@@ -107,13 +116,34 @@ class ClassificationProviderSettings(StrictModel):
     max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
 
 
+class DecisionsProviderSettings(ClassificationProviderSettings):
+    enabled: bool = False
+    default_model: str | None = Field(default="gpt-6-luna", min_length=1)
+    api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 class ClassificationSettings(StrictModel):
     enabled: bool = False
     default_provider: str = Field(default="jev", min_length=1)
     providers: dict[str, ClassificationProviderSettings] = Field(
-        default_factory=lambda: {"jev": ClassificationProviderSettings()}
+        default_factory=lambda: {
+            "jev": ClassificationProviderSettings(),
+            DECISIONS_PROVIDER_ID: DecisionsProviderSettings(),
+        }
     )
     profiles: dict[str, ClassificationProfile] = Field(default_factory=dict)
+
+    @field_validator("providers", mode="before")
+    @classmethod
+    def provider_defaults(cls, value):
+        if isinstance(value, dict):
+            return {
+                name: DecisionsProviderSettings.model_validate(settings)
+                if name == DECISIONS_PROVIDER_ID
+                else settings
+                for name, settings in value.items()
+            }
+        return value
 
     @field_validator("providers", "profiles")
     @classmethod
@@ -163,9 +193,18 @@ def validate_answers(questions: dict[str, Question], answers: Any) -> dict[str, 
             normalized["score"] = _number(answer.get("score"), minimum=0, maximum=len(options) - 1)
             normalized["legend"] = {str(i): value for i, value in enumerate(question.criteria)}
         else:
-            normalized["probability_true"] = _number(
-                answer.get("probability_true"), minimum=0, maximum=1
-            )
+            if "value" in answer:
+                if type(answer["value"]) is not bool:
+                    raise ClassificationError("Provider returned an invalid boolean answer")
+                normalized["value"] = answer["value"]
+            if answer.get("probability_true") is not None:
+                normalized["probability_true"] = _number(
+                    answer["probability_true"], minimum=0, maximum=1
+                )
+            if not {"value", "probability_true"} & normalized.keys():
+                raise ClassificationError(
+                    "Provider boolean answer requires value or probability_true"
+                )
         if answer.get("confidence") is not None:
             normalized["confidence"] = _number(answer["confidence"], minimum=0, maximum=1)
         if answer.get("probabilities") is not None:
@@ -203,6 +242,7 @@ def answer_schema(questions: dict[str, Any]) -> dict[str, Any]:
             continue
         fields = {"type": {"type": "string"}}
         if question_type == "boolean":
+            fields["value"] = {"type": "boolean"}
             fields["probability_true"] = {"type": "number"}
         else:
             fields[question_type] = {"type": "string" if question_type == "choice" else "number"}

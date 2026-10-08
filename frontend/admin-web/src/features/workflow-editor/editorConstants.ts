@@ -108,6 +108,7 @@ export const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
   "gate:switch": "Route activations to one of several downstream branches.",
   "gate:classifier:switch": "Use classification to route input to a described branch.",
+  "gate:event:validate": "Validate an event body against its directory's registered schema.",
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",

@@ -237,6 +237,12 @@ class GateValidateDefinition(GateDefinition):
         return self
 
 
+class GateEventValidateDefinition(GateDefinition):
+    type: Literal["gate:event:validate"]
+    event_type: ConfigValue
+    payload: ConfigValue
+
+
 class GateMapDefinition(GateDefinition):
     type: Literal["gate:map"]
     template: ConfigValue
@@ -623,6 +629,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:switch": GateSwitchDefinition,
         "gate:classifier:switch": GateClassifierSwitchDefinition,
         "gate:validate": GateValidateDefinition,
+        "gate:event:validate": GateEventValidateDefinition,
         "gate:map": GateMapDefinition,
         "gate:aggregate": GateAggregateDefinition,
         "gate:deserialize": GateDeserializeDefinition,

@@ -21,6 +21,7 @@ function parseStringListDraftValue(value: string): string[] {
 export type ModelPricingRuleSummary = {
   id: string;
   provider: string;
+  provider_endpoint_identifier?: string | null;
   models: string[];
   model_patterns: string[];
   effective_from: string | null;
@@ -29,6 +30,8 @@ export type ModelPricingRuleSummary = {
   rates_per_1m_tokens: {
     input: string | null;
     cached_input: string | null;
+    cache_write_5m?: string | null;
+    cache_write_1h?: string | null;
     output: string | null;
   };
   batch_multiplier: string | null;
@@ -51,12 +54,15 @@ export type ModelPricingCatalogPayload = {
 export type ModelPricingRuleDraft = {
   id: string;
   provider: string;
+  providerEndpointIdentifier: string;
   modelsText: string;
   modelPatternsText: string;
   effectiveFrom: string;
   effectiveTo: string;
   inputRate: string;
   cachedInputRate: string;
+  cacheWrite5mRate: string;
+  cacheWrite1hRate: string;
   outputRate: string;
   batchMultiplier: string;
   serviceTier: string;
@@ -107,12 +113,15 @@ export function modelPricingRuleDraftFromPayload(rule: ModelPricingRuleSummary):
   return {
     id: rule.id,
     provider: rule.provider || "openai",
+    providerEndpointIdentifier: rule.provider_endpoint_identifier ?? "",
     modelsText: encodeStringListDraftValue(rule.models),
     modelPatternsText: encodeStringListDraftValue(rule.model_patterns),
     effectiveFrom: rule.effective_from ?? "",
     effectiveTo: rule.effective_to ?? "",
     inputRate: rule.rates_per_1m_tokens.input ?? "",
     cachedInputRate: rule.rates_per_1m_tokens.cached_input ?? "",
+    cacheWrite5mRate: rule.rates_per_1m_tokens.cache_write_5m ?? "",
+    cacheWrite1hRate: rule.rates_per_1m_tokens.cache_write_1h ?? "",
     outputRate: rule.rates_per_1m_tokens.output ?? "",
     batchMultiplier: rule.batch_multiplier ?? "",
     serviceTier: rule.service_tier ?? "",
@@ -147,12 +156,15 @@ export function emptyModelPricingRuleDraft(index: number): ModelPricingRuleDraft
   return {
     id: `openai:new-rule-${index}`,
     provider: "openai",
+    providerEndpointIdentifier: "",
     modelsText: "",
     modelPatternsText: "",
     effectiveFrom: "",
     effectiveTo: "",
     inputRate: "",
     cachedInputRate: "",
+    cacheWrite5mRate: "",
+    cacheWrite1hRate: "",
     outputRate: "",
     batchMultiplier: "",
     serviceTier: "",
@@ -216,6 +228,9 @@ export function modelPricingPayloadFromDraft(
     return {
       id,
       provider: rule.provider.trim() || "openai",
+      ...(optionalString(rule.providerEndpointIdentifier) ? {
+        provider_endpoint_identifier: optionalString(rule.providerEndpointIdentifier),
+      } : {}),
       models,
       model_patterns: modelPatterns,
       effective_from: optionalString(rule.effectiveFrom),
@@ -227,6 +242,12 @@ export function modelPricingPayloadFromDraft(
           rule.cachedInputRate,
           `Pricing rule ${id} cached input rate`,
         ),
+        ...((rule.cacheWrite5mRate ?? "").trim() ? {
+          cache_write_5m: decimalString(rule.cacheWrite5mRate, `Pricing rule ${id} 5-minute cache write rate`),
+        } : {}),
+        ...((rule.cacheWrite1hRate ?? "").trim() ? {
+          cache_write_1h: decimalString(rule.cacheWrite1hRate, `Pricing rule ${id} 1-hour cache write rate`),
+        } : {}),
         output: decimalString(rule.outputRate, `Pricing rule ${id} output rate`, true),
       },
       batch_multiplier: decimalString(

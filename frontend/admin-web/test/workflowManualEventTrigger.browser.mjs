@@ -8,7 +8,7 @@ import { browserHookTimeout, browserTestTimeout, listeningAddress, suiteBrowser,
 const browser = suiteBrowser();
 const json = (payload, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(payload) });
 
-async function editor(t, { control = true } = {}) {
+async function editor(t, { control = true, schema = null } = {}) {
   const server = await createServer({
     root: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
     server: { host: "127.0.0.1", port: 0 }, logLevel: "error",
@@ -65,6 +65,7 @@ async function editor(t, { control = true } = {}) {
     if (name === "/api/admin/user-preferences/workflow-tutorial-progress") return route.fulfill(json({ completed_tutorial_ids: [], skipped_tutorial_ids: [] }));
     if (name === "/api/workflow-editor/document") return route.fulfill(json(document));
     if (name === "/api/workflow-editor/catalog") return route.fulfill(json(catalog));
+    if (name.endsWith("/event-schema")) return route.fulfill(json({ event_type: "custom.answer", payload_schema: schema, schema_revision: "schema-1" }));
     if (name === "/api/workflow-editor/validate") {
       const body = request.postDataJSON();
       return route.fulfill(json({ valid: true, config: body.config, layout: body.layout, graphs: body.graphs, diagnostics: [], output_schemas: {} }));
@@ -193,4 +194,160 @@ test("workflow readers without run-control permission cannot trigger nodes", { t
   assert.equal(await page.getByRole("button", { name: "Trigger manually", exact: true }).isDisabled(), true);
   await page.getByText("Workflow run-control permission is required.", { exact: true }).waitFor();
   assert.equal(requests.length, 0);
+});
+
+test("registered event forms preserve typed nested values, optional fields, and null", { timeout: browserTestTimeout }, async (t) => {
+  const schema = { type: "object", additionalProperties: false, required: ["answer", "options", "tags"], properties: {
+    answer: { type: "string", enum: ["yes", "no"] },
+    options: { type: "object", additionalProperties: false, required: ["publish", "count"], properties: { publish: { type: "boolean" }, count: { type: "integer", minimum: 0 } } },
+    tags: { type: "array", items: { type: "string" } }, note: { type: ["string", "null"] }, omitted: { type: "string" },
+  } };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("answer", { exact: true }).selectOption("0");
+  await dialog.getByLabel("count", { exact: true }).fill("0");
+  await dialog.getByRole("button", { name: "Add tags item", exact: true }).click();
+  await dialog.getByLabel("tags 1", { exact: true }).fill("review");
+  await dialog.getByLabel("Include note", { exact: true }).check();
+  await dialog.getByRole("group", { name: "note", exact: true }).getByLabel("Use null", { exact: true }).check();
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { answer: "yes", options: { publish: false, count: 0 }, tags: ["review"], note: null });
+  assert.equal(requests[0].body.schema_revision, "schema-1");
+  assert.equal(await dialog.getByLabel("Event payload JSON", { exact: true }).count(), 0);
+});
+
+test("server schema failures stay editable and accepted retries keep the request ID", { timeout: browserTestTimeout }, async (t) => {
+  const schema = { type: "object", additionalProperties: false, required: ["answer"], properties: { answer: { type: "string" } } };
+  const { page, requests, setReply } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("answer", { exact: true }).fill("invalid");
+  setReply(async (route) => route.fulfill(json({ error: "Event payload does not match its registered schema", details: { failures: [{ path: "/answer", code: "schema.enum", message: "Choose an accepted answer" }] } }, 400)));
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "Choose an accepted answer" }).waitFor();
+  assert.equal(await dialog.getByLabel("answer", { exact: true }).inputValue(), "invalid");
+  await dialog.getByLabel("answer", { exact: true }).fill("yes");
+  setReply(async (route) => route.abort("failed"));
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByRole("alert").waitFor();
+  setReply(async (route) => route.fulfill(json({ event_id: "alpha:registered", trace_id: "registered-trace" }, 202)));
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.notEqual(requests[0].body.request_id, requests[1].body.request_id);
+  assert.equal(requests[1].body.request_id, requests[2].body.request_id);
+});
+
+test("required strings and array items can submit empty values through simple references", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", additionalProperties: false, required: ["answer", "tags"],
+    $defs: { answer: { type: "string" } },
+    properties: {
+      answer: { $ref: "#/$defs/answer", title: "Answer", default: "" },
+      tags: { type: "array", items: { type: "string" } },
+    },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  assert.equal(await dialog.getByLabel("Answer", { exact: true }).inputValue(), "");
+  await dialog.getByRole("button", { name: "Add tags item", exact: true }).click();
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { answer: "", tags: [""] });
+});
+
+test("reference sibling constraints preserve required values through JSON entry", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", $ref: "#/$defs/base",
+    $defs: { base: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } } },
+    properties: { note: { type: "string" } },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("Event payload JSON", { exact: true }).fill('{"id":"example"}');
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { id: "example" });
+});
+
+test("nested schema resources keep scoped references editable through JSON entry", { timeout: browserTestTimeout }, async (t) => {
+  const schema = {
+    type: "object", required: ["nested"],
+    $defs: { value: { type: "integer" } },
+    properties: { nested: {
+      $id: "nested.json", type: "object", additionalProperties: false, required: ["value"],
+      $defs: { value: { type: "string" } },
+      properties: { value: { $ref: "#/$defs/value" } },
+    } },
+  };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("nested JSON", { exact: true }).fill('{"value":"example"}');
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { nested: { value: "example" } });
+});
+
+test("complex-field JSON cannot be submitted while invalid even after another field changes", { timeout: browserTestTimeout }, async (t) => {
+  const schema = { type: "object", additionalProperties: false, required: ["answer", "choice"], properties: { answer: { type: "string" }, choice: { oneOf: [{ type: "string" }, { type: "integer" }] } } };
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("choice JSON", { exact: true }).fill("{");
+  await dialog.getByLabel("answer", { exact: true }).fill("yes");
+  assert.equal(await dialog.getByRole("button", { name: "Trigger node", exact: true }).isDisabled(), true);
+  assert.equal(requests.length, 0);
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/event-schema")),
+    dialog.getByRole("button", { name: "Reload event definition", exact: true }).click(),
+  ]);
+  assert.equal(await dialog.getByLabel("choice JSON", { exact: true }).inputValue(), "{");
+  assert.equal(await dialog.getByRole("button", { name: "Trigger node", exact: true }).isDisabled(), true);
+  await dialog.getByLabel("choice JSON", { exact: true }).fill("3");
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, { answer: "yes", choice: 3 });
+});
+
+test("nullable defaults can be changed and ordinary JSON property names stay intact", { timeout: browserTestTimeout }, async (t) => {
+  const schema = JSON.parse('{"type":"object","additionalProperties":false,"required":["__proto__"],"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"},"note":{"type":["string","null"],"default":null}}}');
+  const { page, requests } = await editor(t, { schema });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  assert.equal(await dialog.getByLabel("Include constructor", { exact: true }).isChecked(), false);
+  await dialog.getByLabel("__proto__", { exact: true }).fill("event data");
+  await dialog.getByLabel("Include note", { exact: true }).uncheck();
+  await dialog.getByLabel("Include note", { exact: true }).check();
+  const nullToggle = dialog.getByRole("group", { name: "note", exact: true }).getByLabel("Use null", { exact: true });
+  assert.equal(await nullToggle.isChecked(), true);
+  await nullToggle.uncheck();
+  await dialog.getByLabel("note", { exact: true }).fill("a note");
+  await dialog.getByLabel("Include constructor", { exact: true }).check();
+  await dialog.getByLabel("constructor", { exact: true }).fill("also data");
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.deepEqual(requests[0].body.payload, JSON.parse('{"__proto__":"event data","constructor":"also data","note":"a note"}'));
+});
+
+test("preflight validation reports success without starting a workflow", { timeout: browserTestTimeout }, async (t) => {
+  const schema = { type: "object", required: ["answer"], properties: { answer: { type: "string" } } };
+  const { page, requests } = await editor(t, { schema });
+  let checkedPayload;
+  await page.route("**/api/workflow-editor/nodes/alpha/validate-event", (route) => {
+    checkedPayload = route.request().postDataJSON().payload;
+    return route.fulfill(json({ valid: true, failures: [] }));
+  });
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("answer", { exact: true }).fill("yes");
+  await dialog.getByRole("button", { name: "Validate payload", exact: true }).click();
+  await dialog.getByText("Payload matches the event schema.", { exact: true }).waitFor();
+  assert.deepEqual(checkedPayload, { answer: "yes" });
+  assert.equal(requests.length, 0);
+  await dialog.getByLabel("answer", { exact: true }).fill("updated");
+  assert.equal(await dialog.getByText("Payload matches the event schema.", { exact: true }).count(), 0);
 });

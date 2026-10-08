@@ -1,6 +1,6 @@
 # Control-plane performance paths
 
-## Additional bounded-work fixes (0.80.5)
+## Additional bounded-work fixes (0.86.1)
 
 This audit identified ten further costs in the current source. The checks use
 synthetic state and deterministic read/iteration bounds; these are not production
@@ -44,13 +44,24 @@ The new bounded-work checks fail against the original implementations. Existing
 behavior checks also cover partial scheduled-publication failure, permission
 boundaries, graph edits, multiple graph roots, explicit loop returns, and cycles.
 
-Validation on 2026-10-07 used `scripts/run_tests.py --workers 4 --timeout 900`:
+Initial validation on 2026-10-07 used `scripts/run_tests.py --workers 4 --timeout 900`:
 9,697 passed, 97 skipped, and one pre-existing failure across 9,795 collected cases.
 All eight timing tests passed. The skips are the opt-in WordPress browser test
 and Docker integration cases. The failure,
 `test_template_materialization_assigns_forward_child_to_parent_lineage`, also fails
 on unchanged baseline `e23a7616`: its monkeypatch targets the absent
 `admin_service.get_template` attribute. Changed-file Ruff and whitespace checks passed.
+
+After merging main `9af6dd50` on 2026-10-08, 246 focused tests passed. The complete
+runner recorded 9,932 passed, 97 skipped, and three failures across 10,032 cases;
+all eight timing tests passed. The template failure and
+`test_configuration_schema_offers_named_assistants_and_root_only_routing` both
+reproduce on unchanged main; the latter's test runtime lacks
+`inbound_phone_routing_service`. The timing-sensitive
+`test_slow_origin_query_answer_supersedes_pending_hold_offer` passed in isolated
+reruns on both unchanged main and the merged branch. The complete run is therefore
+not claimed green. Ruff, conflict-marker, version consistency, and whitespace
+checks passed on the merged branch.
 
 ## Earlier performance audit (0.59.2)
 

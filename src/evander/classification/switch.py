@@ -70,6 +70,15 @@ class PreparedSwitch(StrictModel):
     evaluation: PreparedEvaluation
 
 
+def _check_probability_support(service, prepared: PreparedSwitch) -> None:
+    provider = service.providers.get(prepared.evaluation.provider)
+    if (
+        prepared.config.min_probability is not None
+        and getattr(provider, "reports_option_probabilities", None) is False
+    ):
+        raise ClassificationError("Smart switch probability cutoff requires option probabilities")
+
+
 def prepare_switch(service, settings, payload: Any) -> PreparedSwitch:
     try:
         config = ClassifierSwitchConfig.model_validate(payload)
@@ -96,10 +105,13 @@ def prepare_switch(service, settings, payload: Any) -> PreparedSwitch:
             },
         },
     )
-    return PreparedSwitch(config=config, evaluation=evaluation)
+    prepared = PreparedSwitch(config=config, evaluation=evaluation)
+    _check_probability_support(service, prepared)
+    return prepared
 
 
 def execute_switch(service, settings, prepared: PreparedSwitch, *, attribution=None):
+    _check_probability_support(service, prepared)
     result = service.execute(settings, prepared.evaluation, attribution=attribution)
     answer = result["answers"]["route"]
     choice = answer["choice"]

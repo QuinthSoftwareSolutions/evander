@@ -198,6 +198,9 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 For the opt-in core classification capability, host credential setup, provider enablement,
 and an explicit live smoke command, see [Classification](classification.md). It uses the
 existing gateway, effect orchestrator, and Admin Web processes with no new guest ports.
+OpenAI Decisions uses that same configuration surface with host-owned `OPENAI_API_KEY`,
+model `gpt-6-luna`, and explicit provider enablement. See
+[OpenAI Decisions](classification.md#openai-decisions) for setup and an explicit provider smoke.
 
 Before debugging individual scripts or services, run the consolidated host status command:
 
@@ -713,6 +716,18 @@ catalog before writing and writes atomically to either
 `EVANDER_MODEL_PRICING_PATH` or the configured runtime directory's default
 `model-pricing.openai.json` path.
 
+When upgrading to Ultrafast, add a tier-specific rule to each existing active
+catalog through that panel; updating the example seed or running `init-state`
+does not update an existing operator catalog. The seed includes GPT-6 Astra with
+`service_tier: "ultrafast"`: per 1M tokens, input $60, cached input $6, cache
+writes $75, and output $300. For requests exceeding 272,000 input tokens, those
+rates become $120, $12, $150, and $450 respectively. Preserve other rules, add the
+[published Ultrafast pricing source](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast),
+and update the catalog version when saving. These Astra rules have no date limit
+so recorded usage is repriced at query time. Add Ultrafast rules for other models
+only when their rates are published; an untiered rule falls back to Standard
+pricing and cannot represent an Ultrafast estimate accurately.
+
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
@@ -906,13 +921,17 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   any workflow changes remain unsaved.
 - To run an event workflow manually, select its `trigger:event` node and click
   **Trigger manually** in the inspector. Save or discard any workflow changes first,
-  and enable and save the trigger if it is disabled. Enter a JSON object containing
-  the event payload; the dialog displays the saved event type and supplies event
-  metadata automatically. A configured correlation key is fixed; otherwise one may
+  and enable and save the trigger if it is disabled. Fill the generated event fields;
+  unregistered events retain a JSON editor with a notice. The dialog displays the
+  saved event type and supplies event metadata automatically. A configured correlation key is fixed; otherwise one may
   be entered. **Trigger node** queues only the selected node and its downstream flow.
   **Inspect run** opens the queued run when you have run-read access. This action
-  requires `workflow_runs.control` in the workflow's directory. Payload schemas and
-  generated forms are not available yet.
+  requires `workflow_runs.control` in the workflow's directory. **Validate payload**
+  checks the registered schema without starting a run; submission also validates on
+  the server. **Reload event definition** refreshes a stale schema while retaining
+  entered values. Manage schemas in **Configuration → Automation & Assignment → Events**.
+  Use `gate:event:validate` when automatic workflows should validate event bodies;
+  event publishing itself remains unchanged.
 - Admin Web and workflow API pack mutations write internal change history under
   `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
   `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger
@@ -1170,10 +1189,11 @@ prompts and retries retain the value captured at submission. See
 [reasoning effort configuration](configuration-reference.md#agent-reasoning-effort)
 for native levels, CLI/API examples, provider support, and worker upgrade order.
 
-Codex Fast mode is configured in **Sessions → Settings → Default speed**, at
-agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
+Codex Fast and Ultrafast modes are configured in **Sessions → Settings → Default
+speed**, at agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
 `fast_mode: false` explicitly restores standard speed even when the session
-default is Fast. Workflow prompt effects accept the same override. It requires
+default is Fast or Ultrafast. Use `fast_mode: "ultrafast"` or `--speed ultrafast`
+to select Ultrafast. Workflow prompt effects accept the same override. It requires
 public OpenAI and a supported model; availability and allowance or credit usage
 come from the configured account. Upgrade container workers before enabling the
 new control-plane fields, and rerun the Codex bootstrap for existing VMs. See
@@ -1587,6 +1607,15 @@ A transport-terminated warning without client-visible failure can be expected fo
     search text. The gateway resolves refs with the ADO identities API, renders the comment as
     ADO HTML with documented `data-vss-mention` anchors, and posts with explicit `format=html`;
     unresolved or ambiguous refs fail the call.
+- Gateway tool name: `delete_ado_backlog_comment`.
+  - Required MCP arguments: positive numeric work-item `id` and `comment_id`; optional `project`.
+  - Read comment IDs using `get_ado_backlog_item` with comments included.
+  - Deletes the selected comment through the calling session directory's ADO connection,
+    then invalidates that directory's cached work-item activity scans. Provider failures
+    propagate without reporting a successful deletion.
+  - Grant this tool explicitly in `allowed_tools`; normal directory policy, argument rules,
+    and configured per-invocation approvals apply. The host PAT needs `vso.work_write`.
+  - API reference: [Azure DevOps work-item comment deletion](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/comments/delete?view=azure-devops-rest-7.1).
 - Gateway tool name: `update_ado_backlog_text`.
   - Policy-gated with `update_ado_backlog_text`.
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
@@ -2001,6 +2030,64 @@ creating the voice-session record. `route_prompt` becomes the projected Realtime
 prompt; `startup_text` is the caller-facing greeting. Raw DID and caller numbers are normalized
 for matching, but only redacted or hashed forms are stored in audit logs and JSON stores.
 
+#### Caller routing to agent sessions
+
+To share one DIDWW number across agent sessions, open **Configuration → root → People &
+Communications → Phone calls → Caller routing**. Unlock operations, add a called number,
+select its existing inbound phone route, then add caller phone numbers and choose their
+agent sessions. The picker lists all active sessions, including issue and worker sessions;
+the destination does not need to be a personal assistant. Save changes to persist the map.
+
+The root `providers.json` representation is:
+
+```json
+{
+  "inbound_phone_caller_maps": [
+    {
+      "did": "+15551230000",
+      "route_id": "ops-main",
+      "callers": [
+        {
+          "caller_number": "+15551230001",
+          "session_id": "agent-session-a",
+          "directory_path": "root/ops"
+        },
+        {
+          "caller_number": "+15551230002",
+          "session_id": "agent-session-b",
+          "directory_path": "root/builds"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each map references one existing `inbound_phone_routes` entry for its voice prompt, greeting
+and caller access policy. Its caller assignments replace that route's default `session_id`
+and directory for mapped calls. The gateway resolves provider and controller settings from
+the selected session's directory and requires that session to remain active in that directory.
+Keep a shared route's prompt appropriate for all destinations. The bridge must have access to
+the controller token environment variable configured in each destination directory, as it does
+for existing fixed routes.
+
+Assignments match both the called DID and caller number. Enter international numbers with
+country codes; formatting and an optional `+` do not affect matching, and the gateway does not
+infer country codes. The same caller can reach different sessions through different DIDs.
+Overlapping caller allowlists do not select a destination; each route's allow/block policy is
+still enforced after the explicit lookup.
+
+Unmapped and withheld callers are rejected. Removing the last caller retains the DID map with
+an empty `callers` list and rejects all calls to that number. Use **Remove called number and
+restore fixed routing** to explicitly disable caller routing for a DID; numbers without a map
+keep their existing fixed routing. A bridge-supplied route ID cannot bypass the map.
+
+Changes apply to new calls without restarting the gateway. Calls already admitted keep their
+original session for delegation and transcript handling. If a destination session is replaced,
+update its assignment; unavailable selections remain visible in the editor rather than being
+silently redirected. Phone numbers remain host-side configuration, while voice stores and audit
+events retain only their redacted or hashed identities.
+
 Configure the OpenAI Realtime key env var and upstream base URL in the DIDWW SIP bridge service
 environment. The gateway does not pass those credential-routing values through each phone-call
 request.
@@ -2117,8 +2204,11 @@ Inbound failure handling is deterministic:
 
 - Route miss or ambiguous DID: the bridge hangs up the inbound Asterisk channel and records a
   sanitized provisioning failure.
-- Unauthorized caller: the gateway returns `403`, no voice-session record is exposed, and the audit
-  log contains only route ids plus redacted/hash identity fields.
+- Missing, invalid, or out-of-scope controller credentials: the gateway returns a generic `401`,
+  including when routing or caller-map lookup fails.
+- Caller policy rejection after controller authentication: the gateway returns `403`, no
+  voice-session record is exposed, and the audit log contains only route ids plus redacted/hash
+  identity fields.
 - Missing or inactive origin session: the gateway rejects the request before exposing a record.
 - ARI bridge or `ExternalMedia` failure after acceptance: the call record ends as `failed`, the
   bridge cleans up the Asterisk channels, and reconciliation is not duplicated.
@@ -2858,8 +2948,9 @@ without exposing provider credentials in the VM.
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
    - `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
-     remove_tags?, expected_statuses?, project?)` to update Azure DevOps PR metadata through
-     directory-scoped host credentials. The description argument replaces the full description;
+     remove_tags?, expected_statuses?, project?, artifact_ids?, request_id?)` to update Azure DevOps
+     PR metadata through directory-scoped host credentials. The description argument replaces
+     the full description;
      use `expected_statuses=["active"]` when the request must not mutate a closed PR.
    - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
      before using personal activity filters.
@@ -3197,6 +3288,32 @@ work and let the trigger orchestrator start a temporary review VM.
   - `submit_pr_review(...)` for a summary plus optional batched inline findings
   - `post_pr_feedback_reply(...)` when replying to an existing feedback thread/comment
 
+Maintain existing comments with `delete_pr_comment(provider, repo, pr_id, comment_id, ...)`
+and `resolve_pr_comment(provider, repo, pr_id, ...)`. Both require their own explicit
+`allowed_tools` grant and use the session directory's host credentials. Normal directory
+denials, tool argument rules, configured approvals, and tool-call audit apply.
+
+| Operation | Azure DevOps | GitHub |
+| --- | --- | --- |
+| Delete one comment | Supply positive numeric `thread_id` and `comment_id`; optional `feedback_kind=thread_comment`. | Supply positive numeric `comment_id` and `feedback_kind=issue_comment` for conversation comments or `review_comment` for inline review comments. |
+| Resolve a comment thread | Supply positive numeric `thread_id`; sets the entire thread to `fixed`. | Supply a positive numeric inline review `comment_id`, or a GraphQL review-thread `thread_id`, but not both. |
+
+Use `list_all_feedback` to obtain the comment targets. GitHub feedback's `thread_id` is a
+review ID, so use its `comment_id` when resolving; conversation comments and review summaries
+do not have resolvable review threads. GitHub checks that the comment or thread belongs to the
+specified PR before mutation. Review-thread lookup follows both thread and comment pagination,
+with a limit of 100 GraphQL requests per invocation. Already resolved GitHub threads return
+`resolved=true` and `already_resolved=true` without another mutation. Resolution affects all
+replies in the selected thread. Failed or unconfirmed provider responses fail the tool call.
+
+Azure DevOps PR operations use `azure_devops_pr_pat_env` and need `vso.code_write` or
+`vso.threads_full`; work-item comment deletion uses `azure_devops_pat_env`. GitHub uses
+`github_token_env` and the provider's comment-write and thread-resolution permissions.
+See the [Azure DevOps PR comment deletion](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1),
+[Azure DevOps thread update](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1),
+and [GitHub review-thread resolution](https://docs.github.com/en/graphql/reference/pulls#resolvereviewthread)
+API references.
+
 The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
 through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
 For Azure DevOps PRs, these publish tools can include staged `artifact_ids`; the gateway uploads
@@ -3205,6 +3322,20 @@ They also accept `mentions` on top-level comments, inline comments, review summa
 review comments, and feedback-thread replies. Mention refs use the same ADO identity ID,
 descriptor, email/UPN, or display/name lookup behavior as `post_ado_backlog_comment`; the PAT must
 be able to read ADO identities, equivalent to Azure DevOps OAuth scope `vso.identity`.
+
+To attach files directly to a PR description, stage each file under `/home/agent` with
+`communication_stage_workspace_file` and pass the returned IDs as `artifact_ids` to
+`update_pull_request`. Omit `description` to append the links to the current text, or supply the
+complete replacement description. An empty supplied description leaves only the new links.
+The response includes `uploaded_attachments` with the uploaded filenames and download URLs.
+The files must belong to the caller session and pass its outbound file-send, MIME, extension,
+and size policy. Supply `request_id` for the exact update payload when file-send approval is
+required. Normal tool grants and argument restrictions still apply, including any requirement
+to supply the complete description. The `expected_statuses` check runs before file upload.
+When `description` is omitted, its text is refreshed after file uploads before the links
+are appended. That refresh and the final save are separate provider requests.
+Upload and description save are separate provider requests: an upload failure stops the update;
+a save failure raises an error and may leave uploaded files attached to the PR.
 
 ### Recommended workflow graph
 

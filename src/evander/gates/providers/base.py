@@ -11,6 +11,7 @@ from evander.workflow.validation import NodeCapability, WorkflowValidationDiagno
 @dataclass(frozen=True)
 class GateRuntimeContext(ProviderRuntimeBase):
     vm_inventory: GateVmInventory | None = None
+    event_schemas: Any | None = None
 
 
 class GateProviderBase:

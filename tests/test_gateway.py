@@ -557,6 +557,8 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "post_pr_feedback_reply",
         "request_pr_review",
         "post_pr_comment",
+        "delete_pr_comment",
+        "resolve_pr_comment",
         "post_pr_inline_comment",
         "submit_pr_review",
     }
@@ -566,6 +568,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     ado_tool_names = {
         "create_ado_backlog_item",
         "post_ado_backlog_comment",
+        "delete_ado_backlog_comment",
         "delete_ado_backlog_item",
         "update_ado_backlog_text",
         "update_ado_backlog_title",
@@ -1884,6 +1887,10 @@ def test_update_pull_request_schema_advertises_azure_devops_aliases(tmp_path: Pa
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["azure_devops", "azure-devops", "ado"]
     assert "description" in update_tool.parameters["properties"]
+    artifacts_schema = update_tool.parameters["properties"]["artifact_ids"]
+    assert {"type": "array", "items": {"type": "string"}} in artifacts_schema["anyOf"]
+    assert "artifact_ids" not in update_tool.parameters["required"]
+    assert update_tool.parameters["properties"]["request_id"]["default"] is None
 
 
 def test_mssql_tools_call_container_worker_backend_and_redact_audit(
