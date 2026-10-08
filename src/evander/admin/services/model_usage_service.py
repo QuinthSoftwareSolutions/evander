@@ -67,6 +67,16 @@ def _empty_model_pricing_catalog_payload() -> dict[str, Any]:
     }
 
 
+def _normalize_steering_identifiers(session_id: str, dispatch_id: str) -> tuple[str, str]:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_dispatch_id = str(dispatch_id or "").strip()
+    if not normalized_session_id:
+        raise ValueError("session_id is required")
+    if not normalized_dispatch_id:
+        raise ValueError("dispatch_id is required")
+    return normalized_session_id, normalized_dispatch_id
+
+
 class ModelUsageAdminService:
     """Model usage and operator-steering operations."""
 
@@ -323,12 +333,9 @@ class ModelUsageAdminService:
         worker_execution_id: str | None = None,
         created_by: str | None = None,
     ) -> OperatorSteeringNote:
-        normalized_session_id = str(session_id or "").strip()
-        normalized_dispatch_id = str(dispatch_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        if not normalized_dispatch_id:
-            raise ValueError("dispatch_id is required")
+        normalized_session_id, normalized_dispatch_id = _normalize_steering_identifiers(
+            session_id, dispatch_id
+        )
         context = model_usage_store(self._runtime_dir).get_active_correlation_context(
             session_id=normalized_session_id,
             dispatch_id=normalized_dispatch_id,
@@ -354,12 +361,9 @@ class ModelUsageAdminService:
         worker_execution_id: str | None = None,
         created_by: str | None = None,
     ) -> dict[str, Any]:
-        normalized_session_id = str(session_id or "").strip()
-        normalized_dispatch_id = str(dispatch_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        if not normalized_dispatch_id:
-            raise ValueError("dispatch_id is required")
+        normalized_session_id, normalized_dispatch_id = _normalize_steering_identifiers(
+            session_id, dispatch_id
+        )
         normalized_message = self._validate_operator_steering_message(message)
         context = model_usage_store(self._runtime_dir).get_active_correlation_context(
             session_id=normalized_session_id,
@@ -370,17 +374,11 @@ class ModelUsageAdminService:
                 "No active model-correlation context found for this session and dispatch."
             )
         session = self._deps.session_repository.get_session(normalized_session_id)
-        if context.execution_backend == "container_worker_vm":
+        if context.execution_backend == "container_worker_vm" or (
+            session is not None and self._deps.is_container_session(session)
+        ):
             if session is None:
                 raise ValueError(f"unknown session: {normalized_session_id}")
-            return self._deps.interrupt_container_operator_steering_note(
-                session=session,
-                context=context,
-                message=normalized_message,
-                worker_execution_id=worker_execution_id,
-                created_by=created_by,
-            )
-        if session is not None and self._deps.is_container_session(session):
             return self._deps.interrupt_container_operator_steering_note(
                 session=session,
                 context=context,

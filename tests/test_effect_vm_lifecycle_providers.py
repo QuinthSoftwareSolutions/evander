@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.vm_start import VmStartEffectProvider
@@ -85,3 +87,56 @@ def test_vm_stop_provider_accepts_timeout_override(tmp_path: Path) -> None:
     provider.execute(resolved_config={"target": "session-2", "timeout_seconds": "15"})
 
     assert admin_service.stop_calls == [("session-2", 15)]
+
+
+@pytest.mark.parametrize("provider_type", [VmStartEffectProvider, VmStopEffectProvider])
+@pytest.mark.parametrize(
+    "payload,expected_target",
+    [
+        ({"target": " first ", "vm_name": "second", "session_id": "third"}, "first"),
+        ({"target": " ", "vm_name": " second ", "session_id": "third"}, "second"),
+        ({"target": None, "vm_name": " ", "session_id": " third "}, "third"),
+        ({"target": 0, "vm_name": "second"}, "0"),
+    ],
+)
+def test_vm_power_effects_preserve_target_precedence_and_result_defaults(
+    provider_type, payload, expected_target: str
+) -> None:
+    calls = []
+
+    def run(target, **kwargs):
+        calls.append((target, kwargs))
+        return SimpleNamespace(success=1, vm_name="", message=None)
+
+    provider = provider_type()
+    provider.initialize(
+        SimpleNamespace(id="power-effect"),
+        EffectRuntimeContext(
+            vm_power_controller=SimpleNamespace(start_vm=run, shutdown_vm=run), env={}
+        ),
+    )
+
+    result = provider.execute(resolved_config={**payload, "timeout_seconds": 0})
+
+    is_stop = provider_type is VmStopEffectProvider
+    assert calls == [(expected_target, {"timeout_seconds": 60} if is_stop else {})]
+    assert result == {
+        "success": True,
+        "action": "shutdown" if is_stop else "start",
+        "target": expected_target,
+        "vm_name": expected_target,
+        "message": "",
+    }
+
+
+@pytest.mark.parametrize(
+    "provider_type,effect_type",
+    [(VmStartEffectProvider, "effect:vm:start"), (VmStopEffectProvider, "effect:vm:stop")],
+)
+def test_vm_power_effects_validate_target_before_timeout_and_context(provider_type, effect_type):
+    provider = provider_type()
+
+    with pytest.raises(ValueError) as exc_info:
+        provider.execute(resolved_config={"timeout_seconds": "invalid"})
+
+    assert str(exc_info.value) == f"{effect_type} requires target, vm_name, or session_id"
