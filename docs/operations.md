@@ -2939,8 +2939,9 @@ without exposing provider credentials in the VM.
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
    - `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
-     remove_tags?, expected_statuses?, project?)` to update Azure DevOps PR metadata through
-     directory-scoped host credentials. The description argument replaces the full description;
+     remove_tags?, expected_statuses?, project?, artifact_ids?, request_id?)` to update Azure DevOps
+     PR metadata through directory-scoped host credentials. The description argument replaces
+     the full description;
      use `expected_statuses=["active"]` when the request must not mutate a closed PR.
    - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
      before using personal activity filters.
@@ -3286,6 +3287,20 @@ They also accept `mentions` on top-level comments, inline comments, review summa
 review comments, and feedback-thread replies. Mention refs use the same ADO identity ID,
 descriptor, email/UPN, or display/name lookup behavior as `post_ado_backlog_comment`; the PAT must
 be able to read ADO identities, equivalent to Azure DevOps OAuth scope `vso.identity`.
+
+To attach files directly to a PR description, stage each file under `/home/agent` with
+`communication_stage_workspace_file` and pass the returned IDs as `artifact_ids` to
+`update_pull_request`. Omit `description` to append the links to the current text, or supply the
+complete replacement description. An empty supplied description leaves only the new links.
+The response includes `uploaded_attachments` with the uploaded filenames and download URLs.
+The files must belong to the caller session and pass its outbound file-send, MIME, extension,
+and size policy. Supply `request_id` for the exact update payload when file-send approval is
+required. Normal tool grants and argument restrictions still apply, including any requirement
+to supply the complete description. The `expected_statuses` check runs before file upload.
+When `description` is omitted, its text is refreshed after file uploads before the links
+are appended. That refresh and the final save are separate provider requests.
+Upload and description save are separate provider requests: an upload failure stops the update;
+a save failure raises an error and may leave uploaded files attached to the PR.
 
 ### Recommended workflow graph
 

@@ -1133,9 +1133,12 @@ Use this when you want the guest to wake only for new review feedback and post t
    Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
    Use `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
-   remove_tags?, expected_statuses?, project?)` for an explicitly authorized Azure DevOps
-   metadata update. `description` replaces the complete PR description; omit it to leave the
-   description unchanged and use `expected_statuses=["active"]` to guard against stale requests.
+   remove_tags?, expected_statuses?, project?, artifact_ids?, request_id?)` for an explicitly
+   authorized Azure DevOps metadata update. `description` replaces the complete PR description;
+   omit it to leave the description unchanged unless attaching files. Pass staged `artifact_ids` to upload files
+   directly to the PR and append their Markdown image/download links to the supplied description,
+   or to its current text when `description` is omitted. Use `expected_statuses=["active"]`
+   to guard against stale requests.
    For full thread history, including already-consumed items and agent-authored replies suppressed
    from wake/unread checks, call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list`, `effect:pull-request:update`, and
@@ -1278,6 +1281,15 @@ line context.
 For Azure DevOps PRs, PR comment/reply/review tools accept staged `artifact_ids`. The gateway
 uploads each artifact to the PR attachments API and appends Markdown image/link references to the
 posted text.
+
+`update_pull_request` also accepts staged `artifact_ids` for description attachments. The
+gateway uploads files and appends their image/download links directly to the description.
+For example, stage `/home/agent/repo/review.csv` with `communication_stage_workspace_file`,
+then call `update_pull_request(provider="azure_devops", repo="example-repo", pr_id="17",
+artifact_ids=["<returned-artifact-id>"], expected_statuses=["active"])`. Its response includes
+`uploaded_attachments` with the provider download URLs. File sending must be enabled and the
+artifacts must belong to the caller; MIME, extension, size, and exact file-send approval policies
+apply. Supplying `description` replaces the existing text before the links are appended.
 
 ### Typical workflow shape
 

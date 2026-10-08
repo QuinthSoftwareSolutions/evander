@@ -1219,19 +1219,21 @@ class AzureDevOpsPrQueryProvider:
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
         expected_statuses: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> UpdatePullRequestResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         project_name = _normalize_optional_text(project) or self.project
         expected = _normalize_string_list(expected_statuses)
         tags_to_add = _normalize_string_list(add_tags)
         tags_to_remove = _normalize_string_list(remove_tags)
+        pr_url = (
+            f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+            f"pullRequests/{pr_id}"
+        )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             current_response = client.get(
-                (
-                    f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
-                    f"pullRequests/{pr_id}"
-                ),
+                pr_url,
                 params={"api-version": "7.1"},
                 auth=("", self.pat),
             )
@@ -1271,6 +1273,32 @@ class AzureDevOpsPrQueryProvider:
             normalized_status = _normalize_optional_text(status)
             if normalized_status:
                 patch_payload["status"] = normalized_status.lower()
+
+            uploaded_attachments = _upload_azure_devops_pr_attachments(
+                client=client,
+                organization_url=self.organization_url,
+                project=project_name,
+                pat=self.pat,
+                repo=repo,
+                pr_id=pr_id,
+                attachments=attachments,
+            )
+            if uploaded_attachments:
+                if any(not attachment["url"] for attachment in uploaded_attachments):
+                    raise ValueError("Azure DevOps did not return an attachment download URL")
+                description_text = description
+                if description_text is None:
+                    # Preserve description edits made while the files were uploading.
+                    description_response = client.get(
+                        pr_url,
+                        params={"api-version": "7.1"},
+                        auth=("", self.pat),
+                    )
+                    description_response.raise_for_status()
+                    description_text = description_response.json().get("description")
+                patch_payload["description"] = _append_markdown_attachment_links(
+                    str(description_text or ""), uploaded_attachments
+                )
 
             latest_payload = current_payload
             if patch_payload:
@@ -1342,14 +1370,15 @@ class AzureDevOpsPrQueryProvider:
             description=(
                 _normalize_optional_text(latest_payload.get("description"))
                 if "description" in latest_payload
-                else _normalize_optional_text(description)
-                if description is not None
+                else _normalize_optional_text(patch_payload["description"])
+                if "description" in patch_payload
                 else _normalize_optional_text(current_payload.get("description"))
             ),
             url=_azure_pr_web_url(latest_payload) or _azure_pr_web_url(current_payload),
             tags=latest_tags,
             added_tags=added_tags,
             removed_tags=removed_tags,
+            uploaded_attachments=uploaded_attachments,
             raw=latest_payload if isinstance(latest_payload, dict) else {},
         )
 
@@ -2254,6 +2283,7 @@ class PrQueryService:
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
         expected_statuses: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> UpdatePullRequestResponse:
         provider_name = normalize_pr_automation_provider(provider)
         if provider_name not in self.providers:
@@ -2263,17 +2293,20 @@ class PrQueryService:
         update_pull_request = getattr(self.providers[provider_name], "update_pull_request", None)
         if not callable(update_pull_request):
             raise ValueError(f"PR update provider {provider_name!r} does not support updates")
-        return update_pull_request(
-            repo=repo,
-            pr_id=pr_id,
-            project=project,
-            title=title,
-            description=description,
-            status=status,
-            add_tags=add_tags,
-            remove_tags=remove_tags,
-            expected_statuses=expected_statuses,
-        )
+        update_kwargs: dict[str, Any] = {
+            "repo": repo,
+            "pr_id": pr_id,
+            "project": project,
+            "title": title,
+            "description": description,
+            "status": status,
+            "add_tags": add_tags,
+            "remove_tags": remove_tags,
+            "expected_statuses": expected_statuses,
+        }
+        if attachments:
+            update_kwargs["attachments"] = attachments
+        return update_pull_request(**update_kwargs)
 
     def get_pull_request(
         self,

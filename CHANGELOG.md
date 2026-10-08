@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-08 - Direct PR description attachments (0.85.0)
+
+- Add staged `artifact_ids` to `update_pull_request` so agents can upload files
+  directly to an Azure DevOps PR and include their image/download links in its description.
+- Append links to the current description when no replacement text is supplied,
+  and return uploaded attachment metadata and URLs.
+- Refresh the current description after uploads to preserve edits made while
+  files were uploading; stop the save if that refresh fails.
+- Apply existing file ownership, outbound file policy, exact file-send approval,
+  and tool/PR restrictions; check expected PR status before uploading files.
+
 ## 2026-10-07 - OpenAI Decisions classification (0.84.0)
 
 - Add an opt-in host-side OpenAI Decisions provider using the published `/v1/decisions`

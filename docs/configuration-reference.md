@@ -1564,6 +1564,16 @@ unchanged; an empty `description` clears the full description, and `expected_sta
 mutation if the current provider status is no longer expected. The normal `allowed_tools`,
 `approval_required_tools`, `mcp_tool_policies`, and tool-argument policy controls apply.
 
+For direct PR-description file attachments, `update_pull_request` accepts `artifact_ids` from
+`communication_stage_workspace_file` or inbound file downloads. The gateway uploads the caller's
+artifacts to Azure DevOps and appends their Markdown image/download links to the supplied
+description, or to its current text if omitted. Enable `communication_file_send_enabled` and
+grant `communication_stage_workspace_file` for agent-created files. The existing
+`communication_file_max_bytes`, `communication_file_allowed_mime_types`,
+`communication_file_allowed_extensions`, and `communication_file_blocked_extensions` settings
+apply. If `communication_file_require_approval_for_send` is enabled, pass an approved `request_id`
+bound to that exact update payload. No session or directory grants are added automatically.
+
 `query:pull-request:get`, `query:pull-request:work-items`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`,
 `effect:pull-request:remove-tag` accept Azure DevOps `provider` as
