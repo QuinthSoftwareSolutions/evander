@@ -11,6 +11,7 @@ from pydantic import Field as PydanticField
 
 from evander.models import (
     CancelScheduledWakeResponse,
+    DeletePrCommentRequest,
     DownloadPrFeedbackAttachmentRequest,
     DownloadPrFeedbackAttachmentResponse,
     GetPullRequestRequest,
@@ -22,6 +23,7 @@ from evander.models import (
     PostPrFeedbackReplyRequest,
     PostPrInlineCommentRequest,
     RequestPrReviewRequest,
+    ResolvePrCommentRequest,
     RunScriptRequest,
     RunScriptResponse,
     ScheduleResumeRequest,
@@ -1138,6 +1140,118 @@ def register_pr_tools(
                 error_class="unexpected_error",
             )
             raise
+
+    def _manage_pr_comment(
+        request: DeletePrCommentRequest | ResolvePrCommentRequest, tool_name: ToolName
+    ) -> dict[str, Any]:
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(request.session_id, tool_name)
+            service = context.pr_publish_service_for_session(request.session_id)
+            operation = (
+                service.delete_comment
+                if isinstance(request, DeletePrCommentRequest)
+                else service.resolve_comment
+            )
+            result = operation(**request.model_dump(exclude={"session_id"}))
+            audit_success(request.session_id, tool_name, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, tool_name, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                tool_name,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                tool_name,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def delete_pr_comment(
+        provider: str,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: Literal["thread_comment", "issue_comment", "review_comment"] | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Delete one PR comment. Use IDs and feedback_kind from list_all_feedback.
+
+        Azure DevOps requires thread_id and comment_id. GitHub requires comment_id and
+        feedback_kind=issue_comment (conversation) or review_comment (inline review).
+        GitHub verifies the comment belongs to this PR before deleting it.
+        """
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        return _manage_pr_comment(
+            DeletePrCommentRequest(
+                session_id=resolved_session_id,
+                provider=normalize_pr_feedback_provider(provider),
+                repo=repo.strip(),
+                pr_id=pr_id.strip(),
+                comment_id=comment_id.strip(),
+                thread_id=(
+                    thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+                ),
+                feedback_kind=feedback_kind,
+            ),
+            ToolName.DELETE_PR_COMMENT,
+        )
+
+    @server.tool()
+    def resolve_pr_comment(
+        provider: str,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the entire PR comment thread, including its replies.
+
+        Azure DevOps requires thread_id from list_all_feedback and sets status to fixed.
+        For GitHub, pass a review comment_id from feedback or a GraphQL review thread_id.
+        GitHub feedback's thread_id is a review ID; use comment_id for those records.
+        GitHub conversation comments and review summaries cannot be resolved as threads.
+        """
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        return _manage_pr_comment(
+            ResolvePrCommentRequest(
+                session_id=resolved_session_id,
+                provider=normalize_pr_feedback_provider(provider),
+                repo=repo.strip(),
+                pr_id=pr_id.strip(),
+                thread_id=(
+                    thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+                ),
+                comment_id=(
+                    comment_id.strip() if isinstance(comment_id, str) and comment_id.strip() else None
+                ),
+            ),
+            ToolName.RESOLVE_PR_COMMENT,
+        )
 
     @server.tool()
     def post_pr_comment(

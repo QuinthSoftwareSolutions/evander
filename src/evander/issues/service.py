@@ -21,6 +21,7 @@ import httpx
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from evander.ado_builds import positive_id
 from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL, validate_ado_query_mode
 from evander.ado_mentions import (
     render_ado_mentions_html_prefix,
@@ -481,6 +482,15 @@ class IssueProviderAdapter(Protocol):
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         correlation_marker: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def delete_comment(
+        self,
+        *,
+        remote_issue_id: str,
+        comment_id: str,
+        directory_path: str,
+        project: str | None = None,
     ) -> dict[str, Any]: ...
 
     def update_issue(
@@ -1354,6 +1364,42 @@ class AzureDevOpsIssueAdapter:
                 "uploaded_attachments": uploaded_attachments,
                 "resolved_mentions": [mention.audit_payload() for mention in resolved_mentions],
             }
+
+    def delete_comment(
+        self,
+        *,
+        remote_issue_id: str,
+        comment_id: str,
+        directory_path: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        work_item_id = str(positive_id(remote_issue_id.strip(), "id"))
+        comment_id = str(positive_id(comment_id.strip(), "comment_id"))
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps comment deletion.")
+        url = (
+            f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/"
+            f"workItems/{work_item_id}/comments/{comment_id}"
+        )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.delete(
+                url,
+                params={"api-version": "7.1-preview.4"},
+                headers={"Authorization": self._auth_header(pat)},
+            )
+            if response.is_error:
+                self._raise_ado_http_error(action="delete work item comment", response=response)
+            response.raise_for_status()
+        return {
+            "status": "deleted",
+            "provider": self.provider_name,
+            "work_item_id": work_item_id,
+            "comment_id": comment_id,
+            "project": normalized_project,
+            "deleted": True,
+        }
 
     def resolve_comment_mentions(
         self,
@@ -3023,6 +3069,9 @@ class GitHubIssueAdapter:
     def post_comment(self, **_: Any) -> dict[str, Any]:
         raise ValueError("GitHub issue comment posting is not supported by IssueService")
 
+    def delete_comment(self, **_: Any) -> dict[str, Any]:
+        raise ValueError("GitHub issue comment deletion is not supported by IssueService")
+
     def update_issue(self, **_: Any) -> dict[str, Any]:
         raise ValueError("GitHub issue updates are not supported by IssueService")
 
@@ -3566,6 +3615,25 @@ class IssueService:
             mentions=mentions,
             attachments=attachments,
             correlation_marker=correlation_marker,
+        )
+
+    def delete_remote_comment(
+        self,
+        *,
+        provider: str,
+        remote_issue_id: str,
+        comment_id: str,
+        directory_path: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.delete_comment(
+            remote_issue_id=remote_issue_id,
+            comment_id=comment_id,
+            directory_path=directory_path,
+            project=project,
         )
 
     def resolve_ado_comment_mentions(

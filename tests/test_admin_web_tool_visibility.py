@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from evander.admin.composition import build_admin_runtime
@@ -198,15 +199,27 @@ def test_admin_web_tool_visibility_marks_locked_approval_rows(
     assert rows["create_ado_backlog_item"]["approval_locked"] is False
 
 
-def test_admin_web_tool_visibility_classifies_update_title_tool(
+@pytest.mark.parametrize(
+    ("tool", "provider", "category"),
+    [
+        (ToolName.UPDATE_ADO_BACKLOG_TITLE, "azure_devops", "Azure DevOps"),
+        (ToolName.DELETE_ADO_BACKLOG_COMMENT, "azure_devops", "Azure DevOps"),
+        (ToolName.DELETE_PR_COMMENT, "pull_requests", "Pull requests"),
+        (ToolName.RESOLVE_PR_COMMENT, "pull_requests", "Pull requests"),
+    ],
+)
+def test_admin_web_tool_visibility_classifies_work_item_and_pr_tools(
     tmp_path: Path,
+    tool: ToolName,
+    provider: str,
+    category: str,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     session = SessionManifest(
         session_id="session-1",
         vm_id="vm-1",
         vm_provider="libvirt",
-        allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+        allowed_tools=[tool],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     service.runtime.session_repository.upsert_session(session)
@@ -217,10 +230,10 @@ def test_admin_web_tool_visibility_classifies_update_title_tool(
     rows = {row["tool_name"]: row for row in payload["tools"]}
 
     assert response.status_code == 200
-    assert rows["update_ado_backlog_title"]["visibility_state"] == "visible"
-    assert rows["update_ado_backlog_title"]["source"] == "session.allowed_tools"
-    assert rows["update_ado_backlog_title"]["provider"] == "azure_devops"
-    assert rows["update_ado_backlog_title"]["category"] == "Azure DevOps"
+    assert rows[tool.value]["visibility_state"] == "visible"
+    assert rows[tool.value]["source"] == "session.allowed_tools"
+    assert rows[tool.value]["provider"] == provider
+    assert rows[tool.value]["category"] == category
 
 
 def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(

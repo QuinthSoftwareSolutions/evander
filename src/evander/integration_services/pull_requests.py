@@ -14,6 +14,7 @@ from threading import Lock
 from typing import Any, Iterator, Literal, Mapping, Protocol
 from urllib.parse import quote, unquote
 import httpx
+from evander.ado_builds import positive_id
 from evander.ado_mentions import (
     AdoResolvedMention,
     AdoMentionResolver,
@@ -45,6 +46,7 @@ from evander.pr_feedback.providers import (
 )
 from evander.pr_feedback.identity import pr_feedback_stream_aliases
 from evander.pr_feedback.store import PrFeedbackRepository, PrFeedbackStore, _stream_key
+from evander.integration_services.pr_comments import GitHubPrComments
 
 from .common import (
     _IGNORED_FEEDBACK_RETENTION,
@@ -2656,6 +2658,25 @@ def _normalize_github_feedback_kind(value: str | None) -> str:
 
 
 class PrPublishProvider(Protocol):
+    def delete_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def resolve_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
     def post_comment(
         self,
         *,
@@ -2697,6 +2718,35 @@ class GitHubPrPublishProvider:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    def delete_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: str | None = None,
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            return GitHubPrComments(
+                client, api_base_url=self.api_base_url, headers=self._headers()
+            ).delete_comment(
+                repo=repo, pr_id=pr_id, comment_id=comment_id, feedback_kind=feedback_kind
+            )
+
+    def resolve_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            return GitHubPrComments(
+                client, api_base_url=self.api_base_url, headers=self._headers()
+            ).resolve_comment(repo=repo, pr_id=pr_id, thread_id=thread_id, comment_id=comment_id)
 
     def post_comment(
         self,
@@ -2826,6 +2876,85 @@ class AzureDevOpsPrPublishProvider:
 
     def _repo_identifier(self, repo: str) -> str:
         return _normalize_azure_devops_repo_identifier(repo)
+
+    def _comment_thread_url(self, *, repo: str, pr_id: str, thread_id: str | None) -> str:
+        if not self.organization_url or not self.project.strip():
+            raise ValueError("Azure DevOps PR comment operations require organization URL and project")
+        pr_id = str(positive_id(pr_id.strip(), "pr_id"))
+        thread_id = str(positive_id(thread_id.strip() if thread_id else None, "thread_id"))
+        repository_id = self._repo_identifier(repo)
+        if not repository_id or repository_id in {".", ".."}:
+            raise ValueError("Azure DevOps PR comment operations require repo")
+        return (
+            f"{self.organization_url}/{quote(self.project, safe='')}/_apis/git/repositories/"
+            f"{quote(repository_id, safe='')}/pullRequests/{pr_id}/threads/{thread_id}"
+        )
+
+    def delete_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: str | None = None,
+    ) -> dict[str, Any]:
+        if feedback_kind not in {None, "thread_comment"}:
+            raise ValueError("Azure DevOps PR comments require feedback_kind=thread_comment")
+        comment_id = str(positive_id(comment_id.strip(), "comment_id"))
+        url = self._comment_thread_url(repo=repo, pr_id=pr_id, thread_id=thread_id)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.delete(
+                f"{url}/comments/{comment_id}", params={"api-version": "7.1"}, auth=("", self.pat)
+            )
+            _raise_azure_devops_pr_publish_error(response, action="delete PR comment")
+        return {
+            "status": "deleted",
+            "provider": "azure_devops",
+            "repo": repo,
+            "pr_id": str(positive_id(pr_id.strip(), "pr_id")),
+            "thread_id": str(positive_id(thread_id.strip(), "thread_id")),
+            "comment_id": comment_id,
+            "feedback_kind": "thread_comment",
+            "deleted": True,
+        }
+
+    def resolve_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+    ) -> dict[str, Any]:
+        if comment_id is not None:
+            raise ValueError("Azure DevOps PR resolution requires thread_id without comment_id")
+        url = self._comment_thread_url(repo=repo, pr_id=pr_id, thread_id=thread_id)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.patch(
+                url,
+                params={"api-version": "7.1"},
+                auth=("", self.pat),
+                json={"status": "fixed"},
+            )
+            _raise_azure_devops_pr_publish_error(response, action="resolve PR comment thread")
+            payload = response.json()
+        normalized_thread_id = str(positive_id(thread_id.strip(), "thread_id"))
+        if (
+            str(payload.get("id")) != normalized_thread_id
+            or payload.get("status") not in {"fixed", 2}
+            or payload.get("isDeleted") is True
+        ):
+            raise ValueError("Azure DevOps did not confirm PR comment thread resolution")
+        return {
+            "status": "resolved",
+            "provider": "azure_devops",
+            "repo": repo,
+            "pr_id": str(positive_id(pr_id.strip(), "pr_id")),
+            "thread_id": normalized_thread_id,
+            "thread_status": "fixed",
+            "resolved": True,
+        }
 
     def _post_thread_comment(
         self,
@@ -3443,6 +3572,45 @@ class PrPublishService:
         self.idempotency_store_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.idempotency_store_path.exists():
             self._write_raw({})
+
+    def _comment_provider(self, provider: str) -> PrPublishProvider:
+        provider_name = normalize_pr_feedback_provider(provider)
+        if provider_name not in self.providers:
+            raise ValueError(
+                f"PR publish provider {provider_name!r} is not configured for this gateway instance"
+            )
+        return self.providers[provider_name]
+
+    def delete_comment(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        comment_id: str,
+        thread_id: str | None = None,
+        feedback_kind: str | None = None,
+    ) -> dict[str, Any]:
+        return self._comment_provider(provider).delete_comment(
+            repo=repo,
+            pr_id=pr_id,
+            comment_id=comment_id,
+            thread_id=thread_id,
+            feedback_kind=feedback_kind,
+        )
+
+    def resolve_comment(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._comment_provider(provider).resolve_comment(
+            repo=repo, pr_id=pr_id, thread_id=thread_id, comment_id=comment_id
+        )
 
     def post_comment(
         self,

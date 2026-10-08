@@ -1607,6 +1607,15 @@ A transport-terminated warning without client-visible failure can be expected fo
     search text. The gateway resolves refs with the ADO identities API, renders the comment as
     ADO HTML with documented `data-vss-mention` anchors, and posts with explicit `format=html`;
     unresolved or ambiguous refs fail the call.
+- Gateway tool name: `delete_ado_backlog_comment`.
+  - Required MCP arguments: positive numeric work-item `id` and `comment_id`; optional `project`.
+  - Read comment IDs using `get_ado_backlog_item` with comments included.
+  - Deletes the selected comment through the calling session directory's ADO connection,
+    then invalidates that directory's cached work-item activity scans. Provider failures
+    propagate without reporting a successful deletion.
+  - Grant this tool explicitly in `allowed_tools`; normal directory policy, argument rules,
+    and configured per-invocation approvals apply. The host PAT needs `vso.work_write`.
+  - API reference: [Azure DevOps work-item comment deletion](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/comments/delete?view=azure-devops-rest-7.1).
 - Gateway tool name: `update_ado_backlog_text`.
   - Policy-gated with `update_ado_backlog_text`.
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
@@ -3278,6 +3287,32 @@ work and let the trigger orchestrator start a temporary review VM.
     `path line N` at the start of a top-level comment
   - `submit_pr_review(...)` for a summary plus optional batched inline findings
   - `post_pr_feedback_reply(...)` when replying to an existing feedback thread/comment
+
+Maintain existing comments with `delete_pr_comment(provider, repo, pr_id, comment_id, ...)`
+and `resolve_pr_comment(provider, repo, pr_id, ...)`. Both require their own explicit
+`allowed_tools` grant and use the session directory's host credentials. Normal directory
+denials, tool argument rules, configured approvals, and tool-call audit apply.
+
+| Operation | Azure DevOps | GitHub |
+| --- | --- | --- |
+| Delete one comment | Supply positive numeric `thread_id` and `comment_id`; optional `feedback_kind=thread_comment`. | Supply positive numeric `comment_id` and `feedback_kind=issue_comment` for conversation comments or `review_comment` for inline review comments. |
+| Resolve a comment thread | Supply positive numeric `thread_id`; sets the entire thread to `fixed`. | Supply a positive numeric inline review `comment_id`, or a GraphQL review-thread `thread_id`, but not both. |
+
+Use `list_all_feedback` to obtain the comment targets. GitHub feedback's `thread_id` is a
+review ID, so use its `comment_id` when resolving; conversation comments and review summaries
+do not have resolvable review threads. GitHub checks that the comment or thread belongs to the
+specified PR before mutation. Review-thread lookup follows both thread and comment pagination,
+with a limit of 100 GraphQL requests per invocation. Already resolved GitHub threads return
+`resolved=true` and `already_resolved=true` without another mutation. Resolution affects all
+replies in the selected thread. Failed or unconfirmed provider responses fail the tool call.
+
+Azure DevOps PR operations use `azure_devops_pr_pat_env` and need `vso.code_write` or
+`vso.threads_full`; work-item comment deletion uses `azure_devops_pat_env`. GitHub uses
+`github_token_env` and the provider's comment-write and thread-resolution permissions.
+See the [Azure DevOps PR comment deletion](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1),
+[Azure DevOps thread update](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1),
+and [GitHub review-thread resolution](https://docs.github.com/en/graphql/reference/pulls#resolvereviewthread)
+API references.
 
 The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
 through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.

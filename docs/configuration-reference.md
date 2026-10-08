@@ -1556,6 +1556,16 @@ unconditional retry. Omitting it sends an unconditional update. Grant the tool e
 `allowed_tools`; normal `approval_required_tools`, `mcp_tool_policies`, and tool-argument policies
 apply. Existing sessions and provisioning defaults are not automatically granted this tool.
 
+The session-scoped `delete_ado_backlog_comment` tool accepts positive numeric `id` and
+`comment_id`, plus optional `project`, and uses the directory's `azure_devops_pat_env` credential.
+`delete_pr_comment` and `resolve_pr_comment` use `azure_devops_pr_pat_env` for Azure DevOps PRs
+or `github_token_env` for GitHub PRs. All three tools need explicit `allowed_tools` grants;
+normal `approval_required_tools`, `mcp_tool_policies`, and tool argument policies apply.
+Azure DevOps PR deletion requires both comment and thread IDs; resolution requires the thread
+ID. GitHub deletion requires the comment kind, and resolution accepts a review comment ID or
+a GraphQL review-thread ID. See [comment maintenance](operations.md#host-side-contract) for
+arguments and provider behavior. Existing sessions are not automatically granted these tools.
+
 The session-scoped `update_pull_request` MCP tool exposes Azure DevOps PR title, description,
 status, and tag updates to explicitly authorized agents. It accepts `azure_devops`,
 `azure-devops`, or `ado`, always resolves the organization and PAT from the caller's directory,
