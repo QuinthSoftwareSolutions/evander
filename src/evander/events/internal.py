@@ -577,7 +577,7 @@ def _pending_rows(connection: sqlite3.Connection, trigger_id: str, limit: int) -
         FROM internal_event_deliveries AS delivery
         JOIN internal_events AS event ON event.row_id = delivery.internal_event_row_id
         WHERE delivery.trigger_id = ? AND delivery.state = 'pending'
-        ORDER BY event.row_id
+        ORDER BY delivery.internal_event_row_id
         LIMIT ?
         """,
         (trigger_id, limit),

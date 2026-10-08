@@ -173,6 +173,22 @@ class ScheduledInternalEventStore:
             ).fetchall()
         return [_scheduled_from_row(row) for row in rows]
 
+    def list_due_ids(self, now_utc: datetime, *, limit: int) -> list[str]:
+        """Select a bounded publication batch without decoding scheduled payloads."""
+        if limit <= 0:
+            return []
+        with connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT schedule_id FROM scheduled_internal_events
+                WHERE status = 'pending' AND run_at <= ?
+                ORDER BY run_at, created_at, schedule_id
+                LIMIT ?
+                """,
+                (datetime_to_storage(_normalize_datetime(now_utc)), limit),
+            ).fetchall()
+        return [str(row["schedule_id"]) for row in rows]
+
     def import_event(self, event: ScheduledInternalEvent) -> None:
         with connect_orchestration_db(self.path) as connection:
             existing = connection.execute(

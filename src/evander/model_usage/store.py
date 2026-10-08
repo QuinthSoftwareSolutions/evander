@@ -673,13 +673,23 @@ class ModelUsageStore:
         now_value = _storage_datetime(datetime.now(UTC))
         changed = 0
         with self._lock, self._connect() as connection:
-            existing_rows = connection.execute(
-                "SELECT session_id, team_id, project_id, agent_id FROM model_usage_cost_attributions"
-            ).fetchall()
-            existing = {
-                row["session_id"]: (row["team_id"], row["project_id"], row["agent_id"])
-                for row in existing_rows
-            }
+            existing: dict[str, tuple[str | None, str | None, str | None]] = {}
+            session_ids = list(normalized)
+            # Single-session updates must not read every historical attribution.
+            # Bound parameters for older SQLite builds as well as large reconciliations.
+            for offset in range(0, len(session_ids), 500):
+                batch = session_ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    "SELECT session_id, team_id, project_id, agent_id "
+                    "FROM model_usage_cost_attributions "
+                    f"WHERE session_id IN ({placeholders})",
+                    batch,
+                )
+                existing.update(
+                    (row["session_id"], (row["team_id"], row["project_id"], row["agent_id"]))
+                    for row in rows
+                )
             affected_team_ids: set[str] = set()
             pending: list[
                 tuple[
