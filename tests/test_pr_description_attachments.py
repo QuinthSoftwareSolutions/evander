@@ -34,8 +34,11 @@ def attachment_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         requests.append(request)
         assert request.url.params["api-version"] == "7.1"
         if request.method == "GET" and request.url.path == pr_path:
+            is_refresh = sum(
+                r.method == "GET" and r.url.path == pr_path for r in requests
+            ) > 1
             return httpx.Response(
-                200,
+                state.get("refresh_status", 200) if is_refresh else 200,
                 json={
                     "pullRequestId": 17,
                     "title": "Author's title",
@@ -46,6 +49,8 @@ def attachment_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         if request.method == "GET" and request.url.path == f"{pr_path}/labels":
             return httpx.Response(200, json={"value": []})
         if request.method == "POST" and request.url.path.startswith(f"{pr_path}/attachments/"):
+            if "description_during_upload" in state:
+                state["description"] = state["description_during_upload"]
             return httpx.Response(
                 state["upload_status"],
                 json={
@@ -150,13 +155,16 @@ def test_description_attachments_upload_csv_and_image_without_a_comment(
     assert pr.state["description"] == expected_description
     assert result["description"] == expected_description.strip()
     assert result["updated"] is True
-    assert [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in pr.requests] == [
+    expected_requests = [
         ("GET", "17"),
         ("GET", "labels"),
         ("POST", "review-data.csv"),
         ("POST", "chart.png"),
-        ("PATCH", "17"),
     ]
+    if description is None:
+        expected_requests.append(("GET", "17"))
+    expected_requests.append(("PATCH", "17"))
+    assert [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in pr.requests] == expected_requests
     assert pr.requests[2].content == b"name,value\nalpha,1\n"
     assert pr.requests[2].headers["content-type"] == "application/octet-stream"
     assert pr.requests[3].content == b"image-bytes"
@@ -166,6 +174,34 @@ def test_description_attachments_upload_csv_and_image_without_a_comment(
         pr.csv.artifact_id,
         image.artifact_id,
     ]
+
+
+def test_description_attachments_preserve_edits_during_upload(attachment_pr) -> None:
+    pr = attachment_pr
+    pr.state["description_during_upload"] = "Author's revised description.\n\nNew review caveat."
+
+    result = call_tool(pr.server, "update_pull_request", pr.arguments)
+
+    expected_description = (
+        "Author's revised description.\n\nNew review caveat.\n\n"
+        "[review-data.csv](https://dev.azure.com/example/Selected/_apis/git/"
+        "repositories/repo-1/pullRequests/17/attachments/review-data.csv)"
+    )
+    assert pr.state["description"] == expected_description
+    assert result["description"] == expected_description
+    assert result["updated"] is True
+
+
+def test_description_attachment_refresh_failure_does_not_save_stale_text(attachment_pr) -> None:
+    pr = attachment_pr
+    pr.state["description_during_upload"] = "Author's revised description."
+    pr.state["refresh_status"] = 503
+
+    with pytest.raises(ToolError, match="503"):
+        call_tool(pr.server, "update_pull_request", pr.arguments)
+
+    assert pr.state["description"] == "Author's revised description."
+    assert [r.method for r in pr.requests] == ["GET", "GET", "POST", "GET"]
 
 
 @pytest.mark.parametrize(
@@ -253,7 +289,9 @@ def test_description_attachment_http_failures_do_not_report_an_update(
 
     assert pr.state["description"] == original_description
     assert [r.method for r in pr.requests] == (
-        ["GET", "GET", "POST"] if failure == "upload_status" else ["GET", "GET", "POST", "PATCH"]
+        ["GET", "GET", "POST"]
+        if failure == "upload_status"
+        else ["GET", "GET", "POST", "GET", "PATCH"]
     )
 
 

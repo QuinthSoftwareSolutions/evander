@@ -6,6 +6,8 @@
   directly to an Azure DevOps PR and include their image/download links in its description.
 - Append links to the current description when no replacement text is supplied,
   and return uploaded attachment metadata and URLs.
+- Refresh the current description after uploads to preserve edits made while
+  files were uploading; stop the save if that refresh fails.
 - Apply existing file ownership, outbound file policy, exact file-send approval,
   and tool/PR restrictions; check expected PR status before uploading files.
 

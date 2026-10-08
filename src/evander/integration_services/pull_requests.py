@@ -1226,13 +1226,14 @@ class AzureDevOpsPrQueryProvider:
         expected = _normalize_string_list(expected_statuses)
         tags_to_add = _normalize_string_list(add_tags)
         tags_to_remove = _normalize_string_list(remove_tags)
+        pr_url = (
+            f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+            f"pullRequests/{pr_id}"
+        )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             current_response = client.get(
-                (
-                    f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
-                    f"pullRequests/{pr_id}"
-                ),
+                pr_url,
                 params={"api-version": "7.1"},
                 auth=("", self.pat),
             )
@@ -1285,9 +1286,16 @@ class AzureDevOpsPrQueryProvider:
             if uploaded_attachments:
                 if any(not attachment["url"] for attachment in uploaded_attachments):
                     raise ValueError("Azure DevOps did not return an attachment download URL")
-                description_text = (
-                    description if description is not None else current_payload.get("description")
-                )
+                description_text = description
+                if description_text is None:
+                    # Preserve description edits made while the files were uploading.
+                    description_response = client.get(
+                        pr_url,
+                        params={"api-version": "7.1"},
+                        auth=("", self.pat),
+                    )
+                    description_response.raise_for_status()
+                    description_text = description_response.json().get("description")
                 patch_payload["description"] = _append_markdown_attachment_links(
                     str(description_text or ""), uploaded_attachments
                 )

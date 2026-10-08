@@ -3297,6 +3297,8 @@ The files must belong to the caller session and pass its outbound file-send, MIM
 and size policy. Supply `request_id` for the exact update payload when file-send approval is
 required. Normal tool grants and argument restrictions still apply, including any requirement
 to supply the complete description. The `expected_statuses` check runs before file upload.
+When `description` is omitted, its text is refreshed after file uploads before the links
+are appended. That refresh and the final save are separate provider requests.
 Upload and description save are separate provider requests: an upload failure stops the update;
 a save failure raises an error and may leave uploaded files attached to the PR.
 
