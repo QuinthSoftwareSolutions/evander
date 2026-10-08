@@ -10,6 +10,7 @@
   pipeline template-parameter resolution.
 - Share streaming and non-streaming relay usage metadata construction while preserving
   payloads, request correlation, validation, and side-effect ordering.
+- Update Team template and Teams routing test setup to match the current service dependencies.
 
 ## 2026-10-08 - Delete comments and resolve PR threads (0.86.0)
 
