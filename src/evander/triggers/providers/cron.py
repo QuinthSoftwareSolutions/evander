@@ -13,6 +13,7 @@ from evander.events.models import (
 from evander.events.provider_models import CronTriggerDefinition
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
+    parse_cursor_timestamp_text as _parse_dt,
     latest_cursor_timestamp_text,
 )
 from evander.triggers.providers.base import TriggerProviderBase
@@ -122,18 +123,6 @@ class CronTriggerProvider(TriggerProviderBase):
         return TriggerCursorStore(
             self.runtime_context.resolved_config.runtime_dir / "trigger-cursors-cron.json"
         )
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _mark_pending_scheduled_for(

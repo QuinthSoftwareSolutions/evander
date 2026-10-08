@@ -420,7 +420,12 @@ def test_configuration_schema_offers_named_assistants_and_root_only_routing(runt
         list_active_sessions=lambda: list(runtime.sessions.values())
     )
     runtime.sessions["assistant-b"].metadata["display_name"] = "Personal Assistant"
-    service = SimpleNamespace(runtime=runtime)
+    service = SimpleNamespace(
+        runtime=runtime,
+        inbound_phone_routing_service=SimpleNamespace(
+            list_routes=lambda *, skip_invalid_directories=False: []
+        ),
+    )
     root = _directory_tab_metadata(service, "root", "people_communications")
     fields = {
         field["field_name"]: field for section in root["sections"] for field in section["fields"]

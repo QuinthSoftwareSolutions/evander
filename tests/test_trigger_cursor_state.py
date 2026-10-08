@@ -5,10 +5,13 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
     merge_cursor_ids,
+    parse_cursor_timestamp_text,
 )
 
 
@@ -36,6 +39,21 @@ def test_cursor_state_helpers_merge_unique_ids_and_latest_timestamp() -> None:
     ) == ["cursor-2", "cursor-3", "cursor-4"]
     assert latest_cursor_timestamp_text("2026-04-03T12:00:00Z", newer) == ("2026-04-03T12:05:00Z")
     assert latest_cursor_timestamp_text("2026-04-03T12:10:00Z", newer) == ("2026-04-03T12:10:00Z")
+
+
+def test_cursor_text_parser_preserves_strict_and_tolerant_timestamp_contracts() -> None:
+    expected = datetime(2026, 4, 3, 12, 5, tzinfo=UTC)
+    for value in (
+        "2026-04-03T12:05:00Z",
+        "2026-04-03T12:05:00",
+        " 2026-04-03T14:05:00+02:00 ",
+    ):
+        assert parse_cursor_timestamp_text(value) == expected
+    for value in (None, 123, "  ", expected):
+        assert parse_cursor_timestamp_text(value) is None
+    with pytest.raises(ValueError):
+        parse_cursor_timestamp_text("corrupt-cursor")
+    assert latest_cursor_timestamp_text("corrupt-cursor", expected) == "2026-04-03T12:05:00Z"
 
 
 def test_trigger_cursor_store_update_merges_without_overwriting_other_keys(

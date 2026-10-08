@@ -270,13 +270,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
             raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
         address = cls._parse_ip_address(normalized_host)
         if address is not None:
-            if cls._is_metadata_destination(str(address)):
-                raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
-            if not allow_private_networks and cls._is_private_destination(address):
-                raise ValueError(
-                    f"{NODE_TYPE} url targets a blocked private, loopback, "
-                    "or link-local destination"
-                )
+            cls._enforce_address_policy(address, allow_private_networks=allow_private_networks)
             return _ApprovedDestination()
         if not allow_private_networks and cls._is_localhost_name(normalized_host):
             raise ValueError(
@@ -288,19 +282,30 @@ class HttpRequestEffectProvider(EffectProviderBase):
         if not resolved_addresses:
             raise ValueError(f"{NODE_TYPE} url hostname could not be resolved")
         for resolved_address in resolved_addresses:
-            if cls._is_metadata_destination(str(resolved_address)):
-                raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
-            if not allow_private_networks and cls._is_private_destination(resolved_address):
-                raise ValueError(
-                    f"{NODE_TYPE} url targets a blocked private, loopback, "
-                    "or link-local destination"
-                )
+            cls._enforce_address_policy(
+                resolved_address, allow_private_networks=allow_private_networks
+            )
         return _ApprovedDestination(
             transport=_PinnedAddressHTTPTransport(
                 allowed_host=normalized_host,
                 approved_addresses=resolved_addresses,
             )
         )
+
+    @classmethod
+    def _enforce_address_policy(
+        cls,
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+        *,
+        allow_private_networks: bool,
+    ) -> None:
+        if cls._is_metadata_destination(str(address)):
+            raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
+        if not allow_private_networks and cls._is_private_destination(address):
+            raise ValueError(
+                f"{NODE_TYPE} url targets a blocked private, loopback, "
+                "or link-local destination"
+            )
 
     @staticmethod
     def _parse_ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:

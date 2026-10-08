@@ -147,29 +147,7 @@ class SkillAdminService:
         ):
             return
 
-        try:
-            sessions = sorted(
-                self._list_active_sessions(),
-                key=lambda session: str(getattr(session, "session_id", "")),
-            )
-        except Exception as exc:
-            detail = str(exc).strip() or type(exc).__name__
-            raise SkillPropagationError(
-                skill_name,
-                target_count=None,
-                updated_session_ids=[],
-                failures=[
-                    {
-                        "stage": "discover_sessions",
-                        "error_class": type(exc).__name__,
-                        "error": detail,
-                    }
-                ],
-            ) from exc
-
-        targets = [
-            session for session in sessions if self._session_declares_skill(session, skill_name)
-        ]
+        targets = self._discover_skill_targets(skill_name)
         updated_session_ids: list[str] = []
         failures: list[dict[str, object]] = []
         for session in targets:
@@ -209,6 +187,30 @@ class SkillAdminService:
                 updated_session_ids=updated_session_ids,
                 failures=failures,
             )
+
+    def _discover_skill_targets(self, skill_name: str) -> list[Any]:
+        try:
+            sessions = sorted(
+                self._list_active_sessions(),
+                key=lambda session: str(getattr(session, "session_id", "")),
+            )
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            raise SkillPropagationError(
+                skill_name,
+                target_count=None,
+                updated_session_ids=[],
+                failures=[
+                    {
+                        "stage": "discover_sessions",
+                        "error_class": type(exc).__name__,
+                        "error": detail,
+                    }
+                ],
+            ) from exc
+        return [
+            session for session in sessions if self._session_declares_skill(session, skill_name)
+        ]
 
     @staticmethod
     def _session_declares_skill(session: Any, skill_name: str) -> bool:

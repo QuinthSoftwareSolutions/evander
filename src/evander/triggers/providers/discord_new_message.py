@@ -7,6 +7,7 @@ from evander.events.models import TriggerEvent
 from evander.events.provider_models import DiscordNewMessageTriggerDefinition
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
+    parse_cursor_timestamp_text as _parse_dt,
 )
 from evander.triggers.providers.base import TriggerProviderBase
 
@@ -90,18 +91,6 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
 
     def _cursor_store(self) -> TriggerCursorStore:
         return TriggerCursorStore(self._runtime_dir() / "trigger-cursors-discord.json")
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _acknowledge_message(

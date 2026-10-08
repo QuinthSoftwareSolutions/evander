@@ -423,25 +423,8 @@ class ApprovalAuditAdminService:
         try:
             with self.config.audit_log_path.open(encoding="utf-8") as handle:
                 for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    counts.scanned += 1
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        counts.skipped_malformed += 1
-                        continue
-                    if not isinstance(payload, dict):
-                        counts.skipped_malformed += 1
-                        continue
-                    event_type = str(payload.get("event_type") or "").strip().casefold()
-                    if event_type != "tool_call":
-                        counts.skipped_non_tool_call += 1
-                        continue
-                    entry = tool_call_audit_entry_from_payload(payload)
+                    entry = _tool_call_audit_entry_from_line(raw_line, counts)
                     if entry is None:
-                        counts.skipped_malformed += 1
                         continue
                     if not tool_call_audit_entry_matches_filters(
                         entry,
@@ -601,25 +584,8 @@ class ApprovalAuditAdminService:
                 if counts.scanned >= max_lines:
                     has_more = True
                     break
-                line = line.strip()
-                if not line:
-                    continue
-                counts.scanned += 1
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    counts.skipped_malformed += 1
-                    continue
-                if not isinstance(payload, dict):
-                    counts.skipped_malformed += 1
-                    continue
-                event_type = str(payload.get("event_type") or "").strip().casefold()
-                if event_type != "tool_call":
-                    counts.skipped_non_tool_call += 1
-                    continue
-                entry = tool_call_audit_entry_from_payload(payload)
+                entry = _tool_call_audit_entry_from_line(line, counts)
                 if entry is None:
-                    counts.skipped_malformed += 1
                     continue
                 if not tool_call_audit_entry_matches_filters(
                     entry,
@@ -659,6 +625,31 @@ class ApprovalAuditAdminService:
             limit=limit,
             has_more=has_more,
         )
+
+
+def _tool_call_audit_entry_from_line(
+    raw_line: str, counts: ToolCallAuditCountsPayload
+) -> ToolCallAuditEntryPayload | None:
+    line = raw_line.strip()
+    if not line:
+        return None
+    counts.scanned += 1
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        counts.skipped_malformed += 1
+        return None
+    if not isinstance(payload, dict):
+        counts.skipped_malformed += 1
+        return None
+    event_type = str(payload.get("event_type") or "").strip().casefold()
+    if event_type != "tool_call":
+        counts.skipped_non_tool_call += 1
+        return None
+    entry = tool_call_audit_entry_from_payload(payload)
+    if entry is None:
+        counts.skipped_malformed += 1
+    return entry
 
 
 def _utc_now() -> datetime:

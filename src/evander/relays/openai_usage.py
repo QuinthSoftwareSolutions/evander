@@ -91,15 +91,9 @@ class OpenAIUsageAccounting:
                 "method": "POST",
                 "path": f"/v1/{upstream_path}",
             },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
+            response_metadata=self._http_usage_response_metadata(
+                upstream_response=upstream_response,
+                response_payload=response_payload,
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
@@ -142,16 +136,10 @@ class OpenAIUsageAccounting:
                 "path": f"/v1/{upstream_path}",
                 "stream": True,
             },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                    "stream": True,
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
+            response_metadata=self._http_usage_response_metadata(
+                upstream_response=upstream_response,
+                response_payload=response_payload,
+                stream=True,
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
@@ -306,6 +294,27 @@ class OpenAIUsageAccounting:
                 }
             )
         self.model_usage_store.upsert_event(event)
+
+    def _http_usage_response_metadata(
+        self,
+        *,
+        upstream_response: httpx.Response,
+        response_payload: dict[str, Any],
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        metadata = {
+            "status_code": upstream_response.status_code,
+            "content_type": upstream_response.headers.get("content-type"),
+        }
+        if stream:
+            metadata["stream"] = True
+        return self._response_metadata_with_provider_request_id(
+            metadata,
+            provider_request_id=self._provider_request_id_from_response(
+                upstream_response=upstream_response,
+                response_payload=response_payload,
+            ),
+        )
 
     @staticmethod
     def _service_tier_from_payload(payload: object) -> str | None:

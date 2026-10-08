@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,82 @@ def _build_context(tmp_path: Path, admin_service: _AdminServiceStub) -> EffectRu
         env={},
         metadata={"directory_path": "root/team-a"},
     )
+
+
+@pytest.mark.parametrize("merge_strategy", [None, "managed_section"])
+@pytest.mark.parametrize(
+    ("mode", "chmod_stderr", "expected_error"),
+    [
+        (None, None, None),
+        ("0644", None, None),
+        ("0644", " permission denied\n", "permission denied"),
+        ("0644", "", "Failed to set mode for /home/agent/team notes.txt"),
+    ],
+)
+def test_vm_copy_files_fallback_applies_mode_after_transfer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    merge_strategy: str | None,
+    mode: str | None,
+    chmod_stderr: str | None,
+    expected_error: str | None,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        is_chmod = command[-1].startswith("chmod ")
+        failed = is_chmod and chmod_stderr is not None
+        return SimpleNamespace(
+            returncode=int(failed), stdout="", stderr=chmod_stderr if failed else ""
+        )
+
+    monkeypatch.setattr("evander.effects.providers.vm_copy_files.subprocess.run", run)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_private_key_path", lambda: tmp_path / "key"
+    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.ssh_options", lambda *args: [])
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files"),
+        runtime_context=EffectRuntimeContext(
+            resolved_config=GatewayConfig(runtime_dir=tmp_path), env={}
+        ),
+    )
+    entry = {
+        "destination_path": "/home/agent/team notes.txt",
+        "content": "Team guidance",
+        "mode": mode,
+        "merge_strategy": merge_strategy,
+        "section_id": "team-guidance" if merge_strategy else None,
+    }
+
+    expectation = (
+        pytest.raises(RuntimeError, match=expected_error) if expected_error else nullcontext()
+    )
+    with expectation:
+        result = provider.execute(
+            resolved_config={
+                "target": "lab-vm-1",
+                "vm_ip": "192.0.2.15",
+                "files": [entry],
+            }
+        )
+        assert result["success"] is True
+        assert result["copied_paths"] == ["/home/agent/team notes.txt"]
+
+    assert commands[0] == ["ssh", "agent@192.0.2.15", "mkdir -p -- /home/agent"]
+    if merge_strategy:
+        assert commands[1] == ["ssh", "agent@192.0.2.15", "bash", "-s"]
+    else:
+        assert commands[1][0] == "scp"
+        assert commands[1][-1] == "agent@192.0.2.15:/home/agent/team notes.txt"
+    if mode is None:
+        assert len(commands) == 2
+    else:
+        assert commands[2:] == [
+            ["ssh", "agent@192.0.2.15", "chmod 0644 -- '/home/agent/team notes.txt'"]
+        ]
 
 
 def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> None:

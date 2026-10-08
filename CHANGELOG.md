@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-08 - Consolidate internal control-plane helpers (0.86.2)
+
+- Share artifact read selection and audit-line decoding, and separate active-session
+  discovery from skill propagation.
+- Consolidate local-ticket trigger polling, strict timestamp parsing, and Teams
+  meeting cursor normalization.
+- Extract shared HTTP address checks, VM copy permission handling, and Azure DevOps
+  pipeline template-parameter resolution.
+- Share streaming and non-streaming relay usage metadata construction while preserving
+  payloads, request correlation, validation, and side-effect ordering.
+- Update Team template and Teams routing test setup to match the current service dependencies.
+
 ## 2026-10-08 - Bound platform read and orchestration work (0.86.1)
 
 - Fix ten performance issues across cost attribution updates, Teams notification
