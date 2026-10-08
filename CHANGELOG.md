@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-08 - Delete comments and resolve PR threads (0.86.0)
+
+- Add session-scoped tools to delete individual Azure DevOps work-item comments and
+  Azure DevOps or GitHub PR comments.
+- Add PR comment resolution for Azure DevOps threads and GitHub review threads,
+  including lookup by GitHub review comment ID.
+- Use existing directory credentials, explicit tool grants, configured approval and
+  argument policies, and audit records; verify GitHub PR ownership before mutations.
+
 ## 2026-10-08 - Direct PR description attachments (0.85.0)
 
 - Add staged `artifact_ids` to `update_pull_request` so agents can upload files

@@ -557,6 +557,8 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "post_pr_feedback_reply",
         "request_pr_review",
         "post_pr_comment",
+        "delete_pr_comment",
+        "resolve_pr_comment",
         "post_pr_inline_comment",
         "submit_pr_review",
     }
@@ -566,6 +568,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     ado_tool_names = {
         "create_ado_backlog_item",
         "post_ado_backlog_comment",
+        "delete_ado_backlog_comment",
         "delete_ado_backlog_item",
         "update_ado_backlog_text",
         "update_ado_backlog_title",

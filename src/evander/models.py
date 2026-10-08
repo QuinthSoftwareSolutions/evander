@@ -82,6 +82,7 @@ class ToolName(str, Enum):
     GET_ADO_BUILD = "get_ado_build"
     LIST_ADO_BUILD_WORK_ITEMS = "list_ado_build_work_items"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
+    DELETE_ADO_BACKLOG_COMMENT = "delete_ado_backlog_comment"
     DELETE_ADO_BACKLOG_ITEM = "delete_ado_backlog_item"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
     UPDATE_ADO_BACKLOG_TITLE = "update_ado_backlog_title"
@@ -147,6 +148,8 @@ class ToolName(str, Enum):
     QUERY_ADO_WORK_ITEM_ACTIVITY = "query_ado_work_item_activity"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
+    DELETE_PR_COMMENT = "delete_pr_comment"
+    RESOLVE_PR_COMMENT = "resolve_pr_comment"
     POST_PR_INLINE_COMMENT = "post_pr_inline_comment"
     SUBMIT_PR_REVIEW = "submit_pr_review"
     HAS_PENDING_DISCORD_MESSAGES = "has_pending_discord_messages"
@@ -3137,6 +3140,25 @@ class RequestPrReviewResponse(BaseModel):
     model: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeletePrCommentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    comment_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    feedback_kind: Literal["thread_comment", "issue_comment", "review_comment"] | None = None
+
+
+class ResolvePrCommentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
 
 
 class PostPrCommentRequest(BaseModel):

@@ -866,6 +866,9 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   provider adapter (no guest PAT required).
 - Use `post_ado_backlog_comment` to add an Azure DevOps backlog comment, including staged image
   artifacts when outbound communication file send is enabled for the session.
+- Use `delete_ado_backlog_comment(id, comment_id, project?)` to delete one Azure DevOps
+  work-item comment. Read comment IDs with `get_ado_backlog_item` and grant the delete tool
+  explicitly in the session's `allowed_tools`.
 - Use `update_ado_backlog_text` to update the work item description or acceptance criteria and
   append staged artifact links/images to those fields.
 - Use `update_ado_backlog_title` to rename an Azure DevOps backlog item by numeric work-item id;
@@ -1263,6 +1266,8 @@ orchestrator drive the disposable review VM workflow.
 - New MCP tools:
   - `request_pr_review`
   - `post_pr_comment`
+  - `delete_pr_comment`
+  - `resolve_pr_comment`
   - `post_pr_inline_comment`
   - `submit_pr_review`
 - New trigger:
@@ -1273,6 +1278,15 @@ orchestrator drive the disposable review VM workflow.
 `request_pr_review` normalizes the PR target, resolves provider metadata (title, URL, base/head
 refs and commits), and writes a durable request record into the host review-request inbox. The
 trigger provider polls that inbox and emits a `review_request` payload for workflow consumption.
+
+Use `delete_pr_comment(provider, repo, pr_id, comment_id, ...)` to delete one PR comment.
+Azure DevOps also requires `thread_id`; GitHub requires `feedback_kind` of `issue_comment`
+or `review_comment`. Use the IDs returned by `list_all_feedback`.
+Use `resolve_pr_comment(provider, repo, pr_id, ...)` to resolve the entire comment thread:
+pass `thread_id` for Azure DevOps, or a review `comment_id` for GitHub. GitHub also accepts
+a GraphQL review-thread ID. Grant these tools explicitly; normal directory and session
+approval policies apply.
+
 Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_review` with
 `comments=[{"path": "...", "line": 123, "body": "..."}]` for batched inline findings. Do not
 write the file path and line number into the comment body; the tool attaches the provider-native
