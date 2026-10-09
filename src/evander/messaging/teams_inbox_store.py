@@ -517,16 +517,19 @@ class TeamsInboxStore:
 
         stored_now = self._datetime_to_storage(now)
         with self._lock, self._connect() as connection:
-            return connection.execute(
-                """
+            return (
+                connection.execute(
+                    """
                 SELECT 1 FROM teams_inbox_notification_queue
                 WHERE state IN ('pending', 'retry', 'leased')
                   AND next_attempt_at <= ?
                   AND (leased_until IS NULL OR leased_until <= ?)
                 LIMIT 1
                 """,
-                (stored_now, stored_now),
-            ).fetchone() is not None
+                    (stored_now, stored_now),
+                ).fetchone()
+                is not None
+            )
 
     def lease_notifications(
         self,
@@ -1044,6 +1047,10 @@ class TeamsInboxStore:
                     ON teams_inbox_messages(channel_target, created_at, cursor);
                 CREATE INDEX IF NOT EXISTS idx_teams_inbox_messages_created
                     ON teams_inbox_messages(created_at, cursor);
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_messages_id_created
+                    ON teams_inbox_messages(message_id, created_at, cursor);
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_messages_id_target_created
+                    ON teams_inbox_messages(message_id, channel_target, created_at, cursor);
                 CREATE TABLE IF NOT EXISTS teams_inbox_cursors (
                     channel_target TEXT PRIMARY KEY,
                     cursor TEXT NOT NULL,

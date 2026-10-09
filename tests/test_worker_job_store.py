@@ -113,6 +113,7 @@ def test_worker_job_store_uses_expected_sqlite_schema(tmp_path: Path) -> None:
         ("session_id", "started_at", "job_id"),
         ("status", "started_at", "job_id"),
         ("cleanup_status", "started_at", "job_id"),
+        ("status", "cleanup_status"),
     }
 
 

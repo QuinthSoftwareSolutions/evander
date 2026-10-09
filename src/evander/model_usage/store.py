@@ -173,6 +173,8 @@ class ModelUsageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_model_usage_contexts_session_harness
                     ON model_usage_correlation_contexts(session_id, agent_harness, started_at, dispatch_id);
+                CREATE INDEX IF NOT EXISTS idx_model_usage_contexts_session_started
+                    ON model_usage_correlation_contexts(session_id, started_at, dispatch_id);
                 CREATE INDEX IF NOT EXISTS idx_model_usage_contexts_expires_at
                     ON model_usage_correlation_contexts(expires_at, dispatch_id);
                 CREATE INDEX IF NOT EXISTS idx_model_usage_contexts_workflow_run_id

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -163,13 +164,14 @@ def validate_workflow_binding_diagnostics(
     all_node_ids = set(nodes_by_id)
     edges = config.get("edges", [])
     edge_list = edges if isinstance(edges, list) else []
-    output_schemas = derive_workflow_output_schemas(config)
+    upstream_by_target = _index_upstream_node_ids(edge_list)
+    output_schemas = _derive_output_schemas(nodes_by_id, upstream_by_target)
     dominators_by_node = _compute_dominators(edge_list, set(nodes_by_id))
 
     diagnostics: list[WorkflowValidationDiagnostic] = []
     for node_id, node in nodes:
         node_type = str(node.get("type") or "").strip()
-        ancestor_ids = _collect_ancestor_node_ids(edge_list, node_id)
+        ancestor_ids = _collect_ancestor_node_ids(upstream_by_target, node_id)
         declared_outputs = {
             ancestor_id: output_schemas.get(ancestor_id, {})
             for ancestor_id in ancestor_ids
@@ -205,12 +207,19 @@ def derive_workflow_output_schemas(
     nodes_by_id = {node_id: node for node_id, node in nodes}
     edges = config.get("edges", [])
     edge_list = edges if isinstance(edges, list) else []
+    return _derive_output_schemas(nodes_by_id, _index_upstream_node_ids(edge_list))
+
+
+def _derive_output_schemas(
+    nodes_by_id: Mapping[str, Mapping[str, Any]],
+    upstream_by_target: Mapping[str, tuple[str, ...]],
+) -> dict[str, dict[str, dict[str, Any]]]:
     cache: dict[str, dict[str, dict[str, Any]]] = {}
     for node_id in nodes_by_id:
         _derive_workflow_node_output_schema(
             node_id=node_id,
             nodes_by_id=nodes_by_id,
-            edges=edge_list,
+            upstream_by_target=upstream_by_target,
             cache=cache,
             visiting=set(),
         )
@@ -221,7 +230,7 @@ def _derive_workflow_node_output_schema(
     *,
     node_id: str,
     nodes_by_id: Mapping[str, Mapping[str, Any]],
-    edges: list[Any],
+    upstream_by_target: Mapping[str, tuple[str, ...]],
     cache: dict[str, dict[str, dict[str, Any]]],
     visiting: set[str],
 ) -> dict[str, dict[str, Any]]:
@@ -237,13 +246,19 @@ def _derive_workflow_node_output_schema(
 
     visiting.add(node_id)
     node_type = str(output_node.get("type") or "").strip()
-    if node_type in {"gate:filter", "gate:debounce", "gate:throttle", "gate:switch", "gate:classifier:switch"}:
-        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+    if node_type in {
+        "gate:filter",
+        "gate:debounce",
+        "gate:throttle",
+        "gate:switch",
+        "gate:classifier:switch",
+    }:
+        upstream_ids = upstream_by_target.get(node_id, ())
         schema = (
             _derive_workflow_node_output_schema(
                 node_id=upstream_ids[0],
                 nodes_by_id=nodes_by_id,
-                edges=edges,
+                upstream_by_target=upstream_by_target,
                 cache=cache,
                 visiting=visiting,
             )
@@ -251,12 +266,12 @@ def _derive_workflow_node_output_schema(
             else {}
         )
     elif node_type in {"gate:validate", "gate:event:validate"}:
-        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        upstream_ids = upstream_by_target.get(node_id, ())
         schema = (
             _derive_workflow_node_output_schema(
                 node_id=upstream_ids[0],
                 nodes_by_id=nodes_by_id,
-                edges=edges,
+                upstream_by_target=upstream_by_target,
                 cache=cache,
                 visiting=visiting,
             )
@@ -266,12 +281,12 @@ def _derive_workflow_node_output_schema(
         schema = _copy_output_schema(schema)
         schema.update(_copy_output_schema(effective_node_output_schema(output_node)))
     elif node_type == "gate:counter":
-        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        upstream_ids = upstream_by_target.get(node_id, ())
         schema = (
             _derive_workflow_node_output_schema(
                 node_id=upstream_ids[0],
                 nodes_by_id=nodes_by_id,
-                edges=edges,
+                upstream_by_target=upstream_by_target,
                 cache=cache,
                 visiting=visiting,
             )
@@ -281,12 +296,12 @@ def _derive_workflow_node_output_schema(
         schema = _copy_output_schema(schema)
         schema["count"] = {"type": "integer"}
     elif node_type == "gate:dedupe":
-        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        upstream_ids = upstream_by_target.get(node_id, ())
         schema = (
             _derive_workflow_node_output_schema(
                 node_id=upstream_ids[0],
                 nodes_by_id=nodes_by_id,
-                edges=edges,
+                upstream_by_target=upstream_by_target,
                 cache=cache,
                 visiting=visiting,
             )
@@ -298,11 +313,11 @@ def _derive_workflow_node_output_schema(
             _derive_workflow_node_output_schema(
                 node_id=upstream_id,
                 nodes_by_id=nodes_by_id,
-                edges=edges,
+                upstream_by_target=upstream_by_target,
                 cache=cache,
                 visiting=visiting,
             )
-            for upstream_id in _collect_direct_upstream_node_ids(edges, node_id)
+            for upstream_id in upstream_by_target.get(node_id, ())
             if upstream_id in nodes_by_id
         ]
         schema = merge_output_schema_intersection(*upstream_schemas) if upstream_schemas else {}
@@ -330,16 +345,16 @@ def _flatten_node_config(node: Mapping[str, Any]) -> dict[str, Any]:
     return flattened
 
 
-def _collect_direct_upstream_node_ids(edges: list[Any], node_id: str) -> tuple[str, ...]:
-    upstream_ids: list[str] = []
+def _index_upstream_node_ids(edges: Iterable[Any]) -> dict[str, tuple[str, ...]]:
+    upstream_by_target: dict[str, list[str]] = {}
     for edge in edges:
         if not isinstance(edge, Mapping):
             continue
         source_id = str(edge.get("source_id") or "").strip()
         target_id = str(edge.get("target_id") or "").strip()
-        if source_id and target_id == node_id:
-            upstream_ids.append(source_id)
-    return tuple(upstream_ids)
+        if source_id and target_id:
+            upstream_by_target.setdefault(target_id, []).append(source_id)
+    return {target: tuple(sources) for target, sources in upstream_by_target.items()}
 
 
 def _copy_output_schema(
@@ -362,27 +377,19 @@ def _iter_workflow_nodes(config: Mapping[str, Any]) -> Iterable[tuple[str, Mappi
             yield node_id, entry
 
 
-def _collect_ancestor_node_ids(edges: list[Any], node_id: str) -> tuple[str, ...]:
-    inbound_by_target: dict[str, list[str]] = {}
-    for edge in edges:
-        if not isinstance(edge, Mapping):
-            continue
-        source_id = str(edge.get("source_id") or "").strip()
-        target_id = str(edge.get("target_id") or "").strip()
-        if not source_id or not target_id:
-            continue
-        inbound_by_target.setdefault(target_id, []).append(source_id)
-
+def _collect_ancestor_node_ids(
+    upstream_by_target: Mapping[str, tuple[str, ...]], node_id: str
+) -> tuple[str, ...]:
     ordered: list[str] = []
-    queue = list(inbound_by_target.get(node_id, ()))
+    queue = deque(upstream_by_target.get(node_id, ()))
     seen: set[str] = set()
     while queue:
-        current = queue.pop(0)
+        current = queue.popleft()
         if current in seen:
             continue
         seen.add(current)
         ordered.append(current)
-        queue.extend(inbound_by_target.get(current, ()))
+        queue.extend(upstream_by_target.get(current, ()))
     return tuple(ordered)
 
 
@@ -633,6 +640,35 @@ def _compute_dominators(edges: list[Any], node_ids: set[str]) -> dict[str, set[s
         if source_id in node_ids and target_id in node_ids:
             predecessors[target_id].add(source_id)
 
+    successors: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
+    remaining = {node_id: len(preds) for node_id, preds in predecessors.items()}
+    for node_id, preds in predecessors.items():
+        for predecessor_id in preds:
+            successors[predecessor_id].append(node_id)
+    ready = deque(node_id for node_id, count in remaining.items() if not count)
+    ordered: list[str] = []
+    while ready:
+        node_id = ready.popleft()
+        ordered.append(node_id)
+        for successor_id in successors[node_id]:
+            remaining[successor_id] -= 1
+            if not remaining[successor_id]:
+                ready.append(successor_id)
+
+    if len(ordered) == len(node_ids):
+        dominators: dict[str, set[str]] = {}
+        for node_id in ordered:
+            preds = iter(predecessors[node_id])
+            first = next(preds, None)
+            shared = dominators[first].copy() if first is not None else set()
+            for predecessor_id in preds:
+                shared.intersection_update(dominators[predecessor_id])
+            shared.add(node_id)
+            dominators[node_id] = shared
+        return dominators
+
+    # Diagnostics also run on invalid drafts. Retain their existing fixed-point
+    # result when non-loop edges contain an unvalidated cycle.
     dominators: dict[str, set[str]] = {}
     for node_id in node_ids:
         dominators[node_id] = {node_id} if not predecessors[node_id] else set(node_ids)

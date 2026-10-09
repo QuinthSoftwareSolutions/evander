@@ -4,7 +4,9 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
@@ -497,7 +499,6 @@ class WakeRequestStore:
         self, *, now_utc: datetime, late_after: timedelta
     ) -> list[WakeScheduledRequest]:
         grace = max(late_after, timedelta(0))
-        latest_dispatches = self.latest_dispatch_by_request_id()
         updated_requests: list[WakeScheduledRequest] = []
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -512,16 +513,12 @@ class WakeRequestStore:
                 """,
                 (self._datetime_to_storage(now_utc),),
             ).fetchall()
-            for row in rows:
-                try:
-                    request = WakeScheduledRequest.model_validate_json(row["payload_json"])
-                except Exception:
-                    continue
+            for request, latest_dispatch in self._requests_with_latest_dispatch(connection, rows):
                 status, reason = self._derived_due_status(
                     request,
                     now_utc=now_utc,
                     grace=grace,
-                    latest_dispatch=latest_dispatches.get(request.request_id),
+                    latest_dispatch=latest_dispatch,
                 )
                 if status == request.status and reason == request.status_reason:
                     continue
@@ -617,7 +614,6 @@ class WakeRequestStore:
         retry_base_backoff_seconds: float,
         retry_max_backoff_seconds: float,
     ) -> list[WakeScheduledRequest]:
-        latest_dispatches = self.latest_dispatch_by_request_id()
         updated_requests: list[WakeScheduledRequest] = []
         retry_window_seconds = max(0.0, float(retry_window_seconds))
         retry_base_backoff_seconds = max(0.0, float(retry_base_backoff_seconds))
@@ -635,16 +631,11 @@ class WakeRequestStore:
                 ORDER BY COALESCE(next_run_at, updated_at, created_at) ASC, request_id ASC
                 """
             ).fetchall()
-            for row in rows:
-                try:
-                    request = WakeScheduledRequest.model_validate_json(row["payload_json"])
-                except Exception:
-                    continue
+            for request, latest_dispatch in self._requests_with_latest_dispatch(connection, rows):
                 if request.schedule.cron is not None:
                     continue
                 if request.completed_at is not None or request.status == "cancelled":
                     continue
-                latest_dispatch = latest_dispatches.get(request.request_id)
                 if scheduled_wake_dispatch_is_capacity_deferred(latest_dispatch):
                     continue
                 updated_request = self._apply_one_time_retry_state(
@@ -773,41 +764,50 @@ class WakeRequestStore:
             for normalized in (self._normalize_status(status) for status in (statuses or []))
             if normalized
         }
-        latest_dispatches = self.latest_dispatch_by_request_id()
+        entries: list[dict[str, Any]] = []
         with self._lock, self._connect() as connection:
+            # Keep request pages and their dispatch state in the same read snapshot.
+            connection.execute("BEGIN")
             params: list[Any] = []
             sql = "SELECT payload_json FROM wake_requests"
             if normalized_session_id:
                 sql += " WHERE session_id = ?"
                 params.append(normalized_session_id)
             sql += " ORDER BY updated_at DESC, request_id DESC"
-            rows = connection.execute(sql, params).fetchall()
-
-        entries: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                request = WakeScheduledRequest.model_validate_json(row["payload_json"])
-            except Exception:
-                continue
-            latest_dispatch = latest_dispatches.get(request.request_id)
-            status = self._ledger_status_for_request(request, latest_dispatch=latest_dispatch)
-            if normalized_statuses and status not in normalized_statuses:
-                continue
-            if not include_completed and status == "completed_or_acknowledged":
-                continue
-            entries.append(
-                self._ledger_entry_for_request(
-                    request,
-                    latest_dispatch=latest_dispatch,
-                    status=status,
+            cursor = connection.execute(sql, params)
+            while len(entries) < max(1, int(limit)):
+                rows = cursor.fetchmany(max(1, min(100, int(limit) - len(entries))))
+                if not rows:
+                    break
+                requests = self._validated_requests(rows)
+                latest_dispatches = self._latest_dispatches_for_requests(
+                    connection, (request.request_id for request in requests)
                 )
-            )
-            if len(entries) >= int(limit):
-                break
+                for request in requests:
+                    latest_dispatch = latest_dispatches.get(request.request_id)
+                    status = self._ledger_status_for_request(
+                        request, latest_dispatch=latest_dispatch
+                    )
+                    if normalized_statuses and status not in normalized_statuses:
+                        continue
+                    if not include_completed and status == "completed_or_acknowledged":
+                        continue
+                    entries.append(
+                        self._ledger_entry_for_request(
+                            request,
+                            latest_dispatch=latest_dispatch,
+                            status=status,
+                        )
+                    )
+                    if len(entries) >= int(limit):
+                        break
         return entries
 
     def ledger_entry_for_request(self, request: WakeScheduledRequest) -> dict[str, Any]:
-        latest_dispatch = self.latest_dispatch_by_request_id().get(request.request_id)
+        with self._lock, self._connect() as connection:
+            latest_dispatch = self._latest_dispatches_for_requests(
+                connection, [request.request_id]
+            ).get(request.request_id)
         status = self._ledger_status_for_request(request, latest_dispatch=latest_dispatch)
         return self._ledger_entry_for_request(
             request,
@@ -921,7 +921,6 @@ class WakeRequestStore:
 
     def find_due_requests(self, *, now_utc: datetime) -> list[WakeScheduledRequest]:
         now_storage = self._datetime_to_storage(now_utc)
-        latest_dispatches = self.latest_dispatch_by_request_id()
         due_requests: list[WakeScheduledRequest] = []
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -935,18 +934,12 @@ class WakeRequestStore:
                 """,
                 (now_storage,),
             ).fetchall()
-            for row in rows:
-                try:
-                    request = WakeScheduledRequest.model_validate_json(row["payload_json"])
-                except Exception:
-                    continue
+            for request, latest_dispatch in self._requests_with_latest_dispatch(connection, rows):
                 request = self._normalize_cancelled_request(request)
                 if request.status == "cancelled" or not request.enabled:
                     continue
                 if request.schedule.resume_at is not None and (
-                    scheduled_wake_dispatch_is_capacity_deferred(
-                        latest_dispatches.get(request.request_id)
-                    )
+                    scheduled_wake_dispatch_is_capacity_deferred(latest_dispatch)
                 ):
                     continue
                 next_run_at = request.next_run_at
@@ -1006,6 +999,10 @@ class WakeRequestStore:
                     ON wake_requests(enabled, next_run_at, request_id);
                 CREATE INDEX IF NOT EXISTS idx_wake_requests_listing
                     ON wake_requests(session_id, enabled, updated_at, request_id);
+                CREATE INDEX IF NOT EXISTS idx_wake_requests_updated
+                    ON wake_requests(updated_at, request_id);
+                CREATE INDEX IF NOT EXISTS idx_wake_requests_session_updated
+                    ON wake_requests(session_id, updated_at, request_id);
                 CREATE INDEX IF NOT EXISTS idx_wake_requests_retention
                     ON wake_requests(enabled, updated_at);
 
@@ -1097,6 +1094,72 @@ class WakeRequestStore:
             (request_id,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _validated_requests(rows: Iterable[sqlite3.Row]) -> list[WakeScheduledRequest]:
+        requests: list[WakeScheduledRequest] = []
+        for row in rows:
+            try:
+                requests.append(WakeScheduledRequest.model_validate_json(row["payload_json"]))
+            except Exception:
+                continue
+        return requests
+
+    @classmethod
+    def _requests_with_latest_dispatch(
+        cls, connection: sqlite3.Connection, rows: Iterable[sqlite3.Row]
+    ) -> Iterator[tuple[WakeScheduledRequest, WakeDispatchRecord | None]]:
+        for batch in batched(rows, 400):
+            requests = cls._validated_requests(batch)
+            latest = cls._latest_dispatches_for_requests(
+                connection, (request.request_id for request in requests)
+            )
+            for request in requests:
+                yield request, latest.get(request.request_id)
+
+    @staticmethod
+    def _latest_dispatches_for_requests(
+        connection: sqlite3.Connection, request_ids: Iterable[str]
+    ) -> dict[str, WakeDispatchRecord]:
+        ids = list(dict.fromkeys(request_id for request_id in request_ids if request_id))
+        latest: dict[str, WakeDispatchRecord] = {}
+        for offset in range(0, len(ids), 400):
+            batch = ids[offset : offset + 400]
+            values = ",".join("(?)" for _ in batch)
+            rows = connection.execute(
+                f"""
+                WITH requested(request_id) AS (VALUES {values})
+                SELECT requested.request_id, dispatch.payload_json
+                FROM requested JOIN wake_dispatches AS dispatch ON dispatch.dispatch_id = (
+                    SELECT dispatch_id FROM wake_dispatches
+                    WHERE request_id = requested.request_id
+                    ORDER BY dispatched_at DESC, dispatch_id DESC LIMIT 1
+                )
+                """,
+                batch,
+            ).fetchall()
+            for row in rows:
+                request_id = row["request_id"]
+                try:
+                    latest[request_id] = WakeDispatchRecord.model_validate_json(row["payload_json"])
+                    continue
+                except Exception:
+                    pass
+                # Match the historical reader: a corrupt newest record must not
+                # hide the most recent valid dispatch for this request.
+                for candidate in connection.execute(
+                    "SELECT payload_json FROM wake_dispatches WHERE request_id = ? "
+                    "ORDER BY dispatched_at DESC, dispatch_id DESC",
+                    (request_id,),
+                ):
+                    try:
+                        latest[request_id] = WakeDispatchRecord.model_validate_json(
+                            candidate["payload_json"]
+                        )
+                        break
+                    except Exception:
+                        continue
+        return latest
 
     @staticmethod
     def _latest_dispatch_for_request(
