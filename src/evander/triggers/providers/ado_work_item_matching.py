@@ -5,11 +5,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import AdoWorkItemMatchingTriggerDefinition
 from evander.issues.service import IssueService
-from evander.models import AdoBacklogQueryRequest, AdoCurrentIterationBacklogRequest
+from evander.provider_runtime.results import coerce_mapping_result as _coerce_result
+from evander.triggers.providers._ado_work_item_query import query_ado_work_items
+from evander.triggers.providers._matching_markers import (
+    _marker_is_newer as _marker_is_newer,
+    _parse_dt as _parse_dt,
+)
 from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.base import TriggerProviderBase
 
@@ -84,71 +88,8 @@ class AdoWorkItemMatchingTriggerProvider(TriggerProviderBase):
             )
         issue_service = IssueService(context.provider_config_resolver)
         directory_path = trigger.directory_path or self._context_directory_path()
-        if trigger.current_iteration:
-            request = AdoCurrentIterationBacklogRequest.model_validate(
-                {
-                    "project": trigger.project,
-                    "team": trigger.team,
-                    "area_path": trigger.area_path,
-                    "states": trigger.states,
-                    "types": trigger.types,
-                    "tags_any": trigger.tags_any,
-                    "text_search": trigger.text_search,
-                    "top": trigger.top,
-                    "skip": 0,
-                }
-            )
-            return _coerce_result(
-                issue_service.list_remote_current_iteration_backlog_items(
-                    provider="azure_devops",
-                    directory_path=directory_path,
-                    project=request.project,
-                    team=request.team,
-                    area_path=request.area_path,
-                    states=request.states,
-                    types=[item_type.value for item_type in request.types],
-                    tags_any=request.tags_any,
-                    text_search=request.text_search,
-                    top=request.top,
-                    skip=request.skip,
-                )
-            )
-
-        request_payload: dict[str, Any] = {
-            "project": trigger.project,
-            "query_mode": trigger.query_mode,
-            "wiql": trigger.wiql,
-            "iteration": trigger.iteration,
-            "area_path": trigger.area_path,
-            "states": trigger.states,
-            "types": trigger.types,
-            "tags_any": trigger.tags_any,
-            "text_search": trigger.text_search,
-            "top": trigger.top,
-            "skip": 0,
-        }
-        if trigger.query_mode == ADO_QUERY_MODE_MANUAL_WIQL:
-            request_payload = {
-                key: request_payload[key]
-                for key in ("project", "query_mode", "wiql", "top", "skip")
-                if request_payload.get(key) is not None
-            }
-        request = AdoBacklogQueryRequest.model_validate(request_payload)
         return _coerce_result(
-            issue_service.query_remote_backlog_items(
-                provider="azure_devops",
-                directory_path=directory_path,
-                project=request.project,
-                wiql=request.wiql,
-                iteration=request.iteration,
-                area_path=request.area_path,
-                states=request.states,
-                types=[item_type.value for item_type in request.types],
-                tags_any=request.tags_any,
-                text_search=request.text_search,
-                top=request.top,
-                skip=request.skip,
-            )
+            query_ado_work_items(trigger, issue_service, directory_path=directory_path)
         )
 
     def _runtime_dir(self) -> Path:
@@ -210,43 +151,3 @@ def _changed_at(item: Mapping[str, Any]) -> str:
     if isinstance(fields, Mapping):
         return str(fields.get("System.ChangedDate") or "").strip()
     return ""
-
-
-def _marker_is_newer(candidate: str, previous: str) -> bool:
-    if not previous:
-        return True
-    candidate_dt = _parse_dt(candidate)
-    previous_dt = _parse_dt(previous)
-    if candidate_dt is None or previous_dt is None:
-        return candidate != previous
-    return candidate_dt > previous_dt
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip() or value == "__seen__":
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _coerce_result(result: Any) -> dict[str, Any]:
-    if result is None:
-        return {}
-    if isinstance(result, Mapping):
-        return dict(result)
-    model_dump = getattr(result, "model_dump", None)
-    if callable(model_dump):
-        dumped = model_dump()
-        if isinstance(dumped, Mapping):
-            return dict(dumped)
-    if hasattr(result, "__dict__"):
-        return dict(vars(result))
-    return {"result": result}

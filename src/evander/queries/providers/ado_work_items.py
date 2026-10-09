@@ -7,6 +7,7 @@ from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL, validate_ado_quer
 from evander.issues.service import IssueService
 from evander.models import AdoBacklogQueryRequest, AdoCurrentIterationBacklogRequest
 
+from evander.provider_runtime.results import coerce_mapping_result
 from .base import QueryProviderBase
 
 
@@ -136,15 +137,4 @@ class AdoWorkItemsQueryProvider(QueryProviderBase):
 
     @staticmethod
     def _coerce_result(result: Any) -> dict[str, Any]:
-        if result is None:
-            return {}
-        if isinstance(result, Mapping):
-            return dict(result)
-        model_dump = getattr(result, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if isinstance(dumped, Mapping):
-                return dict(dumped)
-        if hasattr(result, "__dict__"):
-            return dict(vars(result))
-        return {"result": result}
+        return coerce_mapping_result(result)
