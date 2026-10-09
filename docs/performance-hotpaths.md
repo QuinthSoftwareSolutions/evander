@@ -1,10 +1,13 @@
 # Control-plane performance paths
 
-## Worker, wake and validation reads (0.86.5)
+## Worker, wake and validation reads (0.86.6)
 
 Ten additional findings were fixed against main `81b241c6` on 2026-10-09.
 The changes retain existing public payloads, status and timestamp ordering,
 retry/capacity behavior, and workflow diagnostic ordering.
+
+The release was renumbered to 0.86.6 when integrating updated main. The recorded
+baseline comparisons below retain their original 0.86.5 measurement metadata.
 
 | Finding | Previous work | Fix and regression boundary |
 | --- | --- | --- |
@@ -91,6 +94,13 @@ execution ledgers and conformance reports are under
 `/tmp/evander-performance-validation-20261009/full`. Ruff passed for all fifteen
 changed Python files, and `git diff --check` passed. The implementation is local
 source work; no live services were changed or deployed.
+
+After merging main `8b21d0b6`, the complete runner verified all 10,229 cases:
+10,132 passed and 97 opt-in cases skipped, including all eight isolated timing
+checks. The integration run took 248.505 seconds; evidence is under
+`/tmp/evander-performance-integration-20261009/full`. The 75 focused performance
+and refactor cases, Ruff for all 38 Python files in the combined changes, and
+`git diff --check` also passed.
 
 ## Further repeated-work fixes (0.86.3)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -14,6 +14,13 @@ from starlette.routing import Route
 from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
 from evander.models import HttpTargetMetadata, SessionManifest
+from evander.relays._paths import (
+    PATH_SEGMENT_SAFE_CHARS as PATH_SEGMENT_SAFE_CHARS,
+    MAX_PATH_DECODE_PASSES as MAX_PATH_DECODE_PASSES,
+    _safe_path_segments as _safe_path_segments,
+    _fully_unquote_path_segment as _fully_unquote_path_segment,
+    _path_from_segments as _path_from_segments,
+)
 from evander.provider_config import ProviderConfigResolver
 from evander.website_sessions import ManagedWebsiteSessionService, WebsiteSessionError
 from evander.session_auth import (
@@ -38,8 +45,6 @@ HOP_BY_HOP_HEADERS = {
 }
 
 MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
-PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
-MAX_PATH_DECODE_PASSES = 5
 
 
 class HttpTargetRelay:
@@ -361,42 +366,6 @@ class HttpTargetRelay:
         if not remainder:
             return "/"
         return _path_from_segments(remainder, root_if_empty=True)
-
-
-def _safe_path_segments(path: object, *, field_name: str) -> list[str]:
-    raw_path = str(path or "").lstrip("/")
-    if not raw_path:
-        return []
-    segments: list[str] = []
-    for raw_segment in raw_path.split("/"):
-        if not raw_segment:
-            continue
-        segment = _fully_unquote_path_segment(raw_segment, field_name=field_name)
-        if segment in {".", ".."}:
-            raise ValueError(f"{field_name} must not contain dot segments")
-        if "/" in segment or "\\" in segment:
-            raise ValueError(f"{field_name} must not contain encoded path separators")
-        segments.append(segment)
-    return segments
-
-
-def _fully_unquote_path_segment(segment: str, *, field_name: str) -> str:
-    decoded = segment
-    for _ in range(MAX_PATH_DECODE_PASSES):
-        next_decoded = unquote(decoded)
-        if next_decoded == decoded:
-            return decoded
-        decoded = next_decoded
-    if unquote(decoded) != decoded:
-        raise ValueError(f"{field_name} is too deeply percent-encoded")
-    return decoded
-
-
-def _path_from_segments(segments: list[str], *, root_if_empty: bool) -> str:
-    if not segments:
-        return "/" if root_if_empty else ""
-    encoded_segments = [quote(segment, safe=PATH_SEGMENT_SAFE_CHARS) for segment in segments]
-    return f"/{'/'.join(encoded_segments)}"
 
 
 def create_app(

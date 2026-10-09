@@ -6,6 +6,7 @@ from typing import Any
 from evander.events.models import QueryDefinitionDiscriminated, WorkflowNodeEnvelope
 from evander.events.provider_models import IssueGetQueryDefinition
 
+from evander.provider_runtime.results import coerce_mapping_result
 from .base import QueryProviderBase
 from .issue_get_schema import IssueGetQueryConfigSchema
 
@@ -55,18 +56,7 @@ class IssueGetQueryProvider(QueryProviderBase):
 
     @staticmethod
     def _coerce_result(result: Any) -> dict[str, Any]:
-        if result is None:
-            return {}
-        if isinstance(result, Mapping):
-            return dict(result)
-        model_dump = getattr(result, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if isinstance(dumped, Mapping):
-                return dict(dumped)
-        if hasattr(result, "__dict__"):
-            return dict(vars(result))
-        return {"result": result}
+        return coerce_mapping_result(result)
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:

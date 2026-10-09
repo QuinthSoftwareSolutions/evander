@@ -25,38 +25,58 @@ from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 from . import cli_app, cli_common, cli_runtime
 
 
-def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
+def _configure_worker_logging(log_level: str) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+
+def _build_optional_worker(
+    cfg: GatewayConfig,
+    *,
+    project_dir: Path,
+    module_name: str,
+    builder_name: str,
+    worker_label: str,
+):
     try:
-        module = importlib.import_module("evander.messaging.teams_ingest")
+        module = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
-        if exc.name == "evander.messaging.teams_ingest":
+        if exc.name == module_name:
             raise RuntimeError(
-                "Teams ingest worker module evander.messaging.teams_ingest is not available."
+                f"{worker_label} worker module {module_name} is not available."
             ) from exc
         raise
-    builder = getattr(module, "build_teams_ingest_worker", None)
+    builder = getattr(module, builder_name, None)
     if builder is None:
         raise RuntimeError(
-            "Teams ingest worker module does not export build_teams_ingest_worker(config, *, project_dir=...)."
+            f"{worker_label} worker module does not export {builder_name}(config, *, project_dir=...)."
         )
     return builder(cfg, project_dir=project_dir)
+
+
+def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
+    return _build_optional_worker(
+        cfg,
+        project_dir=project_dir,
+        module_name="evander.messaging.teams_ingest",
+        builder_name="build_teams_ingest_worker",
+        worker_label="Teams ingest",
+    )
 
 
 def _build_teams_meeting_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
-    try:
-        module = importlib.import_module("evander.messaging.teams_meeting_ingest")
-    except ModuleNotFoundError as exc:
-        if exc.name == "evander.messaging.teams_meeting_ingest":
-            raise RuntimeError(
-                "Teams meeting ingest worker module evander.messaging.teams_meeting_ingest is not available."
-            ) from exc
-        raise
-    builder = getattr(module, "build_teams_meeting_ingest_worker", None)
-    if builder is None:
-        raise RuntimeError(
-            "Teams meeting ingest worker module does not export build_teams_meeting_ingest_worker(config, *, project_dir=...)."
-        )
-    return builder(cfg, project_dir=project_dir)
+    return _build_optional_worker(
+        cfg,
+        project_dir=project_dir,
+        module_name="evander.messaging.teams_meeting_ingest",
+        builder_name="build_teams_meeting_ingest_worker",
+        worker_label="Teams meeting ingest",
+    )
 
 
 @cli_app.app.command(
@@ -69,13 +89,7 @@ def force_complete_await_agent(
     config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = build_effect_orchestrator_worker(
@@ -99,13 +113,7 @@ def teams_ingest(
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = _build_teams_ingest_worker(
@@ -139,13 +147,7 @@ def teams_meeting_ingest(
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = _build_teams_meeting_ingest_worker(
@@ -176,13 +178,7 @@ def discord_wake(
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = build_discord_wake_worker(
@@ -212,13 +208,7 @@ def scheduled_wake(
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = build_scheduled_wake_worker(
@@ -248,13 +238,7 @@ def trigger_orchestrator(
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
 
     cfg = cli_runtime._load_runtime_config_from_option(config)
     worker = build_trigger_orchestrator_worker(
@@ -303,13 +287,7 @@ def proxy_issue_sync(
     ] = DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_worker_logging(log_level)
     runtime_dir = cli_runtime._runtime_dir_for_config_option(config)
     if run_once:
         result = run_proxy_issue_sync_once(
