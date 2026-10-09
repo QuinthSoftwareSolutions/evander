@@ -4,8 +4,11 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from config_helpers import canonical_workflow_payload
 
+from evander.config import GatewayConfig
 from evander.models import LocalIssueRecord
 from evander.storage import JsonStore
 from evander.triggers.providers._local_tickets import (
@@ -19,6 +22,13 @@ from evander.triggers.providers._local_tickets import (
     ticket_cursor_path,
     within_ticket_directories,
 )
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.schemas import (
+    TicketChangedTriggerDefinition,
+    TicketCreatedTriggerDefinition,
+)
+from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from evander.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 
 
 def _issue(
@@ -224,3 +234,81 @@ def test_seed_new_ticket_created_trigger_cursors_preserves_existing_entries(
     assert payload["preserve-me"] == {"last_created_at": "2026-05-01T00:00:00Z"}
     assert payload["ticket-copy"] == {"last_created_at": "2026-05-01T01:00:00Z"}
     assert payload["ticket-copy-2"]["last_created_at"] == "2026-05-02T11:30:00Z"
+
+
+@pytest.mark.parametrize(
+    ("provider_class", "definition_class", "trigger_type", "expected_ids", "expected_hours"),
+    [
+        (
+            TicketCreatedTriggerProvider,
+            TicketCreatedTriggerDefinition,
+            "trigger:ticket:created",
+            ["issue-a", "issue-b"],
+            [10, 11],
+        ),
+        (
+            TicketChangedTriggerProvider,
+            TicketChangedTriggerDefinition,
+            "trigger:ticket:changed",
+            ["issue-b", "issue-a"],
+            [13, 14],
+        ),
+    ],
+)
+def test_ticket_triggers_keep_timestamp_order_and_unacknowledged_boundary_items(
+    tmp_path: Path,
+    provider_class,
+    definition_class,
+    trigger_type: str,
+    expected_ids: list[str],
+    expected_hours: list[int],
+) -> None:
+    store = JsonStore(tmp_path / LOCAL_ISSUES_FILENAME, LocalIssueRecord)
+    for issue_id, created_hour, updated_hour, directory in [
+        ("issue-a", 10, 14, "root/team"),
+        ("issue-b", 11, 13, "root/team/child"),
+        ("outside", 12, 15, "root/other"),
+    ]:
+        issue = _issue(
+            tmp_path,
+            issue_id=issue_id,
+            issue_number=issue_id,
+            directory_path=directory,
+            created_at=datetime(2026, 5, 2, created_hour, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 2, updated_hour, tzinfo=UTC),
+        )
+        store.put(issue_id, issue)
+    provider = provider_class()
+    provider.initialize(
+        definition_class(
+            id="tickets",
+            display_name="Tickets",
+            type=trigger_type,
+            directories=["root/team"],
+        ),
+        TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=tmp_path)),
+    )
+
+    events = provider.poll()
+    assert [event.payload["ticket"]["issue_id"] for event in events] == expected_ids
+    assert [event.occurred_at.hour for event in events] == expected_hours
+    assert provider.poll() == events
+
+    # A delayed acknowledgement must not move the timestamp behind a newer one.
+    for event in reversed(events):
+        provider.acknowledge_published_event(event)
+    assert provider.poll() == []
+
+    boundary_issue = _issue(
+        tmp_path,
+        issue_id="issue-c",
+        issue_number="3",
+        directory_path="root/team",
+        created_at=datetime(2026, 5, 2, 11, tzinfo=UTC),
+        updated_at=datetime(2026, 5, 2, 14, tzinfo=UTC),
+    )
+    store.put(boundary_issue.issue_id, boundary_issue)
+    remaining = provider.poll()
+    assert [event.payload["ticket"]["issue_id"] for event in remaining] == ["issue-c"]
+    provider.acknowledge_published_event(remaining[0])
+    assert provider.poll() == []

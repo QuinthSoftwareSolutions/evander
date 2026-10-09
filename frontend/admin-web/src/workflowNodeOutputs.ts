@@ -140,6 +140,22 @@ export function deriveWorkflowOutputSchemas(
         ...copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? "")),
         count: { type: "integer" },
       };
+    } else if (node.type === "gate:event:validate") {
+      schema = {
+        ...copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? "")),
+        valid: { type: "boolean" },
+        event_type: { type: "string" },
+        schema_revision: { type: "string" },
+        schema_source: { type: ["string", "null"] },
+        failures: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { code: { type: "string" }, path: { type: "string" }, message: { type: "string" } },
+            required: ["code", "path", "message"],
+          },
+        },
+      };
     } else if (node.type === "gate:merge") {
       schema = mergeDeclaredOutputIntersection(
         directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),
@@ -647,7 +663,10 @@ export function classificationAnswerSchema(questions: unknown): Record<string, u
     if (!isRecord(question)) continue;
     if (!["choice", "score", "boolean"].includes(String(question.type))) continue;
     const fields: Record<string, unknown> = {type: {type: "string"}};
-    if (question.type === "boolean") fields.probability_true = {type: "number"};
+    if (question.type === "boolean") {
+      fields.value = {type: "boolean"};
+      fields.probability_true = {type: "number"};
+    }
     else {
       fields[question.type === "choice" ? "choice" : "score"] = {type: question.type === "choice" ? "string" : "number"};
       fields.confidence = {type: "number"};

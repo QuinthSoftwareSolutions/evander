@@ -17,6 +17,9 @@ def main() -> int:
     )
     parser.add_argument("--runtime-dir", type=Path, default=Path("runtime"))
     parser.add_argument("--directory-path", default="root")
+    parser.add_argument(
+        "--provider", help="Use this enabled provider without changing directory defaults"
+    )
     args = parser.parse_args()
     if not args.live:
         parser.error("--live is required; this check calls the configured provider")
@@ -26,6 +29,7 @@ def main() -> int:
             args.directory_path,
             {
                 "state": "A customer reports that the export button no longer works.",
+                "provider": args.provider,
                 "questions": {
                     "route": {
                         "type": "choice",

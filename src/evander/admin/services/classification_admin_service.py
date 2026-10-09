@@ -5,7 +5,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from evander.classification.models import ClassificationError, ClassificationSettings, revision
+from evander.classification.models import (
+    ClassificationError,
+    ClassificationProviderSettings,
+    ClassificationSettings,
+    revision,
+)
 from evander.classification.service import ClassificationService
 from evander.models import AuditEvent
 
@@ -53,6 +58,17 @@ class ClassificationAdminService:
             "providers": [
                 {
                     "id": name,
+                    "label": getattr(provider, "display_name", name),
+                    "available": getattr(provider, "available", True),
+                    "unavailable_reason": getattr(provider, "unavailable_reason", None)
+                    if not getattr(provider, "available", True)
+                    else None,
+                    "defaults": getattr(
+                        provider, "default_settings", ClassificationProviderSettings()
+                    ).model_dump(mode="json"),
+                    "reports_option_probabilities": getattr(
+                        provider, "reports_option_probabilities", None
+                    ),
                     "supported_question_types": sorted(provider.supported_question_types),
                     "credential_configured": bool(
                         self.service.secret_resolver(settings.providers[name].api_key_env)
@@ -136,7 +152,9 @@ class ClassificationAdminService:
             if not isinstance(payload, dict) or set(payload) != {"config"}:
                 raise ClassificationError("Smart switch tests require a config object")
             prepared = prepare_switch(self.service, settings, payload["config"])
-            result = execute_switch(self.service, settings, prepared, attribution={"directory_path": scope})
+            result = execute_switch(
+                self.service, settings, prepared, attribution={"directory_path": scope}
+            )
         except Exception:
             self._audit(scope, "switch_test_failed", actor)
             raise

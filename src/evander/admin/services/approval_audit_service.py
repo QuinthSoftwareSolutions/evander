@@ -204,23 +204,22 @@ class ApprovalAuditAdminService:
     ) -> list[dict[str, Any]]:
         if not self.config.audit_log_path.exists():
             return []
+        matches: list[dict[str, Any]] = []
         try:
-            lines = self.config.audit_log_path.read_text(encoding="utf-8").splitlines()
+            for raw_line in iter_file_lines_reverse(self.config.audit_log_path, errors="strict"):
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and approval_audit_payload_matches_request(
+                    payload, request
+                ):
+                    matches.append(payload)
+                if len(matches) >= limit:
+                    break
         except (OSError, UnicodeError) as exc:
             LOGGER.error("Approval audit log read failed (%s)", type(exc).__name__)
             return []
-        matches: list[dict[str, Any]] = []
-        for raw_line in reversed(lines):
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and approval_audit_payload_matches_request(
-                payload, request
-            ):
-                matches.append(payload)
-            if len(matches) >= limit:
-                break
         matches.reverse()
         return matches
 
@@ -423,25 +422,8 @@ class ApprovalAuditAdminService:
         try:
             with self.config.audit_log_path.open(encoding="utf-8") as handle:
                 for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    counts.scanned += 1
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        counts.skipped_malformed += 1
-                        continue
-                    if not isinstance(payload, dict):
-                        counts.skipped_malformed += 1
-                        continue
-                    event_type = str(payload.get("event_type") or "").strip().casefold()
-                    if event_type != "tool_call":
-                        counts.skipped_non_tool_call += 1
-                        continue
-                    entry = tool_call_audit_entry_from_payload(payload)
+                    entry = _tool_call_audit_entry_from_line(raw_line, counts)
                     if entry is None:
-                        counts.skipped_malformed += 1
                         continue
                     if not tool_call_audit_entry_matches_filters(
                         entry,
@@ -601,25 +583,8 @@ class ApprovalAuditAdminService:
                 if counts.scanned >= max_lines:
                     has_more = True
                     break
-                line = line.strip()
-                if not line:
-                    continue
-                counts.scanned += 1
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    counts.skipped_malformed += 1
-                    continue
-                if not isinstance(payload, dict):
-                    counts.skipped_malformed += 1
-                    continue
-                event_type = str(payload.get("event_type") or "").strip().casefold()
-                if event_type != "tool_call":
-                    counts.skipped_non_tool_call += 1
-                    continue
-                entry = tool_call_audit_entry_from_payload(payload)
+                entry = _tool_call_audit_entry_from_line(line, counts)
                 if entry is None:
-                    counts.skipped_malformed += 1
                     continue
                 if not tool_call_audit_entry_matches_filters(
                     entry,
@@ -659,6 +624,31 @@ class ApprovalAuditAdminService:
             limit=limit,
             has_more=has_more,
         )
+
+
+def _tool_call_audit_entry_from_line(
+    raw_line: str, counts: ToolCallAuditCountsPayload
+) -> ToolCallAuditEntryPayload | None:
+    line = raw_line.strip()
+    if not line:
+        return None
+    counts.scanned += 1
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        counts.skipped_malformed += 1
+        return None
+    if not isinstance(payload, dict):
+        counts.skipped_malformed += 1
+        return None
+    event_type = str(payload.get("event_type") or "").strip().casefold()
+    if event_type != "tool_call":
+        counts.skipped_non_tool_call += 1
+        return None
+    entry = tool_call_audit_entry_from_payload(payload)
+    if entry is None:
+        counts.skipped_malformed += 1
+    return entry
 
 
 def _utc_now() -> datetime:
@@ -1143,7 +1133,9 @@ def tool_call_recent_scan_max_lines(limit: int) -> int:
     return max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, max(1, int(limit)) * 25))
 
 
-def iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:
+def iter_file_lines_reverse(
+    path: Path, *, block_size: int = 64 * 1024, errors: str = "replace"
+) -> Iterator[str]:
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
@@ -1157,9 +1149,9 @@ def iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Itera
             buffer = lines[0]
             for raw_line in reversed(lines[1:]):
                 if raw_line:
-                    yield raw_line.decode("utf-8", errors="replace")
+                    yield raw_line.decode("utf-8", errors=errors)
         if buffer:
-            yield buffer.decode("utf-8", errors="replace")
+            yield buffer.decode("utf-8", errors=errors)
 
 
 def tool_call_audit_entry_matches_filters(

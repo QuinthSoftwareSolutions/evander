@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 from evander.config import GatewayConfig
@@ -19,6 +20,65 @@ from evander.models import SessionManifest
 from evander.operator_steering import operator_steering_note_store
 from evander.relays.openai import OpenAIRelay, create_app
 from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("headers", "payload_request_id", "expected_request_id"),
+    [
+        ({"request-id": " first ", "x-request-id": "second"}, "payload", "first"),
+        ({"request-id": " ", "x-generation-id": " generation "}, "payload", "generation"),
+        ({}, " payload ", "payload"),
+        ({}, None, None),
+    ],
+)
+def test_http_usage_preserves_request_id_precedence_and_transport_metadata(
+    tmp_path: Path,
+    stream: bool,
+    headers: dict[str, str],
+    payload_request_id: str | None,
+    expected_request_id: str | None,
+) -> None:
+    relay = OpenAIRelay(make_config(tmp_path))
+    payload = {
+        "id": "response-1",
+        "model": "test-model",
+        "request_id": payload_request_id,
+        "usage": {"input_tokens": 2, "output_tokens": 3},
+    }
+    content_type = "text/event-stream" if stream else "application/json"
+    response = httpx.Response(
+        200, headers={**headers, "content-type": content_type}, json=payload
+    )
+    arguments = {
+        "session_id": "session-1",
+        "upstream_path": "responses",
+        "request_body": b'{"model":"test-model"}',
+        "upstream_response": response,
+    }
+    if stream:
+        relay._record_stream_model_usage_event(
+            **arguments,
+            response_body_bytes=123,
+            response_body_sha256=None,
+            response_payload=payload,
+            duration_ms=10,
+        )
+    else:
+        relay._record_model_usage_event(**arguments)
+
+    event = relay.model_usage_store.get_event("response-1")
+    assert event is not None
+    assert event.request_id == expected_request_id
+    expected_response_metadata = {"status_code": 200, "content_type": content_type}
+    expected_request_metadata = {"method": "POST", "path": "/v1/responses"}
+    if stream:
+        expected_response_metadata["stream"] = True
+        expected_request_metadata["stream"] = True
+    if expected_request_id is not None:
+        expected_response_metadata["provider_request_id"] = expected_request_id
+    assert event.raw_usage_metadata["response_metadata"] == expected_response_metadata
+    assert event.raw_usage_metadata["request_metadata"] == expected_request_metadata
 
 
 class _UsageStream(httpx.AsyncByteStream):

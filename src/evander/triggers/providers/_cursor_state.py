@@ -179,6 +179,20 @@ def latest_cursor_timestamp_text(
     return winner.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def parse_cursor_timestamp_text(value: object) -> datetime | None:
+    """Parse a cursor string as UTC, preserving errors for malformed timestamps."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def _iter_text_values(value: object) -> Iterable[str]:
     if isinstance(value, str):
         text = value.strip()

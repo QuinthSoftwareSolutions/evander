@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .base import EffectProviderBase
+from .vm_power import power_action_result, resolve_power_target
 
 
 class VmStopEffectProvider(EffectProviderBase):
@@ -16,13 +17,7 @@ class VmStopEffectProvider(EffectProviderBase):
         if context.vm_power_controller is None:
             raise RuntimeError("effect:vm:stop vm_power_controller is not available")
         result = context.vm_power_controller.shutdown_vm(target, timeout_seconds=timeout_seconds)
-        return {
-            "success": bool(result.success),
-            "action": "shutdown",
-            "target": target,
-            "vm_name": result.vm_name or target,
-            "message": result.message or "",
-        }
+        return power_action_result(result, target=target, action="shutdown")
 
     def _context(self):
         if self.runtime_context is None:
@@ -30,11 +25,11 @@ class VmStopEffectProvider(EffectProviderBase):
         return self.runtime_context
 
     def _resolve_target(self, payload: Mapping[str, Any]) -> str:
-        for field_name in ("target", "vm_name", "session_id"):
-            value = self._normalize_optional_string(payload.get(field_name))
-            if value:
-                return value
-        raise ValueError("effect:vm:stop requires target, vm_name, or session_id")
+        return resolve_power_target(
+            payload,
+            effect_type="effect:vm:stop",
+            normalize_optional_string=self._normalize_optional_string,
+        )
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:

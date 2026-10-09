@@ -120,6 +120,8 @@ from evander.gates.providers.classifier_switch import ClassifierSwitchGateProvid
 from evander.gates.providers.switch_gate import SwitchGateProvider
 from evander.gates.providers.throttle_gate import ThrottleGateProvider
 from evander.gates.providers.validate_gate import ValidateGateProvider
+from evander.gates.providers.event_validate_gate import EventValidateGateProvider
+from evander.events.catalog import BUILTIN_EVENT_CATALOG
 from evander.gates.providers.while_gate import WhileGateProvider
 from evander.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
 from evander.queries.providers.artifact_space import (
@@ -254,6 +256,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:classifier:switch": ClassifierSwitchGateProvider,
             "gate:while": WhileGateProvider,
             "gate:validate": ValidateGateProvider,
+            "gate:event:validate": EventValidateGateProvider,
         },
         effect_providers={
             "effect:code-index:ensure": CodeIndexEffectProvider,
@@ -363,4 +366,5 @@ def register_providers() -> dict[str, dict[str, type]]:
             **effect_node_schema_resolvers(),
             **query_node_schema_resolvers(),
         },
+        internal_event_catalog_entries=BUILTIN_EVENT_CATALOG,
     )

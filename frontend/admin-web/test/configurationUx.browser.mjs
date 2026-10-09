@@ -6,6 +6,58 @@ import { browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout } fro
 
 const browser = suiteBrowser();
 
+test("event definitions replace inherited schemas, preserve other definitions, and remove overrides", { timeout: browserTestTimeout }, async (t) => {
+  const inherited = { event_type: "custom.answer", label: "Answer", source: "Platform", payload_schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } };
+  const unrelated = { label: "Other event", payload_schema: { type: "object" } };
+  let snapshot = { revision: "events-1", config: { events: { "custom.other": unrelated } }, events: [inherited], inherited_events: [inherited] };
+  const writes = [];
+  const { page, errors } = await fixture(t, "EventsConfiguration", "configuration", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON(); writes.push(body);
+      snapshot = { ...snapshot, revision: `events-${writes.length + 1}`, config: body.config };
+    }
+    await route.fulfill({ json: snapshot });
+  });
+  await page.getByLabel("Event", { exact: true }).selectOption("custom.answer");
+  assert.equal(await page.getByRole("button", { name: "Override in this directory", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByRole("button", { name: "Override in this directory", exact: true }).click();
+  const schema = page.getByLabel("Payload JSON Schema", { exact: true });
+  await schema.fill("{");
+  assert.equal(await page.getByRole("button", { name: "Save events", exact: true }).isDisabled(), true);
+  const replacement = { type: "object", properties: { count: { type: "integer" } }, required: ["count"] };
+  await schema.fill(JSON.stringify(replacement));
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByText("Event definitions saved.", { exact: true }).waitFor();
+  assert.equal(writes[0].expected_revision, "events-1");
+  assert.deepEqual(writes[0].config.events["custom.answer"].payload_schema, replacement);
+  assert.deepEqual(writes[0].config.events["custom.other"], unrelated);
+  await page.getByRole("button", { name: "Remove local definition", exact: true }).click();
+  assert.equal(await schema.isDisabled(), true);
+  assert.deepEqual(JSON.parse(await schema.inputValue()), inherited.payload_schema);
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByText("Event definitions saved.", { exact: true }).waitFor();
+  assert.equal(writes[1].expected_revision, "events-2");
+  assert.deepEqual(writes[1].config.events, { "custom.other": unrelated });
+  assert.deepEqual(errors, []);
+});
+
+test("event schema save conflicts retain the operator draft", { timeout: browserTestTimeout }, async (t) => {
+  const definition = { label: "Answer", payload_schema: { type: "object" } };
+  const { page, errors } = await fixture(t, "EventsConfiguration", "configuration", async (route) => {
+    if (route.request().method() === "PUT") return route.fulfill({ status: 409, json: { error: "Event definitions changed. Reload before saving again." } });
+    await route.fulfill({ json: { revision: "events-1", config: { events: { "custom.answer": definition } }, events: [], inherited_events: [] } });
+  });
+  await page.getByLabel("Event", { exact: true }).selectOption("custom.answer");
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByLabel("Event label", { exact: true }).fill("Edited answer");
+  await page.getByRole("button", { name: "Save events", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Event definitions changed" }).waitFor();
+  assert.equal(await page.getByLabel("Event label", { exact: true }).inputValue(), "Edited answer");
+  assert.equal(await page.getByRole("button", { name: "Save events", exact: true }).isDisabled(), false);
+  assert.deepEqual(errors, []);
+});
+
 async function fixture(t, component, feature, routeHandler, hash = "") {
   const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script type="module">
     import React from 'react';
@@ -21,7 +73,7 @@ async function fixture(t, component, feature, routeHandler, hash = "") {
       return React.createElement(React.Fragment, null,
         React.createElement('button', { onClick: () => setUnlocked(true) }, 'Unlock operations'),
         React.createElement(AdminUiContext.Provider, { value: context },
-          React.createElement(${component}, { selectedDirectoryPath: 'root', privilegedUnlocked: unlocked })));
+          React.createElement(${component}, { selectedDirectoryPath: 'root', directoryPath: 'root', disabled: !unlocked, onDirtyChange: () => {}, privilegedUnlocked: unlocked })));
     }
     createRoot(document.getElementById('root')).render(React.createElement(Fixture));
   </script></body></html>`;
@@ -51,6 +103,87 @@ function addon(id, enabled) {
     has_admin_ui: false, has_admin_api: false, has_mcp_tools: false, has_connector_drivers: false, has_workflow_providers: false,
     workflow_node_types: [], referenced_workflow_node_types: [], required_restart_services: ["evander-admin-web"] };
 }
+
+function phoneRoutingState(maps, revision = "phone-1") {
+  const snapshot = { key: "people_communications", revision, raw: { exists: true, config: { inbound_phone_caller_maps: maps } },
+    effective: { config: { inbound_phone_caller_maps: maps }, payload: {}, validation_diagnostics: [], errors: [] },
+    parent_defaults: { directory_path: null, config: {}, payload: {} } };
+  return { directory_scoped_config_enabled: true, selected_directory_path: "root",
+    selected_directory: { path: "root", parent_path: null, can_create: false, can_delete: false },
+    tabs: [{ key: "people_communications", title: "People & Communications", underlying_domains: ["providers"],
+      sections: [{ key: "phone_calls", title: "Phone calls", fields: [{ source_domain: "providers", field_name: "inbound_phone_caller_maps",
+        label: "Caller routing", kind: "json", options: [], scope: "directory", root_starts_editable: true, tooltip: "Assign callers to agent sessions.",
+        session_options: [{ session_id: "issue-worker", directory_path: "root/builds", name: "Issue worker" }],
+        phone_route_options: [{ route_id: "shared-phone", did: "+15550000100", called_number: null, directory_path: "root" }] }] }] }],
+    tab_snapshots: { people_communications: snapshot },
+    directory_overrides: { field_count: 1, domain_count: 1, exists: true, overrides: {}, errors: [], payload: {} } };
+}
+
+test("phone caller map chooses an agent session, persists its scope, and keeps an empty DID enabled", { timeout: browserTestTimeout }, async (t) => {
+  let maps = [];
+  let revision = "phone-1";
+  const writes = [];
+  const { page, errors } = await fixture(t, "ConfigurationScreen", "configuration", async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON();
+      writes.push(payload);
+      maps = payload.config.inbound_phone_caller_maps;
+      revision = `phone-${writes.length + 1}`;
+      return route.fulfill({ json: { write_result: { ok: true, errors: [] }, tab_snapshot: phoneRoutingState(maps, revision).tab_snapshots.people_communications } });
+    }
+    return route.fulfill({ json: phoneRoutingState(maps, revision) });
+  }, "#configuration?config_tab=people_communications&config_section=phone_calls");
+  const addNumber = page.getByRole("button", { name: "Add called number", exact: true });
+  await addNumber.waitFor();
+  assert.equal(await addNumber.isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await addNumber.click();
+  await page.getByLabel("Phone route for called number 1", { exact: true }).selectOption({ label: "shared-phone — +15550000100 (root)" });
+  await page.getByRole("button", { name: "Add caller", exact: true }).click();
+  await page.getByLabel("Caller phone number 1 for map 1", { exact: true }).fill("+15550000201");
+  await page.getByLabel("Agent session 1 for map 1", { exact: true }).selectOption({ label: "Issue worker — issue-worker (root/builds)" });
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("Saved People & Communications overrides for root.", { exact: true }).waitFor();
+  assert.equal(writes[0].expected_revision, "phone-1");
+  assert.deepEqual(writes[0].config.inbound_phone_caller_maps, [{ did: "+15550000100", route_id: "shared-phone", callers: [
+    { caller_number: "+15550000201", session_id: "issue-worker", directory_path: "root/builds" },
+  ] }]);
+  await page.reload();
+  await page.getByLabel("Caller phone number 1 for map 1", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Caller phone number 1 for map 1", { exact: true }).inputValue(), "+15550000201");
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByRole("button", { name: "Remove caller", exact: true }).click();
+  await page.getByText("No callers assigned. All calls to this number will be rejected.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("Saved People & Communications overrides for root.", { exact: true }).waitFor();
+  assert.equal(writes[1].expected_revision, "phone-2");
+  assert.deepEqual(writes[1].config.inbound_phone_caller_maps, [{ did: "+15550000100", route_id: "shared-phone", callers: [] }]);
+  assert.deepEqual(errors, []);
+});
+
+test("phone caller map preserves unavailable targets and retains a repaired draft after a revision conflict", { timeout: browserTestTimeout }, async (t) => {
+  const maps = [{ did: "+15550000100", route_id: "shared-phone", callers: [
+    { caller_number: "+15550000201", session_id: "issue-worker", directory_path: "root/old" },
+  ] }];
+  const writes = [];
+  const { page, errors } = await fixture(t, "ConfigurationScreen", "configuration", async (route) => {
+    if (route.request().method() === "PUT") {
+      writes.push(route.request().postDataJSON());
+      return route.fulfill({ status: 409, json: { error: "Revision changed" } });
+    }
+    return route.fulfill({ json: phoneRoutingState(maps) });
+  }, "#configuration?config_tab=people_communications&config_section=phone_calls");
+  const select = page.getByLabel("Agent session 1 for map 1", { exact: true });
+  await select.waitFor();
+  assert.equal(await select.locator("option:checked").innerText(), "Unavailable: issue-worker (root/old)");
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await select.selectOption({ label: "Issue worker — issue-worker (root/builds)" });
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("This configuration tab changed on the server. Reload this tab before saving again; your draft is still visible.", { exact: true }).waitFor();
+  assert.equal(writes[0].config.inbound_phone_caller_maps[0].callers[0].directory_path, "root/builds");
+  assert.equal(await select.locator("option:checked").innerText(), "Issue worker — issue-worker (root/builds)");
+  assert.deepEqual(errors, []);
+});
 
 test("selected add-on enablement preserves other drafts and saves with its revision", { timeout: browserTestTimeout }, async (t) => {
   let state = { addons: [addon("alpha", false), addon("beta", true)], explicit_enabled_addon_ids: ["beta"],

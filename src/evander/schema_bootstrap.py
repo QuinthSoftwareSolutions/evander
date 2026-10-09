@@ -694,6 +694,17 @@ _GATE_OUTPUT_SCHEMAS = {
             },
         },
     },
+    "gate:event:validate": {
+        "valid": {"type": "boolean"},
+        "event_type": {"type": "string"},
+        "schema_revision": {"type": "string"},
+        "schema_source": {"type": ["string", "null"]},
+        "failures": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "code": {"type": "string"}, "path": {"type": "string"}, "message": {"type": "string"},
+            }, "required": ["code", "path", "message"],
+        }},
+    },
     "gate:while": {
         "iteration_index": {"type": "integer"},
         "iteration_count": {"type": "integer"},
@@ -873,7 +884,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "copied_paths": {"type": "array"},
     },
     "effect:agent:prompt": {
-        "fast_mode": {"type": "boolean"},
+        "fast_mode": {"anyOf": [{"type": "boolean"}, {"const": "ultrafast"}]},
         "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
         "reasoning_effort_source": {"type": ["string", "null"]},
@@ -903,7 +914,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
-        "fast_mode": {"type": "boolean"},
+        "fast_mode": {"anyOf": [{"type": "boolean"}, {"const": "ultrafast"}]},
         "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
         "reasoning_effort_source": {"type": ["string", "null"]},

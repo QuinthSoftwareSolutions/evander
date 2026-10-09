@@ -109,6 +109,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),
+    ToolName.DELETE_ADO_BACKLOG_COMMENT: "Delete one Azure DevOps work-item comment.",
     ToolName.DELETE_ADO_BACKLOG_ITEM: (
         "Delete Azure DevOps backlog items; soft delete by default and permanent only with destroy=true."
     ),
@@ -271,6 +272,8 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.REQUEST_PR_REVIEW: ("Request reviewers on a pull request from the host side."),
     ToolName.POST_PR_COMMENT: ("Post a pull request comment using the host integration."),
+    ToolName.DELETE_PR_COMMENT: "Delete one Azure DevOps or GitHub pull request comment.",
+    ToolName.RESOLVE_PR_COMMENT: "Resolve an Azure DevOps or GitHub pull request comment thread.",
     ToolName.POST_PR_INLINE_COMMENT: (
         "Post an inline pull request comment at a specific diff position."
     ),

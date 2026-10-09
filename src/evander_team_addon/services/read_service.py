@@ -8,6 +8,7 @@ from ..case_context_models import CaseContextSnapshot
 
 from ..models import (
     AgentInboxItem,
+    AgentProjectAssignmentKind,
     AgentTask,
     Deliverable,
     PersistentAgent,
@@ -22,8 +23,6 @@ from ..models import (
     TeamState,
     TeamTaskState,
     agent_project_assignment_payloads,
-    agent_lead_project_ids,
-    agent_project_ids,
     effective_role_permissions,
     external_source_evidence_snapshot_payload,
     runtime_operations_payload,
@@ -46,6 +45,17 @@ class TeamReadService:
         self._state = state
         self._actor = actor
         self._actor_id = actor.id
+        self._project_ids_by_agent: dict[str, set[str]] = {}
+        self._lead_project_ids_by_agent: dict[str, set[str]] = {}
+        for assignment in state.project_assignments.values():
+            self._project_ids_by_agent.setdefault(assignment.agent_id, set()).add(
+                assignment.project_id
+            )
+            if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD:
+                self._lead_project_ids_by_agent.setdefault(assignment.agent_id, set()).add(
+                    assignment.project_id
+                )
+        self._subordinate_ids: set[str] | None = None
         self._managed_team_ids = self._managed_team_ids_for_actor()
         self._visible_team_ids = self._compute_visible_team_ids()
         self._visible_project_ids = self._compute_visible_project_ids()
@@ -128,8 +138,10 @@ class TeamReadService:
             and (include_handled or item.state == TeamInboxItemState.PENDING)
             and _matches_enum(state, item.state)
         ]
-        rows = [self._inbox_row(item) for item in sorted(items, key=_inbox_sort_key)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(items, key=_inbox_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._inbox_row,
+        )
 
     def get_inbox_item(self, inbox_item_id: str) -> dict[str, Any] | None:
         item = self._state.inbox.get(_text(inbox_item_id))
@@ -161,8 +173,10 @@ class TeamReadService:
             and _matches_enum(state, blocker.state)
             and _matches_enum(source_kind, blocker.source_kind)
         ]
-        rows = [self._blocker_row(blocker) for blocker in sorted(blockers, key=_blocker_sort_key)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(blockers, key=_blocker_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._blocker_row,
+        )
 
     def get_blocker(self, blocker_id: str) -> dict[str, Any] | None:
         blocker = self._state.blockers.get(_text(blocker_id))
@@ -214,8 +228,10 @@ class TeamReadService:
             and _matches(owner_agent_id, case.owner_agent_id)
             and _matches_enum(status, case.status)
         ]
-        rows = [self._case_row(case) for case in sorted(cases, key=_case_sort_key)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(cases, key=_case_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._case_row,
+        )
 
     def get_case(self, case_id: str) -> dict[str, Any] | None:
         case = self._state.cases.get(_text(case_id))
@@ -241,11 +257,10 @@ class TeamReadService:
             and _matches(producer_agent_id, deliverable.producer_agent_id)
             and _matches_enum(state, deliverable.state)
         ]
-        rows = [
-            self._deliverable_row(deliverable)
-            for deliverable in sorted(deliverables, key=_deliverable_sort_key)
-        ]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(deliverables, key=_deliverable_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._deliverable_row,
+        )
 
     def get_deliverable(self, deliverable_id: str) -> dict[str, Any] | None:
         deliverable = self._state.deliverables.get(_text(deliverable_id))
@@ -271,11 +286,10 @@ class TeamReadService:
             and _matches(reviewer_agent_id, request.reviewer_agent_id)
             and _matches_enum(state, request.state)
         ]
-        rows = [
-            self._review_request_row(request)
-            for request in sorted(requests, key=_review_request_sort_key)
-        ]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(requests, key=_review_request_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._review_request_row,
+        )
 
     def get_review_request(self, review_request_id: str) -> dict[str, Any] | None:
         request = self._state.review_requests.get(_text(review_request_id))
@@ -299,8 +313,10 @@ class TeamReadService:
             and _matches(project_id, release.project_id)
             and _matches_enum(state, release.state)
         ]
-        rows = [self._release_row(release) for release in sorted(releases, key=_release_sort_key)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(releases, key=_release_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._release_row,
+        )
 
     def get_release_package(self, release_package_id: str) -> dict[str, Any] | None:
         release = self._state.release_packages.get(_text(release_package_id))
@@ -332,12 +348,13 @@ class TeamReadService:
             and _matches_enum(status, agent.status)
             and (
                 project_id is None
-                or project_id in set(agent_project_ids(self._state, agent.id))
-                or project_id in set(agent_lead_project_ids(self._state, agent.id))
+                or project_id in self._project_ids_by_agent.get(agent.id, ())
             )
         ]
-        rows = [self._agent_row(agent) for agent in sorted(agents, key=lambda item: item.id)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(agents, key=lambda item: item.id),
+            limit=limit, cursor=cursor, offset=offset, transform=self._agent_row,
+        )
 
     def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         agent = self._state.agents.get(_text(agent_id))
@@ -450,43 +467,49 @@ class TeamReadService:
         if not (
             self._managed_team_ids
             or self._subordinate_agent_ids()
-            or agent_lead_project_ids(self._state, self._actor_id)
+            or self._lead_project_ids_by_agent.get(self._actor_id)
         ):
             return {}
-        projects = []
-        for project_id in sorted(self._visible_project_ids):
-            project = self._state.projects.get(project_id)
-            if project is None:
-                continue
-            projects.append(
-                {
-                    "id": project.id,
-                    "name": project.name,
-                    "status": project.status.value,
-                    "task_counts": _state_counts(
-                        task.state.value
-                        for task in self._state.tasks.values()
-                        if task.project_id == project.id and self._task_visible(task)
-                    ),
-                    "open_blocker_count": sum(
-                        blocker.project_id == project.id
-                        and blocker.state == TeamBlockerState.OPEN
-                        and self._blocker_visible(blocker)
-                        for blocker in self._state.blockers.values()
-                    ),
-                    "release_counts": _state_counts(
-                        release.state.value
-                        for release in self._state.release_packages.values()
-                        if release.project_id == project.id and self._release_visible(release)
-                    ),
-                }
-            )
+        project_ids = sorted(
+            project_id for project_id in self._visible_project_ids
+            if project_id in self._state.projects
+        )
+        projects = {
+            project_id: {
+                "id": project_id,
+                "name": self._state.projects[project_id].name,
+                "status": self._state.projects[project_id].status.value,
+                "task_counts": {},
+                "open_blocker_count": 0,
+                "release_counts": {},
+            }
+            for project_id in project_ids[:8]
+        }
+        if projects:
+            for task in self._state.tasks.values():
+                row = projects.get(task.project_id)
+                if row is not None and self._task_visible(task):
+                    counts = row["task_counts"]
+                    counts[task.state.value] = counts.get(task.state.value, 0) + 1
+            for blocker in self._state.blockers.values():
+                row = projects.get(blocker.project_id)
+                if (
+                    row is not None
+                    and blocker.state == TeamBlockerState.OPEN
+                    and self._blocker_visible(blocker)
+                ):
+                    row["open_blocker_count"] += 1
+            for release in self._state.release_packages.values():
+                row = projects.get(release.project_id)
+                if row is not None and self._release_visible(release):
+                    counts = row["release_counts"]
+                    counts[release.state.value] = counts.get(release.state.value, 0) + 1
         return {
             "read_only": True,
             "execution_scope": "current_dispatch",
-            "project_count": len(projects),
-            "projects": projects[:8],
-            "omitted_project_count": max(0, len(projects) - 8),
+            "project_count": len(project_ids),
+            "projects": list(projects.values()),
+            "omitted_project_count": max(0, len(project_ids) - 8),
             "retrieval": {
                 "projects": {"tool": "team_list_projects", "paginate": True},
                 "tasks": {"tool": "team_list_tasks", "paginate": True},
@@ -618,8 +641,7 @@ class TeamReadService:
         return visible
 
     def _compute_visible_project_ids(self) -> set[str]:
-        visible = set(agent_project_ids(self._state, self._actor_id))
-        visible.update(agent_lead_project_ids(self._state, self._actor_id))
+        visible = set(self._project_ids_by_agent.get(self._actor_id, ()))
         if self._actor.role_id is not None:
             role = self._state.roles.get(self._actor.role_id)
             if role is not None and role.project_id is not None:
@@ -630,8 +652,7 @@ class TeamReadService:
             if project.team_id in self._managed_team_ids:
                 visible.add(project.id)
         for subordinate_id in self._subordinate_agent_ids():
-            visible.update(agent_project_ids(self._state, subordinate_id))
-            visible.update(agent_lead_project_ids(self._state, subordinate_id))
+            visible.update(self._project_ids_by_agent.get(subordinate_id, ()))
         return visible
 
     def _compute_visible_agent_ids(self) -> set[str]:
@@ -654,6 +675,8 @@ class TeamReadService:
         return set()
 
     def _subordinate_agent_ids(self) -> set[str]:
+        if self._subordinate_ids is not None:
+            return self._subordinate_ids
         result: set[str] = set()
         stack = list(self._actor.subordinate_agent_ids)
         while stack:
@@ -664,23 +687,23 @@ class TeamReadService:
             agent = self._state.agents.get(agent_id)
             if agent is not None:
                 stack.extend(agent.subordinate_agent_ids)
+        # Explicit subordinate links and reporting links are separate sources of
+        # visibility. Do not traverse a mixed graph: that could expand access.
+        reports: dict[str, list[str]] = {}
         for agent in self._state.agents.values():
-            if agent.id != self._actor_id and self._reports_under(agent.id, self._actor_id):
-                result.add(agent.id)
+            if agent.reports_to_agent_id is not None:
+                reports.setdefault(agent.reports_to_agent_id, []).append(agent.id)
+        seen = {self._actor_id}
+        stack = list(reports.get(self._actor_id, ()))
+        while stack:
+            agent_id = stack.pop()
+            if agent_id in seen:
+                continue
+            seen.add(agent_id)
+            result.add(agent_id)
+            stack.extend(reports.get(agent_id, ()))
+        self._subordinate_ids = result
         return result
-
-    def _reports_under(self, agent_id: str, ancestor_id: str) -> bool:
-        seen: set[str] = set()
-        current = self._state.agents.get(agent_id)
-        while current is not None and current.reports_to_agent_id is not None:
-            parent_id = current.reports_to_agent_id
-            if parent_id == ancestor_id:
-                return True
-            if parent_id in seen:
-                return False
-            seen.add(parent_id)
-            current = self._state.agents.get(parent_id)
-        return False
 
     def _agent_visible(self, agent_id: str | None) -> bool:
         return agent_id is not None and agent_id in self._visible_agent_ids
@@ -1093,8 +1116,8 @@ class TeamReadService:
 
     def _agent_row(self, agent: PersistentAgent) -> dict[str, Any]:
         role = self._state.roles.get(agent.role_id) if agent.role_id is not None else None
-        project_ids = agent_project_ids(self._state, agent.id)
-        lead_project_ids = agent_lead_project_ids(self._state, agent.id)
+        project_ids = sorted(self._project_ids_by_agent.get(agent.id, ()))
+        lead_project_ids = sorted(self._lead_project_ids_by_agent.get(agent.id, ()))
         return _without_none(
             {
                 "id": agent.id,

@@ -220,6 +220,7 @@ _PHONE_CALL_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "didww_sip_bridge_token_env"),
     ("providers", "didww_from_number"),
     ("providers", "inbound_phone_routes"),
+    ("providers", "inbound_phone_caller_maps"),
 )
 _PROVIDER_STATE_FIELDS: tuple[tuple[str, str], ...] = (("providers", "provider_state"),)
 _VM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
@@ -296,6 +297,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "didww_sip_bridge_token_env"): "DIDWW SIP bridge token env",
     ("providers", "didww_from_number"): "DIDWW from number",
     ("providers", "inbound_phone_routes"): "Inbound phone routes",
+    ("providers", "inbound_phone_caller_maps"): "Caller routing",
     ("providers", "model_provider_mode"): "Default model provider mode",
     ("providers", "openai_api_base_url"): "OpenAI API base URL",
     ("providers", "openai_api_key_env"): "OpenAI API key env",
@@ -1018,9 +1020,21 @@ def _directory_config_field_metadata(
                          or session.session_id)}
             for session in service.runtime.session_repository.list_active_sessions()
         ] if field_name == "teams_call_routes" else [],
+        "session_options": [
+            {"session_id": session.session_id, "directory_path": session.directory_path,
+             "name": str(session.metadata.get("display_name") or session.metadata.get("name")
+                         or session.session_id)}
+            for session in service.runtime.session_repository.list_active_sessions()
+        ] if field_name == "inbound_phone_caller_maps" else [],
+        "phone_route_options": [
+            {"route_id": route.id, "did": route.did, "called_number": route.called_number,
+             "directory_path": route.directory_path}
+            for route in service.inbound_phone_routing_service.list_routes(skip_invalid_directories=True)
+        ] if field_name == "inbound_phone_caller_maps" else [],
         "root_starts_editable": (
             (source_domain == "pr_template" and field_name == "pr_template_markdown")
             or (source_domain == COMMUNICATION_TARGETS_DOMAIN and field_name == "targets")
+            or field_name == "inbound_phone_caller_maps"
         ),
         "tooltip": _directory_config_field_tooltip(
             source_domain, field_name, label=label, kind=kind, options=options
@@ -1047,7 +1061,7 @@ def _directory_tab_metadata(
                         prefixes,
                     )
                     for source_domain, field_name in field_sources
-                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency"}
+                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency", "inbound_phone_caller_maps"}
                 ],
             }
         )
@@ -1068,7 +1082,7 @@ def _directory_tab_metadata(
                         (),
                     )
                     for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
-                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency"}
+                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency", "inbound_phone_caller_maps"}
                 ],
             }
         ]

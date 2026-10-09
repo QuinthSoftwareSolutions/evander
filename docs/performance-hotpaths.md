@@ -1,5 +1,157 @@
 # Control-plane performance paths
 
+## Further repeated-work fixes (0.86.3)
+
+Ten additional findings were fixed against main `e300a4c4` on 2026-10-08.
+Each change removes a specific repeated read, query or graph construction while
+retaining the existing visibility, ordering, pagination and durable state behavior.
+
+| Finding | Previous work | Fix and regression boundary |
+| --- | --- | --- |
+| 1. Discord message pages | Decode the entire allowed channel history before applying unread cursors and page limits. | Apply cursor predicates in SQLite and decode only enough valid rows to fill the requested page. Keep chronological/message-ID order, corrupt-record skipping, timestamp ties, timezone normalization and cursor advancement. |
+| 2. Discord unread checks | Query the session cursor and message existence separately for every channel. | Load requested channel cursors together, then probe indexed existence in one statement. Keep channel/session isolation and empty-channel behavior. |
+| 3. Cost-report identity lookup | Execute a separate event-ID query for every supplied session or dispatch ID, including duplicates. | Deduplicate identifiers and query indexed batches of 400; preserve the exact event-ID set, empty inputs and rejected field names. |
+| 4. Team memory visibility | Rebuild team/project/reporting visibility for every memory record or semantic candidate. | Resolve visibility lazily once per read. Canonical records still determine permissions; assignment changes are observed by the next read. |
+| 5. Team chat/voice assessments | Construct a complete task-assessment graph for each task and each project in one context. | Share one lazy assessment service within a context, keeping its task/project payloads and building fresh assessments for subsequent contexts. Idle contexts avoid graph construction. |
+| 6. Team attention links | Sort and scan all deliverables separately for every blocked or waiting task. | Build one lazy task-to-smallest-deliverable-ID index for the projection. Keep the selected links and observe changed deliverables on the next projection. |
+| 7. Workflow graph metadata | Rescan and normalize every saved graph for every scoped connected component. | Normalize each graph once and index its component overlaps. Keep first-error ordering, exact component requirements and the last matching metadata record. |
+| 8. Repository symbol navigation | Execute one relationship query per expanded symbol. | Expand each breadth layer with indexed queries in one statement; keep directed definitions, symmetric references, snapshot isolation, stable result pages and the 2,000-symbol limit. |
+| 9. Repository build reuse | Read and sort all historical snapshots for an identity before selecting the first reusable row. | Select eligible statuses and one newest row in SQLite using partial identity/time indexes. Keep rebuild eligibility, timestamp tie order and unsupported-status skipping. |
+| 10. Approval audit review | Load and split the entire audit file to find the latest eight related entries. | Read backward in 64 KiB blocks and stop when the context is complete. Keep chronological context, request/digest/session matching, redaction, long Unicode records and empty context on encountered read/encoding errors. |
+
+The focused regressions are `test_messaging_usage_performance_paths.py`,
+`test_team_additional_performance_paths.py`, `test_workflow_index_performance.py`,
+and `test_approval_review_performance_paths.py`. Work counts are checked together
+with observable payloads and state; the tests do not depend on timing thresholds.
+
+Repository-index state databases upgrade from internal schema 1 or 2 to schema 3
+on first access. The new migration adds two partial indexes and preserves existing
+data; its version recheck and DDL share a writer transaction. Existing schema-1
+content maintenance migration still runs when required. Normal schema-3 reads do
+not repeat DDL. Portable exports retain format version 1. Index creation has a
+one-time cost proportional to snapshot history. Previous binaries reject internal
+schema 3, so binary rollback requires restoring the pre-upgrade database or an
+operator-controlled schema-version downgrade while index workers are stopped.
+
+Memory visibility, task assessments and attention indexes live only for one read
+or context. They do not cache permissions or task state across mutations. Negative
+Discord page limits retain their previous Python slicing behavior and read all
+matching valid records. Corrupt records can require scanning beyond the requested
+page size. Approval context may still scan the whole file if related entries are
+sparse; its retained data is limited to file blocks, an individual line and the
+requested context. It does not inspect unrelated older bytes once the context is
+complete. Consequently, an encoding error before a complete valid context no
+longer discards that context; corruption encountered while searching still returns
+an empty context. Multi-channel Discord ordering can still scan/sort matching
+database rows even though payload decoding and positive SQL page sizes are bounded.
+
+Controlled synthetic comparisons used Python 3.12.13 and SQLite 3.50.4, with the
+same inputs against baseline `e300a4c4` and the changed source. Work counts are the
+primary evidence; these figures do not establish live latency or production capacity.
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| Ten unread Discord messages, one corrupt row, 6,000 stored messages | 6,000 payloads decoded | 11 payloads decoded |
+| Unread existence over 201 channels | 402 SELECTs | 2 SELECTs |
+| Event-ID lookup for 801 identities supplied twice | 1,602 SELECTs | 3 SELECTs |
+| 500 project memories | 500 team and 500 project visibility resolutions | 1 team and 1 project resolution |
+| Chat wake with 200 tasks and two projects | 202 assessment graph builds | 1 graph build |
+| Attention for 250 tasks and 5,000 deliverables | 250 deliverable scans/sorts | 1 deliverable scan |
+| Metadata for 300 disconnected scoped graphs | 90,600 node-list reads | 300 node-list reads |
+| Navigation over 702 related symbols | 702 relationship SELECTs | 2 relationship SELECTs |
+| Reuse among 5,001 snapshots for one identity | 5,001 SQLite rows hydrated | 1 row hydrated |
+| Approval review in a 29,500,408-byte audit log | 29,500,408 bytes read; 63,802,368-byte peak allocation | 65,536 bytes read; 149,958-byte peak allocation |
+
+In the same instrumented workloads, SQLite VM instructions fell from 30,101 to
+557 for the Discord page, 7,897,901 to 86,024 for symbol navigation, and 200,293
+to 293 for either repository-rebuild mode. Team memory, wake and attention output
+hashes matched the baseline. Navigation pages, selected build IDs and Discord
+pages/cursors also matched; randomized probes compared 250 graph results/errors
+and 60 navigation pages with the baseline. Independent review additionally
+compared 5,000 graph results/errors and 600 navigation pages, and verified that an
+injected index-migration failure leaves schema 2 intact and succeeds on retry.
+
+Validation covered all 10,097 Python cases: 10,000 passed and 97 opt-in cases
+skipped. The initial complete runner (`scripts/run_tests.py --workers 4 --timeout
+900`) reported 9,982 passed, 97 skipped and 18 failures. All eighteen were script
+subprocesses unable to use the missing worktree `.venv`, causing unavailable
+refresh clients or missing dependencies. After linking the existing shared
+virtual environment, an exact eighteen-case rerun passed without production-code
+changes. Execution ledgers were checked to prove that the rerun covered every
+initial failure. All eight isolated timing checks passed. Changed-file Ruff,
+formatting and `git diff --check` also passed. The four added regression modules
+contain 37 cases covering the ten findings.
+
+HTTP/TestClient selections attempted under the restricted sandbox exceeded their
+90- or 120-second limits; their processes were stopped. The complete runner used
+permitted local socket access and exercised those cases successfully. This source
+change has not been deployed or tested against live operator workloads.
+
+## Additional bounded-work fixes (0.86.1)
+
+This audit identified ten further costs in the current source. The checks use
+synthetic state and deterministic read/iteration bounds; these are not production
+latency measurements.
+
+| Finding | Previous work | Fix and preserved behavior |
+| --- | --- | --- |
+| 1. Cost attribution updates | Read every historical session attribution before a small update. | Look up only requested session IDs in batches of 500; retain duplicate-input handling, unchanged-row detection, and invalidation of old and new Team balances. |
+| 2. Teams notification status | Load and validate every queued notification to calculate depth and age; scan all received times for the latest notification. | Aggregate count/minimum over a covering index and use an indexed maximum; preserve active-state selection, empty queues, and future-time age clamping. |
+| 3. Semantic code hits | Hydrate every matching chunk and its text before sorting and keeping 1,000. | Rank and limit chunk metadata in SQLite before loading at most 1,000 texts; preserve snapshot scope, last occurrence rank for repeated hashes, and path/line ordering. |
+| 4. Team collection pages | Serialize and enrich all matching inbox, blocker, case, deliverable, review, release, and agent records before taking a page. | Apply the existing permission filters and sort, then project only the requested page; retain totals, cursors, offsets, and the 50-record cap. |
+| 5. Team reporting visibility | Walk every reporting chain separately and repeatedly scan project assignments for subordinates. | Index reporting links and assignments once per read-service snapshot; preserve the separate explicit-subordinate and reporting-chain visibility rules, including cycles. |
+| 6. Supervisory overview | Rescan all tasks, blockers, and releases for every visible project, then discard all but eight projects. | Select the eight displayed projects first and aggregate each collection once; preserve visible project totals, omitted counts, and record visibility checks. |
+| 7. Workflow downstream depth | Recursively expand shared descendants once per path, with exponential work on layered branching graphs. | Use an iterative traversal with per-call completed depths; visit each reachable node once, preserve cycle errors, and support paths beyond Python's recursion limit. |
+| 8. Merge-gate context | Repeatedly propagate full dominator sets over the entire graph to identify guaranteed upstream context. | Walk only ancestors and construct their dominator tree in topological order; preserve explicit loop exclusions and the previous fallback for unvalidated cyclic graphs. |
+| 9. Overdue scheduled events | Decode the entire due backlog before publishing, then reread each payload during atomic publication. | Select up to 200 ordered schedule IDs per publication pass (before and after trigger polling); publication still rereads authoritative state atomically, and remaining due work keeps the next cycle immediately runnable. |
+| 10. Internal-event retry pages | Sort and join the complete pending delivery queue despite a page limit. | Order by the equal delivery foreign key so SQLite can use the existing pending index and stop at the limit; preserve event order, retry, and acknowledgement behavior. |
+
+The new Teams indexes are created by the existing store initialization path; the
+first access to an existing database pays the index-build cost. Notification counts
+still visit active index entries. Team pages still filter and sort matching records;
+semantic search still ranks matching chunk metadata. The fixes bound the expensive
+payload and projection work without introducing persistent response caches.
+
+Focused regressions are in `test_storage_performance_paths.py`,
+`test_team_read_performance_paths.py`, `test_workflow_graph.py`, and
+`test_workflow_scaling.py`, alongside the existing domain suites.
+
+Controlled comparisons against the original source showed:
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| One changed attribution among 3,001 stored rows | 3,001 attribution rows read | 1 row read |
+| Two-record Team page with 80 matching records | 80 records projected | 2 records projected |
+| Reporting visibility for a 200-agent chain | 404 assignment-collection scans | 1 scan |
+| Supervisory overview with 30 visible projects | 30 scans of each record collection | 1 scan of each collection |
+| Semantic hits with 2,504 matching chunks | 2,504 hydrated hits | 1,000 hydrated hits and text loads |
+| Ten pending deliveries among 4,000 | 36,206 SQLite VM instructions | 182 instructions |
+
+The new bounded-work checks fail against the original implementations. Existing
+behavior checks also cover partial scheduled-publication failure, permission
+boundaries, graph edits, multiple graph roots, explicit loop returns, and cycles.
+
+Initial validation on 2026-10-07 used `scripts/run_tests.py --workers 4 --timeout 900`:
+9,697 passed, 97 skipped, and one pre-existing failure across 9,795 collected cases.
+All eight timing tests passed. The skips are the opt-in WordPress browser test
+and Docker integration cases. The failure,
+`test_template_materialization_assigns_forward_child_to_parent_lineage`, also fails
+on unchanged baseline `e23a7616`: its monkeypatch targets the absent
+`admin_service.get_template` attribute. Changed-file Ruff and whitespace checks passed.
+
+After merging main `9af6dd50` on 2026-10-08, 246 focused tests passed. The complete
+runner recorded 9,932 passed, 97 skipped, and three failures across 10,032 cases;
+all eight timing tests passed. The template failure and
+`test_configuration_schema_offers_named_assistants_and_root_only_routing` both
+reproduce on unchanged main; the latter's test runtime lacks
+`inbound_phone_routing_service`. The timing-sensitive
+`test_slow_origin_query_answer_supersedes_pending_hold_offer` passed in isolated
+reruns on both unchanged main and the merged branch. The complete run is therefore
+not claimed green. Ruff, conflict-marker, version consistency, and whitespace
+checks passed on the merged branch.
+
+## Earlier performance audit (0.59.2)
+
 The 0.59.2 optimizations address the thirteen findings from the September 2026
 performance audit. They preserve the existing API payloads, authorization filters,
 command atomicity, dispatch ownership, and durable cursor/checkpoint behavior.

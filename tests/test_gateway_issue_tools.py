@@ -1827,6 +1827,7 @@ def test_delete_ado_backlog_item_propagates_missing_work_item_error(
         ("update_ado_backlog_state", {"id": 1, "state": "Active"}),
         ("update_ado_backlog_tags", {"id": 1, "add_tags": ["example"]}),
         ("post_ado_backlog_comment", {"id": 1, "comment": "Updated"}),
+        ("delete_ado_backlog_comment", {"id": 1, "comment_id": 1}),
         ("delete_ado_backlog_item", {"id": 1}),
         (
             "create_ado_backlog_item",
@@ -1913,6 +1914,7 @@ def test_activity_cache_survives_service_factories_and_invalidates_after_mutatio
         create_remote_issue = _mutate
         update_remote_issue = _mutate
         post_remote_comment = _mutate
+        delete_remote_comment = _mutate
         delete_remote_issue = _mutate
 
         def read_remote_issue(self, **kwargs):

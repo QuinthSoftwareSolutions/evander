@@ -12,10 +12,10 @@ from evander.pr_feedback import (
     pr_feedback_item_payload,
 )
 
-from .base import QueryProviderBase
+from ._pull_request import PullRequestQueryProviderBase
 
 
-class PullRequestFeedbackQueryProvider(QueryProviderBase):
+class PullRequestFeedbackQueryProvider(PullRequestQueryProviderBase):
     """Fetch provider pull-request feedback without owning cursor state."""
 
     NODE_TYPE = "query:pull-request:feedback"
@@ -119,39 +119,10 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
             timeout_seconds,
         )
 
-    def _resolve_directory_config(self, directory_path: str):
-        resolver = getattr(self._context(), "provider_config_resolver", None)
-        if resolver is None:
-            raise RuntimeError(f"{self.NODE_TYPE} provider_config_resolver is not available")
-        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
-        if not callable(resolve_for_directory):
-            raise RuntimeError(
-                f"{self.NODE_TYPE} provider_config_resolver cannot resolve directories"
-            )
-        return resolve_for_directory(directory_path)
-
     def _context(self):
         if self.runtime_context is None:
             raise RuntimeError("PullRequestFeedbackQueryProvider has no runtime context")
         return self.runtime_context
-
-    def _context_directory_path(self) -> str:
-        metadata = self._context().metadata
-        return self._normalize_optional_string(metadata.get("directory_path")) or "root"
-
-    @classmethod
-    def _require_string(cls, value: Any, *, field_name: str) -> str:
-        text = cls._normalize_optional_string(value)
-        if not text:
-            raise ValueError(f"{cls.NODE_TYPE} requires {field_name}")
-        return text
-
-    @staticmethod
-    def _normalize_provider(provider: str) -> str:
-        normalized = provider.strip()
-        if normalized in {"ado", "azure-devops", "azure_devops"}:
-            return "azure_devops"
-        return normalized
 
     @staticmethod
     def _project_from_composite_repo(repo: str) -> str | None:
@@ -161,10 +132,3 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         if len(parts) == 3:
             return parts[-2]
         return None
-
-    @staticmethod
-    def _normalize_optional_string(value: Any) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None

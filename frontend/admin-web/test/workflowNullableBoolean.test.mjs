@@ -3,18 +3,21 @@ import test, { before } from "node:test";
 import { createServer } from "vite";
 
 let createFieldRenderers;
+let createNodeFieldActions;
 before(async () => {
   const server = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "error" });
   try {
     ({ createFieldRenderers } = await server.ssrLoadModule("/src/features/workflow-editor/fieldRenderers.tsx"));
+    ({ createNodeFieldActions } = await server.ssrLoadModule("/src/features/workflow-editor/nodeFieldActions.ts"));
   } finally {
     await server.close();
   }
 }, { timeout: 10000 });
 
 const speedField = {
-  key: "fast_mode", label: "Fast mode", kind: "boolean", bindable: true,
-  metadata: { nullable: true, unset_label: "Session default", true_label: "Fast", false_label: "Standard" },
+  key: "fast_mode", label: "Speed", kind: "enum", bindable: true,
+  options: [{ value: "false", label: "Standard" }, { value: "true", label: "Fast" }, { value: "ultrafast", label: "Ultrafast" }],
+  metadata: { nullable: true, unset_label: "Session default", literal_values: { false: false, true: true, ultrafast: "ultrafast" } },
 };
 
 function controls(element, type) {
@@ -25,6 +28,16 @@ function controls(element, type) {
 
 function render(value, mode = "literal", field = speedField) {
   const updates = [];
+  const actions = createNodeFieldActions({
+    selectedNode: { type: "effect:agent:prompt" },
+    inspectorKnownValues: { fast_mode: value },
+    inspectorJsonDrafts: {},
+    selectedNodeBindingOptions: [],
+    setInspectorFieldModes: () => {},
+    setInspectorKnownValues: (next) => updates.push(["fast_mode", next.fast_mode]),
+    stageInspectorDraft: () => {},
+    tutorialCurrentRequiredAction: () => null,
+  });
   const { renderField } = createFieldRenderers({
     selectedNode: { type: "effect:agent:prompt" },
     inspectorKnownValues: { fast_mode: value },
@@ -33,17 +46,18 @@ function render(value, mode = "literal", field = speedField) {
     workflowMutationLocked: false,
     updateKnownField: (key, next) => updates.push([key, next]),
     updateFieldMode: () => {},
+    updateBindableEnumFieldMode: actions.updateBindableEnumFieldMode,
   });
   return { element: renderField(field), updates };
 }
 
 test("workflow speed edits preserve standard as a boolean and allow restoring inheritance", () => {
-  for (const [stored, selection] of [[undefined, ""], [null, ""], [false, "false"], [true, "true"]]) {
+  for (const [stored, selection] of [[undefined, ""], [null, ""], [false, "false"], [true, "true"], ["ultrafast", "ultrafast"]]) {
     const { element, updates } = render(stored);
     const picker = controls(element, "select")[1];
     assert.equal(picker.props.value, selection);
-    for (const value of ["true", "false", ""]) picker.props.onChange({ target: { value } });
-    assert.deepEqual(updates, [["fast_mode", true], ["fast_mode", false], ["fast_mode", undefined]]);
+    for (const value of ["true", "false", "ultrafast", ""]) picker.props.onChange({ target: { value } });
+    assert.deepEqual(updates, [["fast_mode", true], ["fast_mode", false], ["fast_mode", "ultrafast"], ["fast_mode", undefined]]);
   }
 });
 
@@ -54,7 +68,7 @@ test("leaving a speed binding restores inheritance instead of enabling Fast", ()
 });
 
 test("ordinary workflow booleans retain checkbox controls", () => {
-  const { element, updates } = render(false, "literal", { ...speedField, metadata: {} });
+  const { element, updates } = render(false, "literal", { ...speedField, kind: "boolean", metadata: {} });
   const checkbox = controls(element, "input")[0];
   assert.equal(checkbox.props.type, "checkbox");
   assert.equal(checkbox.props.checked, false);

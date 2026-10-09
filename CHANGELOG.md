@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-09 - Consolidate shared control-plane logic (0.80.5)
+## 2026-10-09 - Consolidate shared control-plane logic (0.86.5)
 
 - Share session selection, loop graph access, Azure DevOps polling requests,
   matching-trigger markers, and provider result projection.
@@ -9,6 +9,127 @@
 - Preserve existing APIs, payloads, validation order, cursor behavior, and side
   effects. Add characterization coverage for session precedence, result shapes,
   report ordering, worker failures, and inference capacity retention.
+
+## 2026-10-09 - Simplify internal service and provider code (0.86.4)
+
+- Share configuration merge/revision helpers and workflow activity collection;
+  consolidate steering validation and dispatch.
+- Consolidate pull-request query input handling, model-usage totals, and Azure
+  DevOps build collection.
+- Share Git effect result conversion and VM power handling, and separate VM
+  execution result validation and email HTTP request construction from dispatch.
+- Preserve existing payloads, validation and error ordering, permissions,
+  pagination, and side effects; add focused behavior characterization coverage.
+
+## 2026-10-08 - Reduce repeated platform read work (0.86.3)
+
+- Fix ten additional performance issues in Discord inbox paging and unread checks,
+  cost-report identity lookups, Team memory permissions, wake assessments and attention
+  projections, workflow graph metadata, repository-index navigation and enqueue lookups,
+  and approval audit review.
+- Preserve scoped visibility, cursor updates, payload ordering and recovery behavior.
+  Upgrade repository-index databases to schema 3 with indexed snapshot reuse lookups.
+  See `docs/performance-hotpaths.md` for measured work reductions and verification.
+
+## 2026-10-08 - Consolidate internal control-plane helpers (0.86.2)
+
+- Share artifact read selection and audit-line decoding, and separate active-session
+  discovery from skill propagation.
+- Consolidate local-ticket trigger polling, strict timestamp parsing, and Teams
+  meeting cursor normalization.
+- Extract shared HTTP address checks, VM copy permission handling, and Azure DevOps
+  pipeline template-parameter resolution.
+- Share streaming and non-streaming relay usage metadata construction while preserving
+  payloads, request correlation, validation, and side-effect ordering.
+- Update Team template and Teams routing test setup to match the current service dependencies.
+
+## 2026-10-08 - Bound platform read and orchestration work (0.86.1)
+
+- Fix ten performance issues across cost attribution updates, Teams notification
+  status, semantic code hits, Team pagination, reporting visibility, supervisory
+  summaries, workflow depth and merge context, scheduled publication, and internal
+  event retries. Preserve scoped visibility, ordering, counts, and durable delivery.
+- Bound expensive payload reads and page projections; replace repeated graph and
+  collection walks with indexed or single-pass algorithms. Add regression checks
+  for work bounds and behavior; see `docs/performance-hotpaths.md` for the findings.
+
+## 2026-10-08 - Delete comments and resolve PR threads (0.86.0)
+
+- Add session-scoped tools to delete individual Azure DevOps work-item comments and
+  Azure DevOps or GitHub PR comments.
+- Add PR comment resolution for Azure DevOps threads and GitHub review threads,
+  including lookup by GitHub review comment ID.
+- Use existing directory credentials, explicit tool grants, configured approval and
+  argument policies, and audit records; verify GitHub PR ownership before mutations.
+
+## 2026-10-08 - Direct PR description attachments (0.85.0)
+
+- Add staged `artifact_ids` to `update_pull_request` so agents can upload files
+  directly to an Azure DevOps PR and include their image/download links in its description.
+- Append links to the current description when no replacement text is supplied,
+  and return uploaded attachment metadata and URLs.
+- Refresh the current description after uploads to preserve edits made while
+  files were uploading; stop the save if that refresh fails.
+- Apply existing file ownership, outbound file policy, exact file-send approval,
+  and tool/PR restrictions; check expected PR status before uploading files.
+
+## 2026-10-07 - OpenAI Decisions classification (0.84.0)
+
+- Add an opt-in host-side OpenAI Decisions provider using the published `/v1/decisions`
+  contract and `gpt-6-luna`, shared across workflow queries, Smart switches, agent tools,
+  and Admin Web with host-owned credentials and directory-scoped configuration.
+- Preserve native predicate probabilities, choice distributions, and fractional rubric
+  scores. Reject refusals and malformed answers before downstream workflow actions.
+- Bound HTTP requests, responses, retries, and total deadlines; check privacy before each
+  attempt and retain native OpenAI usage attribution without input or answer content.
+- Scope model pricing rules by API endpoint and include Decisions input-only pricing while
+  retaining endpoint qualifiers in Admin Web edits.
+- Keep Admin Web sample evaluations aligned with saved profile defaults, preserving the
+  difference between an omitted model and explicit provider-default selection.
+- Add real-adapter HTTP conformance and shared-path tests plus an explicit provider smoke.
+
+## 2026-10-07 - Codex Ultrafast mode (0.83.0)
+
+- Add Ultrafast to session defaults and prompt overrides in Admin Web, workflow
+  nodes, and CLI speed selection while preserving existing boolean Fast settings.
+- Pass the selected tier through VM, container, and subscription runs, including
+  queues, wakes, retries, and steering. Explicit Standard restores the default tier.
+- Advertise worker Ultrafast support and require it during worker deployment
+  verification; account and model eligibility remain provider-controlled.
+- Seed GPT-6 Astra Ultrafast pricing, including cache and long-context rates,
+  and document how to update existing operator catalogs for accurate estimates.
+
+## 2026-10-05 - Central event schemas and manual event forms (0.82.0)
+
+- Define event payload schemas in directory configuration and Admin Web, with
+  inherited definitions and local overrides.
+- Generate structured manual-trigger forms from registered schemas, validate
+  submissions, and keep JSON entry available for events without definitions.
+- Add `gate:event:validate` to route valid and invalid event payloads through
+  workflows without changing automatic event publication.
+- Include payload schemas for core and bundled Team add-on events.
+- Allow schema-valid empty strings in manual forms, preserve reference sibling
+  constraints through JSON entry, and check references in nested resource scopes
+  before saving event definitions.
+
+## 2026-10-05 - Restore workflow catalog card padding (0.81.1)
+
+- Add horizontal padding inside the Triggers, Gates, Effects, and Queries catalog
+  headers so their labels and node counts sit clear of the card borders.
+
+## 2026-10-04 - Route phone callers to agent sessions (0.81.0)
+
+- Add root caller maps keyed by the called DID and caller phone number, with an Admin Web
+  editor that selects any active agent session and retains unavailable destinations for repair.
+- Reuse inbound route greetings and caller access policies, reject unmapped callers, and keep
+  existing fixed routing for numbers without a caller map. Apply map edits to new calls without
+  restart while preserving the origin of admitted calls.
+- Clear cached inbound routing grants before applying live configuration so removing an
+  override cannot leave its startup route active.
+- Keep root configuration and valid phone route choices available when another directory has
+  invalid provider settings. Require controller authentication before exposing caller-map or
+  routing errors and honor live root controller-token changes, while retaining destination-scoped
+  credentials for mapped and fixed calls.
 
 ## 2026-10-02 - Bound execution-history payload cleanup (0.80.4)
 

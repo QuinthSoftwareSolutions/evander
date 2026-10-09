@@ -10,11 +10,19 @@ from pydantic import TypeAdapter, ValidationError
 
 from evander.events.models import (
     TriggerDefinitionDiscriminated,
+    TriggerEvent,
     materialize_node_definition,
 )
 from evander.models import LocalIssueRecord
 from evander.storage import JsonObjectStore, JsonStore
-from evander.triggers.providers.schemas import TicketCreatedTriggerDefinition
+from evander.triggers.providers._cursor_state import (
+    latest_cursor_timestamp_text,
+    merge_cursor_ids,
+)
+from evander.triggers.providers.schemas import (
+    TicketChangedTriggerDefinition,
+    TicketCreatedTriggerDefinition,
+)
 
 LOCAL_ISSUES_FILENAME = "local-issues.json"
 TICKET_CREATED_CURSOR_FILENAME = "trigger-cursors-ticket-created.json"
@@ -31,6 +39,7 @@ _TICKET_CURSOR_FILENAMES: dict[str, str] = {
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _TicketCursorKind = Literal["created", "changed"]
 _TicketTimestampField = Literal["created_at", "updated_at"]
+_TicketTrigger = TicketCreatedTriggerDefinition | TicketChangedTriggerDefinition
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,57 @@ def local_ticket_candidates(
     ]
     candidates.sort(key=lambda issue: (_issue_timestamp(issue, timestamp_field), issue.issue_id))
     return candidates
+
+
+def local_ticket_events(
+    trigger: _TicketTrigger,
+    *,
+    runtime_dir: Path,
+    state: dict[str, object],
+    cursor_field: str,
+    timestamp_field: _TicketTimestampField,
+) -> list[TriggerEvent]:
+    cursor = parse_ticket_timestamp(state.get(cursor_field))
+    recent_issue_id_set = {
+        value
+        for value in state.get(RECENT_ISSUE_IDS_FIELD, [])
+        if isinstance(value, str) and value.strip()
+    }
+    candidates = local_ticket_candidates(runtime_dir, trigger.directories, timestamp_field)
+
+    events: list[TriggerEvent] = []
+    for issue in candidates:
+        occurred_at = getattr(issue, timestamp_field).astimezone(UTC)
+        if cursor is not None and occurred_at < cursor:
+            continue
+        if cursor is not None and occurred_at == cursor and issue.issue_id in recent_issue_id_set:
+            continue
+        events.append(
+            TriggerEvent(
+                event_id=f"{trigger.id}:{issue.issue_id}:{occurred_at.isoformat()}",
+                trigger_id=trigger.id,
+                trigger_type=trigger.type,
+                occurred_at=occurred_at,
+                payload={"ticket": issue.model_dump(mode="json")},
+            )
+        )
+    return events
+
+
+def acknowledge_ticket(
+    state: dict[str, object],
+    issue_id: str,
+    occurred_at: datetime,
+    *,
+    cursor_field: str,
+) -> dict[str, object]:
+    state[cursor_field] = latest_cursor_timestamp_text(state.get(cursor_field), occurred_at)
+    state[RECENT_ISSUE_IDS_FIELD] = merge_cursor_ids(
+        state.get(RECENT_ISSUE_IDS_FIELD),
+        [issue_id],
+        limit=RECENT_ISSUE_LIMIT,
+    )
+    return state
 
 
 def max_local_ticket_timestamp(

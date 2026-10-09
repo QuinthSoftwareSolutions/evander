@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator
@@ -15,17 +16,35 @@ from evander.reasoning_effort import session_agent_harness
 FAST_MODE_UNSET = object()
 
 
-def normalize_fast_mode(value: Any) -> bool | None:
+FastModeValue = bool | Literal["ultrafast"]
+
+
+class CodexSpeed(str, Enum):
+    STANDARD = "standard"
+    FAST = "fast"
+    ULTRAFAST = "ultrafast"
+
+
+def normalize_fast_mode(value: Any) -> FastModeValue | None:
     if value is None or isinstance(value, bool):
         return value
-    raise ValueError("fast_mode must be true, false, or null")
+    if isinstance(value, str) and value == "ultrafast":
+        return "ultrafast"
+    raise ValueError('fast_mode must be true, false, "ultrafast", or null')
 
 
-FastMode = Annotated[bool, BeforeValidator(normalize_fast_mode)]
+FastMode = Annotated[FastModeValue, BeforeValidator(normalize_fast_mode)]
 FastModeSource = Literal["prompt", "session", "default"]
 
 
-def validate_fast_mode(value: Any, *, harness: str, route: str | None = None) -> bool | None:
+def fast_mode_service_tier(value: Any) -> str:
+    speed = normalize_fast_mode(value)
+    return "ultrafast" if speed == "ultrafast" else "fast" if speed else "default"
+
+
+def validate_fast_mode(
+    value: Any, *, harness: str, route: str | None = None
+) -> FastModeValue | None:
     enabled = normalize_fast_mode(value)
     if enabled and (harness != "codex" or route not in (None, "openai_public")):
         raise ValueError("fast_mode is supported only for public OpenAI Codex sessions")
@@ -43,7 +62,7 @@ def validate_session_fast_mode(session: Any, config: Any = None) -> None:
 
 @dataclass(frozen=True)
 class ResolvedFastMode:
-    value: bool
+    value: FastModeValue
     source: FastModeSource
 
     def fields(self) -> dict[str, Any]:
@@ -51,7 +70,11 @@ class ResolvedFastMode:
 
     @property
     def service_tier(self) -> str:
-        return "fast" if self.value else "default"
+        return fast_mode_service_tier(self.value)
+
+    @property
+    def env_value(self) -> str:
+        return str(self.value).lower()
 
 
 def resolve_fast_mode(

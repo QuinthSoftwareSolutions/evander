@@ -45,7 +45,7 @@ def test_worker_deploy_reconciles_running_code_even_when_files_are_unchanged(
                 "status": 200,
                 "json": {
                     "deployment_revision": "old-revision",
-                    "capabilities": {"codex_fast_mode": 1},
+                    "capabilities": {"codex_fast_mode": 1, "codex_ultrafast_mode": 1},
                 },
             },
             False,
@@ -59,11 +59,21 @@ def test_worker_deploy_reconciles_running_code_even_when_files_are_unchanged(
                     "capabilities": {"codex_fast_mode": 1},
                 },
             },
+            False,
+        ),
+        (
+            {
+                "status": 200,
+                "json": {
+                    "deployment_revision": "new-revision",
+                    "capabilities": {"codex_fast_mode": 1, "codex_ultrafast_mode": 1},
+                },
+            },
             True,
         ),
     ],
 )
-def test_worker_deploy_verification_requires_loaded_revision_and_fast_mode(health, accepted) -> None:
+def test_worker_deploy_verification_requires_loaded_revision_and_speed_modes(health, accepted) -> None:
     tasks = yaml.safe_load(
         (ROOT / "ansible/roles/container_worker_verification/tasks/main.yml").read_text()
     )

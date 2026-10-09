@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-import evander_team_addon.services.admin_service as admin_service_module
 from evander_team_addon.models import (
     AgentRuntime,
     AgentTask,
@@ -21,6 +20,9 @@ from evander_team_addon.models import (
     WorkLineageChatSourceRef,
 )
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services import (
+    template_materialization_application as template_materialization_module,
+)
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands import TeamTaskCreationCommandService
@@ -300,7 +302,7 @@ def test_template_materialization_assigns_forward_child_to_parent_lineage(
         }
     )
     monkeypatch.setattr(
-        admin_service_module,
+        template_materialization_module,
         "get_template",
         lambda template_id: template.model_copy(deep=True)
         if template_id == template.id

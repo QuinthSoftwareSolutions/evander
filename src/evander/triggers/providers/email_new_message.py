@@ -12,6 +12,7 @@ from evander.events.models import TriggerEvent
 from evander.events.provider_models import EmailNewMessageTriggerDefinition
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
+    parse_cursor_timestamp_text as _parse_dt,
     latest_cursor_timestamp_text,
     merge_cursor_ids,
 )
@@ -142,18 +143,6 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
             raise RuntimeError("EmailNewMessageTriggerProvider has no runtime context")
         text = str(self.runtime_context.metadata.get("directory_path") or "root").strip()
         return text or "root"
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _message_is_behind_cursor(

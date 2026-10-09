@@ -1,5 +1,5 @@
 import { FastModeSelect } from "../admin/FastModeSelect";
-import { fastModeSelection, fastModeValue } from "../admin/fastMode";
+import { fastModeLabel, fastModeSelection, fastModeValue, type FastMode } from "../admin/fastMode";
 import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 
@@ -69,7 +69,7 @@ type SessionRecord = {
   vm_provider_id?: string | null;
   model: string | null;
   reasoning_effort?: string | null;
-  fast_mode?: boolean | null;
+  fast_mode?: FastMode | null;
   cost_category?: string | null;
   agent_harness?: string;
   effective_model_provider_mode?: string;
@@ -2039,7 +2039,7 @@ export function SessionsScreen() {
                       <dt>Reasoning effort</dt>
                       <dd>{selectedSession.reasoning_effort ?? (selectedSession.agent_harness === "codex" ? "Default (high)" : "Provider default")}</dd>
                       <dt>Default speed</dt>
-                      <dd>{selectedSession.fast_mode ? "Fast" : "Standard"}</dd>
+                      <dd>{fastModeLabel(selectedSession.fast_mode)}</dd>
                     </div>
                     {selectedSession.runtime_image ? (
                       selectedSession.runtime_image.backend === "container_worker_vm" ? (

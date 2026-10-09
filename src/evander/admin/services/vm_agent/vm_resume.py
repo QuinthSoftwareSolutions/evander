@@ -14,7 +14,7 @@ from evander.admin.services.vm_agent.common import (
     sys,
 )
 from evander.cost_categories import dispatch_with_cost_context
-from evander.fast_mode import resolve_fast_mode
+from evander.fast_mode import FastModeValue, resolve_fast_mode
 from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 
 
@@ -26,7 +26,7 @@ class VmAgentResumeMixin:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         reasoning_effort_source: str | None = None,
         fast_mode_source: str | None = None,
         vm_user: str = "agent",
@@ -200,7 +200,7 @@ class VmAgentResumeMixin:
             "AGENT_MODEL": resolved_model,
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
-            "AGENT_FAST_MODE": "true" if speed.value else "false",
+            "AGENT_FAST_MODE": speed.env_value,
             "AGENT_WEB_SEARCH_MODE": web_search_mode,
         }
         if agent_provider:

@@ -60,6 +60,9 @@ def pr_trigger_field_keys():
 
 def test_workflow_catalog_descriptions(catalog_payload) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
+    event_validator = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:event:validate")
+    assert {port["key"] for port in event_validator["output_ports"]} == {"valid", "invalid", "error"}
+    assert all(field["required"] and field["bindable"] for field in event_validator["fields"] if field["key"] in {"event_type", "payload"})
     generic_kind_tooltips = {
         "Triggers start workflow execution from incoming events.",
         "Gates transform, filter, fan out, or combine workflow data between nodes.",
@@ -512,7 +515,13 @@ def test_workflow_catalog_effect_agent_prompt(catalog_payload) -> None:
         for field in agent_prompt["fields"]
     )
     speed = next(field for field in agent_prompt["fields"] if field["key"] == "fast_mode")
-    assert speed["kind"] == "boolean"
+    assert speed["kind"] == "enum"
+    assert {option["value"]: option["label"] for option in speed["options"]} == {
+        "false": "Standard", "true": "Fast", "ultrafast": "Ultrafast",
+    }
+    assert speed["metadata"]["literal_values"] == {
+        "false": False, "true": True, "ultrafast": "ultrafast",
+    }
     assert speed["bindable"] is True
     assert speed["required"] is False
     assert speed["metadata"]["nullable"] is True

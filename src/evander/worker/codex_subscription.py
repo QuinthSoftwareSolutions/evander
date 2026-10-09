@@ -18,6 +18,7 @@ from evander.codex_auth import (
     CodexSubscriptionDeferredError,
     CodexTurnSpec,
 )
+from evander.fast_mode import fast_mode_service_tier
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
@@ -146,7 +147,7 @@ class CodexSubscriptionTurnRunner:
                         "cwd": self.cwd,
                         "model": self.turn.model,
                         "effort": self.turn.reasoning_effort or "high",
-                        "serviceTier": "fast" if self.turn.fast_mode else "default",
+                        "serviceTier": fast_mode_service_tier(self.turn.fast_mode),
                         "approvalPolicy": "never",
                     },
                 )
@@ -262,7 +263,7 @@ class CodexSubscriptionTurnRunner:
             "sandbox": "danger-full-access",
         }
         config: dict[str, Any] = {"model_reasoning_effort": self.turn.reasoning_effort or "high"}
-        config["service_tier"] = "fast" if self.turn.fast_mode else "default"
+        config["service_tier"] = fast_mode_service_tier(self.turn.fast_mode)
         if self.turn.fast_mode:
             config["features"] = {"fast_mode": True}
         if (

@@ -354,27 +354,14 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 (completed.stderr or completed.stdout or "").strip()
                 or f"Failed to copy {local_source}"
             )
-        if mode is None:
-            return
-        chmod_mode = self._normalize_mode(mode)
-        chmod_command = f"chmod {shlex.quote(chmod_mode)} -- {shlex.quote(remote_path)}"
-        chmod_result = subprocess.run(
-            [
-                "ssh",
-                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                f"{vm_user}@{vm_ip}",
-                chmod_command,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=os.environ.copy(),
+        self._set_remote_mode(
+            vm_name=vm_name,
+            vm_ip=vm_ip,
+            vm_user=vm_user,
+            ssh_private_key_path=ssh_private_key_path,
+            remote_path=remote_path,
+            mode=mode,
         )
-        if chmod_result.returncode != 0:
-            raise RuntimeError(
-                (chmod_result.stderr or chmod_result.stdout or "").strip()
-                or f"Failed to set mode for {remote_path}"
-            )
 
     def _merge_remote_managed_section(
         self,
@@ -453,8 +440,29 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 (completed.stderr or completed.stdout or "").strip()
                 or f"Failed to merge managed section into {remote_path}"
             )
+        self._set_remote_mode(
+            vm_name=vm_name,
+            vm_ip=vm_ip,
+            vm_user=vm_user,
+            ssh_private_key_path=ssh_private_key_path,
+            remote_path=remote_path,
+            mode=mode,
+        )
+
+    def _set_remote_mode(
+        self,
+        *,
+        vm_name: str,
+        vm_ip: str,
+        vm_user: str,
+        ssh_private_key_path: Path,
+        remote_path: str,
+        mode: str | None,
+    ) -> None:
         if mode is None:
             return
+        from evander.admin.services.vm_helpers import ssh_options
+
         chmod_mode = self._normalize_mode(mode)
         chmod_command = f"chmod {shlex.quote(chmod_mode)} -- {shlex.quote(remote_path)}"
         chmod_result = subprocess.run(

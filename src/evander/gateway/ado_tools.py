@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import httpx
 from mcp.server.fastmcp import Context
 from pydantic import Field as PydanticField
+from pydantic import StrictInt
 
 from evander.ado_reports import (
     DEFAULT_DONE_STATES,
@@ -538,6 +539,52 @@ def register_ado_tools(
             audit_failure(
                 session_id,
                 ToolName.POST_ADO_BACKLOG_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def delete_ado_backlog_comment(
+        id: StrictInt | str,
+        comment_id: StrictInt | str,
+        project: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Delete one Azure DevOps work-item comment using IDs from get_ado_backlog_item."""
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": session_id, "id": id, "comment_id": comment_id, "project": project}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.DELETE_ADO_BACKLOG_COMMENT)
+            work_item_id = str(positive_id(id.strip() if isinstance(id, str) else id, "id"))
+            normalized_comment_id = str(
+                positive_id(
+                    comment_id.strip() if isinstance(comment_id, str) else comment_id, "comment_id"
+                )
+            )
+            result = deps.issue_service_factory().delete_remote_comment(
+                provider="azure_devops",
+                remote_issue_id=work_item_id,
+                comment_id=normalized_comment_id,
+                directory_path=session.directory_path,
+                project=project.strip() if isinstance(project, str) and project.strip() else None,
+            )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
+            audit_success(session_id, ToolName.DELETE_ADO_BACKLOG_COMMENT, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.DELETE_ADO_BACKLOG_COMMENT, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DELETE_ADO_BACKLOG_COMMENT,
                 args,
                 str(exc),
                 decision="error",

@@ -14,7 +14,7 @@ from evander.admin.services.vm_agent.common import (
     session_helpers,
     vm_helpers,
 )
-from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.fast_mode import FastModeValue, normalize_fast_mode, validate_session_fast_mode
 from evander.provider_config import validate_openrouter_session
 from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.repositories.skills_library import record_codex_skill_installations
@@ -29,7 +29,7 @@ class VmAgentIssueCreateMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -313,7 +313,7 @@ class VmAgentIssueCreateMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: FastModeValue | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         dotnet: bool = False,

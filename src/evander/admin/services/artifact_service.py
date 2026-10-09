@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Any
 
 from evander.admin.payloads import PublishedArtifactListPayload
 from evander.artifact_spaces import (
+    ArtifactSpace,
     ArtifactSpacePermissionError,
     ArtifactSpaceStore,
     normalize_space_path,
@@ -106,16 +108,12 @@ class ArtifactAdminService:
     ) -> set[str]:
         state = ArtifactSpaceStore(self._runtime_dir).read()
         root_path = normalize_space_path(space_path)
-        readable_paths: set[str] = set()
-        for space in state.spaces.values():
-            matches = space.path == root_path or (
-                recursive and space.path.startswith(root_path.rstrip("/") + "/")
+        readable_paths = {
+            space.path
+            for space in _readable_artifact_spaces(
+                state.spaces.values(), root_path, recursive=recursive, subject=subject
             )
-            if not matches:
-                continue
-            if not space.grants.allows(subject, "read"):
-                continue
-            readable_paths.add(space.path)
+        }
         return {
             version.artifact_key
             for version in state.versions.values()
@@ -132,16 +130,12 @@ class ArtifactAdminService:
     ) -> dict[str, Any]:
         state = ArtifactSpaceStore(self._runtime_dir).read()
         root_path = normalize_space_path(path or "/")
-        spaces: list[dict[str, Any]] = []
-        for space in state.spaces.values():
-            matches = space.path == root_path or (
-                recursive and space.path.startswith(root_path.rstrip("/") + "/")
+        spaces = [
+            space.model_dump(mode="json")
+            for space in _readable_artifact_spaces(
+                state.spaces.values(), root_path, recursive=recursive, subject=subject
             )
-            if not matches:
-                continue
-            if not space.grants.allows(subject, "read"):
-                continue
-            spaces.append(space.model_dump(mode="json"))
+        ]
         spaces.sort(key=lambda item: item["path"])
         readable_paths = {space["path"] for space in spaces}
         versions = (
@@ -242,3 +236,18 @@ class ArtifactAdminService:
             "versions": versions,
             "count": len(versions),
         }
+
+
+def _readable_artifact_spaces(
+    spaces: Iterable[ArtifactSpace],
+    root_path: str,
+    *,
+    recursive: bool,
+    subject: str | None,
+) -> Iterator[ArtifactSpace]:
+    for space in spaces:
+        matches = space.path == root_path or (
+            recursive and space.path.startswith(root_path.rstrip("/") + "/")
+        )
+        if matches and space.grants.allows(subject, "read"):
+            yield space

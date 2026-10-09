@@ -38,7 +38,7 @@ from evander.config import (
 )
 from evander.effects.registry import EffectProviderFactory
 from evander.effects.providers.schemas import AgentCreateEffectDefinition
-from evander.fast_mode import resolve_fast_mode
+from evander.fast_mode import FastModeValue, resolve_fast_mode
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -17744,14 +17744,15 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
         ({}, True, True, "session"),
         ({"fast_mode": False}, False, False, "session"),
         ({"fast_mode": None}, None, False, "default"),
+        ({"fast_mode": "ultrafast"}, "ultrafast", "ultrafast", "session"),
     ],
 )
 def test_effect_agent_create_upsert_preserves_or_clears_vm_session_speed(
     tmp_path: Path,
     monkeypatch: Any,
     speed_options: dict[str, Any],
-    expected_default: bool | None,
-    expected_speed: bool,
+    expected_default: FastModeValue | None,
+    expected_speed: FastModeValue,
     expected_source: str,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
@@ -17794,9 +17795,9 @@ def test_effect_agent_create_upsert_preserves_or_clears_vm_session_speed(
     assert result["success"] is True
     manifest = service.runtime.session_repository.get_session("speed-session")
     assert manifest is not None
-    assert manifest.fast_mode is expected_default
+    assert manifest.fast_mode == expected_default
     speed = resolve_fast_mode({}, session=manifest, harness="codex", route="openai_public")
-    assert speed.value is expected_speed
+    assert speed.value == expected_speed
     assert speed.source == expected_source
 
 

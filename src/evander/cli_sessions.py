@@ -14,7 +14,7 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_effective_issue_setup_config,
 )
 from evander.directories import DirectoryService
-from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.fast_mode import validate_session_fast_mode
 from evander.models import ApprovalStatus, SessionManifest, ToolName
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
@@ -68,6 +68,7 @@ def create_session(
             help="Codex Fast mode; omit to inherit the session default.",
         ),
     ] = None,
+    speed: cli_common.SpeedOption = None,
 ) -> None:
     cfg = cli_runtime._load_runtime_config_from_option(config)
     runtime = cli_runtime.build_runtime(cfg)
@@ -133,7 +134,7 @@ def create_session(
         except ValueError:
             manifest.model = None
     manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
-    manifest.fast_mode = normalize_fast_mode(fast_mode)
+    manifest.fast_mode = cli_common.resolve_speed_option(fast_mode, speed)
     validate_session_reasoning_effort(
         manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
     )
@@ -423,18 +424,19 @@ def set_session_reasoning_effort(
 def set_session_fast_mode(
     target: str,
     fast_mode: Annotated[bool | None, typer.Option("--fast-mode/--no-fast-mode")] = None,
+    speed: cli_common.SpeedOption = None,
     clear: Annotated[
         bool, typer.Option("--clear", help="Restore standard-speed defaults.")
     ] = False,
     config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    if clear == (fast_mode is not None):
-        raise typer.BadParameter("Provide --fast-mode, --no-fast-mode, or --clear, exclusively.")
+    if sum((clear, fast_mode is not None, speed is not None)) != 1:
+        raise typer.BadParameter("Provide --speed, --fast-mode, --no-fast-mode, or --clear, exclusively.")
     try:
         result = cli_runtime.build_admin_runtime(
             config
         ).session_admin.update_session_model_settings(
-            target, {"fast_mode": None if clear else fast_mode}
+            target, {"fast_mode": None if clear else cli_common.resolve_speed_option(fast_mode, speed)}
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc

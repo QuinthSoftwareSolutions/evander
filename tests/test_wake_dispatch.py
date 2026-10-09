@@ -182,7 +182,7 @@ def test_container_target_name_prefers_metadata_then_provider_then_session_id() 
     )
 
 
-@pytest.mark.parametrize("fast_mode", [True, False, None])
+@pytest.mark.parametrize("fast_mode", [True, False, "ultrafast", None])
 def test_resume_binding_passes_session_settings_to_resume_script(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -236,7 +236,9 @@ def test_resume_binding_passes_session_settings_to_resume_script(
     assert captured["env"]["AGENT_PROVIDER"] == "codex"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4-mini"
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
-    assert captured["env"]["AGENT_FAST_MODE"] == ("true" if fast_mode else "false")
+    assert captured["env"]["AGENT_FAST_MODE"] == (
+        "ultrafast" if fast_mode == "ultrafast" else "true" if fast_mode else "false"
+    )
     assert captured["env"]["AGENT_REASONING_EFFORT"] == "low"
     assert captured["env"]["AGENT_REASONING_EFFORT_SOURCE"] == "session"
     assert watcher_calls == [

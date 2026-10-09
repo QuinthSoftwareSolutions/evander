@@ -259,8 +259,8 @@ class AgentCreateEffectDefinition(EffectDefinition):
     )
     fast_mode: ConfigValue | None = Field(
         default=None,
-        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
-        json_schema_extra={"examples": [True, False]},
+        description="Codex speed. True enables Fast; false selects Standard; ultrafast selects Ultrafast; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False, "ultrafast"]},
     )
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
@@ -508,8 +508,8 @@ class AgentPromptEffectDefinition(EffectDefinition):
     )
     fast_mode: ConfigValue | None = Field(
         default=None,
-        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
-        json_schema_extra={"examples": [True, False]},
+        description="Codex speed. True enables Fast; false selects Standard; ultrafast selects Ultrafast; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False, "ultrafast"]},
     )
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
@@ -559,8 +559,8 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     )
     fast_mode: ConfigValue | None = Field(
         default=None,
-        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
-        json_schema_extra={"examples": [True, False]},
+        description="Codex speed. True enables Fast; false selects Standard; ultrafast selects Ultrafast; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False, "ultrafast"]},
     )
     vm_user: ConfigValue | None = None
     dispatch_id: ConfigValue | None = None

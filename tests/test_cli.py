@@ -31,6 +31,7 @@ from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from evander.messaging.teams_auth import InvalidClientConfigurationError
+from evander.model_usage.pricing import default_model_pricing_catalog_seed_path
 from evander.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -937,10 +938,10 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     assert directories["root"].name == "root"
     assert directories["root"].parent_id is None
     assert directories["root"].metadata == {}
-    pricing_catalog = json.loads(
-        (tmp_path / "runtime" / "model-pricing.openai.json").read_text(encoding="utf-8")
+    pricing_catalog_path = tmp_path / "runtime" / "model-pricing.openai.json"
+    assert (
+        pricing_catalog_path.read_bytes() == default_model_pricing_catalog_seed_path().read_bytes()
     )
-    assert pricing_catalog["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
@@ -5222,32 +5223,52 @@ def test_session_reasoning_effort_cli_create_update_and_clear(tmp_path: Path) ->
     assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] is None
 
 
-@pytest.mark.parametrize("flag,default", [("--fast-mode", True), ("--no-fast-mode", False)])
+@pytest.mark.parametrize(
+    "flags,default",
+    [(["--fast-mode"], True), (["--no-fast-mode"], False), (["--speed", "ultrafast"], "ultrafast")],
+)
 def test_session_fast_mode_cli_create_update_clear_and_validate_route(
-    tmp_path: Path, flag: str, default: bool
+    tmp_path: Path, flags: list[str], default
 ) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
     created = runner.invoke(
-        app, ["create-session", "--config", str(config_path), flag, "speed-session"]
+        app, ["create-session", "--config", str(config_path), *flags, "speed-session"]
     )
     assert created.exit_code == 0, created.output
     path = tmp_path / "runtime" / "sessions.json"
-    assert json.loads(path.read_text())["speed-session"]["fast_mode"] is default
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] == default
     base = ["set-session-fast-mode", "--config", str(config_path), "speed-session"]
     enabled = runner.invoke(app, [*base, "--fast-mode"])
     assert enabled.exit_code == 0, enabled.output
-    rejected = runner.invoke(app, [
-        "set-session-model-provider-mode", "--config", str(config_path),
-        "--mode", "local_openai", "speed-session",
-    ])
+    rejected = runner.invoke(
+        app,
+        [
+            "set-session-model-provider-mode",
+            "--config",
+            str(config_path),
+            "--mode",
+            "local_openai",
+            "speed-session",
+        ],
+    )
     assert rejected.exit_code != 0
     saved = json.loads(path.read_text())["speed-session"]
     assert saved["fast_mode"] is True
     assert saved["metadata"].get("model_provider_mode") is None
     assert runner.invoke(app, [*base, "--clear", "--fast-mode"]).exit_code != 0
     assert json.loads(path.read_text())["speed-session"]["fast_mode"] is True
+    ultrafast = runner.invoke(app, [*base, "--speed", "ultrafast"])
+    assert ultrafast.exit_code == 0, ultrafast.output
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] == "ultrafast"
+    for options in (
+        ["--speed", "ultrafast", "--no-fast-mode"],
+        ["--clear", "--speed", "ultrafast"],
+        ["--speed", "unknown"],
+    ):
+        assert runner.invoke(app, [*base, *options]).exit_code != 0
+        assert json.loads(path.read_text())["speed-session"]["fast_mode"] == "ultrafast"
     disabled = runner.invoke(app, [*base, "--no-fast-mode"])
     assert disabled.exit_code == 0, disabled.output
     assert json.loads(path.read_text())["speed-session"]["fast_mode"] is False

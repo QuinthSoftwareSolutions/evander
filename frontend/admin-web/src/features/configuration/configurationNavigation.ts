@@ -5,6 +5,8 @@ export type ConfigurationField = {
   kind: "bool" | "int" | "float" | "literal" | "text" | "multiline_text" | "string_list" | "json";
   options: string[];
   assistant_options?: { session_id: string; directory_path: string; name: string }[];
+  session_options?: { session_id: string; directory_path: string; name: string }[];
+  phone_route_options?: { route_id: string; did: string | null; called_number: string | null; directory_path: string }[];
   scope?: "directory" | "global";
   root_starts_editable: boolean;
   tooltip: string;
@@ -30,6 +32,7 @@ export type ConfigurationUtilityKey =
   | "teams-auth"
   | "model-pricing"
   | "classification"
+  | "events"
   | "validation"
   | "directory-overrides"
   | "effective-config"
@@ -91,6 +94,9 @@ const COMMON_UTILITIES: ReadonlyArray<ConfigurationUtility> = [
 
 export function configurationUtilitiesForTab(tabKey: string): ReadonlyArray<ConfigurationUtility> {
   const specialized: ConfigurationUtility[] = [];
+  if (tabKey === "automation_assignment") {
+    specialized.push({ key: "events", label: "Events", description: "Manage inherited event schemas, manual forms, and workflow validation contracts." });
+  }
   if (tabKey === "access_approvals_audit") {
     specialized.push({key:"credentials",label:"Credentials",description:"Manage encrypted Teams and connector credentials, ownership and expiry."});
     specialized.push({key: "website-logins", label: "Website logins", description: "Manage website profiles, encrypted credentials and login tests."});
