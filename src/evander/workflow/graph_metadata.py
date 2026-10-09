@@ -31,29 +31,37 @@ def resolve_workflow_graph_metadata(
 
     normalized_nodes = _normalize_node_map(nodes_by_id)
     components = _connected_components(normalized_nodes, edges)
-    component_by_node_id = {node_id: component for component in components for node_id in component}
+    component_keys = [frozenset(component) for component in components]
+    component_by_node_id = {
+        node_id: component_key for component_key in component_keys for node_id in component_key
+    }
 
     exact_metadata_by_component: dict[frozenset[str], ResolvedWorkflowGraphMetadata] = {}
     normalized_graphs = [_normalize_workflow_graph(graph) for graph in workflow_graphs or []]
     _validate_unique_graph_ids(normalized_graphs)
+    overlapping_by_component: dict[
+        frozenset[str], list[tuple[WorkflowPackGraph, frozenset[str]]]
+    ] = {}
     for graph in normalized_graphs:
         graph_node_ids = _normalized_node_id_set(graph.node_ids)
         if not graph_node_ids:
             continue
-        component = component_by_node_id.get(next(iter(graph_node_ids)), None)
-        if component is None:
+        overlapping_components = {
+            component_by_node_id[node_id]
+            for node_id in graph_node_ids
+            if node_id in component_by_node_id
+        }
+        for component_key in overlapping_components:
+            overlapping_by_component.setdefault(component_key, []).append((graph, graph_node_ids))
+        if graph_node_ids not in overlapping_components:
             continue
-        component_key = frozenset(component)
-        if graph_node_ids != component_key:
-            continue
-        exact_metadata_by_component[component_key] = ResolvedWorkflowGraphMetadata(
+        exact_metadata_by_component[graph_node_ids] = ResolvedWorkflowGraphMetadata(
             graph_id=graph.id,
             directory_path=_first_directory_path(graph),
         )
 
     node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata] = {}
-    for component in components:
-        component_key = frozenset(component)
+    for component, component_key in zip(components, component_keys):
         scoped_node_ids = [
             node_id
             for node_id in component
@@ -62,16 +70,14 @@ def resolve_workflow_graph_metadata(
         if not scoped_node_ids:
             continue
 
-        overlapping_graphs = _graphs_overlapping_component(normalized_graphs, component_key)
         invalid_overlaps = [
-            graph
-            for graph in overlapping_graphs
-            if _normalized_node_id_set(graph.node_ids) != component_key
+            (graph, graph_node_ids)
+            for graph, graph_node_ids in overlapping_by_component.get(component_key, ())
+            if graph_node_ids != component_key
         ]
         scoped_node_id = scoped_node_ids[0]
         if invalid_overlaps:
-            invalid_graph = invalid_overlaps[0]
-            graph_node_ids = _normalized_node_id_set(invalid_graph.node_ids)
+            invalid_graph, graph_node_ids = invalid_overlaps[0]
             unknown_node_ids = sorted(
                 node_id for node_id in graph_node_ids if node_id not in normalized_nodes
             )
@@ -171,18 +177,6 @@ def _validate_unique_graph_ids(graphs: Iterable[WorkflowPackGraph]) -> None:
 def _first_directory_path(graph: WorkflowPackGraph) -> str:
     text = _normalize_text(graph.directory_path)
     return text or "root"
-
-
-def _graphs_overlapping_component(
-    graphs: list[WorkflowPackGraph], component: frozenset[str]
-) -> list[WorkflowPackGraph]:
-    component_set = set(component)
-    overlapping: list[WorkflowPackGraph] = []
-    for graph in graphs:
-        graph_node_ids = _normalized_node_id_set(graph.node_ids)
-        if graph_node_ids & component_set:
-            overlapping.append(graph)
-    return overlapping
 
 
 def _normalized_node_id_set(node_ids: Iterable[Any]) -> frozenset[str]:

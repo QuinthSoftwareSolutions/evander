@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-08 - Reduce repeated platform read work (0.86.3)
+
+- Fix ten additional performance issues in Discord inbox paging and unread checks,
+  cost-report identity lookups, Team memory permissions, wake assessments and attention
+  projections, workflow graph metadata, repository-index navigation and enqueue lookups,
+  and approval audit review.
+- Preserve scoped visibility, cursor updates, payload ordering and recovery behavior.
+  Upgrade repository-index databases to schema 3 with indexed snapshot reuse lookups.
+  See `docs/performance-hotpaths.md` for measured work reductions and verification.
+
 ## 2026-10-08 - Consolidate internal control-plane helpers (0.86.2)
 
 - Share artifact read selection and audit-line decoding, and separate active-session
