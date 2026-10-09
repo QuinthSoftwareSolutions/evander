@@ -345,10 +345,8 @@ class WorkerDaemon(GitWorkspaceOperations):
         return build_worker_app(self)
 
     def _reconcile_orphaned_codex_subscription_jobs(self) -> None:
-        for record in self.store.list_all_ordered():
+        for record in self.store.list_inflight():
             if not _worker_job_uses_codex_subscription(record):
-                continue
-            if record.status not in {"created", "preparing", "starting", "running"}:
                 continue
             marker_error: OSError | ValueError | None = None
             try:
@@ -445,10 +443,9 @@ class WorkerDaemon(GitWorkspaceOperations):
 
     def list_codex_auth_profiles(self) -> dict[str, Any]:
         payload = self.codex_auth_profiles.list_profiles()
+        active_counts = self._active_subscription_job_counts() if payload["profiles"] else {}
         for profile in payload["profiles"]:
-            profile["active_job_count"] = self._active_subscription_jobs_for_profile(
-                str(profile.get("profile_id") or "")
-            )
+            profile["active_job_count"] = active_counts.get(str(profile.get("profile_id") or ""), 0)
         return payload
 
     def create_codex_auth_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -475,7 +472,9 @@ class WorkerDaemon(GitWorkspaceOperations):
         self, profile_id: str, request: CodexRateLimitResetRequest
     ) -> dict[str, Any]:
         result = self.codex_auth_profiles.consume_reset_credit(profile_id, request)
-        result["profile"]["active_job_count"] = self._active_subscription_jobs_for_profile(profile_id)
+        result["profile"]["active_job_count"] = self._active_subscription_jobs_for_profile(
+            profile_id
+        )
         return result
 
     def codex_profile_device_login_status(self, profile_id: str, login_id: str) -> dict[str, Any]:
@@ -490,13 +489,15 @@ class WorkerDaemon(GitWorkspaceOperations):
         return profile
 
     def _active_subscription_jobs_for_profile(self, profile_id: str) -> int:
-        return sum(
-            1
-            for record in self.store.list_all_ordered()
-            if record.status in {"created", "preparing", "starting", "running"}
-            and _worker_job_uses_codex_subscription(record)
-            and str(record.metadata.get("subscription_profile_id") or "default") == profile_id
-        )
+        return self._active_subscription_job_counts().get(profile_id, 0)
+
+    def _active_subscription_job_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for record in self.store.list_inflight():
+            if _worker_job_uses_codex_subscription(record):
+                profile_id = str(record.metadata.get("subscription_profile_id") or "default")
+                counts[profile_id] = counts.get(profile_id, 0) + 1
+        return counts
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
@@ -3000,7 +3001,7 @@ class WorkerDaemon(GitWorkspaceOperations):
 
     def _job_telemetry(self) -> WorkerJobTelemetry:
         try:
-            records = self.store.list_all_ordered()
+            counts_by_status, cleanup_failure_count = self.store.status_counts()
         except FileNotFoundError:
             return self._job_telemetry_failure(
                 TelemetryStatus.MISSING,
@@ -3016,19 +3017,6 @@ class WorkerDaemon(GitWorkspaceOperations):
                 TelemetryStatus.UNSUPPORTED,
                 "job store is unavailable",
             )
-
-        counts_by_status: dict[str, int] = {}
-        running_job_count = 0
-        failed_start_count = 0
-        cleanup_failure_count = 0
-        for record in records:
-            counts_by_status[record.status] = counts_by_status.get(record.status, 0) + 1
-            if record.status == "running":
-                running_job_count += 1
-            if record.status == "failed":
-                failed_start_count += 1
-            if record.status == "cleanup_failed" or record.cleanup_status == "cleanup_failed":
-                cleanup_failure_count += 1
 
         if cleanup_failure_count:
             cleanup_failure_message = (
@@ -3050,10 +3038,10 @@ class WorkerDaemon(GitWorkspaceOperations):
 
         return WorkerJobTelemetry(
             health=telemetry_health,
-            total_jobs=len(records),
+            total_jobs=sum(counts_by_status.values()),
             counts_by_status=counts_by_status,
-            running_job_count=running_job_count,
-            failed_start_count=failed_start_count,
+            running_job_count=counts_by_status.get("running", 0),
+            failed_start_count=counts_by_status.get("failed", 0),
             cleanup_failure_status=cleanup_failure_status,
             cleanup_failure_message=cleanup_failure_message,
             cleanup_failure_count=cleanup_failure_count,

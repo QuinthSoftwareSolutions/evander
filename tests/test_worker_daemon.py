@@ -4551,7 +4551,7 @@ def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavaila
     )
 
     class LockedJobStore:
-        def list_all_ordered(self) -> list[WorkerJobRecord]:
+        def status_counts(self) -> tuple[dict[str, int], int]:
             raise sqlite3.OperationalError("database is locked")
 
     daemon.store = LockedJobStore()  # type: ignore[assignment]

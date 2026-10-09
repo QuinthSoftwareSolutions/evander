@@ -1,5 +1,107 @@
 # Control-plane performance paths
 
+## Worker, wake and validation reads (0.86.6)
+
+Ten additional findings were fixed against main `81b241c6` on 2026-10-09.
+The changes retain existing public payloads, status and timestamp ordering,
+retry/capacity behavior, and workflow diagnostic ordering.
+
+The release was renumbered to 0.86.6 when integrating updated main. The recorded
+baseline comparisons below retain their original 0.86.5 measurement metadata.
+
+| Finding | Previous work | Fix and regression boundary |
+| --- | --- | --- |
+| 1. Worker telemetry | Load and validate every historical job to count statuses and cleanup failures. | Aggregate indexed status fields in SQLite; preserve totals, status groups, cleanup failure deduplication and unavailable-store reporting. |
+| 2. Worker restart recovery | Hydrate all job history before identifying interrupted subscription turns. | Query only created/preparing/starting/running jobs before inspecting metadata; preserve job order, protected completion markers and failure reporting. |
+| 3. Subscription profile counts | Read the entire job history separately for every displayed profile. | Read active jobs once and group subscription counts for the response; preserve the default profile, non-subscription exclusion and freshness on the next read. |
+| 4. Wake dispatch selection | Read all dispatch history for a single ledger entry or a small set of scheduler candidates. | Select the newest dispatch for requested IDs in indexed batches of 400, inside the request transaction. Corrupt newest records still fall back to the most recent valid dispatch; requests without dispatches retain their existing behavior. |
+| 5. Wake ledger pages | Fetch all matching request payloads before returning a small page. | Stream bounded batches in timestamp/ID order through global or session indexes and stop when the accepted page is full. Keep status/completion filters, corrupt-record skipping and coherent request/dispatch reads. |
+| 6. Teams message ID lookup | Walk timestamp indexes or scan a channel to locate an old message ID. | Add ID/time and ID/target/time indexes; preserve optional target scope, newest timestamp selection and cursor ties. |
+| 7. Model-usage context lookup | Sort all session contexts when no harness filter is supplied. | Add a session/start-time/dispatch index; preserve expiry boundaries, dispatch ties and optional harness/backend/dispatch filters. |
+| 8. Binding ancestor lookup | Rebuild the inbound graph for every node and shift a list during breadth traversal. | Share one inbound index per validation and use a deque; preserve ancestor order, loop traversal and changes between calls. |
+| 9. Output schema derivation | Scan all edges separately for every dynamic gate's upstream inputs. | Reuse indexed inputs during recursive schema derivation; preserve first-input selection, duplicates, loop edges, output isolation and cyclic draft behavior. |
+| 10. Binding dominators | Repeatedly copy/intersect whole-graph sets until a fixed point, depending on node-name order. | Evaluate acyclic graphs once in topological order and intersect predecessor results. Retain the previous fixed-point algorithm for invalid non-loop cycles and preserve multi-root/conditional binding diagnostics. |
+
+The six additional SQLite indexes are installed through the existing store
+initializers. First access pays their index-build cost; they add no columns or
+schema-version restriction, and older binaries can read the same databases.
+Telemetry still scans status index entries. Filtered ledger pages can scan all
+matching requests when accepted results are sparse, and corrupt dispatch history
+can require multiple reads for that request. Dominator sets still retain all
+guaranteed ancestors; large chains therefore have quadratic total set size.
+These changes introduce no permission or state caches across reads.
+
+Controlled sequential probes used Python 3.12.13 and SQLite 3.50.4, 5,000
+historical rows per storage workload and 150 independent edges, 150 filter gates
+or a 150-node reverse chain for the respective graph workloads.
+Every workload's checked output digest or final job statuses matched the baseline.
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| Worker status with 5,002 jobs | 5,002 payload rows | 0 payload rows; 3 aggregate rows |
+| Restart with 5,000 historical and 5 active jobs | 5,005 payload rows | 5 payload rows |
+| Twenty subscription profiles with 8 active jobs | 100,160 payload rows; 20 SELECTs | 8 payload rows; 1 SELECT |
+| One wake entry among 5,001 dispatches | 5,001 payload rows | 1 payload row |
+| Ten-row wake ledger among 5,000 requests | 5,000 payload rows | 10 payload rows |
+| Old Teams message ID lookup | 25,234 SQLite VM instructions | 253 instructions |
+| Latest session model-usage context | 65,341 SQLite VM instructions | 342 instructions |
+| Ancestors for 150 independent edges, reads of each endpoint field | 45,150 | 300 |
+| Derived outputs for 150 filter gates, reads of each endpoint field | 22,500 | 150 |
+| Dominators for a 150-node reverse chain, executed Python lines | 202,797 | 4,349 |
+
+Five uninstrumented warm reads of the same fixtures had these median timings:
+
+| Read workload | Before | After |
+| --- | ---: | ---: |
+| Worker job telemetry | 42.046 ms | 0.442 ms |
+| Job counts for twenty subscription profiles | 965.291 ms | 0.169 ms |
+| One wake ledger entry | 15.793 ms | 0.138 ms |
+| Binding diagnostics, 150-node reverse chain | 71.183 ms | 3.164 ms |
+
+Counters and tracing were disabled for timings; graph timings used ordinary
+dictionary inputs. Profile metadata is supplied by a fixed registry fixture, so
+the profile measurements cover job counting and exclude broker/authentication
+latency. Startup is measured only through work counts because it mutates
+jobs. SQL instruction counts do not include Python payload decoding. These local
+synthetic measurements establish the affected work reductions, not production
+latency or capacity. [Raw measurements](benchmarks/platform-reads-2026-10-09.json)
+include every workload and its output digest.
+
+Run the same benchmark script from this checkout, first selecting an unchanged
+baseline source tree and then this checkout's source, with the same interpreter:
+
+```bash
+PYTHONPATH=/path/to/baseline/src timeout 120s .venv/bin/python \
+  scripts/benchmark_platform_reads.py --history 5000 --nodes 150 --repeat 5 \
+  --output /tmp/platform-reads-before.json
+PYTHONPATH="$PWD/src" timeout 120s .venv/bin/python \
+  scripts/benchmark_platform_reads.py --history 5000 --nodes 150 --repeat 5 \
+  --output /tmp/platform-reads-after.json
+```
+
+The four new regression modules are `test_worker_read_scaling.py`,
+`test_wake_read_scaling.py`, `test_lookup_read_scaling.py` and
+`test_workflow_validation_scaling.py`. Their 26 cases cover the work bounds and
+observable behavior; thirteen work-bound cases fail on unchanged main. The
+focused domain selection passed all 116 cases. Independent path-removal checks
+cover 150 generated graphs, and 1,000 additional generated graphs produced
+identical schemas and ordered diagnostics when compared with the baseline.
+
+The complete runner (`scripts/run_tests.py --workers 4 --timeout 900`) verified
+all 10,180 collected cases: 10,083 passed and 97 opt-in cases skipped, with no
+failures. All eight isolated timing checks passed. The run took 277.051 seconds;
+execution ledgers and conformance reports are under
+`/tmp/evander-performance-validation-20261009/full`. Ruff passed for all fifteen
+changed Python files, and `git diff --check` passed. The implementation is local
+source work; no live services were changed or deployed.
+
+After merging main `8b21d0b6`, the complete runner verified all 10,229 cases:
+10,132 passed and 97 opt-in cases skipped, including all eight isolated timing
+checks. The integration run took 248.505 seconds; evidence is under
+`/tmp/evander-performance-integration-20261009/full`. The 75 focused performance
+and refactor cases, Ruff for all 38 Python files in the combined changes, and
+`git diff --check` also passed.
+
 ## Further repeated-work fixes (0.86.3)
 
 Ten additional findings were fixed against main `e300a4c4` on 2026-10-08.

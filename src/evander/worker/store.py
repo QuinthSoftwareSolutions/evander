@@ -13,6 +13,7 @@ SQLITE_BUSY_TIMEOUT_MS = 30_000
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 _SQLITE_WORKER_JOB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 _TERMINAL_STATUSES = {"removed", "stopped", "failed", "exited", "cleanup_failed"}
+_INFLIGHT_STATUSES = ("created", "preparing", "starting", "running")
 
 
 def _json_dumps(payload: Any) -> str:
@@ -115,6 +116,8 @@ class WorkerJobStore:
                         ON worker_jobs(status, started_at, job_id);
                     CREATE INDEX IF NOT EXISTS idx_worker_jobs_cleanup_status_started_job
                         ON worker_jobs(cleanup_status, started_at, job_id);
+                    CREATE INDEX IF NOT EXISTS idx_worker_jobs_status_cleanup
+                        ON worker_jobs(status, cleanup_status);
                     """
                 )
 
@@ -203,6 +206,31 @@ class WorkerJobStore:
     def list_all_ordered(self) -> list[WorkerJobRecord]:
         query, params = self._ordered_records_query()
         return self._list_records(query, params)
+
+    def list_inflight(self) -> list[WorkerJobRecord]:
+        placeholders = ", ".join("?" for _ in _INFLIGHT_STATUSES)
+        return self._list_records(
+            f"SELECT job_id, payload_json FROM worker_jobs WHERE status IN ({placeholders}) "
+            "ORDER BY started_at IS NULL, started_at, job_id",
+            _INFLIGHT_STATUSES,
+        )
+
+    def status_counts(self) -> tuple[dict[str, int], int]:
+        """Aggregate persisted status fields without loading job payloads."""
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count,
+                       SUM(status = 'cleanup_failed' OR cleanup_status = 'cleanup_failed')
+                           AS cleanup_failures
+                FROM worker_jobs
+                GROUP BY status
+                """
+            ).fetchall()
+        return (
+            {row["status"]: int(row["count"]) for row in rows},
+            sum(int(row["cleanup_failures"]) for row in rows),
+        )
 
     def _list_records(self, query: str, params: tuple[Any, ...]) -> list[WorkerJobRecord]:
         with self._lock:

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-09 - Reduce worker, wake, lookup and workflow validation costs (0.86.6)
+
+- Fix ten additional performance issues in worker telemetry, restart recovery,
+  subscription profile counts, wake dispatch selection and ledger paging, Teams
+  message lookup, model-usage context lookup, and workflow binding/schema validation.
+- Aggregate status fields, bound payload reads, batch scoped dispatch selection,
+  add lookup/order indexes, and share graph indexes with topological dominator
+  evaluation. Preserve payloads, ordering, retry and capacity deferral behavior,
+  corrupt-record fallback, and diagnostics for invalid draft graphs.
+- Add deterministic work-bound regressions and a reproducible synthetic benchmark;
+  see `docs/performance-hotpaths.md` for findings, measurements and validation.
+
 ## 2026-10-09 - Consolidate shared control-plane logic (0.86.5)
 
 - Share session selection, loop graph access, Azure DevOps polling requests,
