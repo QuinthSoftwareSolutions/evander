@@ -49,6 +49,13 @@ INSERT OR IGNORE INTO content_gc_candidates
  SELECT hash FROM contents WHERE NOT EXISTS (SELECT 1 FROM chunks WHERE chunks.hash=contents.hash);
 """
 
+SNAPSHOT_LOOKUP_SCHEMA = """
+CREATE INDEX IF NOT EXISTS snapshots_identity_active ON snapshots(identity,created DESC)
+ WHERE status IN ('queued','running','importing');
+CREATE INDEX IF NOT EXISTS snapshots_identity_reusable ON snapshots(identity,created DESC)
+ WHERE status IN ('queued','running','importing','ready','partial','failed','cancelled');
+"""
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -79,17 +86,23 @@ class IndexStore:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 db.execute("PRAGMA journal_mode=WAL")
-                db.executescript(SCHEMA + PERFORMANCE_SCHEMA + "PRAGMA user_version=2;")
-            elif version == 1:
+                db.executescript(
+                    SCHEMA + PERFORMANCE_SCHEMA + SNAPSHOT_LOOKUP_SCHEMA + "PRAGMA user_version=3;"
+                )
+            elif version in {1, 2}:
                 db.execute("BEGIN IMMEDIATE")
                 # Another process may have migrated while this connection waited.
-                if db.execute("PRAGMA user_version").fetchone()[0] == 1:
-                    for statement in PERFORMANCE_SCHEMA.split(";"):
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                if version in {1, 2}:
+                    migration = (
+                        PERFORMANCE_SCHEMA if version == 1 else ""
+                    ) + SNAPSHOT_LOOKUP_SCHEMA
+                    for statement in migration.split(";"):
                         if statement.strip():
                             db.execute(statement)
-                    db.execute("PRAGMA user_version=2")
+                    db.execute("PRAGMA user_version=3")
                 db.commit()
-            elif version != 2:
+            elif version != 3:
                 raise ValueError("Unsupported repository index schema version")
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             with db:
@@ -222,14 +235,19 @@ class IndexStore:
 
         identity = digest([repo, sha, settings.index_policy(), embedding, TOOLCHAIN])
         with self.connect(write=True) as db:
-            rows = db.execute(
-                "SELECT * FROM snapshots WHERE identity=? ORDER BY created DESC", (identity,)
-            ).fetchall()
-            for row in rows:
-                if row["status"] in {"queued", "running", "importing"} or (
-                    not rebuild and row["status"] in {"ready", "partial", "failed", "cancelled"}
-                ):
-                    return self.payload(row)
+            statuses = (
+                "'queued','running','importing'"
+                if rebuild
+                else "'queued','running','importing','ready','partial','failed','cancelled'"
+            )
+            row = db.execute(
+                "SELECT * FROM snapshots WHERE identity=? AND status IN ("
+                + statuses
+                + ") ORDER BY created DESC LIMIT 1",
+                (identity,),
+            ).fetchone()
+            if row is not None:
+                return self.payload(row)
             build_id = "idx-" + uuid4().hex
             stamp = now()
             db.execute(
@@ -444,18 +462,26 @@ class IndexStore:
                 frontier = {symbol}
                 while frontier:
                     next_frontier = set()
-                    for current in frontier:
-                        rows = db.execute(
-                            "SELECT symbol,target FROM relationships WHERE snapshot=? AND kind=? AND (symbol=? OR target=?)",
-                            (
-                                snapshot,
-                                "reference" if kind == "references" else "definition",
-                                current,
-                                current if kind == "references" else "",
-                            ),
-                        ).fetchall()
-                        for row in rows:
-                            next_frontier.update(row)
+                    # Expand a breadth layer together. Each side uses its symbol/target
+                    # index, and JSON avoids the parameter limit on wide frontiers.
+                    layer = json.dumps(sorted(frontier))
+                    relationship_kind = "reference" if kind == "references" else "definition"
+                    rows = db.execute(
+                        "SELECT symbol,target FROM relationships WHERE snapshot=? AND kind=? "
+                        "AND symbol IN (SELECT value FROM json_each(?)) UNION "
+                        "SELECT symbol,target FROM relationships WHERE snapshot=? AND kind=? "
+                        "AND target IN (SELECT value FROM json_each(?))",
+                        (
+                            snapshot,
+                            relationship_kind,
+                            layer,
+                            snapshot,
+                            relationship_kind,
+                            layer if kind == "references" else '[""]',
+                        ),
+                    ).fetchall()
+                    for row in rows:
+                        next_frontier.update(row)
                     frontier = next_frontier - related
                     related.update(frontier)
                     if len(related) > 2000:

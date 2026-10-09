@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -158,10 +158,11 @@ def _runtime_attention_payload(
 ) -> list[dict[str, Any]]:
     effective_now = _ensure_utc(now or utc_now())
     rows: list[dict[str, Any]] = []
+    deliverable_id_for_task = _first_deliverable_lookup(state)
     rows.extend(_expired_session_rows(state, session_health or []))
     rows.extend(_blocker_rows(state))
-    rows.extend(_blocked_task_rows(state))
-    rows.extend(_waiting_dependency_rows(state))
+    rows.extend(_blocked_task_rows(state, deliverable_id_for_task=deliverable_id_for_task))
+    rows.extend(_waiting_dependency_rows(state, deliverable_id_for_task=deliverable_id_for_task))
     rows.extend(_pending_inbox_rows(state))
     rows.extend(_failed_action_rows(state))
     rows.extend(_failed_promotion_rows(state))
@@ -298,7 +299,12 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
     return rows
 
 
-def _blocked_task_rows(state: TeamState) -> list[dict[str, Any]]:
+def _blocked_task_rows(
+    state: TeamState,
+    *,
+    deliverable_id_for_task: Callable[[str], str | None] | None = None,
+) -> list[dict[str, Any]]:
+    deliverable_id_for_task = deliverable_id_for_task or _first_deliverable_lookup(state)
     rows: list[dict[str, Any]] = []
     for task in sorted(state.tasks.values(), key=lambda item: item.id):
         dependency_status = state.dependency_status(task.id)
@@ -315,7 +321,7 @@ def _blocked_task_rows(state: TeamState) -> list[dict[str, Any]]:
                 agent_id=task.owner_agent_id,
                 project_id=task.project_id,
                 task_id=task.id,
-                deliverable_id=_first_deliverable_id(state, task.id),
+                deliverable_id=deliverable_id_for_task(task.id),
                 dependency_status=dependency_status,
                 blocked_by_task_ids=state.blocked_by_task_ids(task.id),
                 occurred_at=_json_datetime(task.state_entered_at),
@@ -324,7 +330,12 @@ def _blocked_task_rows(state: TeamState) -> list[dict[str, Any]]:
     return rows
 
 
-def _waiting_dependency_rows(state: TeamState) -> list[dict[str, Any]]:
+def _waiting_dependency_rows(
+    state: TeamState,
+    *,
+    deliverable_id_for_task: Callable[[str], str | None] | None = None,
+) -> list[dict[str, Any]]:
+    deliverable_id_for_task = deliverable_id_for_task or _first_deliverable_lookup(state)
     rows: list[dict[str, Any]] = []
     for task in sorted(state.tasks.values(), key=lambda item: item.id):
         dependency_status = state.dependency_status(task.id)
@@ -341,7 +352,7 @@ def _waiting_dependency_rows(state: TeamState) -> list[dict[str, Any]]:
                 agent_id=task.owner_agent_id,
                 project_id=task.project_id,
                 task_id=task.id,
-                deliverable_id=_first_deliverable_id(state, task.id),
+                deliverable_id=deliverable_id_for_task(task.id),
                 dependency_status=dependency_status,
                 blocked_by_task_ids=state.blocked_by_task_ids(task.id),
                 occurred_at=_json_datetime(task.state_entered_at),
@@ -1212,10 +1223,23 @@ def _severity_rank(severity: object) -> int:
 
 
 def _first_deliverable_id(state: TeamState, task_id: str) -> str | None:
-    for deliverable in sorted(state.deliverables.values(), key=lambda item: item.id):
-        if deliverable.task_id == task_id:
-            return deliverable.id
-    return None
+    return _first_deliverable_lookup(state)(task_id)
+
+
+def _first_deliverable_lookup(state: TeamState) -> Callable[[str], str | None]:
+    first_ids: dict[str, str] | None = None
+
+    def lookup(task_id: str) -> str | None:
+        nonlocal first_ids
+        if first_ids is None:
+            first_ids = {}
+            for deliverable in state.deliverables.values():
+                current = first_ids.get(deliverable.task_id)
+                if current is None or deliverable.id < current:
+                    first_ids[deliverable.task_id] = deliverable.id
+        return first_ids.get(task_id)
+
+    return lookup
 
 
 def _project_id_for_task(state: TeamState, task_id: str | None) -> str | None:

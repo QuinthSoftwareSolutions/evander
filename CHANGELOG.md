@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-08 - Simplify internal service and provider code (0.86.3)
+## 2026-10-09 - Simplify internal service and provider code (0.86.4)
 
 - Share configuration merge/revision helpers and workflow activity collection;
   consolidate steering validation and dispatch.
@@ -10,6 +10,16 @@
   execution result validation and email HTTP request construction from dispatch.
 - Preserve existing payloads, validation and error ordering, permissions,
   pagination, and side effects; add focused behavior characterization coverage.
+
+## 2026-10-08 - Reduce repeated platform read work (0.86.3)
+
+- Fix ten additional performance issues in Discord inbox paging and unread checks,
+  cost-report identity lookups, Team memory permissions, wake assessments and attention
+  projections, workflow graph metadata, repository-index navigation and enqueue lookups,
+  and approval audit review.
+- Preserve scoped visibility, cursor updates, payload ordering and recovery behavior.
+  Upgrade repository-index databases to schema 3 with indexed snapshot reuse lookups.
+  See `docs/performance-hotpaths.md` for measured work reductions and verification.
 
 ## 2026-10-08 - Consolidate internal control-plane helpers (0.86.2)
 

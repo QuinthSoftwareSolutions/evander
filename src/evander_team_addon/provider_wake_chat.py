@@ -126,6 +126,7 @@ from .services.domain.project_status import (
     project_blocking_sources,
 )
 from .services.domain.task_assessment import (
+    TaskAssessmentService,
     task_payload_with_assessment,
 )
 from .services.domain.wake import (
@@ -358,10 +359,22 @@ def _team_chat_wake_lease(
     agent_payload = _agent_payload(state, agent)
     role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
     runtime = state.agent_runtimes[agent.id]
+    assessment_service: TaskAssessmentService | None = None
+
+    def assessments() -> TaskAssessmentService:
+        nonlocal assessment_service
+        if assessment_service is None:
+            assessment_service = TaskAssessmentService(state)
+        return assessment_service
+
     projects = [
         {
             **state.projects[project_id].model_dump(mode="json"),
-            "blocking_sources": project_blocking_sources(state, project_id),
+            "blocking_sources": project_blocking_sources(
+                state,
+                project_id,
+                assessment_service=assessments(),
+            ),
         }
         for project_id in dispatch.project_ids
         if project_id in state.projects
@@ -398,7 +411,11 @@ def _team_chat_wake_lease(
         "reason": "team_chat",
         "dispatch": dispatch.model_dump(mode="json"),
         "tasks": [
-            task_payload_with_assessment(state, state.tasks[task_id])
+            task_payload_with_assessment(
+                state,
+                state.tasks[task_id],
+                assessment_service=assessments(),
+            )
             for task_id in dispatch.task_ids
             if task_id in state.tasks
         ],
@@ -507,10 +524,22 @@ def build_voice_reconciliation_context(
         if task.owner_agent_id == agent.id and task.state not in terminal_task_states
     ]
     task_ids = {task.id for task in tasks}
+    assessment_service: TaskAssessmentService | None = None
+
+    def assessments() -> TaskAssessmentService:
+        nonlocal assessment_service
+        if assessment_service is None:
+            assessment_service = TaskAssessmentService(state)
+        return assessment_service
+
     projects = [
         {
             **state.projects[project_id].model_dump(mode="json"),
-            "blocking_sources": project_blocking_sources(state, project_id),
+            "blocking_sources": project_blocking_sources(
+                state,
+                project_id,
+                assessment_service=assessments(),
+            ),
         }
         for project_id in project_ids
         if project_id in state.projects
@@ -520,7 +549,10 @@ def build_voice_reconciliation_context(
         "agent": _agent_payload(state, agent),
         "runtime": runtime.model_dump(mode="json") if runtime is not None else {},
         "reason": "voice_session_reconciliation",
-        "tasks": [task_payload_with_assessment(state, task) for task in tasks],
+        "tasks": [
+            task_payload_with_assessment(state, task, assessment_service=assessments())
+            for task in tasks
+        ],
         "projects": projects,
         "outcome_kinds": [
             {

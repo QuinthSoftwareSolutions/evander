@@ -346,18 +346,58 @@ class DiscordInboxStore:
         return advanced
 
     def has_unread_messages(self, *, session_id: str, channel_ids: list[str]) -> bool:
+        if not channel_ids:
+            return False
         with self._lock, self._connect() as connection:
-            for channel_id in channel_ids:
-                session_cursor = self._get_session_cursor_from_connection(
-                    connection, session_id, channel_id
+            cursor_rows = connection.execute(
+                """
+                SELECT channel_id, cursor
+                FROM discord_inbox_session_reads
+                WHERE session_id = ? AND channel_id IN (SELECT value FROM json_each(?))
+                """,
+                (session_id, _json_dumps(channel_ids)),
+            )
+            raw_cursors = {str(row["channel_id"]): str(row["cursor"]) for row in cursor_rows}
+            try:
+                cursors = {
+                    channel_id: self._storage_cursor(value)
+                    for channel_id, value in raw_cursors.items()
+                }
+            except ValueError:
+                # Preserve the original ordered short circuit when a persisted
+                # cursor is invalid: an earlier unread channel still wins.
+                for channel_id in channel_ids:
+                    cursor = raw_cursors.get(channel_id)
+                    row = connection.execute(
+                        """
+                        SELECT 1 FROM discord_inbox_messages
+                        WHERE channel_id = ? AND (? IS NULL OR created_at > ?)
+                        LIMIT 1
+                        """,
+                        (channel_id, cursor, self._storage_cursor(cursor)),
+                    ).fetchone()
+                    if row is not None:
+                        return True
+                return False
+            row = connection.execute(
+                """
+                SELECT 1 FROM json_each(?) AS channels
+                WHERE (
+                    channels.value IS NULL AND EXISTS (
+                        SELECT 1 FROM discord_inbox_messages
+                        WHERE channel_id = channels.key
+                    )
+                ) OR (
+                    channels.value IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM discord_inbox_messages
+                        WHERE channel_id = channels.key AND created_at > channels.value
+                    )
                 )
-                if self._channel_has_unread_messages(
-                    connection=connection,
-                    channel_id=channel_id,
-                    cursor=session_cursor,
-                ):
-                    return True
-        return False
+                LIMIT 1
+                """,
+                (_json_dumps({channel_id: cursors.get(channel_id) for channel_id in channel_ids}),),
+            ).fetchone()
+        return row is not None
 
     def list_unread_messages(
         self,
@@ -392,17 +432,10 @@ class DiscordInboxStore:
             messages = self._select_messages(
                 connection,
                 allowed_channel_ids=allowed_channel_ids,
+                after_cursors=normalized_cursors,
+                limit=limit,
             )
-
-            filtered: list[DiscordMessageEnvelope] = []
-            for candidate in messages:
-                effective_cursor = normalized_cursors.get(candidate.channel_id)
-                if effective_cursor and candidate.created_at <= self._parse_dt(effective_cursor):
-                    continue
-                filtered.append(candidate)
-
-            if limit is not None:
-                filtered = filtered[:limit]
+            filtered = messages if limit is None else messages[:limit]
 
             next_cursor = (
                 filtered[-1].created_at.isoformat().replace("+00:00", "Z")
@@ -436,6 +469,7 @@ class DiscordInboxStore:
             messages = self._select_messages(
                 connection,
                 allowed_channel_ids=allowed_channel_ids,
+                limit=limit,
             )
         if limit is not None:
             messages = messages[:limit]
@@ -636,54 +670,65 @@ class DiscordInboxStore:
         connection: sqlite3.Connection,
         *,
         allowed_channel_ids: set[str],
+        after_cursors: dict[str, str | None] | None = None,
+        limit: int | None = None,
     ) -> list[DiscordMessageEnvelope]:
-        placeholders = ", ".join("?" for _ in allowed_channel_ids)
-        rows = connection.execute(
-            f"""
-            SELECT payload_json
-            FROM discord_inbox_messages
-            WHERE channel_id IN ({placeholders})
-            ORDER BY created_at ASC, message_id ASC
-            """,
-            sorted(allowed_channel_ids),
-        ).fetchall()
+        if limit == 0:
+            return []
         messages: list[DiscordMessageEnvelope] = []
-        for row in rows:
-            candidate = self._validate_message(row["payload_json"])
-            if candidate is None:
-                continue
-            messages.append(candidate)
+        after_row: tuple[str, str] | None = None
+        while True:
+            boundary = (
+                " AND (messages.created_at, messages.message_id) > (?, ?)" if after_row else ""
+            )
+            if after_cursors is None:
+                sql = (
+                    "SELECT messages.created_at, messages.message_id, messages.payload_json "
+                    "FROM discord_inbox_messages AS messages "
+                    "WHERE messages.channel_id IN (SELECT value FROM json_each(?))" + boundary
+                )
+                params: list[Any] = [_json_dumps(sorted(allowed_channel_ids))]
+                if after_row:
+                    params.extend(after_row)
+            else:
+                params = []
+                branches = []
+                # Separate cursor cases so SQLite can use the channel/time
+                # index range for already-read history.
+                for predicate in (
+                    "channels.value IS NULL",
+                    "channels.value IS NOT NULL AND messages.created_at > channels.value",
+                ):
+                    branches.append(
+                        "SELECT messages.created_at, messages.message_id, messages.payload_json "
+                        "FROM json_each(?) AS channels JOIN discord_inbox_messages AS messages "
+                        "ON messages.channel_id = channels.key WHERE " + predicate + boundary
+                    )
+                    params.append(_json_dumps(after_cursors))
+                    if after_row:
+                        params.extend(after_row)
+                sql = " UNION ALL ".join(branches)
+            sql += " ORDER BY created_at ASC, message_id ASC"
+            if limit is not None and limit > 0:
+                sql += " LIMIT ?"
+                params.append(limit - len(messages))
+            rows = connection.execute(sql, params)
+            last_row = None
+            for row in rows:
+                last_row = (str(row["created_at"]), str(row["message_id"]))
+                candidate = self._validate_message(row["payload_json"])
+                if candidate is not None:
+                    if after_cursors is not None:
+                        cursor = after_cursors.get(candidate.channel_id)
+                        if cursor and candidate.created_at <= self._parse_dt(cursor):
+                            continue
+                    messages.append(candidate)
+            # Refill positive pages after corrupt rows using a keyset boundary.
+            # Unlimited/negative limits retain the caller's slicing semantics.
+            if last_row is None or limit is None or limit < 0 or len(messages) >= limit:
+                break
+            after_row = last_row
         return messages
-
-    def _channel_has_unread_messages(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        channel_id: str,
-        cursor: str | None,
-    ) -> bool:
-        if cursor is None:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM discord_inbox_messages
-                WHERE channel_id = ?
-                LIMIT 1
-                """,
-                (channel_id,),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM discord_inbox_messages
-                WHERE channel_id = ?
-                  AND created_at > ?
-                LIMIT 1
-                """,
-                (channel_id, self._storage_cursor(cursor)),
-            ).fetchone()
-        return row is not None
 
     def _advance_session_cursor_in_connection(
         self,
