@@ -1,11 +1,16 @@
 """Workflow run record correlation and detail projection."""
 
 from __future__ import annotations
+
 import json
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 from pydantic import BaseModel
+from evander.admin.workflow_report_helpers import (
+    _collect_workflow_artifact_ids,
+    _collect_workflow_keyed_values,
+)
 from evander.admin.common import (
     _coerce_optional_datetime,
     _coerce_optional_string,
@@ -701,68 +706,10 @@ class WorkflowRunDetailBuilder:
         return max(0, int(delta.total_seconds() * 1000))
 
     def collect_keyed_values(self, payload: Any, *, key_suffix: str | None = None) -> list[str]:
-        values: list[str] = []
-
-        def walk(value: Any, key: str | None = None) -> None:
-            if isinstance(value, dict):
-                for child_key, child_value in value.items():
-                    walk(child_value, str(child_key))
-                return
-            if isinstance(value, list):
-                for child_value in value:
-                    walk(child_value, key)
-                return
-            if isinstance(value, str):
-                normalized = value.strip()
-                if not normalized:
-                    return
-                if key_suffix is not None:
-                    if key is None or not key.lower().endswith(key_suffix):
-                        return
-                values.append(normalized)
-
-        walk(payload)
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            deduped.append(value)
-        return deduped
+        return _collect_workflow_keyed_values(payload, key_suffix=key_suffix)
 
     def collect_artifact_ids(self, payload: Any) -> list[str]:
-        values: list[str] = []
-
-        def walk(value: Any) -> None:
-            if isinstance(value, dict):
-                for child_value in value.values():
-                    walk(child_value)
-                return
-            if isinstance(value, list):
-                for child_value in value:
-                    walk(child_value)
-                return
-            if isinstance(value, str):
-                normalized = value.strip()
-                if not normalized:
-                    return
-                try:
-                    from evander.communication_artifacts import validate_artifact_id
-
-                    values.append(validate_artifact_id(normalized))
-                except ValueError:
-                    pass
-
-        walk(payload)
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            deduped.append(value)
-        return deduped
+        return _collect_workflow_artifact_ids(payload)
 
     def ensure_group(self, groups: dict[str, dict[str, Any]], event_key: str) -> dict[str, Any]:
         group = groups.get(event_key)

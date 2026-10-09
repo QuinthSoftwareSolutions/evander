@@ -97,62 +97,19 @@ class JsonSessionManifestRepository:
         return list(self.read_all_safe().values())
 
     def list_active_sessions(self, *, now: datetime | None = None) -> list[SessionManifest]:
-        effective_now = now or datetime.now(UTC)
-        return [session for session in self.list_sessions() if session.expires_at > effective_now]
+        return _list_active_sessions(self, now=now)
 
     def list_sessions_for_vm(self, vm_name: str) -> list[SessionManifest]:
-        normalized_vm_name = str(vm_name or "").strip()
-        if not normalized_vm_name:
-            return []
-        sessions = [
-            session
-            for session in self.list_sessions()
-            if str(getattr(session, "vm_id", "") or "").strip() == normalized_vm_name
-        ]
-        sessions.sort(key=_session_manifest_sort_key)
-        return sessions
+        return _list_sessions_for_vm(self, vm_name)
 
     def list_sessions_for_issue(self, issue_number: str) -> list[SessionManifest]:
-        normalized_issue_number = str(issue_number or "").strip()
-        if not normalized_issue_number:
-            return []
-        vm_name = f"vm-{normalized_issue_number}"
-        prefix = _issue_session_id_prefix(normalized_issue_number)
-        sessions = [
-            session
-            for session in self.list_sessions()
-            if str(getattr(session, "vm_id", "") or "").strip() == vm_name
-            or str(getattr(session, "session_id", "") or "").strip() == normalized_issue_number
-            or str(getattr(session, "session_id", "") or "").strip().startswith(prefix)
-        ]
-        sessions.sort(key=_session_manifest_sort_key)
-        return sessions
+        return _list_sessions_for_issue(self, issue_number)
 
     def resolve_session_target(self, target: str) -> SessionManifest | None:
-        normalized = str(target or "").strip()
-        if not normalized:
-            return None
-        direct_match = self.get_session(normalized)
-        if direct_match is not None:
-            return direct_match
-
-        issue_number = _extract_issue_number(normalized)
-        matches: list[SessionManifest] = []
-        if issue_number is not None:
-            matches.extend(self.list_sessions_for_issue(issue_number))
-        matches.extend(self.list_sessions_for_vm(normalized))
-        if not matches:
-            return None
-        return max(matches, key=_session_manifest_sort_key)
+        return _resolve_session_target(self, target)
 
     def resolve_vm_name_from_target(self, target: str) -> str:
-        normalized = str(target or "").strip()
-        if not normalized:
-            return ""
-        session = self.get_session(normalized)
-        if session is not None:
-            return str(getattr(session, "vm_id", "") or "").strip() or normalized
-        return normalized
+        return _resolve_vm_name_from_target(self, target)
 
     def upsert_session(self, manifest: SessionManifest) -> None:
         def _upsert(payload: dict[str, Any]) -> None:
@@ -251,62 +208,19 @@ class SessionManifestStoreAdapter:
         return list(self._store.read_all().values())
 
     def list_active_sessions(self, *, now: datetime | None = None) -> list[SessionManifest]:
-        effective_now = now or datetime.now(UTC)
-        return [session for session in self.list_sessions() if session.expires_at > effective_now]
+        return _list_active_sessions(self, now=now)
 
     def list_sessions_for_vm(self, vm_name: str) -> list[SessionManifest]:
-        normalized_vm_name = str(vm_name or "").strip()
-        if not normalized_vm_name:
-            return []
-        sessions = [
-            session
-            for session in self.list_sessions()
-            if str(getattr(session, "vm_id", "") or "").strip() == normalized_vm_name
-        ]
-        sessions.sort(key=_session_manifest_sort_key)
-        return sessions
+        return _list_sessions_for_vm(self, vm_name)
 
     def list_sessions_for_issue(self, issue_number: str) -> list[SessionManifest]:
-        normalized_issue_number = str(issue_number or "").strip()
-        if not normalized_issue_number:
-            return []
-        vm_name = f"vm-{normalized_issue_number}"
-        prefix = _issue_session_id_prefix(normalized_issue_number)
-        sessions = [
-            session
-            for session in self.list_sessions()
-            if str(getattr(session, "vm_id", "") or "").strip() == vm_name
-            or str(getattr(session, "session_id", "") or "").strip() == normalized_issue_number
-            or str(getattr(session, "session_id", "") or "").strip().startswith(prefix)
-        ]
-        sessions.sort(key=_session_manifest_sort_key)
-        return sessions
+        return _list_sessions_for_issue(self, issue_number)
 
     def resolve_session_target(self, target: str) -> SessionManifest | None:
-        normalized = str(target or "").strip()
-        if not normalized:
-            return None
-        direct_match = self.get_session(normalized)
-        if direct_match is not None:
-            return direct_match
-
-        issue_number = _extract_issue_number(normalized)
-        matches: list[SessionManifest] = []
-        if issue_number is not None:
-            matches.extend(self.list_sessions_for_issue(issue_number))
-        matches.extend(self.list_sessions_for_vm(normalized))
-        if not matches:
-            return None
-        return max(matches, key=_session_manifest_sort_key)
+        return _resolve_session_target(self, target)
 
     def resolve_vm_name_from_target(self, target: str) -> str:
-        normalized = str(target or "").strip()
-        if not normalized:
-            return ""
-        session = self.get_session(normalized)
-        if session is not None:
-            return str(getattr(session, "vm_id", "") or "").strip() or normalized
-        return normalized
+        return _resolve_vm_name_from_target(self, target)
 
     def upsert_session(self, manifest: SessionManifest) -> None:
         self._store.put(manifest.session_id, manifest)
@@ -332,6 +246,77 @@ class SessionManifestStoreAdapter:
 
     def write_all(self, payload: dict[str, SessionManifest]) -> None:
         self._store.write_all(payload)
+
+
+def _list_active_sessions(
+    repository: SessionManifestRepository, *, now: datetime | None = None
+) -> list[SessionManifest]:
+    effective_now = now or datetime.now(UTC)
+    return [session for session in repository.list_sessions() if session.expires_at > effective_now]
+
+
+def _list_sessions_for_vm(
+    repository: SessionManifestRepository, vm_name: str
+) -> list[SessionManifest]:
+    normalized_vm_name = str(vm_name or "").strip()
+    if not normalized_vm_name:
+        return []
+    sessions = [
+        session
+        for session in repository.list_sessions()
+        if str(getattr(session, "vm_id", "") or "").strip() == normalized_vm_name
+    ]
+    sessions.sort(key=_session_manifest_sort_key)
+    return sessions
+
+
+def _list_sessions_for_issue(
+    repository: SessionManifestRepository, issue_number: str
+) -> list[SessionManifest]:
+    normalized_issue_number = str(issue_number or "").strip()
+    if not normalized_issue_number:
+        return []
+    vm_name = f"vm-{normalized_issue_number}"
+    prefix = _issue_session_id_prefix(normalized_issue_number)
+    sessions = [
+        session
+        for session in repository.list_sessions()
+        if str(getattr(session, "vm_id", "") or "").strip() == vm_name
+        or str(getattr(session, "session_id", "") or "").strip() == normalized_issue_number
+        or str(getattr(session, "session_id", "") or "").strip().startswith(prefix)
+    ]
+    sessions.sort(key=_session_manifest_sort_key)
+    return sessions
+
+
+def _resolve_session_target(
+    repository: SessionManifestRepository, target: str
+) -> SessionManifest | None:
+    normalized = str(target or "").strip()
+    if not normalized:
+        return None
+    direct_match = repository.get_session(normalized)
+    if direct_match is not None:
+        return direct_match
+
+    issue_number = _extract_issue_number(normalized)
+    matches: list[SessionManifest] = []
+    if issue_number is not None:
+        matches.extend(repository.list_sessions_for_issue(issue_number))
+    matches.extend(repository.list_sessions_for_vm(normalized))
+    if not matches:
+        return None
+    return max(matches, key=_session_manifest_sort_key)
+
+
+def _resolve_vm_name_from_target(repository: SessionManifestRepository, target: str) -> str:
+    normalized = str(target or "").strip()
+    if not normalized:
+        return ""
+    session = repository.get_session(normalized)
+    if session is not None:
+        return str(getattr(session, "vm_id", "") or "").strip() or normalized
+    return normalized
 
 
 def as_session_manifest_repository(

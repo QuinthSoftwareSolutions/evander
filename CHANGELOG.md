@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-09 - Consolidate shared control-plane logic (0.86.5)
+
+- Share session selection, loop graph access, Azure DevOps polling requests,
+  matching-trigger markers, and provider result projection.
+- Reuse workflow report traversal and relay path validation; consolidate worker
+  logging, optional worker loading, and prompt capacity reconciliation.
+- Preserve existing APIs, payloads, validation order, cursor behavior, and side
+  effects. Add characterization coverage for session precedence, result shapes,
+  report ordering, worker failures, and inference capacity retention.
+
 ## 2026-10-09 - Simplify internal service and provider code (0.86.4)
 
 - Share configuration merge/revision helpers and workflow activity collection;

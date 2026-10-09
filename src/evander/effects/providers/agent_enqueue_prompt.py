@@ -16,10 +16,7 @@ from evander.fast_mode import FastModeValue, resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
-    LocalInferenceCapacityLease,
     local_inference_capacity_store,
-    local_inference_execution_is_active,
-    local_inference_vm_lease_is_active,
     maintain_local_inference_launch,
 )
 from evander.messaging.agent_prompt_enqueue import (
@@ -51,6 +48,7 @@ from evander.workflow.lifecycle_ports import (
 from evander.workflow.validation import NodeCapability
 
 from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
+from .agent_capacity import reconcile_local_inference_capacity
 from .agent_session import (
     container_backend,
     container_codex_turn_spec,
@@ -1703,44 +1701,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
 
     def _reconcile_local_inference_capacity(self, *, capacity_store: Any, config: Any) -> None:
-        context = self._context()
-        running_leases = [
-            lease for lease in capacity_store.read_all().values() if lease.status == "running"
-        ]
-        if not running_leases:
-            return
-
-        summaries: list[Any] | None = None
-        if any(
-            lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value
-            for lease in running_leases
-        ):
-            list_vms = getattr(context.vm_inventory, "list_vms", None)
-            if callable(list_vms):
-                try:
-                    summaries = list(list_vms(include_inactive=True, vm_user="agent"))
-                except Exception:
-                    summaries = None
-
-        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
-            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
-                if summaries is None:
-                    return None
-                return local_inference_vm_lease_is_active(lease, summaries)
-
-            session_id = str(lease.session_id or "").strip()
-            execution_id = str(lease.execution_id or "").strip()
-            if not execution_id and session_id:
-                execution_id = safe_effect_execution_id("agent", session_id)
-            if not execution_id:
-                return None
-            effective_config = (
-                effective_config_for_session(context, session_id) if session_id else config
-            )
-            backend = container_backend(context, effective_config)
-            return local_inference_execution_is_active(backend.inspect(execution_id))
-
-        capacity_store.reconcile_running(is_active)
+        reconcile_local_inference_capacity(
+            context=self._context(),
+            capacity_store=capacity_store,
+            config=config,
+            backend_factory=container_backend,
+            config_for_session=effective_config_for_session,
+        )
 
     def _mark_local_inference_running(
         self,

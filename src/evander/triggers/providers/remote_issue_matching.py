@@ -8,6 +8,11 @@ from typing import Any
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import RemoteIssueMatchingTriggerDefinition
 from evander.issues.service import IssueService
+from evander.provider_runtime.results import coerce_mapping_result as _coerce_result
+from evander.triggers.providers._matching_markers import (
+    _marker_is_newer as _marker_is_newer,
+    _parse_dt as _parse_dt,
+)
 from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.base import TriggerProviderBase
 
@@ -228,43 +233,3 @@ def _normalize_provider(value: object) -> str:
     if text in {"ado", "azure_devops", "azure-devops"}:
         return "azure_devops"
     return text
-
-
-def _marker_is_newer(candidate: str, previous: str) -> bool:
-    if not previous:
-        return True
-    candidate_dt = _parse_dt(candidate)
-    previous_dt = _parse_dt(previous)
-    if candidate_dt is None or previous_dt is None:
-        return candidate != previous
-    return candidate_dt > previous_dt
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip() or value == "__seen__":
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _coerce_result(result: Any) -> dict[str, Any]:
-    if result is None:
-        return {}
-    if isinstance(result, Mapping):
-        return dict(result)
-    model_dump = getattr(result, "model_dump", None)
-    if callable(model_dump):
-        dumped = model_dump()
-        if isinstance(dumped, Mapping):
-            return dict(dumped)
-    if hasattr(result, "__dict__"):
-        return dict(vars(result))
-    return {"result": result}
