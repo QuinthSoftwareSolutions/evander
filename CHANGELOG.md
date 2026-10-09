@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-09 - Simplify internal service and provider code (0.86.4)
+
+- Share configuration merge/revision helpers and workflow activity collection;
+  consolidate steering validation and dispatch.
+- Consolidate pull-request query input handling, model-usage totals, and Azure
+  DevOps build collection.
+- Share Git effect result conversion and VM power handling, and separate VM
+  execution result validation and email HTTP request construction from dispatch.
+- Preserve existing payloads, validation and error ordering, permissions,
+  pagination, and side effects; add focused behavior characterization coverage.
+
 ## 2026-10-08 - Reduce repeated platform read work (0.86.3)
 
 - Fix ten additional performance issues in Discord inbox paging and unread checks,

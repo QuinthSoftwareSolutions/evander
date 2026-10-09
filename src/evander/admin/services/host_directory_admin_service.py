@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
-import json
 from typing import Any, ContextManager, Protocol
 
 from evander.admin.directory import (
@@ -11,6 +9,8 @@ from evander.admin.directory import (
     DirectoryConfigWritePayload,
     DirectoryEffectiveConfigPayload,
 )
+from evander.admin.services.config_helpers import _deep_merge as _deep_merge
+from evander.admin.services.config_helpers import _revision as _revision
 from evander.host_directories.models import (
     HostDirectoryDirectoryConfig,
     normalize_host_directory_id,
@@ -259,17 +259,3 @@ class HostDirectoryAdminService:
                         f"directory {scoped_directory_path!r}; restore or purge them "
                         "before removing the definition or changing its root"
                     )
-
-
-def _revision(payload: object) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return sha256(encoded).hexdigest()
-
-
-def _deep_merge(current: Any, overlay: Any) -> Any:
-    if isinstance(current, dict) and isinstance(overlay, dict):
-        merged = dict(current)
-        for key, value in overlay.items():
-            merged[key] = _deep_merge(merged.get(key), value)
-        return merged
-    return overlay

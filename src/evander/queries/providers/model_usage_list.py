@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 import logging
@@ -8,6 +9,7 @@ from typing import Any
 
 from evander.model_usage.models import ModelInferenceUsageEvent
 from evander.model_usage.pricing import (
+    ModelCostEstimate,
     ModelPricingCatalog,
     default_model_pricing_catalog,
     estimate_model_usage_cost,
@@ -18,6 +20,65 @@ from evander.model_usage.pricing import (
 from .base import QueryProviderBase
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ModelUsageTotals:
+    estimated_cost: Decimal = Decimal("0")
+    reported_cost: Decimal = Decimal("0")
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_input_tokens: int = 0
+    output_tokens: int = 0
+    tokens: int = 0
+    costs_estimated_count: int = 0
+    costs_reported_count: int = 0
+    costs_unavailable_count: int = 0
+
+    def add_tokens(self, event: ModelInferenceUsageEvent) -> tuple[int | None, int]:
+        input_tokens = int(event.input_tokens or 0)
+        output_tokens = int(event.output_tokens or 0)
+        cached_input_tokens = extract_cached_input_tokens(event)
+        cache_write_tokens = extract_cache_write_input_tokens(event)
+        self.input_tokens += input_tokens
+        self.cached_input_tokens += int(cached_input_tokens or 0)
+        self.cache_write_input_tokens += cache_write_tokens.total
+        self.output_tokens += output_tokens
+        self.tokens += (
+            int(event.total_tokens)
+            if event.total_tokens is not None
+            else input_tokens + output_tokens
+        )
+        return cached_input_tokens, cache_write_tokens.total
+
+    def add_cost(self, estimate: ModelCostEstimate) -> None:
+        if estimate.estimated_total is not None:
+            self.estimated_cost += estimate.estimated_total
+            self.costs_estimated_count += 1
+        elif estimate.reported_total is not None:
+            self.reported_cost += estimate.reported_total
+            self.costs_reported_count += 1
+        else:
+            self.costs_unavailable_count += 1
+
+    def payload(self, *, include_costs: bool) -> dict[str, Any]:
+        return {
+            "total_estimated_cost": _decimal_to_float(self.estimated_cost)
+            if include_costs
+            else None,
+            "total_reported_cost": _decimal_to_float(self.reported_cost) if include_costs else None,
+            "total_cost": _decimal_to_float(self.estimated_cost + self.reported_cost)
+            if include_costs
+            else None,
+            "total_input_tokens": self.input_tokens,
+            "total_cached_input_tokens": self.cached_input_tokens,
+            "total_cache_write_input_tokens": self.cache_write_input_tokens,
+            "total_output_tokens": self.output_tokens,
+            "total_tokens": self.tokens,
+            "costs_estimated_count": self.costs_estimated_count,
+            "costs_reported_count": self.costs_reported_count,
+            "costs_unavailable_count": self.costs_unavailable_count,
+        }
 
 
 class ModelUsageListQueryProvider(QueryProviderBase):
@@ -71,33 +132,12 @@ class ModelUsageListQueryProvider(QueryProviderBase):
 
         catalog = self._pricing_catalog(admin_service) if include_costs else None
         items: list[dict[str, Any]] = []
-        total_estimated_cost = Decimal("0")
-        total_reported_cost = Decimal("0")
-        total_input_tokens = 0
-        total_cached_input_tokens = 0
-        total_cache_write_input_tokens = 0
-        total_output_tokens = 0
-        total_tokens = 0
-        costs_estimated_count = 0
-        costs_reported_count = 0
-        costs_unavailable_count = 0
+        totals = _ModelUsageTotals()
 
         for event_value in events:
             event = self._usage_event(event_value)
             item = self._event_payload(event_value)
-            input_tokens = int(event.input_tokens or 0)
-            output_tokens = int(event.output_tokens or 0)
-            cached_input_tokens = extract_cached_input_tokens(event)
-            cache_write_tokens = extract_cache_write_input_tokens(event)
-            total_input_tokens += input_tokens
-            total_cached_input_tokens += int(cached_input_tokens or 0)
-            total_cache_write_input_tokens += cache_write_tokens.total
-            total_output_tokens += output_tokens
-            total_tokens += (
-                int(event.total_tokens)
-                if event.total_tokens is not None
-                else input_tokens + output_tokens
-            )
+            cached_input_tokens, cache_write_input_tokens = totals.add_tokens(event)
 
             if include_costs:
                 estimate = estimate_model_usage_cost(event, catalog, currency=cost_currency)
@@ -125,39 +165,16 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                         "pricing_version": estimate.pricing_version,
                         "pricing_explanation": estimate.explanation,
                         "cached_input_tokens": cached_input_tokens,
-                        "cache_write_input_tokens": cache_write_tokens.total,
+                        "cache_write_input_tokens": cache_write_input_tokens,
                     }
                 )
-                if estimate.estimated_total is not None:
-                    total_estimated_cost += estimate.estimated_total
-                    costs_estimated_count += 1
-                elif estimate.reported_total is not None:
-                    total_reported_cost += estimate.reported_total
-                    costs_reported_count += 1
-                else:
-                    costs_unavailable_count += 1
+                totals.add_cost(estimate)
             items.append(item)
 
         return {
             "items": items,
             "count": len(items),
-            "total_estimated_cost": _decimal_to_float(total_estimated_cost)
-            if include_costs
-            else None,
-            "total_reported_cost": _decimal_to_float(total_reported_cost)
-            if include_costs
-            else None,
-            "total_cost": _decimal_to_float(total_estimated_cost + total_reported_cost)
-            if include_costs
-            else None,
-            "total_input_tokens": total_input_tokens,
-            "total_cached_input_tokens": total_cached_input_tokens,
-            "total_cache_write_input_tokens": total_cache_write_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "total_tokens": total_tokens,
-            "costs_estimated_count": costs_estimated_count,
-            "costs_reported_count": costs_reported_count,
-            "costs_unavailable_count": costs_unavailable_count,
+            **totals.payload(include_costs=include_costs),
         }
 
     def _query_payload(self) -> dict[str, Any]:

@@ -350,3 +350,95 @@ def test_model_usage_list_query_provider_separates_openrouter_reported_cost(
     assert result["items"][0]["estimated_cost"] is None
     assert result["items"][0]["reported_cost"] == pytest.approx(0.0042)
     assert result["items"][0]["cost_source"] == "provider_reported"
+
+
+@pytest.mark.parametrize("include_costs", [True, False])
+def test_model_usage_totals_preserve_mixed_costs_and_explicit_zero_tokens(
+    include_costs: bool,
+) -> None:
+    occurred_at = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+    estimated = _event(
+        "estimated",
+        occurred_at=occurred_at,
+        directory_path="root",
+        input_tokens=1000,
+        output_tokens=500,
+        total_tokens=1500,
+        cached_input_tokens=200,
+    )
+    reported = _event(
+        "reported",
+        occurred_at=occurred_at,
+        directory_path="root",
+        provider="openrouter",
+        model="openai/gpt-5.4",
+        input_tokens=None,
+        output_tokens=20,
+        total_tokens=None,
+    ).model_copy(
+        update={"raw_usage_metadata": {"usage": {"cost": 0.0042, "cache_read_input_tokens": 2}}}
+    )
+    unavailable = _event(
+        "unavailable",
+        occurred_at=occurred_at,
+        directory_path="root",
+        provider="unknown",
+        model="unknown",
+        input_tokens=3,
+        output_tokens=4,
+        total_tokens=0,
+    ).model_copy(update={"raw_usage_metadata": {"usage": {"cache_creation_input_tokens": 7}}})
+    catalog_calls = []
+
+    def load_catalog():
+        catalog_calls.append(True)
+        return load_model_pricing_catalog(default_model_pricing_catalog_seed_path())
+
+    provider = ModelUsageListQueryProvider()
+    provider.initialize(
+        ModelUsageListQueryDefinition(
+            id="mixed-usage",
+            display_name="Mixed usage",
+            type="query:model-usage:list",
+        ),
+        QueryRuntimeContext(
+            admin_service=SimpleNamespace(
+                list_model_usage_events=lambda **kwargs: {
+                    "estimated": estimated,
+                    "reported": reported,
+                    "unavailable": unavailable,
+                },
+                model_pricing_catalog=load_catalog,
+            )
+        ),
+    )
+
+    result = provider.execute(resolved_config={"include_costs": include_costs})
+
+    assert [item["event_id"] for item in result["items"]] == [
+        "estimated",
+        "reported",
+        "unavailable",
+    ]
+    assert result["total_input_tokens"] == 1003
+    assert result["total_cached_input_tokens"] == 202
+    assert result["total_cache_write_input_tokens"] == 7
+    assert result["total_output_tokens"] == 524
+    assert result["total_tokens"] == 1520
+    if include_costs:
+        assert catalog_calls == [True]
+        assert result["total_estimated_cost"] == pytest.approx(0.008435)
+        assert result["total_reported_cost"] == pytest.approx(0.0042)
+        assert result["total_cost"] == pytest.approx(0.012635)
+        assert result["costs_estimated_count"] == 1
+        assert result["costs_reported_count"] == 1
+        assert result["costs_unavailable_count"] == 1
+    else:
+        assert catalog_calls == []
+        assert result["total_estimated_cost"] is None
+        assert result["total_reported_cost"] is None
+        assert result["total_cost"] is None
+        assert result["costs_estimated_count"] == 0
+        assert result["costs_reported_count"] == 0
+        assert result["costs_unavailable_count"] == 0
+        assert all("cost" not in item for item in result["items"])

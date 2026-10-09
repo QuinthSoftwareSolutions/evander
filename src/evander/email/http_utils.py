@@ -26,6 +26,32 @@ class ProviderRequestError(RuntimeError):
         self.max_attempts = max_attempts
 
 
+def _request_once(
+    *,
+    client: httpx.Client,
+    method: str,
+    url: str,
+    headers: dict[str, str] | None,
+    params: dict[str, Any] | None,
+    data: dict[str, Any] | None,
+    json: dict[str, Any] | None,
+) -> httpx.Response:
+    request_kwargs = {
+        key: value
+        for key, value in {
+            "headers": headers,
+            "params": params,
+            "data": data,
+            "json": json,
+        }.items()
+        if value is not None
+    }
+    if hasattr(client, "request"):
+        return client.request(method, url, **request_kwargs)
+    request_method = getattr(client, method.lower())
+    return request_method(url, **request_kwargs)
+
+
 def request_with_retries(
     *,
     client: httpx.Client,
@@ -52,25 +78,15 @@ def request_with_retries(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            request_kwargs = {
-                key: value
-                for key, value in {
-                    "headers": headers,
-                    "params": params,
-                    "data": data,
-                    "json": json,
-                }.items()
-                if value is not None
-            }
-            if hasattr(client, "request"):
-                response = client.request(
-                    method_normalized,
-                    url,
-                    **request_kwargs,
-                )
-            else:
-                request_method = getattr(client, method_normalized.lower())
-                response = request_method(url, **request_kwargs)
+            response = _request_once(
+                client=client,
+                method=method_normalized,
+                url=url,
+                headers=headers,
+                params=params,
+                data=data,
+                json=json,
+            )
             status_code = getattr(response, "status_code", 200)
             last_status_code = status_code
             if status_code in {401, 403}:

@@ -162,51 +162,41 @@ class WorkflowRunSearchBuilder:
             )
 
     def _collect_effect_executions(self) -> None:
-        for execution_id, record in self.effect_records.items():
-            raw_record = _normalize_record_payload(record)
-            if not raw_record:
-                continue
-            event_id = _record_event_id(raw_record, execution_id)
-            payload_sources = [
-                raw_record.get("resolved_config"),
-                raw_record.get("input_payload"),
-                raw_record.get("outputs"),
-            ]
-            _register_activity(
-                self.groups,
-                event_key=event_id,
-                node_id_value=_coerce_optional_string(raw_record.get("effect_id")),
-                status=_coerce_optional_string(raw_record.get("status")),
-                source="effect_execution",
-                trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
-                session_payloads=payload_sources,
-                artifact_payloads=payload_sources,
-                request_payloads=payload_sources,
-                started_at_value=_coerce_optional_datetime(raw_record.get("started_at")),
-                finished_at_value=_coerce_optional_datetime(raw_record.get("finished_at")),
-                source_node_id=_coerce_optional_string(raw_record.get("source_node_id")),
-                source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
-                error=_coerce_optional_string(raw_record.get("error")),
-            )
+        self._collect_node_executions(
+            self.effect_records,
+            node_id_key="effect_id",
+            source="effect_execution",
+            payload_keys=("resolved_config", "input_payload", "outputs"),
+        )
 
     def _collect_gate_executions(self) -> None:
-        for execution_id, record in self.gate_records.items():
+        self._collect_node_executions(
+            self.gate_records,
+            node_id_key="gate_id",
+            source="gate_execution",
+            payload_keys=("resolved_config", "input_payload", "outputs", "inputs_by_source"),
+        )
+
+    def _collect_node_executions(
+        self,
+        records: dict[str, Any],
+        *,
+        node_id_key: str,
+        source: str,
+        payload_keys: tuple[str, ...],
+    ) -> None:
+        for execution_id, record in records.items():
             raw_record = _normalize_record_payload(record)
             if not raw_record:
                 continue
             event_id = _record_event_id(raw_record, execution_id)
-            payload_sources = [
-                raw_record.get("resolved_config"),
-                raw_record.get("input_payload"),
-                raw_record.get("outputs"),
-                raw_record.get("inputs_by_source"),
-            ]
+            payload_sources = [raw_record.get(key) for key in payload_keys]
             _register_activity(
                 self.groups,
                 event_key=event_id,
-                node_id_value=_coerce_optional_string(raw_record.get("gate_id")),
+                node_id_value=_coerce_optional_string(raw_record.get(node_id_key)),
                 status=_coerce_optional_string(raw_record.get("status")),
-                source="gate_execution",
+                source=source,
                 trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
                 session_payloads=payload_sources,
                 artifact_payloads=payload_sources,

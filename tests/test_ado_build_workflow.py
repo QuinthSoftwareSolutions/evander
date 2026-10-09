@@ -134,6 +134,78 @@ def test_no_build_for_revision_is_an_explicit_empty_result(monkeypatch, tmp_path
     assert query(tmp_path) == {"count": 0, "builds": []}
 
 
+def test_build_query_filters_foreign_and_deleted_runs_before_deduplicating(monkeypatch, tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    build(9, sha="MERGE-CURRENT"),
+                    build(8),
+                    build(10, branch="refs/heads/other"),
+                    dict(build(11), repository={"id": "other"}),
+                    dict(build(12), definition={"id": 45}),
+                    dict(build(13), deleted=True),
+                    build(14, sha="old"),
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    selector = {"branch": "refs/pull/17/merge", "source_version": "merge-current"}
+
+    result = query(tmp_path, filters=[selector, selector], limit=10)
+
+    assert [item["run_id"] for item in result["builds"]] == ["9", "8"]
+    assert result["count"] == 2
+    assert len(requests) == 2
+
+
+def test_build_query_page_limit_counts_matches_before_deduplication(monkeypatch, tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"value": [build(9)]},
+            headers={"x-ms-continuationtoken": f"page-{len(requests)}"},
+        )
+
+    install_transport(monkeypatch, handler)
+
+    result = query(
+        tmp_path,
+        filters=[{"branch": "refs/pull/17/merge", "source_version": "merge-current"}],
+        limit=2,
+    )
+
+    assert [item["run_id"] for item in result["builds"]] == ["9"]
+    assert len(requests) == 2
+
+
+def test_build_query_rejects_a_repeated_continuation(monkeypatch, tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"value": []},
+            headers={"x-ms-continuationtoken": "same-page"},
+        )
+
+    install_transport(monkeypatch, handler)
+
+    with pytest.raises(RuntimeError, match="Azure DevOps build pagination could not be completed"):
+        query(tmp_path, filters=[{"branch": "refs/pull/17/merge"}])
+
+    assert len(requests) == 2
+
+
 def test_filters_support_non_pr_refs_and_return_multiple_builds(monkeypatch, tmp_path):
     requests = []
 

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .base import EffectProviderBase
+from .git_results import coerce_git_result
 
 
 class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
@@ -90,17 +91,4 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             raise ValueError(f"effect:git:promote-agent-branch requires {field_name}")
         return text
 
-    @staticmethod
-    def _coerce_result(result: Any) -> dict[str, Any]:
-        if result is None:
-            return {}
-        if isinstance(result, Mapping):
-            return dict(result)
-        model_dump = getattr(result, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if isinstance(dumped, Mapping):
-                return dict(dumped)
-        if hasattr(result, "__dict__"):
-            return dict(vars(result))
-        return {"result": result}
+    _coerce_result = staticmethod(coerce_git_result)

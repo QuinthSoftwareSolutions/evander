@@ -38,29 +38,9 @@ class VmExecEffectProvider(EffectProviderBase):
                 timeout_seconds=timeout_seconds,
                 check=check,
             )
-            if not isinstance(result, Mapping):
-                raise RuntimeError("Admin runtime vm_exec must return a mapping")
-            payload = dict(result)
-            payload.setdefault("vm_name", vm_name)
-            payload.setdefault("action", "vm_exec")
-            payload.setdefault("success", False)
-            payload.setdefault("stdout", "")
-            payload.setdefault("stderr", "")
-            payload.setdefault("exit_code", 0 if payload.get("success") else 1)
-            payload.setdefault("message", "")
-            payload.setdefault("session_id", session_id)
-            if not payload.get("session_id"):
-                payload["session_id"] = session_id
-            if check and not bool(payload.get("success")):
-                raise RuntimeError(
-                    str(
-                        payload.get("stderr")
-                        or payload.get("stdout")
-                        or payload.get("message")
-                        or "VM command failed"
-                    )
-                )
-            return payload
+            return self._normalize_admin_result(
+                result, vm_name=vm_name, session_id=session_id, check=check
+            )
 
         return self._execute_via_ssh(
             vm_name=vm_name,
@@ -73,6 +53,38 @@ class VmExecEffectProvider(EffectProviderBase):
             stdin=stdin,
             environment=environment,
         )
+
+    @staticmethod
+    def _normalize_admin_result(
+        result: Any,
+        *,
+        vm_name: str,
+        session_id: str | None,
+        check: bool,
+    ) -> dict[str, Any]:
+        if not isinstance(result, Mapping):
+            raise RuntimeError("Admin runtime vm_exec must return a mapping")
+        payload = dict(result)
+        payload.setdefault("vm_name", vm_name)
+        payload.setdefault("action", "vm_exec")
+        payload.setdefault("success", False)
+        payload.setdefault("stdout", "")
+        payload.setdefault("stderr", "")
+        payload.setdefault("exit_code", 0 if payload.get("success") else 1)
+        payload.setdefault("message", "")
+        payload.setdefault("session_id", session_id)
+        if not payload.get("session_id"):
+            payload["session_id"] = session_id
+        if check and not bool(payload.get("success")):
+            raise RuntimeError(
+                str(
+                    payload.get("stderr")
+                    or payload.get("stdout")
+                    or payload.get("message")
+                    or "VM command failed"
+                )
+            )
+        return payload
 
     def _payload(self, resolved_config: Mapping[str, Any] | None) -> dict[str, Any]:
         payload: dict[str, Any] = {}

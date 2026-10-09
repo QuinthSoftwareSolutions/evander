@@ -484,3 +484,90 @@ def test_vm_exec_provider_returns_failure_result_when_check_is_disabled(tmp_path
     assert result["exit_code"] == 7
     assert result["stdout"] == "out"
     assert result["stderr"] == "err"
+
+
+@pytest.mark.parametrize(
+    "backend_result,expected",
+    [
+        ({}, {"success": False, "exit_code": 1, "session_id": "session-lab-vm"}),
+        (
+            {"success": True, "session_id": "", "stdout": None, "custom": "kept"},
+            {
+                "success": True,
+                "exit_code": 0,
+                "session_id": "session-lab-vm",
+                "stdout": None,
+                "custom": "kept",
+            },
+        ),
+        (
+            {"success": False, "session_id": "backend-session", "exit_code": 9},
+            {"success": False, "exit_code": 9, "session_id": "backend-session"},
+        ),
+    ],
+)
+def test_vm_exec_preserves_backend_fields_and_default_values(backend_result, expected):
+    calls = []
+
+    def vm_exec(**kwargs):
+        calls.append(kwargs)
+        return backend_result
+
+    provider = VmExecEffectProvider()
+    provider.initialize(
+        _effect_definition(),
+        EffectRuntimeContext(
+            vm_executor=SimpleNamespace(vm_exec=vm_exec),
+            session_lookup=SimpleNamespace(read_all_sessions=lambda: {}),
+            env={},
+        ),
+    )
+
+    result = provider.execute(
+        resolved_config={"vm_name": "lab-vm", "command": "true", "check": False}
+    )
+
+    assert len(calls) == 1
+    assert {key: result[key] for key in expected} == expected
+    assert result["vm_name"] == "lab-vm"
+    assert result["action"] == "vm_exec"
+    assert result["stderr"] == ""
+    assert result["message"] == ""
+    assert "vm_name" not in backend_result
+
+
+@pytest.mark.parametrize(
+    "backend_result,expected_error",
+    [
+        (None, "Admin runtime vm_exec must return a mapping"),
+        (
+            {"success": False, "stderr": " stderr ", "stdout": "stdout", "message": "message"},
+            " stderr ",
+        ),
+        ({"success": False, "stdout": " stdout ", "message": "message"}, " stdout "),
+        ({"success": False, "message": " message "}, " message "),
+        ({}, "VM command failed"),
+    ],
+)
+def test_vm_exec_preserves_backend_result_errors(backend_result, expected_error):
+    calls = []
+
+    def vm_exec(**kwargs):
+        calls.append(kwargs)
+        return backend_result
+
+    provider = VmExecEffectProvider()
+    provider.initialize(
+        _effect_definition(),
+        EffectRuntimeContext(
+            vm_executor=SimpleNamespace(vm_exec=vm_exec),
+            session_lookup=SimpleNamespace(read_all_sessions=lambda: {}),
+            env={},
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider.execute(resolved_config={"vm_name": "lab-vm", "command": "false"})
+
+    assert str(exc_info.value) == expected_error
+    assert len(calls) == 1

@@ -47,44 +47,17 @@ class AdoBuildsQueryProvider(QueryProviderBase):
                     raise ValueError("source_version must be a string or null")
                 if "source_version" in selector and (commit is None or not commit.strip()):
                     continue
-                continuation = None
-                seen: set[str] = set()
-                matching_count = 0
-                while True:
-                    params = {
-                        "definitions": pipeline_id,
-                        "repositoryId": repository_id,
-                        "repositoryType": payload.get("repository_type", "TfsGit"),
-                        "branchName": branch,
-                        "queryOrder": "queueTimeDescending",
-                        "$top": 100,
-                    }
-                    if continuation:
-                        params["continuationToken"] = continuation
-                    page, continuation = client.list_builds(**params)
-                    matching = [
-                        build
-                        for build in page
-                        if build.get("sourceBranch") == branch
-                        and (
-                            commit is None
-                            or str(build.get("sourceVersion") or "").lower() == commit.lower()
-                        )
-                        and str(build.get("repository", {}).get("id")) == repository_id
-                        and str(build.get("definition", {}).get("id")) == str(pipeline_id)
-                        and not build.get("deleted")
-                    ]
-                    for build in matching:
-                        output = client.output(build)
-                        candidates[output["run_id"]] = output
-                    matching_count += len(matching)
-                    if matching_count >= limit:
-                        break
-                    if not continuation:
-                        break
-                    if continuation in seen or len(seen) >= 100:
-                        raise RuntimeError("Azure DevOps build pagination could not be completed")
-                    seen.add(continuation)
+                candidates.update(
+                    _collect_builds_for_filter(
+                        client,
+                        pipeline_id=pipeline_id,
+                        repository_id=repository_id,
+                        repository_type=payload.get("repository_type", "TfsGit"),
+                        branch=branch,
+                        commit=commit,
+                        limit=limit,
+                    )
+                )
 
         builds = sorted(
             candidates.values(),
@@ -92,3 +65,52 @@ class AdoBuildsQueryProvider(QueryProviderBase):
             reverse=True,
         )[:limit]
         return {"builds": builds, "count": len(builds)}
+
+
+def _collect_builds_for_filter(
+    client: AdoBuildClient,
+    *,
+    pipeline_id: int,
+    repository_id: str,
+    repository_type: str,
+    branch: str,
+    commit: str | None,
+    limit: int,
+) -> dict[str, dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    continuation = None
+    seen: set[str] = set()
+    matching_count = 0
+    while True:
+        params = {
+            "definitions": pipeline_id,
+            "repositoryId": repository_id,
+            "repositoryType": repository_type,
+            "branchName": branch,
+            "queryOrder": "queueTimeDescending",
+            "$top": 100,
+        }
+        if continuation:
+            params["continuationToken"] = continuation
+        page, continuation = client.list_builds(**params)
+        matching = [
+            build
+            for build in page
+            if build.get("sourceBranch") == branch
+            and (commit is None or str(build.get("sourceVersion") or "").lower() == commit.lower())
+            and str(build.get("repository", {}).get("id")) == repository_id
+            and str(build.get("definition", {}).get("id")) == str(pipeline_id)
+            and not build.get("deleted")
+        ]
+        for build in matching:
+            output = client.output(build)
+            candidates[output["run_id"]] = output
+        matching_count += len(matching)
+        if matching_count >= limit:
+            break
+        if not continuation:
+            break
+        if continuation in seen or len(seen) >= 100:
+            raise RuntimeError("Azure DevOps build pagination could not be completed")
+        seen.add(continuation)
+    return candidates
