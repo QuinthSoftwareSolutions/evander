@@ -38,7 +38,11 @@ from evander.queries.providers.schemas import (
     VmRunStateQueryDefinition,
 )
 from evander.schema_bootstrap import _QUERY_OUTPUT_SCHEMAS
-from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
+from evander.workflow.contracts import (
+    materialize_node_model as _materialize_with_model,
+    WorkflowNodeEnvelope,
+    register_node_output_schema,
+)
 
 _QUERY_MODEL_BY_TYPE = {
     "query:classification:evaluate": ClassificationEvaluateQueryDefinition,
@@ -70,17 +74,6 @@ _QUERY_MODEL_BY_TYPE = {
     "query:semantic:search": SemanticSearchQueryDefinition,
     "query:semantic:get": SemanticGetQueryDefinition,
 }
-
-
-def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
-    payload = {
-        "id": node.id,
-        "display_name": node.display_name,
-        "type": node.type,
-        "outputs": node.outputs,
-        **dict(node.config),
-    }
-    return model_class.model_validate(payload)
 
 
 def query_node_schema_resolvers() -> dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]]:

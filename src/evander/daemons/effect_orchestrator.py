@@ -85,6 +85,7 @@ from evander.app_bootstrap import build_runtime
 from evander.platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
 from evander.triggers.queue import TriggerQueueRecord
 from evander.workflow.runtime_config import (
+    provider_loader_signature as _provider_loader_signature,
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
@@ -3984,22 +3985,6 @@ def _build_workflow_config_snapshot(
     if workflow_graphs is not None:
         snapshot["workflow_graphs"] = _snapshot_json_value(workflow_graphs)
     return snapshot
-
-
-def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
-    payload = {
-        "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
-        "addon_loader": worker_config.addon_loader.model_dump(mode="json"),
-        "provider_include_builtin": worker_config.provider_include_builtin,
-        "orchestration_store_path": str(worker_config.orchestration_store_path),
-        "trigger_lock_path": str(worker_config.lock_path),
-        "orchestration_retention_days": worker_config.orchestration_retention_days,
-        "orchestration_compact_history_retention_days": (
-            worker_config.orchestration_compact_history_retention_days
-        ),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _effect_store_binding_signature(

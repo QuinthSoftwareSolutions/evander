@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any
-
-from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
+from evander.admin.web.json_support import jsonable as _jsonable
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.cache import AdminWebJsonResponseCache, _request_bypasses_cache
 from evander.admin.web.shared import AdminWebAuth, json_error
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return value
 
 
 def capacity_routes(

@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from evander.env_files import load_optional_env_file
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.admin.services import vm_agent_service
 
@@ -41,19 +42,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
 
 
 def _load_optional_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip('"').strip("'")
-    return values
+    return load_optional_env_file(path)
 
 
 def _run_system_service_command(

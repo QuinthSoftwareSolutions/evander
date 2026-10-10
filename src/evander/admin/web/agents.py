@@ -3,15 +3,17 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
+from evander.admin.web.json_support import (
+    json_body as _json_body,
+    jsonable as _jsonable,
+)
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
@@ -25,18 +27,6 @@ DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
 DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
 AGENT_EXECUTION_HISTORY_DEFAULT_LIMIT = 50
 AGENT_EXECUTION_HISTORY_MAX_LIMIT = 100
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return value
 
 
 def _compact_agent_codex_usage(host: dict[str, Any]) -> dict[str, Any] | None:
@@ -172,16 +162,6 @@ def _decode_agent_execution_cursor(cursor: str | None) -> tuple[str | None, str 
     if not created_at or not execution_id:
         raise ValueError("Invalid agent execution cursor.")
     return created_at, execution_id
-
-
-async def _json_body(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object")
-    return payload
 
 
 def _bool_query(request: Request, name: str, *, default: bool) -> bool:

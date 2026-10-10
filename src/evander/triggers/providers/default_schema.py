@@ -34,7 +34,11 @@ from evander.triggers.providers.schemas import (
     WebhookTriggerDefinition,
 )
 from evander.schema_bootstrap import _TRIGGER_OUTPUT_SCHEMAS
-from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
+from evander.workflow.contracts import (
+    materialize_node_model as _materialize_with_model,
+    WorkflowNodeEnvelope,
+    register_node_output_schema,
+)
 
 _TRIGGER_MODEL_BY_TYPE = {
     "trigger:event": EventTriggerDefinition,
@@ -65,17 +69,6 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
     "trigger:approval:pending-created": ApprovalPendingCreatedTriggerDefinition,
 }
-
-
-def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
-    payload = {
-        "id": node.id,
-        "display_name": node.display_name,
-        "type": node.type,
-        "outputs": node.outputs,
-        **dict(node.config),
-    }
-    return model_class.model_validate(payload)
 
 
 def trigger_node_schema_resolvers() -> dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]]:

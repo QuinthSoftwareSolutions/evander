@@ -69,7 +69,11 @@ from evander.effects.providers.schemas import (
     VmStopEffectDefinition,
 )
 from evander.schema_bootstrap import _EFFECT_OUTPUT_SCHEMAS
-from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
+from evander.workflow.contracts import (
+    materialize_node_model as _materialize_with_model,
+    WorkflowNodeEnvelope,
+    register_node_output_schema,
+)
 
 _EFFECT_MODEL_BY_TYPE = {
     "effect:code-index:ensure": CodeIndexEnsureDefinition,
@@ -141,17 +145,6 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:git:push-branch": GitPushBranchEffectDefinition,
     "effect:pr:create": PrCreateEffectDefinition,
 }
-
-
-def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
-    payload = {
-        "id": node.id,
-        "display_name": node.display_name,
-        "type": node.type,
-        "outputs": node.outputs,
-        **dict(node.config),
-    }
-    return model_class.model_validate(payload)
 
 
 def effect_node_schema_resolvers() -> dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]]:

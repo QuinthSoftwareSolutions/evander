@@ -1,28 +1,16 @@
 from __future__ import annotations
 
-import json
-from typing import Any
-
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from evander.admin.web.json_support import json_body as _json_body
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.rbac import (
     WORKFLOW_RUNS_CONTROL_PERMISSION,
     WORKFLOW_RUNS_READ_PERMISSION,
 )
 from evander.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
-
-
-async def _json_body(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object")
-    return payload
 
 
 def _session_login(auth: AdminWebAuth, request: Request) -> str | None:

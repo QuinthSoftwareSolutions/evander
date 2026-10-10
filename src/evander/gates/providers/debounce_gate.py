@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from evander.gates.providers._state import provider_state_path as _provider_state_path
 from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from evander.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from evander.gates.providers.base import GateProviderBase
@@ -318,18 +319,6 @@ def _forwardable_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _debounce_state_key(*, gate_id: str, debounce_key: str) -> str:
     digest = hashlib.sha256(debounce_key.encode("utf-8")).hexdigest()[:24]
     return f"{gate_id}:{digest}"
-
-
-def _provider_state_path(provider_state: Any, *, namespace: tuple[str, ...], default: Path) -> Path:
-    cursor: Any = provider_state if isinstance(provider_state, dict) else {}
-    for key in namespace:
-        if not isinstance(cursor, dict):
-            return default
-        cursor = cursor.get(key)
-    if cursor is None:
-        return default
-    text = str(cursor).strip()
-    return Path(text) if text else default
 
 
 def _coerce_utc(value: datetime) -> datetime:

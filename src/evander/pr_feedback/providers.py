@@ -21,7 +21,10 @@ from evander.inline_media import (
     sanitize_inline_media_metadata,
 )
 from evander.models import InlineMediaRef, PrFeedbackAttachmentRef
-from evander.pr_feedback.identity import azure_devops_repository_scope
+from evander.pr_feedback.identity import (
+    normalize_azure_devops_repo_identifier as _normalize_azure_devops_repo_identifier,
+    azure_devops_repository_scope,
+)
 from evander.pr_feedback.store import (
     FeedbackEnvelope,
     FeedbackProviderAuthError,
@@ -1392,18 +1395,3 @@ def _ado_line_from_context(thread_context: dict[str, Any]) -> int | None:
     if isinstance(left, dict) and isinstance(left.get("line"), int):
         return left["line"]
     return None
-
-
-def _normalize_azure_devops_repo_identifier(repo: str) -> str:
-    normalized = unquote(repo.strip())
-    if not normalized:
-        return normalized
-    if "/_git/" in normalized:
-        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
-    if "/_apis/git/repositories/" in normalized:
-        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
-    if "ssh.dev.azure.com:v3/" in normalized:
-        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
-    if normalized.count("/") >= 2:
-        return normalized.rsplit("/", 1)[-1]
-    return normalized

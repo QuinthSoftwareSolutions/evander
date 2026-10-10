@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Any, Literal
 from uuid import uuid4
 import httpx
+from evander.voice_tasks import voice_task_looks_actionable as _voice_task_looks_actionable
 from evander.voice_sessions import (
     VoiceTranscriptEvent,
     sanitize_voice_metadata,
@@ -840,44 +841,6 @@ def _projection_has_complete_startup_objective(
     if isinstance(contract, dict) and "complete_objective" in contract:
         return bool(contract.get("complete_objective"))
     return _voice_task_looks_actionable(task_prompt)
-
-
-def _voice_task_looks_actionable(prompt: str) -> bool:
-    normalized = re.sub(r"\s+", " ", str(prompt or "").strip())
-    if not normalized:
-        return False
-    lowered = normalized.casefold().rstrip(".!?")
-    if len(lowered.split()) < 5:
-        return False
-    task_markers = {
-        "ask",
-        "tell",
-        "say",
-        "explain",
-        "summarize",
-        "request",
-        "confirm",
-        "verify",
-        "collect",
-        "give",
-        "open",
-        "start",
-        "begin",
-        "discuss",
-        "approve",
-        "approval",
-        "script",
-        "objective",
-        "prompt",
-    }
-    if any(marker in lowered.split() for marker in task_markers):
-        return True
-    if re.fullmatch(
-        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
-        lowered,
-    ):
-        return False
-    return False
 
 
 def _question_asks_projected_task(question: str) -> bool:

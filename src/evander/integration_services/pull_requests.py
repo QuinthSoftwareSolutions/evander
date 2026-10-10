@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Iterator, Literal, Mapping, Protocol
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import httpx
 from evander.ado_builds import positive_id
 from evander.ado_mentions import (
@@ -44,7 +44,10 @@ from evander.pr_feedback.providers import (
     _ado_thread_resolved,
     pr_feedback_item_payload,
 )
-from evander.pr_feedback.identity import pr_feedback_stream_aliases
+from evander.pr_feedback.identity import (
+    normalize_azure_devops_repo_identifier as _normalize_azure_devops_repo_identifier,
+    pr_feedback_stream_aliases,
+)
 from evander.pr_feedback.store import PrFeedbackRepository, PrFeedbackStore, _stream_key
 from evander.integration_services.pr_comments import GitHubPrComments
 
@@ -1838,21 +1841,6 @@ class GitHubPrQueryProvider:
             vote=vote_by_state.get(state),
             status=state,
         )
-
-
-def _normalize_azure_devops_repo_identifier(repo: str) -> str:
-    normalized = unquote(repo.strip())
-    if not normalized:
-        return normalized
-    if "/_git/" in normalized:
-        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
-    if "/_apis/git/repositories/" in normalized:
-        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
-    if "ssh.dev.azure.com:v3/" in normalized:
-        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
-    if normalized.count("/") >= 2:
-        return normalized.rsplit("/", 1)[-1]
-    return normalized
 
 
 def _expand_pull_request_statuses(

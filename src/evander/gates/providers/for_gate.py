@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from evander.gates.providers._state import provider_state_path as _provider_state_path
 from evander.gate_runtime import GateRuntimeError
 from evander.gates.providers._loop_graph import (
     _node_id as _node_id,
@@ -320,18 +321,6 @@ def _for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -
 
 def _legacy_for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
     return f"{gate_id}:{trace_id}:{for_execution_id}"
-
-
-def _provider_state_path(provider_state: Any, *, namespace: tuple[str, ...], default: Path) -> Path:
-    cursor: Any = provider_state if isinstance(provider_state, dict) else {}
-    for key in namespace:
-        if not isinstance(cursor, dict):
-            return default
-        cursor = cursor.get(key)
-    if cursor is None:
-        return default
-    text = str(cursor).strip()
-    return Path(text) if text else default
 
 
 def _migrate_legacy_store(*, legacy_path: Path, provider_owned_path: Path) -> None:

@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
+from evander.voice_tasks import voice_task_looks_actionable as _voice_task_looks_actionable
 from evander.contact_allowlists import (
     require_allowed_contact_id,
     validate_allowed_contact_ids_for_directory,
@@ -1009,44 +1010,6 @@ class OpenAIRealtimeClientSecretService:
         if not str(payload.get("value") or "").strip():
             raise ProviderRequestError("openai_realtime.client_secret response was missing value")
         return sanitize_voice_metadata(payload)
-
-
-def _voice_task_looks_actionable(prompt: str) -> bool:
-    normalized = re.sub(r"\s+", " ", str(prompt or "").strip())
-    if not normalized:
-        return False
-    lowered = normalized.casefold().rstrip(".!?")
-    if len(lowered.split()) < 5:
-        return False
-    task_markers = {
-        "ask",
-        "tell",
-        "say",
-        "explain",
-        "summarize",
-        "request",
-        "confirm",
-        "verify",
-        "collect",
-        "give",
-        "open",
-        "start",
-        "begin",
-        "discuss",
-        "approve",
-        "approval",
-        "script",
-        "objective",
-        "prompt",
-    }
-    if any(marker in lowered.split() for marker in task_markers):
-        return True
-    if re.fullmatch(
-        r"(?:please\s+)?(?:call|phone|contact|reach out to)\s+[\w\s'.-]+",
-        lowered,
-    ):
-        return False
-    return False
 
 
 class VoiceMediaBridgeClient:
