@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 
+from evander.env_files import load_optional_env_file
 from evander.models import SessionManifest, ToolName
 from evander.policy_config import EffectivePolicyConfig
 from evander.pr_feedback.store import PrFeedbackStore
@@ -86,19 +87,7 @@ def _extract_issue_number(value: str | None) -> str | None:
 
 
 def _load_optional_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip('"').strip("'")
-    return values
+    return load_optional_env_file(path)
 
 
 def _matching_issue_session_ids(

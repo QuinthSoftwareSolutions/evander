@@ -47,6 +47,17 @@ class WorkflowNodeEnvelope(BaseModel):
         raise AttributeError(item)
 
 
+def materialize_node_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
+    payload = {
+        "id": node.id,
+        "display_name": node.display_name,
+        "type": node.type,
+        "outputs": node.outputs,
+        **dict(node.config),
+    }
+    return model_class.model_validate(payload)
+
+
 class WorkflowNodeDefinition(WorkflowNodeEnvelope):
     """Typed provider definition materialized from a persisted node envelope."""
 

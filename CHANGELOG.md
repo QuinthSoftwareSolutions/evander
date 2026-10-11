@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-10 - Share internal platform contracts (0.86.7)
+
+- Refactor ten duplicated concerns: log tail pagination, Admin Web JSON response
+  conversion and request decoding, gate state paths, literal environment parsing,
+  Azure DevOps repository identifiers, workflow node materialization, provider
+  reload signatures, voice startup objectives, and ADO query list validation.
+- Preserve existing payloads, defaults, validation order, exception chaining,
+  persistence paths, reload behavior, and side effects. Add characterization
+  coverage checked against the unchanged implementation before refactoring.
+
 ## 2026-10-09 - Reduce worker, wake, lookup and workflow validation costs (0.86.6)
 
 - Fix ten additional performance issues in worker telemetry, restart recovery,

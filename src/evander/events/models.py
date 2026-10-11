@@ -16,6 +16,7 @@ from typing_extensions import TypeAliasType
 from evander.classification.switch import ClassifierSwitchConfig
 from evander.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from evander.workflow.contracts import (
+    materialize_node_model as _materialize_with_model,
     EdgeDefinition as EdgeDefinition,
     FOR_EXECUTION_IDS_CONTEXT_KEY as FOR_EXECUTION_IDS_CONTEXT_KEY,
     NODE_OUTPUTS_CONTEXT_KEY as NODE_OUTPUTS_CONTEXT_KEY,
@@ -568,17 +569,6 @@ class TriggerEvent(BaseModel):
 
 
 _NODE_SCHEMA_RESOLVERS: dict[str, Any] | None = None
-
-
-def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
-    payload = {
-        "id": node.id,
-        "display_name": node.display_name,
-        "type": node.type,
-        "outputs": node.outputs,
-        **dict(node.config),
-    }
-    return model_class.model_validate(payload)
 
 
 def _builtin_node_schema_resolvers() -> dict[str, Any]:

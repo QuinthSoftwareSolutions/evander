@@ -2606,6 +2606,45 @@ class AdoBacklogTagsUpdateRequest(BaseModel):
             raise ValueError("add_tags or remove_tags is required")
 
 
+def _normalize_ado_string_filters(value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("filter must be a list of strings")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        normalized = str(item).strip()
+        if not normalized:
+            continue
+        dedupe_key = normalized.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _normalize_ado_type_filters(value: object) -> list[AdoBacklogItemType]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("types must be a list of item types")
+    normalized: list[AdoBacklogItemType] = []
+    seen: set[AdoBacklogItemType] = set()
+    for item in value:
+        resolved = (
+            item
+            if isinstance(item, AdoBacklogItemType)
+            else AdoBacklogItemType.from_raw(str(item))
+        )
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        normalized.append(resolved)
+    return normalized
+
+
 class AdoBacklogQueryRequest(BaseModel):
     project: str | None = None
     query_mode: AdoQueryMode | None = None
@@ -2635,43 +2674,12 @@ class AdoBacklogQueryRequest(BaseModel):
     @field_validator("states", "tags_any", mode="before")
     @classmethod
     def normalize_string_filters(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("filter must be a list of strings")
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            normalized = str(item).strip()
-            if not normalized:
-                continue
-            dedupe_key = normalized.casefold()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            deduped.append(normalized)
-        return deduped
+        return _normalize_ado_string_filters(value)
 
     @field_validator("types", mode="before")
     @classmethod
     def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("types must be a list of item types")
-        normalized: list[AdoBacklogItemType] = []
-        seen: set[AdoBacklogItemType] = set()
-        for item in value:
-            resolved = (
-                item
-                if isinstance(item, AdoBacklogItemType)
-                else AdoBacklogItemType.from_raw(str(item))
-            )
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            normalized.append(resolved)
-        return normalized
+        return _normalize_ado_type_filters(value)
 
     @model_validator(mode="after")
     def validate_query_mode_contract(self) -> "AdoBacklogQueryRequest":
@@ -2732,43 +2740,12 @@ class AdoCurrentIterationBacklogRequest(BaseModel):
     @field_validator("states", "tags_any", mode="before")
     @classmethod
     def normalize_string_filters(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("filter must be a list of strings")
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            normalized = str(item).strip()
-            if not normalized:
-                continue
-            dedupe_key = normalized.casefold()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            deduped.append(normalized)
-        return deduped
+        return _normalize_ado_string_filters(value)
 
     @field_validator("types", mode="before")
     @classmethod
     def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("types must be a list of item types")
-        normalized: list[AdoBacklogItemType] = []
-        seen: set[AdoBacklogItemType] = set()
-        for item in value:
-            resolved = (
-                item
-                if isinstance(item, AdoBacklogItemType)
-                else AdoBacklogItemType.from_raw(str(item))
-            )
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            normalized.append(resolved)
-        return normalized
+        return _normalize_ado_type_filters(value)
 
 
 class AdoCurrentIterationBacklogResponse(BaseModel):
@@ -2841,42 +2818,11 @@ class AdoDailyStatusReportRequest(BaseModel):
     )
     @classmethod
     def normalize_string_lists(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("filter must be a list of strings")
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            normalized = str(item).strip()
-            if not normalized:
-                continue
-            dedupe_key = normalized.casefold()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            deduped.append(normalized)
-        return deduped
+        return _normalize_ado_string_filters(value)
 
     @classmethod
     def _normalize_type_list(cls, value: object) -> list[AdoBacklogItemType]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("types must be a list of item types")
-        normalized: list[AdoBacklogItemType] = []
-        seen: set[AdoBacklogItemType] = set()
-        for item in value:
-            resolved = (
-                item
-                if isinstance(item, AdoBacklogItemType)
-                else AdoBacklogItemType.from_raw(str(item))
-            )
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            normalized.append(resolved)
-        return normalized
+        return _normalize_ado_type_filters(value)
 
     @field_validator("types", mode="before")
     @classmethod

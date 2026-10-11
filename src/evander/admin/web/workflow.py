@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from evander.admin.web.json_support import json_body as json_body
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.payloads import (
     AdminRevisionConflict,
@@ -31,16 +32,6 @@ from evander.admin.web.rbac import (
 from evander.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from evander.admin.web.shared import json_error
 from evander.events.internal import InternalEventSource
-
-
-async def json_body(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object")
-    return payload
 
 
 def expected_revision_from_payload(payload: dict[str, Any]) -> str:

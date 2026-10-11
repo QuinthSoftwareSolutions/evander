@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from evander.env_files import parse_env_content as _parse_env_content
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
@@ -204,20 +205,6 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     except PermissionError:
         return {}
     return _parse_env_content(path.read_text(encoding="utf-8"))
-
-
-def _parse_env_content(content: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip('"').strip("'")
-    return values
 
 
 def _quote_env_value(value: str) -> str:

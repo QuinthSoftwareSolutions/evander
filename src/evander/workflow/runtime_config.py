@@ -59,6 +59,22 @@ def _require_canonical_persisted_node_envelopes(payload: dict[str, Any], *, cont
                     )
 
 
+def provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = {
+        "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
+        "addon_loader": worker_config.addon_loader.model_dump(mode="json"),
+        "provider_include_builtin": worker_config.provider_include_builtin,
+        "orchestration_store_path": str(worker_config.orchestration_store_path),
+        "trigger_lock_path": str(worker_config.lock_path),
+        "orchestration_retention_days": worker_config.orchestration_retention_days,
+        "orchestration_compact_history_retention_days": (
+            worker_config.orchestration_compact_history_retention_days
+        ),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 

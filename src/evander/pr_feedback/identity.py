@@ -92,6 +92,21 @@ def _append_repo_alias(
         aliases.append(candidate)
 
 
+def normalize_azure_devops_repo_identifier(repo: str) -> str:
+    normalized = unquote(repo.strip())
+    if not normalized:
+        return normalized
+    if "/_git/" in normalized:
+        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
+    if "/_apis/git/repositories/" in normalized:
+        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
+    if "ssh.dev.azure.com:v3/" in normalized:
+        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
+    if normalized.count("/") >= 2:
+        return normalized.rsplit("/", 1)[-1]
+    return normalized
+
+
 def _azure_devops_repository_name(repo: str) -> str:
     normalized = unquote(str(repo or "").strip()).rstrip("/")
     if not normalized:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from evander.env_files import load_optional_env_file as _load_optional_env_file
 from evander.config import GatewayConfig
 from evander.directory_config import (
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
@@ -156,22 +157,6 @@ def _migrate_domain_payload_to_root(
         config_store.write("root", domain=domain, payload=payload)
         return DomainMigrationResult(domain=domain, status="written", path=path)
     return DomainMigrationResult(domain=domain, status="skipped", path=path)
-
-
-def _load_optional_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip('"').strip("'")
-    return values
 
 
 def _merged_env_value(name: str, env_values: dict[str, str]) -> str:

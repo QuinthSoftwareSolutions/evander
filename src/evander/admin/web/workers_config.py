@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
+from evander.admin.web.json_support import json_body as _json_body
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
@@ -661,16 +662,6 @@ def _expected_revision(payload: dict[str, Any]) -> str | None:
     if not isinstance(expected, str) or not expected.strip():
         return None
     return expected.strip()
-
-
-async def _json_body(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object")
-    return payload
 
 
 def _directory_path_from_request(request: Request) -> str:
