@@ -100,7 +100,7 @@ def capture_retained_attempt(context, state, incident):
     # new task. A worker reply alone cannot establish durable Git transport.
     managed = adapter.managed_git_admin
     for ref_key, commit_key in (("work_ref", "commit_sha"), ("index_ref", "index_commit_sha")):
-        if not str(result[ref_key]).startswith(f"refs/heads/{request.recovery_branch}/"):
+        if not str(result[ref_key]).startswith(f"refs/evander/{request.recovery_branch}/"):
             raise ValueError("salvage receipt escaped its authorized Git namespace")
         managed.resolve_snapshot(
             project.git.managed_repo_id,

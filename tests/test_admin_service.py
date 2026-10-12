@@ -11263,7 +11263,7 @@ def test_normalize_workflow_failure_signature_canonicalizes_volatile_identifiers
         "node_type": "effect:git:push-branch",
     }
     error_a = (
-        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "Rejected branch update for refs/evander/agents/session-123/update-branch-host-a "
         "at 2026-05-18T11:00:00Z; session_id=11111111-1111-1111-1111-111111111111; "
         "trace_id=22222222-2222-2222-2222-222222222222; thread_id=33333333-3333-3333-3333-333333333333; "
         "execution_id=44444444-4444-4444-4444-444444444444; "
@@ -11272,7 +11272,7 @@ def test_normalize_workflow_failure_signature_canonicalizes_volatile_identifiers
         "hash=abcdef1234567890abcdef1234567890; path=/tmp/workflow-run-a?token=secret"
     )
     error_b = (
-        "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b "
+        "Rejected branch update for refs/evander/agents/session-987/update-branch-host-b "
         "at 2026-06-12T05:06:07Z; session_id=66666666-6666-6666-6666-666666666666; "
         "trace_id=77777777-7777-7777-7777-777777777777; thread_id=88888888-8888-8888-8888-888888888888; "
         "execution_id=99999999-9999-9999-9999-999999999999; "
@@ -11307,10 +11307,10 @@ def test_normalize_workflow_failure_signature_keeps_distinct_errors_separate() -
         "node_type": "effect:git:push-branch",
     }
     rejected = (
-        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "Rejected branch update for refs/evander/agents/session-123/update-branch-host-a "
         "because the remote branch already exists"
     )
-    existing = "Existing branch refs/heads/agents/session-987/update-branch-host-b already exists"
+    existing = "Existing branch refs/evander/agents/session-987/update-branch-host-b already exists"
 
     rejected_summary, rejected_key = admin_service._normalize_workflow_failure_signature(
         rejected, outputs
@@ -11364,19 +11364,19 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     queue_store.mark_event_cleared(
         "evt-trigger-root",
         cleared_at=datetime(2026, 6, 12, 9, 5, tzinfo=UTC),
-        clear_reason="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
-        error="Rejected branch update for refs/heads/agents/session-root/update-branch-host-root because the remote branch already exists",
+        clear_reason="Rejected branch update for refs/evander/agents/session-root/update-branch-host-root because the remote branch already exists",
+        error="Rejected branch update for refs/evander/agents/session-root/update-branch-host-root because the remote branch already exists",
     )
 
     error_a = (
-        "Rejected branch update for refs/heads/agents/session-123/update-branch-host-a "
+        "Rejected branch update for refs/evander/agents/session-123/update-branch-host-a "
         "at 2026-06-12T10:00:00Z; session_id=11111111-1111-1111-1111-111111111111; "
         "trace_id=22222222-2222-2222-2222-222222222222; thread_id=33333333-3333-3333-3333-333333333333; "
         "execution_id=44444444-4444-4444-4444-444444444444; request_id=55555555-5555-5555-5555-555555555555; "
         "artifact_url=https://example.com/api/run?session=11111111-1111-1111-1111-111111111111&trace=22222222-2222-2222-2222-222222222222"
     )
     error_b = (
-        "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b "
+        "Rejected branch update for refs/evander/agents/session-987/update-branch-host-b "
         "at 2026-06-12T11:00:00Z; session_id=66666666-6666-6666-6666-666666666666; "
         "trace_id=77777777-7777-7777-7777-777777777777; thread_id=88888888-8888-8888-8888-888888888888; "
         "execution_id=99999999-9999-9999-9999-999999999999; request_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa; "
@@ -11477,7 +11477,7 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
             resolved_config={"session_id": "session-c", "pr_id": "pr-103"},
             input_payload={"issue_id": "issue-c"},
             outputs={
-                "message": "Existing branch refs/heads/agents/session-987/update-branch-host-b already exists",
+                "message": "Existing branch refs/evander/agents/session-987/update-branch-host-b already exists",
                 "artifact_id": "comm_00000000000000000000000000000004",
             },
             dismissed_at=None,
@@ -11719,7 +11719,7 @@ def test_workflow_failure_cluster_payload_models_validate_representative_json() 
                     "count": 2,
                     "first_seen_at": "2026-06-12T10:00:00Z",
                     "last_seen_at": "2026-06-12T11:00:00Z",
-                    "latest_error_summary": "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b",
+                    "latest_error_summary": "Rejected branch update for refs/evander/agents/session-987/update-branch-host-b",
                     "state": "recent",
                     "event_ids": ["evt-2", "evt-1"],
                     "trace_ids": ["trace-1"],
@@ -11734,7 +11734,7 @@ def test_workflow_failure_cluster_payload_models_validate_representative_json() 
                             "session_id": "session-1",
                             "occurred_at": "2026-06-12T11:00:00Z",
                             "run_state": "active",
-                            "error_summary": "Rejected branch update for refs/heads/agents/session-987/update-branch-host-b",
+                            "error_summary": "Rejected branch update for refs/evander/agents/session-987/update-branch-host-b",
                             "run_detail_href": "#workflow?event_id=evt-2",
                             "api_run_detail_href": "/api/workflow-editor/run-detail?event_id=evt-2",
                         }

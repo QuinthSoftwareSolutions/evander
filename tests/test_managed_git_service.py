@@ -590,7 +590,7 @@ def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path
         "git",
         f"--git-dir={bare}",
         "update-ref",
-        f"refs/heads/{branch}",
+        f"refs/evander/{branch}",
         first,
     )
 
@@ -665,7 +665,7 @@ def test_verify_branch_commit_ancestry_pins_tip_and_required_history(
         "git",
         f"--git-dir={bare}",
         "update-ref",
-        f"refs/heads/{branch}",
+        f"refs/evander/{branch}",
         second,
     )
 
@@ -2454,20 +2454,20 @@ def test_refresh_updates_canonical_refs_and_preserves_host_and_guest_namespaces(
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     notes_ref = agent_pr_notes_ref_for_session("session-1")
-    _run("git", "push", str(bare), f"{first}:refs/heads/agents/session-1/topic", cwd=source)
+    _run("git", "push", str(bare), f"{first}:refs/evander/agents/session-1/topic", cwd=source)
     _run("git", "notes", f"--ref={notes_ref}", "add", "-m", "pinned note", first, cwd=source)
     _run("git", "push", str(bare), f"{notes_ref}:{notes_ref}", cwd=source)
-    _run("git", f"--git-dir={bare}", "update-ref", "refs/heads/review/session-1/topic", first)
+    _run("git", f"--git-dir={bare}", "update-ref", "refs/evander/review/session-1/topic", first)
     second = _commit(source, "README.md", "second\n", "second")
 
     service.refresh_repository(repo_id)
 
     assert _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/main") == second
     assert (
-        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/agents/session-1/topic") == first
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/agents/session-1/topic") == first
     )
     assert (
-        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/review/session-1/topic") == first
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/review/session-1/topic") == first
     )
     assert (
         _run("git", f"--git-dir={bare}", "notes", f"--ref={notes_ref}", "show", first)
@@ -2485,16 +2485,220 @@ def test_refresh_updates_canonical_refs_and_preserves_host_and_guest_namespaces(
     )
 
 
-def test_registration_rejects_reserved_upstream_branch_and_rolls_back(tmp_path: Path) -> None:
-    source, _, _ = _source_repository(tmp_path)
-    _run("git", "branch", "agents/upstream-owned", cwd=source)
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "agents",
+        "review",
+        "team",
+        "agents/upstream-owned",
+        "review/upstream-owned",
+        "team/upstream-owned",
+    ],
+)
+def test_registration_accepts_upstream_names_without_treating_them_as_private(
+    tmp_path: Path, branch: str
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    _run("git", "branch", branch, cwd=source)
     service = _service(tmp_path)
+    record = service.register_repository("root", str(source), default_branch=branch)
+    bare = _bare_path(service, record["managed_repo_id"])
+    assert _run("git", f"--git-dir={bare}", "rev-parse", f"refs/heads/{branch}") == first
+    assert (
+        service.resolve_snapshot(
+            record["managed_repo_id"], "root", source_ref=f"refs/heads/{branch}"
+        )["commit_sha"]
+        == first
+    )
+    assert service.resolve_snapshot(record["managed_repo_id"], "root")["commit_sha"] == first
 
-    with pytest.raises(ManagedGitConflictError, match="reserved branch"):
-        service.register_repository("root", str(source))
 
-    assert service.list_repositories() == []
-    assert list((service.runtime_dir / "managed-git").glob("*.git")) == []
+def test_private_ref_migration_preserves_legacy_work_and_allows_same_upstream_name(
+    tmp_path: Path,
+) -> None:
+    from evander.admin.services.managed_git_ref_migration import LAYOUT_MARKER
+
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    old_ref = "refs/heads/agents/session-1/topic"
+    private_ref = "refs/evander/agents/session-1/topic"
+    _run("git", f"--git-dir={bare}", "update-ref", "-d", LAYOUT_MARKER)
+    _run("git", f"--git-dir={bare}", "update-ref", old_ref, first)
+    upstream = _commit(source, "README.md", "upstream change\n", "upstream change")
+    _run("git", "branch", "agents/session-1/topic", cwd=source)
+
+    preview = service.migrate_ref_namespace(repo_id)
+    assert preview["moves"] == [
+        {
+            "source_ref": old_ref,
+            "target_ref": private_ref,
+            "commit_sha": first,
+            "target_exists": False,
+        }
+    ]
+    assert _run("git", f"--git-dir={bare}", "rev-parse", old_ref) == first
+    service.refresh_repository(repo_id)
+
+    assert _run("git", f"--git-dir={bare}", "rev-parse", old_ref) == upstream
+    assert _run("git", f"--git-dir={bare}", "rev-parse", private_ref) == first
+    assert (
+        service.resolve_branch_commit(
+            repo_id, directory_path="root", branch="agents/session-1/topic"
+        )
+        == first
+    )
+    assert service.resolve_branch_commit(repo_id, directory_path="root", branch=old_ref) == upstream
+    # Old immutable receipts keep referring to the original reviewed content,
+    # while an explicit unpinned upstream ref resolves the upstream branch.
+    assert (
+        service.resolve_snapshot(repo_id, "root", source_ref=old_ref, commit_sha=first)[
+            "source_ref"
+        ]
+        == private_ref
+    )
+    assert service.resolve_snapshot(repo_id, "root", source_ref=old_ref)["commit_sha"] == upstream
+    with service.temporary_worktree(repo_id, source_ref=old_ref, commit_sha=first) as checkout:
+        assert _run("git", "rev-parse", "HEAD", cwd=checkout) == first
+    assert service.migrate_ref_namespace(repo_id, apply=True)["already_migrated"] is True
+    _run("git", "branch", "-D", "agents/session-1/topic", cwd=source)
+    service.refresh_repository(repo_id)
+    assert _run("git", f"--git-dir={bare}", "rev-parse", private_ref) == first
+
+
+def test_private_ref_migration_conflict_changes_no_refs(tmp_path: Path) -> None:
+    from evander.admin.services.managed_git_ref_migration import LAYOUT_MARKER
+
+    source, _, first = _source_repository(tmp_path)
+    second = _commit(source, "README.md", "second\n", "second")
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    _run("git", f"--git-dir={bare}", "update-ref", "-d", LAYOUT_MARKER)
+    _run("git", f"--git-dir={bare}", "update-ref", "refs/heads/review/topic", first)
+    _run("git", f"--git-dir={bare}", "update-ref", "refs/evander/review/topic", second)
+    before = _run("git", f"--git-dir={bare}", "show-ref")
+    with pytest.raises(ManagedGitConflictError, match="would overwrite"):
+        service.migrate_ref_namespace(repo_id, apply=True)
+    assert _run("git", f"--git-dir={bare}", "show-ref") == before
+
+
+def test_private_ref_migration_rejects_a_checked_out_legacy_branch(tmp_path: Path) -> None:
+    from evander.admin.services.managed_git_ref_migration import LAYOUT_MARKER
+
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    _run("git", f"--git-dir={bare}", "update-ref", "-d", LAYOUT_MARKER)
+    _run("git", f"--git-dir={bare}", "update-ref", "refs/heads/team/release", first)
+    _run("git", f"--git-dir={bare}", "worktree", "add", str(tmp_path / "active"), "team/release")
+    before = _run("git", f"--git-dir={bare}", "show-ref")
+    with pytest.raises(ManagedGitConflictError, match="Detach host worktrees"):
+        service.migrate_ref_namespace(repo_id, apply=True)
+    assert _run("git", f"--git-dir={bare}", "show-ref") == before
+
+
+def test_private_ref_migration_refuses_a_concurrent_legacy_ref_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from evander.admin.services.managed_git_ref_migration import LAYOUT_MARKER
+
+    source, _, first = _source_repository(tmp_path)
+    second = _commit(source, "README.md", "concurrent work\n", "Concurrent work")
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    legacy = "refs/heads/agents/session-1/topic"
+    migrated = "refs/evander/agents/session-1/topic"
+    _run("git", f"--git-dir={bare}", "update-ref", "-d", LAYOUT_MARKER)
+    _run("git", f"--git-dir={bare}", "update-ref", legacy, first)
+    original = service._run_git
+
+    def race(command, **kwargs):
+        if LAYOUT_MARKER in (kwargs.get("input_text") or ""):
+            _run("git", f"--git-dir={bare}", "update-ref", legacy, second, first)
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", race)
+    with pytest.raises(RuntimeError):
+        service.migrate_ref_namespace(repo_id, apply=True)
+    assert _run("git", f"--git-dir={bare}", "rev-parse", legacy) == second
+    remaining = _run("git", f"--git-dir={bare}", "for-each-ref", "--format=%(refname)")
+    assert migrated not in remaining.splitlines()
+    assert LAYOUT_MARKER not in remaining.splitlines()
+
+
+def test_publication_and_refresh_allow_upstream_agent_branch_name(tmp_path: Path) -> None:
+    source, upstream, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(upstream), default_branch="main")
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    reviewed = _commit(source, "feature.txt", "reviewed\n", "Reviewed feature")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{reviewed}:refs/evander/review/topic")
+    result = service.push_branch(repo_id, "review/topic", reviewed, "agents/published-work", "root")
+    assert result["success"] is True
+    assert (
+        _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/agents/published-work")
+        == reviewed
+    )
+    service.refresh_repository(repo_id)
+    assert (
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/agents/published-work")
+        == reviewed
+    )
+    assert _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/review/topic") == reviewed
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_private_ref_migration_upgrades_installed_hooks_for_existing_keys(
+    tmp_path: Path, automatic: bool
+) -> None:
+    from evander.admin.services.managed_git_ref_migration import LAYOUT_MARKER
+
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    _run("git", f"--git-dir={bare}", "update-ref", "-d", LAYOUT_MARKER)
+    _run("git", f"--git-dir={bare}", "update-ref", "refs/heads/agents/session-1/topic", first)
+    old_hook = bare / "hooks/pre-receive"
+    old_hook.write_text("#!/bin/sh\necho 'legacy hook' >&2\nexit 1\n")
+    old_hook.chmod(0o755)
+    service.project_dir = Path(__file__).resolve().parents[1]
+
+    if automatic:
+        service.refresh_repository(repo_id)
+    else:
+        service.migrate_ref_namespace(repo_id, apply=True)
+
+    env = {
+        **os.environ,
+        "EVANDER_GIT_AUTH_ENFORCE": "1",
+        "EVANDER_GIT_AUTH_ACCESS": "write",
+        "EVANDER_GIT_AUTH_REPO": str(bare),
+        "EVANDER_GIT_AUTH_SESSION_ID": "session-1",
+        "EVANDER_GIT_AUTH_REF_PREFIX": "refs/heads/agents/session-1/",
+        "EVANDER_GIT_AUTH_PR_NOTES_REF": agent_pr_notes_ref_for_session("session-1"),
+    }
+    _run("git", "push", str(bare), "HEAD:refs/evander/agents/session-1/next", cwd=source, env=env)
+    denied = subprocess.run(
+        ["git", "push", str(bare), "HEAD:refs/heads/agents/session-1/forbidden"],
+        cwd=source,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert denied.returncode != 0
+    assert "outside authorized prefix" in denied.stderr
 
 
 def test_promotion_pins_exact_sha_and_stale_event_cannot_regress_target(tmp_path: Path) -> None:
@@ -2503,7 +2707,7 @@ def test_promotion_pins_exact_sha_and_stale_event_cannot_regress_target(tmp_path
     record = service.register_repository("root", str(source))
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
-    _run("git", "push", str(bare), f"{first}:refs/heads/agents/session-1/topic", cwd=source)
+    _run("git", "push", str(bare), f"{first}:refs/evander/agents/session-1/topic", cwd=source)
 
     promoted = service.promote_agent_branch(
         repo_id,
@@ -2518,7 +2722,7 @@ def test_promotion_pins_exact_sha_and_stale_event_cannot_regress_target(tmp_path
         "push",
         "--force",
         str(bare),
-        f"{second}:refs/heads/agents/session-1/topic",
+        f"{second}:refs/evander/agents/session-1/topic",
         cwd=source,
     )
     stale = service.promote_agent_branch(
@@ -2532,7 +2736,7 @@ def test_promotion_pins_exact_sha_and_stale_event_cannot_regress_target(tmp_path
     assert promoted["success"] is True
     assert stale["reason"] == "source_ref_moved"
     assert (
-        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/review/session-1/topic") == first
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/review/session-1/topic") == first
     )
     assert (
         _run(
@@ -2555,10 +2759,10 @@ def test_promotion_reports_source_ref_moved_when_repush_wins_pin_transaction(
     record = service.register_repository("root", str(source))
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
-    source_ref = "refs/heads/agents/session-1/topic"
+    source_ref = "refs/evander/agents/session-1/topic"
     _run("git", "push", str(bare), f"{first}:{source_ref}", cwd=source)
     second = _commit(source, "repush.txt", "new\n", "repush")
-    _run("git", "push", str(bare), f"{second}:refs/heads/agents/session-1/staged", cwd=source)
+    _run("git", "push", str(bare), f"{second}:refs/evander/agents/session-1/staged", cwd=source)
     original_transaction = service._run_update_ref_transaction
 
     def race_pin(path: Path, commands: list[str]) -> None:
@@ -2586,7 +2790,7 @@ def test_promotion_reports_source_ref_moved_when_repush_wins_pin_transaction(
                 "show-ref",
                 "--verify",
                 "--quiet",
-                "refs/heads/review/session-1/topic",
+                "refs/evander/review/session-1/topic",
             ],
             check=False,
         ).returncode
@@ -2624,7 +2828,7 @@ def test_push_branch_publishes_exact_sha_with_destination_lease(tmp_path: Path) 
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     result = service.push_branch(repo_id, "review/topic", approved, "main", "root")
 
@@ -2650,7 +2854,7 @@ def test_push_branch_publishes_when_destination_matches_reviewed_base(tmp_path: 
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     result = service.push_branch(
         repo_id,
@@ -2675,7 +2879,7 @@ def test_push_branch_rejects_destination_that_predates_reviewed_base(tmp_path: P
     bare = _bare_path(service, repo_id)
     reviewed_base = _commit(source, "preexisting.txt", "unreviewed\n", "preexisting feature work")
     approved = _commit(source, "allowed.txt", "allowed\n", "allowed release change")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     result = service.push_branch(
         repo_id,
@@ -2701,7 +2905,7 @@ def test_push_branch_creates_missing_destination_from_reviewed_base(tmp_path: Pa
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     result = service.push_branch(
         repo_id,
@@ -2736,7 +2940,7 @@ def test_push_branch_retries_transient_transport_failure_with_backoff(
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     original_run_git = service._run_git
     push_attempts = 0
@@ -2786,7 +2990,7 @@ def test_push_branch_reconciles_ambiguous_success_without_a_second_push(
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     original_run_git = service._run_git
     push_attempts = 0
@@ -2832,7 +3036,7 @@ def test_push_branch_does_not_retry_nontransient_push_failure(
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
 
     original_run_git = service._run_git
     push_attempts = 0
@@ -2890,7 +3094,7 @@ def test_push_branch_rejects_missing_destination_with_unrelated_reviewed_base(
         f"--git-dir={bare}",
         "fetch",
         str(source),
-        f"{approved}:refs/heads/review/topic",
+        f"{approved}:refs/evander/review/topic",
         f"{incompatible_base}:refs/heads/test/incompatible-base",
     )
 
@@ -2916,7 +3120,7 @@ def test_push_branch_returns_merge_required_when_destination_is_ahead(tmp_path: 
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
     approved = _commit(source, "approved.txt", "approved\n", "approved")
-    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/evander/review/topic")
     _run("git", "checkout", "-b", "destination", first, cwd=source)
     destination = _commit(source, "destination.txt", "destination\n", "destination")
     _run("git", "push", "origin", "destination:main", cwd=source)
@@ -2941,10 +3145,10 @@ def test_push_reports_source_ref_moved_when_repush_wins_pin_transaction(
     record = service.register_repository("root", str(source))
     repo_id = record["managed_repo_id"]
     bare = _bare_path(service, repo_id)
-    source_ref = "refs/heads/review/topic"
+    source_ref = "refs/evander/review/topic"
     _run("git", f"--git-dir={bare}", "update-ref", source_ref, first)
     second = _commit(source, "repush.txt", "new\n", "repush")
-    _run("git", "push", str(bare), f"{second}:refs/heads/review/staged", cwd=source)
+    _run("git", "push", str(bare), f"{second}:refs/evander/review/staged", cwd=source)
     original_transaction = service._run_update_ref_transaction
 
     def race_pin(path: Path, commands: list[str]) -> None:
@@ -3063,11 +3267,11 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
     feature_a = tmp_path / "feature-a.txt"
     _run("git", "checkout", "-b", "agents/session-1/a", cwd=source)
     first_feature = _commit(source, feature_a.name, "a\n", "feature a")
-    _run("git", "push", str(bare), "agents/session-1/a", cwd=source)
+    _run("git", "push", str(bare), "agents/session-1/a:refs/evander/agents/session-1/a", cwd=source)
     _run("git", "checkout", "main", cwd=source)
     _run("git", "checkout", "-b", "agents/session-2/b", cwd=source)
     second_feature = _commit(source, "feature-b.txt", "b\n", "feature b")
-    _run("git", "push", str(bare), "agents/session-2/b", cwd=source)
+    _run("git", "push", str(bare), "agents/session-2/b:refs/evander/agents/session-2/b", cwd=source)
     _run("git", "checkout", "main", cwd=source)
 
     result = service.consolidate_branches(
@@ -3132,7 +3336,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         },
     }
     assert (
-        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/releases/release-1")
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/team/releases/release-1")
         == result["commit_sha"]
     )
     assert _run(
@@ -3166,7 +3370,7 @@ def test_consolidation_fast_forwards_to_single_reviewed_source(tmp_path: Path) -
     bare = _bare_path(service, repo_id)
     _run("git", "checkout", "-b", "agents/session-1/fix", cwd=source)
     reviewed_commit = _commit(source, "fix.txt", "fixed\n", "Fix the release")
-    _run("git", "push", str(bare), "agents/session-1/fix", cwd=source)
+    _run("git", "push", str(bare), "agents/session-1/fix:refs/evander/agents/session-1/fix", cwd=source)
 
     result = service.consolidate_branches(
         repo_id,
@@ -3181,7 +3385,7 @@ def test_consolidation_fast_forwards_to_single_reviewed_source(tmp_path: Path) -
     assert result["success"] is True
     assert result["commit_sha"] == reviewed_commit
     assert (
-        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/corrections/release-1")
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/evander/team/corrections/release-1")
         == reviewed_commit
     )
 
@@ -3197,8 +3401,8 @@ def test_consolidation_fast_forwards_to_dominant_reviewed_source(tmp_path: Path)
     _run("git", "branch", "agents/session-2/dominant", cwd=source)
     _run("git", "checkout", "agents/session-2/dominant", cwd=source)
     dominant_commit = _commit(source, "second.txt", "second\n", "Second accepted change")
-    _run("git", "push", str(bare), "agents/session-1/first", cwd=source)
-    _run("git", "push", str(bare), "agents/session-2/dominant", cwd=source)
+    _run("git", "push", str(bare), "agents/session-1/first:refs/evander/agents/session-1/first", cwd=source)
+    _run("git", "push", str(bare), "agents/session-2/dominant:refs/evander/agents/session-2/dominant", cwd=source)
 
     result = service.consolidate_branches(
         repo_id,
@@ -3236,7 +3440,7 @@ def test_consolidation_rejects_source_outside_required_ancestor(
     _run(
         "git",
         "update-ref",
-        "refs/heads/agents/session-1/unrelated",
+        "refs/evander/agents/session-1/unrelated",
         unrelated_commit,
         cwd=source,
     )
@@ -3244,7 +3448,7 @@ def test_consolidation_rejects_source_outside_required_ancestor(
         "git",
         "push",
         str(bare),
-        "agents/session-1/unrelated",
+        "refs/evander/agents/session-1/unrelated:refs/evander/agents/session-1/unrelated",
         cwd=source,
     )
 

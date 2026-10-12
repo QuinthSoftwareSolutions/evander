@@ -236,8 +236,9 @@ def _strip_ref_prefix(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    if text.startswith("refs/heads/"):
-        return text.removeprefix("refs/heads/") or None
+    for prefix in ("refs/evander/", "refs/heads/"):
+        if text.startswith(prefix):
+            return text.removeprefix(prefix) or None
     return text
 
 

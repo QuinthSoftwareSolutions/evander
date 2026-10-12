@@ -114,10 +114,10 @@ The bare repository is a controlled exchange, not a shared free-for-all.
 | Namespace | Owner |
 |---|---|
 | ordinary `refs/heads/*` and tags | canonical refresh |
-| `refs/heads/agents/<session-id>/**` and that session's notes | the authorized guest session |
-| `refs/heads/review/**`, `refs/heads/team/**`, and `refs/evander/**` | host workflows |
+| `refs/evander/agents/<session-id>/**` and that session's notes | the authorized guest session |
+| `refs/evander/review/**`, `refs/evander/team/**`, and `refs/evander/**` | host workflows |
 
-Registration rejects an upstream that already uses reserved top-level branch prefixes such as `agents/`, `review/`, or `team/`.
+Upstream branches may use any ordinary Git branch name, including `agents/`, `review/`, and `team/`. Evander keeps its own refs outside `refs/heads/` so refresh cannot overwrite agent or review work.
 
 Canonical refresh first fetches into an operation-scoped namespace under `refs/evander/refresh/`, then updates the ordinary refs in one `git update-ref --stdin` transaction. It does not prune agent, review, Team, note, or operation refs.
 

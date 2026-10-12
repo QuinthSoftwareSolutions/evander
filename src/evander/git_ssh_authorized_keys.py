@@ -214,7 +214,7 @@ def authorized_ref_prefix_for_session(session_id: str) -> str:
     normalized = str(session_id or "").strip()
     if not normalized or "/" in normalized or normalized in {".", ".."}:
         raise ValueError("session_id must be a single non-empty ref path component")
-    return f"refs/heads/agents/{normalized}/"
+    return f"refs/evander/agents/{normalized}/"
 
 
 def _authorized_write_forced_command(

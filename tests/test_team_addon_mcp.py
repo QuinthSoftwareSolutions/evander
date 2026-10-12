@@ -2510,7 +2510,7 @@ def test_team_addon_mcp_slice8_git_intent_tools_smoke(tmp_path: Path) -> None:
         TEAM_RECOVER_RELEASE_TOOL,
         {
             "release_package_id": "rel-1",
-            "agent_branch": "refs/heads/agents/lead/release-resolved",
+            "agent_branch": "refs/evander/agents/lead/release-resolved",
             "commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
             "request_id": "request-mcp-recovery",
         },

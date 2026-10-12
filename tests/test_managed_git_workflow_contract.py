@@ -258,7 +258,7 @@ def test_git_push_trigger_selects_and_emits_only_managed_repository_identity(
         repo_path=str(repo_path),
         old_rev="0" * 40,
         new_rev=_COMMIT_SHA,
-        ref_name="refs/heads/agents/session-1/topic",
+        ref_name="refs/evander/agents/session-1/topic",
     )
 
     assert event is not None
@@ -269,7 +269,7 @@ def test_git_push_trigger_selects_and_emits_only_managed_repository_identity(
         "new_commit_hash": _COMMIT_SHA,
         "event_hash": _COMMIT_SHA,
         "old_commit_hash": "0" * 40,
-        "ref_name": "refs/heads/agents/session-1/topic",
+        "ref_name": "refs/evander/agents/session-1/topic",
         "default_branch": "main",
         "session_id": "session-1",
         "review_branch": "review/session-1/topic",
@@ -283,7 +283,7 @@ def test_git_push_trigger_selects_and_emits_only_managed_repository_identity(
         repo_path=str(repo_path),
         old_rev="0" * 40,
         new_rev=_COMMIT_SHA,
-        ref_name="refs/heads/agents/session-1/topic",
+        ref_name="refs/evander/agents/session-1/topic",
     )
     persisted = json.loads(
         (runtime_dir / "trigger-git-push-events.jsonl").read_text(encoding="utf-8")

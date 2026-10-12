@@ -63,7 +63,7 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
     _git(source, "add", "README.md", "feature.txt", env=env)
     _git(source, "commit", "-m", "Head commit", env=env)
     head_sha = _git(source, "rev-parse", "HEAD", env=env).stdout.strip()
-    _git(source, "push", "-u", "origin", "review/topic", env=env)
+    _git(source, "push", "origin", "review/topic:refs/evander/review/topic", env=env)
 
     prep_repo = tmp_path / "prep"
     subprocess.run(
@@ -81,7 +81,7 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
             "--base-ref",
             "refs/heads/main",
             "--head-ref",
-            "refs/heads/review/topic",
+            "refs/evander/review/topic",
             "--context-file",
             str(context_file),
         ],
@@ -110,7 +110,7 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
     assert f"REVIEW_BASE_COMMIT={target_sha}" in context
     assert "REVIEW_TARGET_REF=refs/heads/main" in context
     assert f"REVIEW_TARGET_COMMIT={target_sha}" in context
-    assert "REVIEW_HEAD_REF=refs/heads/review/topic" in context
+    assert "REVIEW_HEAD_REF=refs/evander/review/topic" in context
     assert f"REVIEW_HEAD_COMMIT={head_sha}" in context
     assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in context
     assert f"REVIEW_REPO_PATH={prep_repo}" in context
@@ -188,10 +188,10 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
     _git(source, "add", "README.md", "feature.txt", env=env)
     _git(source, "commit", "-m", "Head commit", env=env)
     head_sha = _git(source, "rev-parse", "HEAD", env=env).stdout.strip()
-    _git(source, "push", "-u", "origin", "review/topic", env=env)
+    _git(source, "push", "origin", "review/topic:refs/evander/review/topic", env=env)
 
     _git(source, "remote", "add", "shallow", str(shallow))
-    _git(source, "push", "shallow", "review/topic", env=env)
+    _git(source, "push", "shallow", "review/topic:refs/evander/review/topic", env=env)
 
     missing_head = subprocess.run(
         ["git", "-C", str(prep_repo), "cat-file", "-e", f"{head_sha}^{{commit}}"],
@@ -210,7 +210,7 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
             "--base-ref",
             "refs/heads/main",
             "--head-ref",
-            "refs/heads/review/topic",
+            "refs/evander/review/topic",
             "--base-commit",
             base_sha,
             "--head-commit",
@@ -278,7 +278,7 @@ def test_guest_setup_review_repo_fails_when_explicit_commit_is_stale(tmp_path: P
     _git(source, "add", "feature.txt", env=env)
     _git(source, "commit", "-m", "Head commit", env=env)
     head_sha = _git(source, "rev-parse", "HEAD", env=env).stdout.strip()
-    _git(source, "push", "-u", "origin", "review/topic", env=env)
+    _git(source, "push", "origin", "review/topic:refs/evander/review/topic", env=env)
 
     prep_repo = tmp_path / "prep"
     subprocess.run(
@@ -296,7 +296,7 @@ def test_guest_setup_review_repo_fails_when_explicit_commit_is_stale(tmp_path: P
             "--base-ref",
             "refs/heads/main",
             "--head-ref",
-            "refs/heads/review/topic",
+            "refs/evander/review/topic",
             "--base-commit",
             "0000000000000000000000000000000000000001",
             "--head-commit",

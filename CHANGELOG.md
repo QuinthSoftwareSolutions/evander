@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-12 - Isolate private Git refs from upstream branches (0.86.8)
+
+- Store session, review, and Team refs under `refs/evander/` so upstream
+  `agents/`, `review/`, and `team/` branches no longer block repository refresh.
+- Migrate existing private refs atomically at their exact commits, reject
+  conflicting destinations, and retain pinned pre-migration receipts. Add an
+  operator preview/apply command and preserve exact-repository, session-scoped
+  SSH write restrictions across the transport and workflow paths.
+
 ## 2026-10-10 - Share internal platform contracts (0.86.7)
 
 - Refactor ten duplicated concerns: log tail pagination, Admin Web JSON response

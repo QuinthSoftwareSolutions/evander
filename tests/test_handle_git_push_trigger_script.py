@@ -419,7 +419,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
 
     result = subprocess.run(
         [str(script), str(repo_path)],
-        input=f"{'0' * 40} {'1' * 40} refs/heads/agents/session-1/topic-branch\n",
+        input=f"{'0' * 40} {'1' * 40} refs/evander/agents/session-1/topic-branch\n",
         text=True,
         capture_output=True,
         env={
@@ -476,7 +476,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/evander/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,
@@ -575,7 +575,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
         text=True,
     )
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/evander/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,

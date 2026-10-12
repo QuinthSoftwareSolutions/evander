@@ -306,11 +306,12 @@ def test_managed_git_migration_cli_and_route_are_retired() -> None:
         "/api/admin/git-repositories/migrate",
         json={"stage": "dry-run"},
     )
-    cli_help = CliRunner().invoke(app, ["git-repos", "--help"])
+    retired_command = CliRunner().invoke(app, ["git-repos", "migrate", "--help"])
+    private_ref_help = CliRunner().invoke(app, ["git-repos", "migrate-private-refs", "--help"])
 
     assert route_response.status_code == 405
-    assert cli_help.exit_code == 0
-    assert "migrate" not in cli_help.output
+    assert retired_command.exit_code != 0
+    assert private_ref_help.exit_code == 0
     assert managed_git.calls == []
 
 

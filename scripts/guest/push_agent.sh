@@ -54,13 +54,13 @@ agent_branch_ref() {
   local suffix="$3"
 
   if [[ "${branch}" == agents/"${session_id_value}"/* ]]; then
-    printf 'refs/heads/%s\n' "${branch}"
+    printf 'refs/evander/%s\n' "${branch}"
     return 0
   fi
   if [[ "${branch}" == agents/* ]]; then
     die "Current branch ${branch} belongs to a different agent session; refusing agent push."
   fi
-  printf 'refs/heads/agents/%s/%s-%s\n' "${session_id_value}" "${branch}" "${suffix}"
+  printf 'refs/evander/agents/%s/%s-%s\n' "${session_id_value}" "${branch}" "${suffix}"
 }
 
 sanitize_suffix() {

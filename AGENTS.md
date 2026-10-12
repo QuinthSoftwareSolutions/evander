@@ -304,7 +304,7 @@ For managed Git repositories:
 1. Register or refresh the upstream with `evander-cli git-repos register`.
 2. Clone into the VM/container using only the returned `managed_repo_id`; the control plane
    provisions scoped guest Git SSH internally.
-3. Let the guest push only to `refs/heads/agents/<session-id>/<topic>`.
+3. Let the guest push only to `refs/evander/agents/<session-id>/<topic>`.
 4. Let the queued workflow pin and promote the trigger's exact SHA.
 5. Publish that approved SHA with the managed push/PR effects and an explicit lease.
 

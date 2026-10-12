@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.git_refs import managed_branch_ref
+
 import json
 import shlex
 from collections.abc import (
@@ -50,6 +52,11 @@ def _build_vm_task_worktree_command(
     quoted_target = shlex.quote(worktree_path)
     quoted_branch = shlex.quote(agent_branch)
     quoted_base = shlex.quote(base_ref)
+    base_fetch_ref = (
+        "refs/heads/" + base_ref.removeprefix("origin/")
+        if base_ref.startswith("origin/")
+        else managed_branch_ref(base_ref)
+    )
     quoted_prior_base = shlex.quote(prior_base_commit or "")
     quoted_pinned_base = shlex.quote(pinned_base_commit or "")
     quoted_pinned_tree = shlex.quote(pinned_base_tree or "")
@@ -138,7 +145,7 @@ def _build_vm_task_worktree_command(
         pinned_ref = _optional_text(source.get("pinned_ref"))
         source_ref = shlex.quote(
             pinned_ref
-            or f"refs/heads/{validate_branch_name(_required_text(source.get('branch'), 'dependency branch'))}"
+            or managed_branch_ref(validate_branch_name(_required_text(source.get('branch'), 'dependency branch')))
         )
         source_task = shlex.quote(
             _required_text(source.get("dependency_task_id"), "dependency_task_id")
@@ -281,6 +288,8 @@ def _build_vm_task_worktree_command(
         f"target={quoted_target}",
         f"branch={quoted_branch}",
         f"base={quoted_base}",
+        f"base_fetch_ref={shlex.quote(base_fetch_ref)}",
+        f"resolved_dependency_ref={shlex.quote(managed_branch_ref(resolved_dependency_branch) if resolved_dependency_branch else '')}",
         'base_commitish="$base"',
         f"expected_prior_base={quoted_prior_base}",
         f"pinned_base_commit={quoted_pinned_base}",
@@ -302,7 +311,7 @@ def _build_vm_task_worktree_command(
         '  if [ "$base" = "$pinned_base_commit" ]; then',
         ('    test "$(git rev-parse --verify "$base^{commit}")" = "$pinned_base_commit"'),
         "  else",
-        '    git fetch --no-tags origin "refs/heads/$base"',
+        '    git fetch --no-tags origin "$base_fetch_ref"',
         '    if [ -n "$pinned_base_tree" ]; then',
         ('      test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$pinned_base_commit"'),
         "    else",
@@ -327,7 +336,7 @@ def _build_vm_task_worktree_command(
         '    if [ "$base" = "HEAD" ]; then',
         "      git fetch --no-tags origin HEAD",
         "    else",
-        '      git fetch --no-tags origin "refs/heads/$base"',
+        '      git fetch --no-tags origin "$base_fetch_ref"',
         "    fi",
         '    base_commitish="$(git rev-parse --verify FETCH_HEAD^{commit})"',
         "  fi",
@@ -399,7 +408,7 @@ def _build_vm_task_worktree_command(
         '  test -n "$dependency_recovery_id"',
         '  test -n "$resolved_dependency_branch"',
         '  test -n "$resolved_dependency_commit"',
-        '  git fetch --no-tags origin "refs/heads/$resolved_dependency_branch"',
+        '  git fetch --no-tags origin "$resolved_dependency_ref"',
         ('  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$resolved_dependency_commit"'),
         *[f"  {line}" for line in dependency_fetch_lines],
         (
@@ -558,8 +567,8 @@ def _build_vm_task_worktree_command(
         '  composed_commit="$configured_composed_commit"',
         "fi",
         'if [ "$head_commit" = "$base_commit" ] && ! git -C "$target" ls-remote '
-        '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
-        '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
+        '--exit-code origin "refs/evander/$branch" >/dev/null 2>&1; then',
+        '  git -C "$target" push origin "HEAD:refs/evander/$branch"',
         "fi",
         *(
             [

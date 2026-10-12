@@ -1799,7 +1799,7 @@ def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None
     assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
     assert (
         subprocess.run(
-            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-a-1234"],
+            ["git", "rev-parse", "refs/evander/agents/session-1/tasks/task-a-1234"],
             cwd=source,
             check=True,
             capture_output=True,
@@ -2194,7 +2194,7 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
     )
     assert (
         subprocess.run(
-            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-ui-1234"],
+            ["git", "rev-parse", "refs/evander/agents/session-1/tasks/task-ui-1234"],
             cwd=source,
             check=True,
             capture_output=True,
@@ -2344,6 +2344,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
     )
+    _publish_private_source_refs(source)
     request = WorkerTaskWorktreeRequest(
         repo_name="repo",
         worktree_name="task-ui-compact",
@@ -2507,6 +2508,7 @@ def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(
             "commit_sha": dependency_commit,
         }
     ]
+    _publish_private_source_refs(source)
     recovery_request = legacy_request.model_copy(
         update={
             "expected_base_commit_sha": prepared.base_commit_sha,
@@ -2663,6 +2665,7 @@ def test_worker_does_not_merge_missing_dependency_into_retained_task_work(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    _publish_private_source_refs(source)
     recovery_request = legacy_request.model_copy(
         update={
             "expected_base_commit_sha": prepared.base_commit_sha,
@@ -2705,6 +2708,21 @@ def test_worker_does_not_merge_missing_dependency_into_retained_task_work(
         ).returncode
         != 0
     )
+
+
+def _publish_private_source_refs(source: Path) -> None:
+    """Publish simulated agent/Team refs separately from upstream branches."""
+    refs = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname) %(objectname)",
+         "refs/heads/agents", "refs/heads/review", "refs/heads/team"],
+        cwd=source, check=True, capture_output=True, text=True,
+    ).stdout
+    for line in refs.splitlines():
+        ref, commit = line.split()
+        subprocess.run(
+            ["git", "update-ref", ref.replace("refs/heads/", "refs/evander/", 1), commit],
+            cwd=source, check=True,
+        )
 
 
 def test_worker_rolls_back_conflicting_dependency_git_composition(
@@ -2762,6 +2780,7 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
     )
+    _publish_private_source_refs(source)
     request = WorkerTaskWorktreeRequest(
         repo_name="repo",
         worktree_name="task-conflict-1234",
@@ -2908,6 +2927,7 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    _publish_private_source_refs(source)
     adopted = daemon.prepare_task_worktree(
         "session-1",
         request.model_copy(
@@ -3577,6 +3597,21 @@ def test_worker_fetches_new_release_branch_missing_from_persistent_clone(
         text=True,
     ).stdout.strip()
 
+    _publish_private_source_refs(source)
+    # Preserve an old remote-tracking name while an upstream branch with that
+    # name points elsewhere. The pinned Team base must use the private ref.
+    previous_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=checkout,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-ref", f"refs/remotes/origin/{release_branch}", previous_base],
+        cwd=checkout, check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", f"refs/heads/{release_branch}", previous_base],
+        cwd=source, check=True,
+    )
     prepared = daemon.prepare_task_worktree(
         "session-1",
         WorkerTaskWorktreeRequest(
@@ -3662,6 +3697,7 @@ def test_worker_rejects_release_branch_that_does_not_match_pinned_candidate(
         text=True,
     ).stdout.strip()
 
+    _publish_private_source_refs(source)
     with pytest.raises(ValueError, match="expected authoritative Team base commit"):
         daemon.prepare_task_worktree(
             "session-1",
@@ -3684,7 +3720,7 @@ def test_worker_rejects_release_branch_that_does_not_match_pinned_candidate(
                 "show-ref",
                 "--verify",
                 "--quiet",
-                "refs/heads/agents/session-1/tasks/correction-moved-1234",
+                "refs/evander/agents/session-1/tasks/correction-moved-1234",
             ],
             cwd=paths.repo_root / "repo",
             check=False,

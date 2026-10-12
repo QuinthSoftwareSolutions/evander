@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 from typing import Any, Protocol
+from evander.git_refs import PRIVATE_BRANCH_ROOTS, managed_branch_ref, private_branch_ref
 
 
 DEFAULT_STALE_WORKTREE_SECONDS = 60 * 60
@@ -54,7 +55,7 @@ def _normalize_ref(value: str, *, field_name: str) -> str:
     if not ref_name:
         raise ValueError(f"{field_name} is required")
     if not ref_name.startswith("refs/"):
-        ref_name = f"refs/heads/{ref_name}"
+        ref_name = managed_branch_ref(ref_name)
     result = subprocess.run(
         ["git", "check-ref-format", ref_name],
         check=False,
@@ -102,6 +103,23 @@ def _require_commit(run_git: _RunGit, bare_path: Path, object_id: str) -> None:
             f"Unknown commit: {object_id}", cause="reviewed_object_unavailable",
             evidence={"commit_sha": object_id},
         )
+
+
+def resolve_pinned_source_ref(
+    run_git: _RunGit, bare_path: Path, ref: str | None, expected: str | None
+) -> str | None:
+    """Read pre-migration immutable receipts only when their exact SHA survived.
+
+    Explicit upstream refs without a pinned SHA are never reinterpreted as
+    internal branches. No mutable fallback is used for migrated receipts.
+    """
+    if ref and expected and ref.startswith("refs/heads/"):
+        name = ref.removeprefix("refs/heads/")
+        if name.split("/", 1)[0] in PRIVATE_BRANCH_ROOTS and "/" in name:
+            migrated = private_branch_ref(name)
+            if _resolve_ref(run_git, bare_path, migrated) == expected:
+                return migrated
+    return ref
 
 
 def _run_update_ref_transaction(

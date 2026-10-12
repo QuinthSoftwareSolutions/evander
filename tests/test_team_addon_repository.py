@@ -22040,7 +22040,7 @@ def test_recover_release_command_records_retryable_recovery_outbox(
     state, result = _command_service(repo).recover_release_command(
         session_id="session-lead",
         release_package_id="rel-1",
-        agent_branch="refs/heads/agents/lead/release-resolved",
+        agent_branch="refs/evander/agents/lead/release-resolved",
         commit_sha="708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
         summary="Resolved release merge conflict.",
         request_id="request-release-recovery",
@@ -22048,7 +22048,7 @@ def test_recover_release_command_records_retryable_recovery_outbox(
     state, replay = _command_service(repo).recover_release_command(
         session_id="session-lead",
         release_package_id="rel-1",
-        agent_branch="refs/heads/agents/lead/release-resolved",
+        agent_branch="refs/evander/agents/lead/release-resolved",
         commit_sha="708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
         summary="Resolved release merge conflict.",
         request_id="request-release-recovery",
@@ -25480,7 +25480,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
             "git_release_recoveries": [
                 {
                     "release_package_id": "rel-1",
-                    "agent_branch": "refs/heads/agents/lead/release-resolved",
+                    "agent_branch": "refs/evander/agents/lead/release-resolved",
                     "commit_sha": "reviewed-commit",
                     "summary": "Resolved release merge conflict.",
                 }
@@ -25574,7 +25574,7 @@ def test_apply_agent_action_git_release_recovery_continues_failed_feature_promot
             "git_release_recoveries": [
                 {
                     "release_package_id": "rel-1",
-                    "agent_branch": "refs/heads/agents/backend/work",
+                    "agent_branch": "refs/evander/agents/backend/work",
                     "commit_sha": "reviewed-commit",
                 }
             ],

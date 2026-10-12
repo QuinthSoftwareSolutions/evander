@@ -4146,7 +4146,7 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
                 "commit_hash": "a" * 40,
                 "new_commit_hash": "a" * 40,
                 "old_commit_hash": "0" * 40,
-                "ref_name": "refs/heads/agents/session-1/topic",
+                "ref_name": "refs/evander/agents/session-1/topic",
                 "default_branch": "main",
             },
             trace_id="trace-git-1",

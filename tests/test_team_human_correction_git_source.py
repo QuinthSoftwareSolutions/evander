@@ -877,7 +877,7 @@ def test_libvirt_correction_worktree_fetches_and_checks_pinned_candidate() -> No
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr
-    assert 'git fetch --no-tags origin "refs/heads/$base"' in command
+    assert 'git fetch --no-tags origin "$base_fetch_ref"' in command
     assert f"pinned_base_commit={CANDIDATE_COMMIT}" in command
     assert f"pinned_base_tree={CANDIDATE_TREE}" in command
     assert 'git worktree add -b "$branch" "$target" "$base_commitish"' in command

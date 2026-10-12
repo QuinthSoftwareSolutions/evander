@@ -46,9 +46,10 @@ def _emit_git_promotion_event(
 
 def _normalize_agent_branch_ref(value: object) -> str:
     text = _required_text(value, "agent_branch")
-    prefix = "refs/heads/"
-    if text.startswith(prefix):
-        text = text[len(prefix) :]
+    for prefix in ("refs/evander/", "refs/heads/"):
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+            break
     branch = validate_branch_name(text)
     if not branch.startswith("agents/"):
         raise ValueError("agent_branch must be under agents/")

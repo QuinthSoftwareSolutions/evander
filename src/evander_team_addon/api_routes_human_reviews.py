@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.git_refs import private_branch_ref
+
 import os
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -202,7 +204,7 @@ def build_human_reviews_handlers(
             )
 
         release_ref = (
-            release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+            private_branch_ref(release_branch)
         )
         descriptor, archive_name = tempfile.mkstemp(
             prefix="evander-human-review-",

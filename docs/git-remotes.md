@@ -163,7 +163,7 @@ standalone grant and cannot be used for later refreshes.
 
 Writable sessions receive a dedicated SSH key. The forced command permits writes only to:
 
-- `refs/heads/agents/<session-id>/**`
+- `refs/evander/agents/<session-id>/**`
 - that session's PR notes ref
 
 It rejects writes to other agents, ordinary branches, `review/**`, `team/**`, tags, configuration,
@@ -186,16 +186,47 @@ enqueues a structured event; it never receives upstream credentials and never pu
 Namespaces have one owner:
 
 - canonical refresh owns ordinary `refs/heads/*` and tags;
-- guests own their authorized `refs/heads/agents/**` namespace and session notes;
-- host workflows own `refs/heads/review/**`, `refs/heads/team/**`, and `refs/evander/**`.
+- guests own their authorized `refs/evander/agents/**` namespace and session notes;
+- host workflows own `refs/evander/review/**`, `refs/evander/team/**`, and `refs/evander/**`.
 
-Registration and refresh reject an upstream that already contains branches under the reserved
-`agents/`, `review/`, or `team/` prefixes.
+Upstream branches may use `agents/`, `review/`, and `team/` like any other branch prefix.
+They remain under `refs/heads/` and never replace the separate Evander-owned refs.
+Workflow and Team records retain logical names such as `agents/<session-id>/topic`;
+internal operations resolve those to `refs/evander/agents/<session-id>/topic`.
+Use a full `refs/heads/...` name when explicitly selecting an upstream branch with
+one of these names.
 
 A refresh fetches into `refs/evander/refresh/<operation-id>/**`, then applies canonical ref changes
 with one `git update-ref --stdin` transaction. It never prunes guest, review, Team, notes, or
 operation refs. Git remotes are not added or rewritten during operations because linked worktrees
 share repository configuration.
+
+### Migrate existing private refs
+
+Update the control plane and workers together, with active Git writes finished before
+the upgrade. Existing repositories migrate on their first locked managed-Git operation.
+Operators can also preview and apply the migration explicitly before restarting the
+updated services:
+
+```bash
+evander-cli git-repos migrate-private-refs mr_0123456789abcdef0123
+evander-cli git-repos migrate-private-refs mr_0123456789abcdef0123 --apply
+```
+
+The preview reports each old ref, its new ref, and the preserved commit. Apply moves
+legacy `refs/heads/agents/**`, `refs/heads/review/**`, and `refs/heads/team/**` to
+`refs/evander/` in one compare-and-swap transaction and refreshes the repository's
+installed Git hooks. A durable marker makes subsequent
+runs a no-op, even after upstream branches reuse those names. Conflicting destination
+refs and checked-out legacy host branches stop the migration without changing refs.
+Detach those host worktrees or reconcile the reported conflicting refs before retrying.
+
+Refresh existing sessions' Git helpers through their normal managed-Git bootstrap
+before resuming agent pushes. Existing exact-repository SSH keys remain valid: legacy
+authorization metadata is accepted only for the new private write destination. Writes
+to `refs/heads/**` remain denied. Agent branch names in workflows and Team records do
+not change, and receipts with an exact pre-migration commit can still resolve the
+preserved private ref.
 
 Pull-time refresh requests travel over `/run/evander/managed-git-refresh.sock`. The broker accepts
 only same-host peer credentials and registry-backed `mr_<20-hex>` identifiers derived from the

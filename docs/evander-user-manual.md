@@ -559,7 +559,7 @@ The important operator-level result is that review and release refer to one exac
 
 > <span class="sidebar-kicker">Deeper detail</span> **Managed-Git enforcement**
 >
-> The host registers or refreshes an upstream into an Evander-owned bare repository. The session receives a `managed_repo_id`; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper constrains operations and refs. Agent writes belong below `refs/heads/agents/<session-id>/<topic>`.
+> The host registers or refreshes an upstream into an Evander-owned bare repository. The session receives a `managed_repo_id`; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper constrains operations and refs. Agent writes belong below `refs/evander/agents/<session-id>/<topic>`.
 >
 > Workflows consume the exact SHA from the triggering push, pin it, and promote or publish it with explicit lease checks. This prevents a **TOCTOU race**[^toctou] in which a mutable branch advances after review. Managed repositories and ephemeral worktrees stay below the runtime root; exposing a trusted host checkout would bypass ownership, cleanup, and provenance controls.
 
@@ -2748,6 +2748,14 @@ worker egress policies allow only the configured control-plane subscription prox
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
 
+The same page shows remaining weekly usage and banked resets. With privileged operations unlocked,
+expand an enabled, signed-in profile and choose **Redeem one reset** to use an available reset.
+The page refreshes its counts and usage, and recovered capacity makes queued work eligible again.
+If the response fails, **Retry reset redemption** checks the same attempt without consuming a
+second reset, including after leaving the page or reloading it. Retry information is saved before
+submission and retained until a definitive response. A changed directory worker or account cannot
+receive the original redemption. **Unavailable** is distinct from a reported count of zero.
+
 When cleanup fails:
 
 1. Record the session ID, execution ID, worker job ID, last observed status, and cleanup error.
@@ -3223,10 +3231,10 @@ The bare repository is a controlled exchange, not a shared free-for-all.
 | Namespace | Owner |
 |---|---|
 | ordinary `refs/heads/*` and tags | canonical refresh |
-| `refs/heads/agents/<session-id>/**` and that session's notes | the authorized guest session |
-| `refs/heads/review/**`, `refs/heads/team/**`, and `refs/evander/**` | host workflows |
+| `refs/evander/agents/<session-id>/**` and that session's notes | the authorized guest session |
+| `refs/evander/review/**`, `refs/evander/team/**`, and `refs/evander/**` | host workflows |
 
-Registration rejects an upstream that already uses reserved top-level branch prefixes such as `agents/`, `review/`, or `team/`.
+Upstream branches may use any ordinary Git branch name, including `agents/`, `review/`, and `team/`. Evander keeps its own refs outside `refs/heads/` so refresh cannot overwrite agent or review work.
 
 Canonical refresh first fetches into an operation-scoped namespace under `refs/evander/refresh/`, then updates the ordinary refs in one `git update-ref --stdin` transaction. It does not prune agent, review, Team, note, or operation refs.
 
@@ -9400,7 +9408,7 @@ The everyday question here is whether the agent received the intended code or fi
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Guest clone is denied | Restricted-SSH log plus managed repository ID/binding | Unknown ID, directory binding, key scope, or wrapper rule | Register/refresh through `evander-cli git-repos`; clone by returned `managed_repo_id` |
-| Guest push is denied | Attempted ref and session-scoped allowed prefix | Ref protection or stale scoped key | Push to `refs/heads/agents/<session-id>/<topic>` with the provisioned restricted key |
+| Guest push is denied | Attempted ref and session-scoped allowed prefix | Ref protection or stale scoped key | Push to `refs/evander/agents/<session-id>/<topic>` with the provisioned restricted key |
 | Published branch is not the reviewed commit | Review candidate SHA, approved SHA, lease expectation, and remote ref | Exact-SHA/lease gate | Stop publication; re-establish review evidence and promote the exact approved SHA through the managed effect |
 | Managed Git operation left a worktree | Operation manifest/lock under `runtime/git-worktrees/` and process liveness | Interrupted operation or stale process | Use the service's reconciliation/cleanup path; do not blindly delete an active worktree |
 | Resolved Team task worktree remains | `WorktreeCleanupCandidate` state, exact task/repository/path/branch, last safety check, and active dispatch/context references | Task-worktree cleanup safety or recovery | Preserve the checkout; repair the named state, commit, path, or dirty-file mismatch and retry the candidate through the reconciler |
