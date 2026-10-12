@@ -8,6 +8,8 @@
   conflicting destinations, and retain pinned pre-migration receipts. Add an
   operator preview/apply command and preserve exact-repository, session-scoped
   SSH write restrictions across the transport and workflow paths.
+- Preserve upstream branch identity when preparing reference repositories,
+  including default and explicitly selected branches with matching private names.
 
 ## 2026-10-10 - Share internal platform contracts (0.86.7)
 

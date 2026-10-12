@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
@@ -1053,6 +1054,106 @@ def test_prepare_reference_repositories_resolves_selected_managed_repository_id(
     assert resolved[0].managed_repo_id == "mr-selected"
     assert resolved[0].repo_source == "https://example.invalid/selected.git"
     assert resolved[0].source_ref == "refs/heads/trunk"
+
+
+@pytest.mark.parametrize("namespace", ["agents", "review", "team"])
+@pytest.mark.parametrize("branch_selection", ["default", "short", "qualified"])
+@pytest.mark.parametrize("refresh_upstream", [False, True])
+def test_prepare_reference_repositories_keeps_upstream_and_private_refs_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    namespace: str,
+    branch_selection: str,
+    refresh_upstream: bool,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path / "runtime",
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    branch = f"{namespace}/reference"
+    source_ref = f"refs/heads/{branch}"
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=source, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-b", branch)
+    git("config", "user.name", "Reference Repository Test")
+    git("config", "user.email", "reference@example.invalid")
+    readme = source / "README.md"
+    readme.write_text("private content\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "-m", "private content")
+    private_commit = git("rev-parse", "HEAD")
+    readme.write_text("upstream content\n", encoding="utf-8")
+    git("commit", "-am", "upstream content")
+    upstream_commit = git("rev-parse", "HEAD")
+    managed = ManagedGitAdminService(config, SimpleNamespace(), tmp_path)
+    registered = managed.register_repository("root/personal", str(source))
+    repo_id = registered["managed_repo_id"]
+    bare, _ = managed.resolve_internal_repository(repo_id, "root/personal")
+    git(f"--git-dir={bare}", "update-ref", f"refs/evander/{branch}", private_commit)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-1",
+            directory_path="root/personal",
+            execution_backend="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        get_managed_git_repository=managed.get_repository,
+        refresh_managed_git_repository_if_branch_changed=(
+            managed.refresh_repository_if_branch_changed
+        ),
+        resolve_managed_git_branch_commit=managed.resolve_branch_commit,
+        resolve_managed_git_clone=lambda **kwargs: {
+            "clone_url": "https://example.invalid/reference.git",
+            "repo_name": "reference",
+        },
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prepare_reference_repositories.container_backend",
+        lambda context, config: backend,
+    )
+    repository = {"managed_repo_id": repo_id}
+    if branch_selection != "default":
+        repository["branch"] = source_ref if branch_selection == "qualified" else branch
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repository",
+            display_name="Prepare repository",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="assistant-1",
+            directory_path="root/personal",
+            repositories=[repository],
+            refresh_upstream=refresh_upstream,
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["repositories"][0]["source_ref"] == source_ref
+    assert result["repositories"][0]["commit_sha"] == upstream_commit
+    assert backend.prepared_reference_repos[0]["source_ref"] == source_ref
+    assert backend.prepared_reference_repos[0]["commit_sha"] == upstream_commit
 
 
 def test_prepare_reference_repositories_reconciles_forward_trust_transitions_in_parallel(
