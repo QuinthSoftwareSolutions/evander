@@ -16,6 +16,19 @@ from evander.triggers.providers.git_push import (
 _MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 
 
+def test_upstream_agent_named_branch_does_not_impersonate_a_session(tmp_path: Path) -> None:
+    repo = tmp_path / "repo.git"
+    subprocess.run(["git", "init", "--bare", str(repo)], check=True, capture_output=True)
+    _configure_managed_repo(repo)
+    payload = build_git_push_payloads(
+        repo_path=str(repo), old_rev="0" * 40, new_rev="1" * 40,
+        ref_name="refs/heads/agents/session-1/topic",
+    )[0]
+    assert payload["branch_name"] == "agents/session-1/topic"
+    assert "session_id" not in payload
+    assert "review_branch" not in payload
+
+
 def _configure_managed_repo(
     repo_path: Path,
     *,
@@ -140,7 +153,7 @@ def test_git_push_provider_derives_session_metadata_from_agent_branch(tmp_path: 
         repo_path=str(repo_path),
         old_rev="0" * 40,
         new_rev="1" * 40,
-        ref_name="refs/heads/agents/session-1/topic-branch",
+        ref_name="refs/evander/agents/session-1/topic-branch",
     )
 
     assert event is not None
@@ -178,7 +191,7 @@ def test_build_git_push_payloads_ignores_shared_notes_ref(
         text=True,
     )
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/evander/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,
@@ -246,7 +259,7 @@ def test_build_git_push_payloads_maps_per_session_notes_push_to_matching_agent_b
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/evander/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,

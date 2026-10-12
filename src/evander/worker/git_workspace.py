@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.git_refs import managed_branch_ref
+
 from evander.git_recovery import GitPreparationFailure
 
 import json
@@ -1047,7 +1049,7 @@ class GitWorkspaceOperations:
             branch = str(source["branch"])
             pinned_ref = str(source.get("pinned_ref") or "").strip()
             fetch_exact_ref(
-                pinned_ref or f"refs/heads/{branch}",
+                pinned_ref or managed_branch_ref(branch),
                 str(source["commit_sha"]),
                 label=pinned_ref or branch,
             )
@@ -1132,7 +1134,7 @@ class GitWorkspaceOperations:
                 raise ValueError("resolved dependency adoption requires an authoritative base")
             resolved_commit = str(resolved_dependency_commit_sha)
             fetch_exact_ref(
-                f"refs/heads/{resolved_dependency_branch}",
+                managed_branch_ref(resolved_dependency_branch),
                 resolved_commit,
                 label=str(resolved_dependency_branch),
             )

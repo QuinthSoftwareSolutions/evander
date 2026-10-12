@@ -1997,7 +1997,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         "canonical_repository_identity": "azure-devops:org/project/app",
         "repository_display_name": "SampleApplication",
         "managed_repo_id": "mr_0123456789abcdefabcd",
-        "release_ref": "refs/heads/team/team/releases/release-1",
+        "release_ref": "refs/evander/team/team/releases/release-1",
         "candidate_commit_sha": "candidate-sha",
         "candidate_tree_hash": "candidate-tree",
         "checkout_command": (
@@ -2135,7 +2135,7 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
         {
             "managed_repo_id": "mr_0123456789abcdefabcd",
             "directory_path": "root/team",
-            "source_ref": "refs/heads/team/team/releases/release-1",
+            "source_ref": "refs/evander/team/team/releases/release-1",
             "commit_sha": "candidate-sha",
             "tree_hash": "candidate-tree",
         }
@@ -2164,7 +2164,7 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
             "directory_path": "root/team",
         },
         "candidate": {
-            "source_ref": "refs/heads/team/team/releases/release-1",
+            "source_ref": "refs/evander/team/team/releases/release-1",
             "commit_sha": "candidate-sha",
             "tree_hash": "candidate-tree",
         },
@@ -9387,7 +9387,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     assert refresh_response.json()["imported"]["managed_repo_id"] == managed_repo_id
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == refreshed_commit
 
-    _git_dir(bare_repo, "update-ref", "refs/heads/agents/session-1/work", refreshed_commit)
+    _git_dir(bare_repo, "update-ref", "refs/evander/agents/session-1/work", refreshed_commit)
 
     preserved_response = client.post(
         "/api/addons/team-addon/projects/git/import",
@@ -9399,7 +9399,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
 
     assert preserved_response.status_code == 201
     assert (
-        _git_dir(bare_repo, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip()
+        _git_dir(bare_repo, "rev-parse", "refs/evander/agents/session-1/work").stdout.strip()
         == refreshed_commit
     )
 

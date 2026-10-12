@@ -303,7 +303,7 @@ def test_team_checkout_release_candidate_resolves_pinned_release_and_managed_rep
         (
             ("mr_0123456789abcdefabcd", "root/team"),
             {
-                "source_ref": "refs/heads/team/team-1/releases/release-1",
+                "source_ref": "refs/evander/team/team-1/releases/release-1",
                 "commit_sha": candidate_sha,
                 "tree_hash": tree_hash,
                 "target_dir": target,

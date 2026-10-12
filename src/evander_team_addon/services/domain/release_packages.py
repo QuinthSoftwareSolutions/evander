@@ -2570,7 +2570,7 @@ def _review_manifest_branch_aliases(branch: str | None) -> set[str]:
     if value is None:
         return set()
     aliases = {value}
-    prefixes = ("refs/heads/", "refs/remotes/", "origin/", "local-evander/")
+    prefixes = ("refs/evander/", "refs/heads/", "refs/remotes/", "origin/", "local-evander/")
     changed = True
     while changed:
         changed = False

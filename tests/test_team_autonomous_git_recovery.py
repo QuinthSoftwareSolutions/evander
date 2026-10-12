@@ -633,8 +633,8 @@ def test_salvage_captures_outside_state_lock_rechecks_preview_and_requires_new_r
                 )
             )
         return {
-            "work_ref": "refs/heads/agents/session-backend/recovery/work",
-            "index_ref": "refs/heads/agents/session-backend/recovery/index",
+            "work_ref": "refs/evander/agents/session-backend/recovery/work",
+            "index_ref": "refs/evander/agents/session-backend/recovery/index",
             "commit_sha": "c" * 40,
             "index_commit_sha": "d" * 40,
         }

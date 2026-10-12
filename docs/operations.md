@@ -3394,7 +3394,7 @@ reviewing whatever the default branch clone happens to contain:
 ./scripts/guest/setup_review_repo.sh \
   --repo-path /home/agent/<repo-name> \
   --base-ref refs/heads/main \
-  --head-ref refs/heads/review/topic
+  --head-ref refs/evander/review/topic
 ```
 
 The helper:
@@ -3945,7 +3945,7 @@ effect then probes only each requested upstream branch; an omitted branch uses s
 upstream default-branch change is detected, unless an operator default override selects an exact
 branch. An unchanged advertisement reuses the canonical mirror without fetching. A changed or
 missing branch, changed default branch, or uninitialized mirror runs the existing full staged fetch
-and atomic ref transaction, including reserved-namespace and configured-default validation. Probe,
+and atomic ref transaction, including private-ref isolation and configured-default validation. Probe,
 authentication, network, malformed advertisement, and timeout failures fail closed instead of
 serving a cached ref.
 
@@ -4044,7 +4044,7 @@ directly and therefore does not use the broker's stable error-code envelope.
 ### Agent push and queue processing
 
 Each writable guest key is restricted to one managed repository, one
-`refs/heads/agents/<session-id>/**` namespace, and the session PR-notes ref. A guest cannot write
+`refs/evander/agents/<session-id>/**` namespace, and the session PR-notes ref. A guest cannot write
 ordinary branches, host review/Team namespaces, tags, configuration, or hooks.
 
 Inside the guest:

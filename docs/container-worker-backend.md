@@ -882,7 +882,7 @@ also persist only the managed ID, base-branch override, and release-branch polic
 
 Clone jobs default to writable Git access. The control plane asks the worker daemon to generate a
 per-session, per-repository SSH key, installs that public key on the control-plane Git user with a forced command
-scoped to the managed repository, `refs/heads/agents/<session-id>/...`, and that session's PR notes
+scoped to the managed repository, `refs/evander/agents/<session-id>/...`, and that session's PR notes
 ref, then configures the repo-local `git push-agent` alias. Set `git_access_mode` to `read-only` on
 `effect:agent:clone-repo` when a container session should only fetch. Read-only authorization is
 still scoped to that managed repository and directory boundary; a worker key must not provide

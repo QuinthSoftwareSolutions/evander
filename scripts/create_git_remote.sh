@@ -78,6 +78,10 @@ if [[ ! -d "${REPO_DIR}" ]]; then
   git init --bare "${REPO_DIR}" >/dev/null
   git --git-dir="${REPO_DIR}" config receive.denyCurrentBranch ignore
   git --git-dir="${REPO_DIR}" config gc.auto 0
+  layout_marker="$(printf 'evander private ref layout v2\n' | git --git-dir="${REPO_DIR}" hash-object -w --stdin)"
+  git --git-dir="${REPO_DIR}" update-ref refs/evander/layout/private-refs-v2 "${layout_marker}"
+  touch "${REPO_DIR}/evander-private-refs.lock"
+  chmod 644 "${REPO_DIR}/evander-private-refs.lock"
 fi
 
 cat > "${REPO_DIR}/hooks/pre-receive" <<'HOOK'
@@ -161,7 +165,10 @@ if [[ -z "${AUTH_SESSION_ID}" || "${AUTH_SESSION_ID}" == */* || "${AUTH_SESSION_
   exit 1
 fi
 
-expected_prefix="refs/heads/agents/${AUTH_SESSION_ID}/"
+expected_prefix="refs/evander/agents/${AUTH_SESSION_ID}/"
+if [[ "${AUTH_REF_PREFIX}" == "refs/heads/agents/${AUTH_SESSION_ID}/" ]]; then
+  AUTH_REF_PREFIX="${expected_prefix}"
+fi
 if [[ "${AUTH_REF_PREFIX}" != "${expected_prefix}" ]]; then
   echo "Authorized Git ref prefix must be ${expected_prefix}." >&2
   exit 1

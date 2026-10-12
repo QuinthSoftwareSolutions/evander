@@ -21,7 +21,7 @@ Environment:
   EVANDER_GIT_KEY_NAME      Guest key filename. Default: evander-git
   EVANDER_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
   EVANDER_GIT_REPO          Bare repo path or name under EVANDER_GIT_ROOT to allow access.
-  EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
+  EVANDER_GIT_SESSION_ID    Session id allowed to push refs/evander/agents/<session-id>/...
                             Defaults to EVANDER_SESSION_ID from the guest session env.
   EVANDER_GIT_READ_ONLY     Set to 1 to force repo-scoped read-only Git SSH access.
   EVANDER_GIT_REMOVE_LEGACY_KEY
@@ -135,7 +135,7 @@ validate_git_session_id() {
     return 1
   fi
 
-  git check-ref-format "refs/heads/agents/${session_id}/probe" >/dev/null 2>&1
+  git check-ref-format "refs/evander/agents/${session_id}/probe" >/dev/null 2>&1
 }
 
 escape_authorized_keys_command() {
@@ -366,7 +366,7 @@ elif [[ -n "${AUTH_REPO_REAL}" && -n "${GIT_SESSION_ID}" ]]; then
     echo "Session ids used for Git writes must be a single valid ref path component." >&2
     exit 1
   fi
-  AUTH_REF_PREFIX="refs/heads/agents/${GIT_SESSION_ID}/"
+  AUTH_REF_PREFIX="refs/evander/agents/${GIT_SESSION_ID}/"
   AUTH_PR_NOTES_REF="$(agent_pr_notes_ref_for_session "${GIT_SESSION_ID}")"
   AUTH_ACCESS="write"
 elif is_truthy "${EVANDER_GIT_REQUIRE_WRITE_METADATA:-0}"; then
@@ -375,7 +375,7 @@ elif is_truthy "${EVANDER_GIT_REQUIRE_WRITE_METADATA:-0}"; then
   exit 1
 elif [[ -n "${AUTH_REPO_REAL}" ]]; then
   echo "Session metadata unavailable; installing read-only Git SSH access scoped to ${AUTH_REPO_REAL}." >&2
-  echo "Set EVANDER_GIT_SESSION_ID to allow pushes to refs/heads/agents/<session-id>/..." >&2
+  echo "Set EVANDER_GIT_SESSION_ID to allow pushes to refs/evander/agents/<session-id>/..." >&2
 else
   echo "Cannot install Git SSH access without EVANDER_GIT_REPO metadata." >&2
   echo "Set EVANDER_GIT_REPO for repo-scoped read-only access, or set EVANDER_GIT_REPO and EVANDER_GIT_SESSION_ID for writable access." >&2

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.git_refs import managed_branch_ref
+
 import base64
 import errno
 import hashlib
@@ -2181,9 +2183,9 @@ class WorkerDaemon(GitWorkspaceOperations):
         branch: str,
         env: dict[str, str],
     ) -> None:
-        remote_ref = f"refs/heads/{branch}"
+        remote_ref = f"refs/evander/{branch}"
         remote = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", remote_ref],
+            ["git", "ls-remote", "origin", remote_ref],
             cwd=target_dir,
             env=env,
             check=True,
@@ -3510,6 +3512,11 @@ class WorkerDaemon(GitWorkspaceOperations):
         *,
         env: dict[str, str],
     ) -> str | None:
+        requested = managed_branch_ref(base_ref)
+        if requested.startswith(("refs/evander/agents/", "refs/evander/review/", "refs/evander/team/")):
+            # Persistent clones may still have legacy origin/team/... tracking
+            # refs. They must not redirect a private base back to upstream.
+            return requested
         symbolic = subprocess.run(
             ["git", "rev-parse", "--symbolic-full-name", base_ref],
             cwd=repo_dir,
@@ -3518,20 +3525,22 @@ class WorkerDaemon(GitWorkspaceOperations):
             capture_output=True,
             text=True,
         ).stdout.strip()
-        if symbolic.startswith("refs/heads/") or symbolic.startswith("refs/tags/"):
+        if symbolic.startswith(("refs/heads/", "refs/tags/", "refs/evander/")):
             return symbolic
         remote_prefix = "refs/remotes/origin/"
         if symbolic.startswith(remote_prefix):
             return f"refs/heads/{symbolic.removeprefix(remote_prefix)}"
+        if base_ref == "HEAD":
+            return None
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base_ref.casefold()):
             return None
         candidate = (
             f"refs/heads/{base_ref.removeprefix('origin/')}"
             if base_ref.startswith("origin/")
-            else f"refs/heads/{base_ref}"
+            else managed_branch_ref(base_ref)
         )
         valid_branch = subprocess.run(
-            ["git", "check-ref-format", "--branch", candidate.removeprefix("refs/heads/")],
+            ["git", "check-ref-format", candidate],
             cwd=repo_dir,
             env=env,
             check=False,

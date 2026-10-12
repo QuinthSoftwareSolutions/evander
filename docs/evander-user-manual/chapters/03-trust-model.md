@@ -137,7 +137,7 @@ The important operator-level result is that review and release refer to one exac
 
 > <span class="sidebar-kicker">Deeper detail</span> **Managed-Git enforcement**
 >
-> The host registers or refreshes an upstream into an Evander-owned bare repository. The session receives a `managed_repo_id`; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper constrains operations and refs. Agent writes belong below `refs/heads/agents/<session-id>/<topic>`.
+> The host registers or refreshes an upstream into an Evander-owned bare repository. The session receives a `managed_repo_id`; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper constrains operations and refs. Agent writes belong below `refs/evander/agents/<session-id>/<topic>`.
 >
 > Workflows consume the exact SHA from the triggering push, pin it, and promote or publish it with explicit lease checks. This prevents a **TOCTOU race**[^toctou] in which a mutable branch advances after review. Managed repositories and ephemeral worktrees stay below the runtime root; exposing a trusted host checkout would bypass ownership, cleanup, and provenance controls.
 

@@ -72,7 +72,7 @@ The everyday question here is whether the agent received the intended code or fi
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Guest clone is denied | Restricted-SSH log plus managed repository ID/binding | Unknown ID, directory binding, key scope, or wrapper rule | Register/refresh through `evander-cli git-repos`; clone by returned `managed_repo_id` |
-| Guest push is denied | Attempted ref and session-scoped allowed prefix | Ref protection or stale scoped key | Push to `refs/heads/agents/<session-id>/<topic>` with the provisioned restricted key |
+| Guest push is denied | Attempted ref and session-scoped allowed prefix | Ref protection or stale scoped key | Push to `refs/evander/agents/<session-id>/<topic>` with the provisioned restricted key |
 | Published branch is not the reviewed commit | Review candidate SHA, approved SHA, lease expectation, and remote ref | Exact-SHA/lease gate | Stop publication; re-establish review evidence and promote the exact approved SHA through the managed effect |
 | Managed Git operation left a worktree | Operation manifest/lock under `runtime/git-worktrees/` and process liveness | Interrupted operation or stale process | Use the service's reconciliation/cleanup path; do not blindly delete an active worktree |
 | Resolved Team task worktree remains | `WorktreeCleanupCandidate` state, exact task/repository/path/branch, last safety check, and active dispatch/context references | Task-worktree cleanup safety or recovery | Preserve the checkout; repair the named state, commit, path, or dirty-file mismatch and retry the candidate through the reconciler |

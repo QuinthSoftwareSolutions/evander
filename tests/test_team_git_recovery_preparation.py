@@ -67,6 +67,7 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
         _git(source, "checkout", "-q", "-b", branch, "main")
         (source / "shared.txt").write_text(f"{name}\n")
         _git(source, "commit", "-qam", name)
+        _git(source, "update-ref", f"refs/evander/{branch}", "HEAD")
         sources.append({
             "dependency_task_id": f"task-{name}",
             "deliverable_id": f"deliverable-{name}",
@@ -194,6 +195,7 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
     _git(source, "add", "shared.txt")
     _git(source, "commit", "-qm", "Resolve dependencies")
     resolved_commit = _git(source, "rev-parse", "HEAD")
+    _git(source, "update-ref", f"refs/evander/{recovery_branch}", resolved_commit)
 
     def accept_recovery(state: TeamState) -> None:
         [recovery] = state.dependency_composition_recoveries.values()
@@ -314,6 +316,7 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
         (source / f"{name}.txt").write_text(f"{name}\n")
         _git(source, "add", ".")
         _git(source, "commit", "-qm", name)
+        _git(source, "update-ref", f"refs/evander/{branch}", "HEAD")
         contributions.append({
             "dependency_task_id": f"task-{name}", "deliverable_id": f"deliverable-{name}",
             "branch": branch, "commit_sha": _git(source, "rev-parse", "HEAD"),

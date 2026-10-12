@@ -2706,7 +2706,7 @@ bare repository. The session receives a <code>managed_repo_id</code>;
 the control plane resolves the internal path and provisions a scoped SSH
 key. The restricted SSH wrapper constrains operations and refs. Agent
 writes belong below
-<code>refs/heads/agents/&lt;session-id&gt;/&lt;topic&gt;</code>.</p>
+<code>refs/evander/agents/&lt;session-id&gt;/&lt;topic&gt;</code>.</p>
 <p>Workflows consume the exact SHA from the triggering push, pin it, and
 promote or publish it with explicit lease checks. This prevents a
 <strong>TOCTOU race</strong><a href="#fn9" class="footnote-ref" id="fnref9" role="doc-noteref"><sup>9</sup></a> in which a mutable
@@ -6535,6 +6535,17 @@ cloud and worker egress policies allow only the configured control-plane
 subscription proxy and that the proxy&#39;s OpenAI/ChatGPT hostname
 allowlist is current. Do not copy the broker&#39;s account file into a job
 for diagnosis; a missing login is meant to fail closed.</p>
+<p>The same page shows remaining weekly usage and banked resets. With
+privileged operations unlocked, expand an enabled, signed-in profile and
+choose <strong>Redeem one reset</strong> to use an available reset. The
+page refreshes its counts and usage, and recovered capacity makes queued
+work eligible again. If the response fails, <strong>Retry reset
+redemption</strong> checks the same attempt without consuming a second
+reset, including after leaving the page or reloading it. Retry
+information is saved before submission and retained until a definitive
+response. A changed directory worker or account cannot receive the
+original redemption. <strong>Unavailable</strong> is distinct from a
+reported count of zero.</p>
 <p>When cleanup fails:</p>
 <ol type="1">
 <li>Record the session ID, execution ID, worker job ID, last observed
@@ -7489,20 +7500,21 @@ free-for-all.</p>
 <td>canonical refresh</td>
 </tr>
 <tr class="even">
-<td><code>refs/heads/agents/&lt;session-id&gt;/**</code> and that
+<td><code>refs/evander/agents/&lt;session-id&gt;/**</code> and that
 session&#39;s notes</td>
 <td>the authorized guest session</td>
 </tr>
 <tr class="odd">
-<td><code>refs/heads/review/**</code>, <code>refs/heads/team/**</code>,
-and <code>refs/evander/**</code></td>
+<td><code>refs/evander/review/**</code>,
+<code>refs/evander/team/**</code>, and <code>refs/evander/**</code></td>
 <td>host workflows</td>
 </tr>
 </tbody>
 </table>
-<p>Registration rejects an upstream that already uses reserved top-level
-branch prefixes such as <code>agents/</code>, <code>review/</code>, or
-<code>team/</code>.</p>
+<p>Upstream branches may use any ordinary Git branch name, including
+<code>agents/</code>, <code>review/</code>, and <code>team/</code>.
+Evander keeps its own refs outside <code>refs/heads/</code> so refresh
+cannot overwrite agent or review work.</p>
 <p>Canonical refresh first fetches into an operation-scoped namespace
 under <code>refs/evander/refresh/</code>, then updates the ordinary refs
 in one <code>git update-ref --stdin</code> transaction. It does not
@@ -18395,8 +18407,8 @@ by returned <code>managed_repo_id</code></td>
 <td>Attempted ref and session-scoped allowed prefix</td>
 <td>Ref protection or stale scoped key</td>
 <td>Push to
-<code>refs/heads/agents/&lt;session-id&gt;/&lt;topic&gt;</code> with the
-provisioned restricted key</td>
+<code>refs/evander/agents/&lt;session-id&gt;/&lt;topic&gt;</code> with
+the provisioned restricted key</td>
 </tr>
 <tr class="odd">
 <td>Published branch is not the reviewed commit</td>

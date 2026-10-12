@@ -48,7 +48,7 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
             display_name="Create PR",
             type="effect:pr:create",
             managed_repo_id="  mr_11111111111111111111  ",
-            source_ref="refs/heads/review/default",
+            source_ref="refs/evander/review/default",
             expected_commit_sha="1111111111111111111111111111111111111111",
             destination_branch="review/default",
             base_branch="main",
@@ -65,7 +65,7 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
     result = provider.execute(
         resolved_config={
             "managed_repo_id": "  mr_22222222222222222222  ",
-            "source_ref": "  refs/heads/review/session-1  ",
+            "source_ref": "  refs/evander/review/session-1  ",
             "expected_commit_sha": "2222222222222222222222222222222222222222",
             "destination_branch": "  feature/issue-1  ",
             "title": "  Override title  ",
@@ -78,7 +78,7 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
     assert admin_service.calls == [
         {
             "managed_repo_id": "mr_22222222222222222222",
-            "source_ref": "refs/heads/review/session-1",
+            "source_ref": "refs/evander/review/session-1",
             "expected_commit_sha": "2222222222222222222222222222222222222222",
             "destination_branch": "feature/issue-1",
             "directory_path": "root",
@@ -117,7 +117,7 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
             "reason": "destination_branch_ahead",
             "message": "Destination branch is ahead",
             "destination_branch": "feature/issue-1",
-            "source_ref": "refs/heads/review/issue-1/work",
+            "source_ref": "refs/evander/review/issue-1/work",
         }
     )
     provider = PrCreateEffectProvider()
@@ -127,7 +127,7 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
             display_name="Create PR",
             type="effect:pr:create",
             managed_repo_id="mr_11111111111111111111",
-            source_ref="refs/heads/review/issue-1/work",
+            source_ref="refs/evander/review/issue-1/work",
             expected_commit_sha="1111111111111111111111111111111111111111",
             destination_branch="feature/issue-1",
         ),
@@ -151,7 +151,7 @@ def test_pr_create_provider_uses_fallback_title_when_title_is_blank(tmp_path: Pa
             display_name="Create PR",
             type="effect:pr:create",
             managed_repo_id="mr_11111111111111111111",
-            source_ref="refs/heads/review/topic",
+            source_ref="refs/evander/review/topic",
             expected_commit_sha="1111111111111111111111111111111111111111",
             destination_branch="feature/topic",
             title="",
@@ -177,7 +177,7 @@ def test_pr_create_provider_uses_fallback_destination_when_override_is_blank(
             display_name="Create PR",
             type="effect:pr:create",
             managed_repo_id="mr_11111111111111111111",
-            source_ref="refs/heads/review/topic",
+            source_ref="refs/evander/review/topic",
             expected_commit_sha="1" * 40,
             destination_branch=None,
             fallback_destination_branch="feature/session-1",
@@ -207,7 +207,7 @@ def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> Non
         provider.execute(
             resolved_config={
                 "managed_repo_id": "mr_11111111111111111111",
-                "source_ref": "refs/heads/review/topic",
+                "source_ref": "refs/evander/review/topic",
                 "expected_commit_sha": "1111111111111111111111111111111111111111",
                 "destination_branch": "feature/topic",
             }

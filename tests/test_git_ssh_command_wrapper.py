@@ -89,6 +89,12 @@ done
         encoding="utf-8",
     )
     hook.chmod(0o755)
+    from evander.admin.services.managed_git_ref_migration import migrate_private_refs
+
+    def run_git(command, *, input_text=None, check=True):
+        return subprocess.run(command, input=input_text, check=check, capture_output=True, text=True)
+
+    migrate_private_refs(run_git, repo)
     return repo
 
 
@@ -143,7 +149,7 @@ def _ssh_env(
         result.update(
             {
                 "EVANDER_GIT_AUTH_SESSION_ID": session_id,
-                "EVANDER_GIT_AUTH_REF_PREFIX": f"refs/heads/agents/{session_id}/",
+                "EVANDER_GIT_AUTH_REF_PREFIX": f"refs/evander/agents/{session_id}/",
                 "EVANDER_GIT_AUTH_PR_NOTES_REF": agent_pr_notes_ref_for_session(session_id),
             }
         )
@@ -231,10 +237,12 @@ def test_prefix_only_read_key_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "destination_ref",
     [
-        "refs/heads/agents/other-session/topic",
-        "refs/heads/review/topic",
-        "refs/heads/team/topic",
+        "refs/evander/agents/other-session/topic",
+        "refs/evander/review/topic",
+        "refs/evander/team/topic",
         "refs/heads/main",
+        "refs/heads/agents/session-1/topic",
+        "refs/evander/layout/private-refs-v2",
         "refs/tags/v1",
     ],
 )
@@ -258,9 +266,11 @@ def test_write_key_cannot_update_host_or_foreign_namespaces(
     )
     _git(worktree, "remote", "add", "agent", f"ssh://evander-git-host{repo}")
 
+    before = _git_dir(repo, "show-ref", "--verify", destination_ref, check=False)
     denied = _git(
         worktree,
         "push",
+        "--force",
         "agent",
         f"HEAD:{destination_ref}",
         env=write_env,
@@ -270,10 +280,11 @@ def test_write_key_cannot_update_host_or_foreign_namespaces(
 
     assert denied.returncode != 0
     assert "outside authorized prefix" in denied.stderr
-    assert missing.returncode != 0
+    assert (missing.returncode, missing.stdout) == (before.returncode, before.stdout)
 
 
-def test_write_key_accepts_only_its_agent_branch_and_session_note(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_key_metadata", [False, True])
+def test_write_key_accepts_only_its_agent_branch_and_session_note(tmp_path: Path, legacy_key_metadata: bool) -> None:
     git_root = tmp_path / "managed-git"
     git_root.mkdir()
     env = _base_env(git_root)
@@ -289,9 +300,11 @@ def test_write_key_accepts_only_its_agent_branch_and_session_note(tmp_path: Path
         access="write",
         session_id="session-1",
     )
+    if legacy_key_metadata:
+        write_env["EVANDER_GIT_AUTH_REF_PREFIX"] = "refs/heads/agents/session-1/"
     _git(worktree, "remote", "add", "agent", f"ssh://evander-git-host{repo}")
     _git(worktree, "remote", "add", "sibling", f"ssh://evander-git-host{sibling}")
-    agent_ref = "refs/heads/agents/session-1/topic"
+    agent_ref = "refs/evander/agents/session-1/topic"
     notes_ref = agent_pr_notes_ref_for_session("session-1")
     _git(worktree, "notes", f"--ref={notes_ref}", "add", "-m", "Pinned PR note", "HEAD", env=env)
 
@@ -326,7 +339,7 @@ def test_read_key_cannot_push_or_run_non_git_service_commands(tmp_path: Path) ->
         worktree,
         "push",
         "agent",
-        "HEAD:refs/heads/agents/session-1/topic",
+        "HEAD:refs/evander/agents/session-1/topic",
         env=read_env,
         check=False,
     )

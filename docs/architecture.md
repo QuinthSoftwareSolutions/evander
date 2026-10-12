@@ -115,7 +115,7 @@ are separate trust boundaries.
 Canonical refresh, guests, and host workflows own disjoint ref namespaces. Refresh stages ordinary
 branches and tags under `refs/evander/refresh/<operation-id>/**` and commits changes in one ref
 transaction without pruning agent, review, Team, notes, or operation refs. Guest SSH capabilities
-permit writes only to the exact session's `refs/heads/agents/**` namespace and notes ref.
+permit writes only to the exact session's `refs/evander/agents/**` namespace and notes ref.
 
 Host workflows operate on pinned commits. Promotion verifies the source ref and creates a host-only
 operation ref atomically; review/Team targets use compare-and-swap, and upstream pushes use explicit

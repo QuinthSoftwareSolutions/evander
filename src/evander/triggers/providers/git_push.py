@@ -10,6 +10,7 @@ from typing import Any
 
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import GitPushTriggerDefinition
+from evander.git_refs import logical_branch_name
 from evander.git_pr_notes import (
     agent_pr_notes_ref_for_session,
     is_agent_pr_notes_ref,
@@ -183,7 +184,11 @@ def _build_branch_payload(
         "ref_name": ref_name,
         "default_branch": default_branch,
     }
-    session_id = _extract_session_id(branch_name)
+    session_id = (
+        _extract_session_id(branch_name)
+        if ref_name.startswith("refs/evander/agents/") or is_agent_pr_notes_ref(ref_name)
+        else None
+    )
     if session_id:
         payload["session_id"] = session_id
         payload["review_branch"] = _derive_review_branch(branch_name)
@@ -192,12 +197,7 @@ def _build_branch_payload(
 
 
 def _branch_name_from_ref(ref_name: str) -> str | None:
-    normalized = ref_name.strip()
-    prefix = "refs/heads/"
-    if not normalized.startswith(prefix):
-        return None
-    branch_name = normalized.removeprefix(prefix).strip()
-    return branch_name or None
+    return logical_branch_name(ref_name.strip())
 
 
 def _extract_session_id(branch_name: str) -> str | None:
@@ -313,7 +313,7 @@ def _list_agent_branch_tips(repo_path: Path) -> list[tuple[str, str]]:
             f"--git-dir={repo_path}",
             "for-each-ref",
             "--format=%(refname:strip=2) %(objectname)",
-            "refs/heads/agents",
+            "refs/evander/agents",
         ],
         capture_output=True,
         text=True,

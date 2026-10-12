@@ -157,7 +157,12 @@ case "${ORIGINAL_COMMAND}" in
       echo "Authorized Git session id must be a single non-empty ref path component." >&2
       exit 1
     fi
-    EXPECTED_PREFIX="refs/heads/agents/${AUTH_SESSION_ID}/"
+    EXPECTED_PREFIX="refs/evander/agents/${AUTH_SESSION_ID}/"
+    # Existing exact-repository keys remain valid after the storage migration.
+    # Their legacy metadata never permits writes back into upstream branches.
+    if [[ "${AUTH_REF_PREFIX}" == "refs/heads/agents/${AUTH_SESSION_ID}/" ]]; then
+      AUTH_REF_PREFIX="${EXPECTED_PREFIX}"
+    fi
     if [[ "${AUTH_REF_PREFIX}" != "${EXPECTED_PREFIX}" ]]; then
       echo "Authorized Git ref prefix must be ${EXPECTED_PREFIX}." >&2
       exit 1
@@ -178,6 +183,17 @@ case "${ORIGINAL_COMMAND}" in
     export EVANDER_GIT_AUTH_SESSION_ID="${AUTH_SESSION_ID}"
     export EVANDER_GIT_AUTH_REF_PREFIX="${AUTH_REF_PREFIX}"
     export EVANDER_GIT_AUTH_PR_NOTES_REF="${AUTH_PR_NOTES_REF}"
+    LAYOUT_LOCK="${REPO_REAL}/evander-private-refs.lock"
+    if [[ ! -f "${LAYOUT_LOCK}" ]]; then
+      echo "Managed repository requires private-ref migration before agent pushes." >&2
+      exit 1
+    fi
+    exec 9<"${LAYOUT_LOCK}"
+    flock --shared 9
+    if ! git --git-dir="${REPO_REAL}" show-ref --verify --quiet refs/evander/layout/private-refs-v2; then
+      echo "Managed repository requires private-ref migration before agent pushes." >&2
+      exit 1
+    fi
     ;;
 esac
 

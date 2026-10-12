@@ -865,7 +865,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             },
             {
                 "left": '${{trigger-git-push-1.ref_name ?? ""}}',
-                "starts_with": "refs/heads/agents/",
+                "starts_with": "refs/evander/agents/",
             },
             {
                 "is_not_null": True,

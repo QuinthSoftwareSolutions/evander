@@ -474,10 +474,13 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             or registered.get("default_branch"),
             f"managed repository {managed_repo_id} has no default branch",
         )
+        # Reference repositories use upstream heads even when their short names
+        # match a private agent, review, or Team branch.
+        source_ref = f"refs/heads/{branch.removeprefix('refs/heads/')}"
         commit_sha = resolve_branch(
             managed_repo_id,
             directory_path=directory_path,
-            branch=branch,
+            branch=source_ref,
         )
         if refresh_upstream and not commit_sha:
             raise ValueError(
@@ -503,7 +506,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                 or managed_repo_id,
                 "managed Git display name is unavailable",
             ),
-            source_ref=f"refs/heads/{branch}",
+            source_ref=source_ref,
             commit_sha=commit_sha,
             clone_url=required_string(
                 clone_info.get("clone_url") or clone_info.get("worker_repo_source"),

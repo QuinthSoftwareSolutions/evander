@@ -156,6 +156,22 @@ def git_repos_refresh(
 
 
 @cli_app.git_repos_app.command(
+    "migrate-private-refs",
+    short_help="Preview or apply the private Git ref namespace migration.",
+)
+def git_repos_migrate_private_refs(
+    managed_repo_id: str,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Apply the migration; default is a read-only preview.")
+    ] = False,
+    config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    managed_git = _build_managed_git_admin_for_cli(config)
+    result = _managed_git_call(managed_git.migrate_ref_namespace, managed_repo_id, apply=apply)
+    _echo_managed_git_json(result)
+
+
+@cli_app.git_repos_app.command(
     "set-host-identity",
     short_help="Set the author and committer identity for host-created commits.",
 )

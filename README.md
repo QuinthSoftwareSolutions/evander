@@ -575,7 +575,7 @@ VM lifecycle scripts and CLI wrappers share the same network-readiness timeout s
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
 The control plane resolves the restricted guest/worker clone URL internally. Writable sessions get
-a dedicated SSH key that can update only `refs/heads/agents/<session-id>/**` and the session notes
+a dedicated SSH key that can update only `refs/evander/agents/<session-id>/**` and the session notes
 ref. It cannot write host review/Team namespaces, tags, configuration, or hooks. Container-worker
 sessions use the same managed bare repository rather than creating a separate cache mirror; set
 `git_access_mode` to `read-only` when write access is unnecessary.
@@ -1349,7 +1349,7 @@ Guests can prepare a deterministic review checkout with:
 ./scripts/guest/setup_review_repo.sh \
   --repo-path /home/agent/<repo-name> \
   --base-ref refs/heads/main \
-  --head-ref refs/heads/review/topic
+  --head-ref refs/evander/review/topic
 ```
 
 The helper resolves explicit target/head refs, writes durable local refs under

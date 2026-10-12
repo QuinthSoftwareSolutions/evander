@@ -38,7 +38,7 @@ def _history(tmp_path: Path, *, clean_source: bool = False):
     branch = "agents/session-backend/contribution"
     _run("git", "switch", "-c", branch, pinned if clean_source else newer, cwd=source)
     candidate = _commit(source, "contribution.txt", "requested work\n", "Contribution")
-    _run("git", "push", str(_bare_path(managed, record["managed_repo_id"])), branch, cwd=source)
+    _run("git", "push", str(_bare_path(managed, record["managed_repo_id"])), f"{branch}:refs/evander/{branch}", cwd=source)
     return managed, record["managed_repo_id"], pinned, newer, branch, candidate
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.git_refs import private_branch_ref
+
 import json
 import posixpath
 import re
@@ -175,7 +177,7 @@ def _release_candidate_checkout_metadata(
     if not canonical_identity:
         return None
     release_ref = (
-        release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+        private_branch_ref(release_branch)
     )
     safe_release_id = re.sub(r"[^A-Za-z0-9._-]+", "-", release_id).strip(".-")
     suggested_target = f"./release-candidate-{safe_release_id or 'review'}"

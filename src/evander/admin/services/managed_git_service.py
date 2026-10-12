@@ -45,6 +45,7 @@ from evander.admin.services.managed_git_common import (
     _utc_now,
     _with_git_config_environment,
     _write_json_atomic,
+    resolve_pinned_source_ref,
 )
 from evander.admin.services.managed_git_worktree_service import (
     ManagedGitWorktreeDependencies,
@@ -53,6 +54,13 @@ from evander.admin.services.managed_git_worktree_service import (
 from evander.consultations import consultation_snapshot_ref
 from evander.review_snapshots import team_review_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_refs import managed_branch_ref, private_branch_ref
+from evander.admin.services.managed_git_ref_migration import (
+    LAYOUT_MARKER,
+    migrate_private_refs,
+    private_ref_layout_ready,
+    private_ref_migration_plan,
+)
 from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import managed_git_grants_from_metadata
 from evander.models import DirectoryPath, ToolName
@@ -70,7 +78,6 @@ _MANAGED_GIT_PUSH_MAX_ATTEMPTS = 3
 _MANAGED_GIT_PUSH_INITIAL_BACKOFF_SECONDS = 1.0
 _MANAGED_GIT_PUSH_MAX_BACKOFF_SECONDS = 4.0
 _managed_git_push_sleep = time.sleep
-_RESERVED_BRANCH_ROOTS = frozenset({"agents", "review", "team"})
 
 
 def _parse_optional_utc_datetime(value: object) -> datetime | None:
@@ -121,7 +128,7 @@ def _is_same_or_descendant(path: str, ancestor: str) -> bool:
 
 def _normalize_branch(value: str, *, field_name: str) -> str:
     branch = str(value or "").strip()
-    for prefix in ("refs/heads/", "refs/head/"):
+    for prefix in ("refs/heads/", "refs/head/", "refs/evander/"):
         if branch.startswith(prefix):
             branch = branch[len(prefix) :]
             break
@@ -764,14 +771,14 @@ class ManagedGitAdminService:
         """Resolve a directory-authorized branch through the managed bare repository."""
 
         record = self._require_scoped_record(managed_repo_id, directory_path)
-        normalized_branch = _normalize_branch(branch, field_name="branch")
+        _normalize_branch(branch, field_name="branch")
         bare_path = _managed_bare_path(self._managed_root, record)
         with self._repo_lock(managed_repo_id, exclusive=False):
             record = self._require_scoped_record(managed_repo_id, directory_path)
             bare_path = _managed_bare_path(self._managed_root, record)
             return self._resolve_ref(
                 bare_path,
-                f"refs/heads/{normalized_branch}",
+                managed_branch_ref(branch),
             )
 
     def resolve_merge_base(
@@ -1011,7 +1018,7 @@ class ManagedGitAdminService:
             bare_path = _managed_bare_path(self._managed_root, record)
             actual_commit = self._resolve_ref(
                 bare_path,
-                f"refs/heads/{normalized_branch}",
+                managed_branch_ref(branch),
             )
             if actual_commit is None:
                 raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
@@ -1067,7 +1074,7 @@ class ManagedGitAdminService:
             bare_path = _managed_bare_path(self._managed_root, record)
             branch_tip_commit = self._resolve_ref(
                 bare_path,
-                f"refs/heads/{normalized_branch}",
+                managed_branch_ref(branch),
             )
             if branch_tip_commit is None:
                 raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
@@ -1642,7 +1649,7 @@ class ManagedGitAdminService:
             result.update(
                 {
                     "session_id": normalized_session,
-                    "agent_ref_prefix": f"refs/heads/agents/{normalized_session}/",
+                    "agent_ref_prefix": f"refs/evander/agents/{normalized_session}/",
                     "notes_ref": agent_pr_notes_ref_for_session(normalized_session),
                 }
             )
@@ -1675,20 +1682,22 @@ class ManagedGitAdminService:
         bare_path = self._bare_path(record)
         requested_ref = str(source_ref or "").strip()
         if not requested_ref and not commit_sha:
-            requested_ref = str(record.get("default_branch") or "").strip()
+            default_branch = str(record.get("default_branch") or "").strip()
+            requested_ref = f"refs/heads/{default_branch}" if default_branch else ""
             if not requested_ref:
                 raise ValueError(
                     "source_ref or commit_sha is required because the managed repository "
                     "has no default branch"
                 )
         normalized_ref = (
-            _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
+            _normalize_ref(managed_branch_ref(requested_ref), field_name="source_ref") if requested_ref else None
         )
         expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
         expected_tree = (
             _normalize_object_id(tree_hash, field_name="tree_hash") if tree_hash else None
         )
         with self._repo_lock(managed_repo_id, exclusive=False):
+            normalized_ref = resolve_pinned_source_ref(self._run_git, bare_path, normalized_ref, expected)
             resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
             if resolved is None:
                 raise ManagedGitNotFoundError(
@@ -1965,7 +1974,8 @@ class ManagedGitAdminService:
         bare_path = self._bare_path(record)
         requested_ref = str(source_ref or "").strip()
         if not requested_ref and not commit_sha:
-            requested_ref = str(record.get("default_branch") or "").strip()
+            default_branch = str(record.get("default_branch") or "").strip()
+            requested_ref = f"refs/heads/{default_branch}" if default_branch else ""
             if not requested_ref:
                 raise ValueError(
                     "source_ref or commit_sha is required because the managed repository "
@@ -1981,6 +1991,7 @@ class ManagedGitAdminService:
                 self._repo_lock(managed_repo_id, exclusive=False),
                 self._target_lock(managed_repo_id, normalized_pin_ref),
             ):
+                normalized_ref = resolve_pinned_source_ref(self._run_git, bare_path, normalized_ref, expected)
                 existing_pin = self._resolve_ref(bare_path, normalized_pin_ref)
                 if existing_pin is not None:
                     if expected is not None and existing_pin != expected:
@@ -2354,8 +2365,8 @@ class ManagedGitAdminService:
             raise ValueError("agent_branch must be inside the agents/ namespace")
         if not target.startswith(("review/", "team/")):
             raise ValueError("target_branch must be inside the review/ or team/ namespace")
-        source_ref = f"refs/heads/{source_branch}"
-        target_ref = f"refs/heads/{target}"
+        source_ref = private_branch_ref(source_branch)
+        target_ref = private_branch_ref(target)
         record = self._require_scoped_record(managed_repo_id, directory_path)
         bare_path = self._bare_path(record)
         operation_id = uuid4().hex
@@ -2489,12 +2500,10 @@ class ManagedGitAdminService:
         expected_destination_commit_sha: str | None = None,
         _target_lock_held: bool = False,
     ) -> dict[str, Any]:
-        normalized_source = _normalize_ref(source_ref, field_name="source_ref")
-        if not normalized_source.startswith(("refs/heads/review/", "refs/heads/team/")):
+        normalized_source = _normalize_ref(private_branch_ref(source_ref), field_name="source_ref")
+        if not normalized_source.startswith(("refs/evander/review/", "refs/evander/team/")):
             raise ValueError("source_ref must be a host-owned review or Team ref")
         destination = _normalize_branch(destination_branch, field_name="destination_branch")
-        if destination.split("/", 1)[0] in _RESERVED_BRANCH_ROOTS:
-            raise ValueError("destination_branch cannot use an Evander-reserved namespace")
         expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
         expected_destination = (
             _normalize_object_id(
@@ -2807,7 +2816,7 @@ class ManagedGitAdminService:
         return {
             "success": True,
             "managed_repo_id": managed_repo_id,
-            "source_ref": _normalize_ref(source_ref, field_name="source_ref"),
+            "source_ref": published.get("source_ref") or _normalize_ref(source_ref, field_name="source_ref"),
             "destination_branch": destination,
             "expected_commit_sha": expected,
             "base_branch": base,
@@ -3617,6 +3626,10 @@ class ManagedGitAdminService:
         normalized_sources = [
             _normalize_branch(branch, field_name="source_branches") for branch in source_branches
         ]
+        source_refs = {
+            normalized: managed_branch_ref(original)
+            for normalized, original in zip(normalized_sources, source_branches, strict=True)
+        }
         if not normalized_sources:
             raise ValueError("source_branches is required")
         if len(set(normalized_sources)) != len(normalized_sources):
@@ -3666,7 +3679,7 @@ class ManagedGitAdminService:
         )
         record = self._require_scoped_record(managed_repo_id, directory_path)
         bare_path = self._bare_path(record)
-        target_ref = f"refs/heads/{target}"
+        target_ref = private_branch_ref(target)
         operation_id = uuid4().hex
         operation_root = f"refs/evander/consolidations/{operation_id}"
         merged: list[str] = []
@@ -3682,7 +3695,7 @@ class ManagedGitAdminService:
                 base_ref = normalized_base_commit
                 base_commit = normalized_base_commit
             elif normalized_base:
-                base_ref = f"refs/heads/{normalized_base}"
+                base_ref = managed_branch_ref(base_branch)
                 base_commit = self._resolve_ref(bare_path, base_ref)
             elif previous_target:
                 base_ref = target_ref
@@ -3695,7 +3708,7 @@ class ManagedGitAdminService:
                     f"Unknown consolidation base ref {base_ref} in {managed_repo_id}"
                 )
             current_sources = {
-                branch: self._resolve_ref(bare_path, f"refs/heads/{branch}")
+                branch: self._resolve_ref(bare_path, source_refs[branch])
                 for branch in normalized_sources
             }
             moved = [
@@ -3773,7 +3786,7 @@ class ManagedGitAdminService:
             pin_commands.append(f"create {base_operation_ref} {base_commit}")
             source_operation_refs: dict[str, str] = {}
             for index, branch in enumerate(normalized_sources):
-                source_ref = f"refs/heads/{branch}"
+                source_ref = source_refs[branch]
                 operation_ref = f"{operation_root}/sources/{index}"
                 source_operation_refs[branch] = operation_ref
                 pin_commands.extend(
@@ -3786,7 +3799,7 @@ class ManagedGitAdminService:
                 self._run_update_ref_transaction(bare_path, pin_commands)
             except RuntimeError:
                 repinned_sources = {
-                    branch: self._resolve_ref(bare_path, f"refs/heads/{branch}")
+                    branch: self._resolve_ref(bare_path, source_refs[branch])
                     for branch in normalized_sources
                 }
                 moved_during_pin = [
@@ -4051,6 +4064,15 @@ class ManagedGitAdminService:
         operation_id: str | None = None,
         purpose: str = "managed-git-operation",
     ) -> Iterator[Path]:
+        # Complete the one-time migration before the worktree service resolves
+        # its input ref. Its own lock then protects the pinned operation.
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_record(managed_repo_id)
+            source_ref = resolve_pinned_source_ref(
+                self._run_git, self._bare_path(record),
+                _normalize_ref(source_ref, field_name="source_ref") if source_ref else None,
+                _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None,
+            )
         with self._worktrees.temporary_worktree(
             managed_repo_id,
             commit_sha=commit_sha,
@@ -4151,13 +4173,11 @@ class ManagedGitAdminService:
             capability_refs = self._list_refs(
                 bare_path,
                 (
-                    "refs/heads/agents",
-                    "refs/heads/review",
-                    "refs/heads/team",
                     "refs/notes",
                     "refs/evander",
                 ),
             )
+            capability_refs.pop(LAYOUT_MARKER, None)
             if capability_refs:
                 raise ManagedGitConflictError(
                     "The descendant managed repository contains unpublished or operation refs "
@@ -4401,6 +4421,8 @@ class ManagedGitAdminService:
         stage_heads = f"{stage_root}/heads"
         stage_tags = f"{stage_root}/tags"
         env = self._git_environment(record, credential_override=credential_override)
+        if not private_ref_layout_ready(self._run_git, bare_path):
+            migrate_private_refs(self._run_git, bare_path)
         try:
             self._run_git(
                 [
@@ -4416,17 +4438,6 @@ class ManagedGitAdminService:
                 env=env,
             )
             staged = self._list_refs(bare_path, (stage_heads, stage_tags))
-            reserved = sorted(
-                ref
-                for ref in staged
-                if ref.startswith(f"{stage_heads}/")
-                and ref[len(stage_heads) + 1 :].split("/", 1)[0] in _RESERVED_BRANCH_ROOTS
-            )
-            if reserved:
-                branches = ", ".join(ref[len(stage_heads) + 1 :] for ref in reserved)
-                raise ManagedGitConflictError(
-                    f"Upstream contains Evander-reserved branch namespaces: {branches}"
-                )
             desired: dict[str, str] = {}
             for ref, oid in staged.items():
                 if ref.startswith(f"{stage_heads}/"):
@@ -4437,14 +4448,7 @@ class ManagedGitAdminService:
                     continue
                 desired[live_ref] = oid
             current_all = self._list_refs(bare_path, ("refs/heads", "refs/tags"))
-            current = {
-                ref: oid
-                for ref, oid in current_all.items()
-                if not (
-                    ref.startswith("refs/heads/")
-                    and ref[len("refs/heads/") :].split("/", 1)[0] in _RESERVED_BRANCH_ROOTS
-                )
-            }
+            current = current_all
             discovered_default = self._discover_default_branch(source, env=env)
             if not discovered_default:
                 discovered_default = self._fallback_default_branch(desired)
@@ -4852,14 +4856,40 @@ class ManagedGitAdminService:
         with path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
             try:
-                yield
+                yield handle
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
+    @contextmanager
     def _repo_lock(self, managed_repo_id: str, *, exclusive: bool):
-        return self._file_lock(
+        with self._file_lock(
             self._lock_root / f"repo-{managed_repo_id}.lock", shared=not exclusive
-        )
+        ) as handle:
+            record = self._record_or_none(managed_repo_id)
+            bare_path = self._bare_path(record) if record is not None else None
+            if bare_path is not None and (bare_path / "HEAD").exists():
+                if not private_ref_layout_ready(self._run_git, bare_path):
+                    if not exclusive:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    if not private_ref_migration_plan(self._run_git, bare_path)["already_migrated"]:
+                        if (self.project_dir / "scripts" / "create_git_remote.sh").exists():
+                            self._initialize_bare_repository(record)
+                        migrate_private_refs(self._run_git, bare_path)
+                    if not exclusive:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            yield
+
+    def migrate_ref_namespace(self, managed_repo_id: str, *, apply: bool = False) -> dict[str, Any]:
+        """Preview or apply an atomic migration without contacting the upstream."""
+        with self._file_lock(self._lock_root / f"repo-{managed_repo_id}.lock"):
+            record = self._require_record(managed_repo_id)
+            bare_path = self._bare_path(record)
+            plan = private_ref_migration_plan(self._run_git, bare_path)
+            if apply and not plan["already_migrated"]:
+                if (self.project_dir / "scripts" / "create_git_remote.sh").exists():
+                    self._initialize_bare_repository(record)
+                plan = migrate_private_refs(self._run_git, bare_path)
+            return {"managed_repo_id": managed_repo_id, "applied": apply, **plan}
 
     def _target_lock(self, managed_repo_id: str, target: str):
         target_hash = hashlib.sha256(target.encode("utf-8")).hexdigest()[:20]

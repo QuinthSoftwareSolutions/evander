@@ -124,7 +124,7 @@ def test_push_agent_pushes_branch_and_notes_when_destination_is_contained(
 
     _git(agent, "push-agent")
 
-    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    pushed_ref = f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
     assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == agent_sha
     assert (
         _git_dir(dropbox, "notes", f"--ref={NOTES_REF}", "show", agent_sha).stdout.strip()
@@ -142,13 +142,13 @@ def test_push_agent_preserves_team_owned_agent_branch_without_double_prefix(
 
     _git(agent, "push-agent")
 
-    exact_ref = f"refs/heads/{team_branch}"
+    exact_ref = f"refs/evander/{team_branch}"
     assert _git_dir(dropbox, "rev-parse", exact_ref).stdout.strip() == agent_sha
     pushed_refs = _git_dir(
         dropbox,
         "for-each-ref",
         "--format=%(refname)",
-        "refs/heads/agents",
+        "refs/evander/agents",
     ).stdout.splitlines()
     assert pushed_refs == [exact_ref]
 
@@ -190,7 +190,7 @@ def test_push_agent_merges_concurrent_remote_notes_before_publication(
 
     _git(agent, "push-agent")
 
-    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    pushed_ref = f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
     assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == second_agent_sha
     assert (
         _git_dir(
@@ -229,7 +229,7 @@ def test_push_agent_refuses_branch_owned_by_another_session(tmp_path: Path) -> N
             dropbox,
             "for-each-ref",
             "--format=%(refname)",
-            "refs/heads/agents",
+            "refs/evander/agents",
         ).stdout.strip()
         == ""
     )
@@ -262,7 +262,7 @@ def test_push_agent_refuses_when_destination_branch_has_unmerged_commits(
         dropbox,
         "for-each-ref",
         "--format=%(refname)",
-        "refs/heads/agents",
+        "refs/evander/agents",
     ).stdout.strip()
     assert refs == ""
 
@@ -288,7 +288,7 @@ def test_push_agent_refuses_when_base_branch_has_unmerged_commits(
         dropbox,
         "for-each-ref",
         "--format=%(refname)",
-        "refs/heads/agents",
+        "refs/evander/agents",
     ).stdout.strip()
     assert refs == ""
 
@@ -309,7 +309,7 @@ def test_push_agent_allows_server_prepared_base_when_current_base_advances(
 
     _git(agent, "push-agent")
 
-    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    pushed_ref = f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
     assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == agent_sha
 
 
@@ -334,7 +334,7 @@ def test_push_agent_allows_dependency_composed_prepared_base_off_current_base(
 
     _git(agent, "push-agent")
 
-    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    pushed_ref = f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
     assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == agent_sha
 
 
@@ -357,7 +357,7 @@ def test_push_agent_refuses_head_that_does_not_retain_server_prepared_base(
     assert completed.returncode == 1
     assert "does not contain configured prepared base commit" in completed.stderr
     assert (
-        _git_dir(dropbox, "for-each-ref", "--format=%(refname)", "refs/heads/agents")
+        _git_dir(dropbox, "for-each-ref", "--format=%(refname)", "refs/evander/agents")
         .stdout.strip()
         == ""
     )

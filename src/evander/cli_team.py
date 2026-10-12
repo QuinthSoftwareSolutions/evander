@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.git_refs import private_branch_ref
+
 import json
 import time
 from pathlib import Path
@@ -58,7 +60,7 @@ def team_checkout_release_candidate(
             "Expected candidate SHA does not match the pinned release candidate"
         )
     source_ref = (
-        release_branch if release_branch.startswith("refs/") else f"refs/heads/{release_branch}"
+        private_branch_ref(release_branch)
     )
     managed_git = cli_git._build_managed_git_admin_for_cli(config)
     result = cli_git._managed_git_call(
