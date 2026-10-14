@@ -27,6 +27,12 @@ from evander.repositories.maintenance_indexes import (
     MaintenanceIndexesRequired,
     retention_predicate,
 )
+from evander.repositories.history_index_storage import (
+    HistoryIndexStorage,
+    list_history_field_rows,
+    scalar_gc_components,
+    write_history_values,
+)
 from evander.repositories.operational_payloads import FORMAT_KEY, load_record
 from evander.repositories.orchestration_db import (
     WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
@@ -606,10 +612,7 @@ def run_pending_history_indexing(
         job.get("cursor_json"),
     ):
         return {"indexed_values": 0, "completed": 0}
-    connection.executemany(
-        "INSERT OR REPLACE INTO workflow_history_index_values VALUES(?,?,?,?,?,?,?,?,?)",
-        prepared.rows,
-    )
+    write_history_values(connection, prepared.rows)
     if prepared.exhausted:
         connection.execute(
             """INSERT INTO workflow_history_index_state VALUES(?,?)
@@ -726,29 +729,11 @@ def collect_superseded_history_values(
         "SELECT value_json FROM orchestration_metadata WHERE key='history_scalar_gc_cursor'"
     ).fetchone()
     previous = json_loads_object(row[0]) if row else {}
+    tables = scalar_gc_components(connection)
     progress = dict(previous) if hold_completed else {
-        name: previous[name] for name in ("current", "legacy") if name in previous
+        name: previous[name] for name, _, _ in tables if name in previous
     }
     deleted = 0
-    tables = (
-        (
-            "current",
-            "workflow_history_index_values",
-            """
-            NOT EXISTS(SELECT 1 FROM workflow_history_index_state s
-                WHERE s.execution_key=v.execution_key AND s.generation=v.generation)
-            AND NOT EXISTS(SELECT 1 FROM workflow_history_index_jobs j
-                WHERE j.execution_key=v.execution_key
-                  AND j.input_blob_sha256 || ':' || j.output_blob_sha256=v.generation)""",
-        ),
-        (
-            "legacy",
-            "workflow_node_execution_history_values",
-            """
-            EXISTS(SELECT 1 FROM workflow_history_index_state s
-                WHERE s.execution_key=v.execution_key)""",
-        ),
-    )
     for name, table, orphan in tables:
         completed_key = f"{name}_completed"
         deleted_key = f"{name}_deleted_in_sweep"
@@ -1216,9 +1201,32 @@ def search_node_executions(
         page_params.extend([cursor_value[0], cursor_value[0], cursor_value[1]])
     base_from = "FROM workflow_node_execution_history h"
     with connect_orchestration_db_read_only(
-        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        path,
+        deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
+        storage = (
+            HistoryIndexStorage(connection, (str(item.get("path") or "") for item in filters))
+            if filters
+            else None
+        )
+        if storage is not None and storage.interned:
+            where, params = _history_search_predicates(
+                node_id=node_id,
+                started_from=started_from,
+                started_to=started_to,
+                statuses=statuses,
+                filters=filters,
+                storage=storage,
+            )
+            page_where, page_params = list(where), list(params)
+            if cursor_value:
+                page_where.append(
+                    "(h.started_at < ? OR (h.started_at = ? AND h.execution_key < ?))"
+                )
+                page_params.extend([cursor_value[0], cursor_value[0], cursor_value[1]])
+            base_from += storage.search_joins
         _validate_range_filters(
             connection,
             node_id=node_id,
@@ -1226,6 +1234,7 @@ def search_node_executions(
             started_to=started_to,
             statuses=statuses,
             filters=filters,
+            storage=storage,
         )
         matched = None
         if include_total:
@@ -1237,7 +1246,7 @@ def search_node_executions(
             )
         rows = connection.execute(
             f"""
-            SELECT h.*,
+            SELECT h.*{storage.search_columns if storage is not None else ""},
                 CASE h.execution_kind
                     WHEN 'trigger' THEN EXISTS(
                         SELECT 1 FROM trigger_events t WHERE t.event_id = h.execution_id
@@ -1259,7 +1268,10 @@ def search_node_executions(
         ).fetchall()
         has_more = len(rows) > limit
         visible_rows = rows[:limit]
-        items = [_history_row_payload(connection, row, filters=filters) for row in visible_rows]
+        items = [
+            _history_row_payload(connection, row, filters=filters, storage=storage)
+            for row in visible_rows
+        ]
         next_cursor = None
         if has_more and visible_rows:
             last = visible_rows[-1]
@@ -1317,6 +1329,7 @@ def list_node_execution_authorization_paths(
     )
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         rows = connection.execute(
@@ -1339,6 +1352,7 @@ def read_node_execution_authorization_path(
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
@@ -1363,6 +1377,7 @@ def _history_search_predicates(
     started_to: datetime,
     statuses: list[str],
     filters: list[Mapping[str, Any]],
+    storage: HistoryIndexStorage | None = None,
 ) -> tuple[list[str], list[Any]]:
     where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?",
              "NOT EXISTS (SELECT 1 FROM workflow_history_retirements r "
@@ -1380,7 +1395,7 @@ def _history_search_predicates(
             "NOT EXISTS (SELECT 1 FROM workflow_history_index_jobs j WHERE j.execution_key=h.execution_key)"
         )
     for index, item in enumerate(filters):
-        clause, clause_params = _filter_clause(item, alias=f"v{index}")
+        clause, clause_params = _filter_clause(item, alias=f"v{index}", storage=storage)
         where.append(clause)
         params.extend(clause_params)
     return where, params
@@ -1396,27 +1411,12 @@ def list_node_execution_fields(
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
-        rows = connection.execute(
-            """
-            SELECT v.location, v.json_pointer, v.value_type, COUNT(*) AS observed_count
-            FROM workflow_node_execution_current_values v
-            JOIN workflow_node_execution_history h
-              ON h.execution_key = v.execution_key
-            WHERE h.node_id = ? AND h.started_at >= ? AND h.started_at < ?
-              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
-                  WHERE r.execution_key=h.execution_key)
-            GROUP BY v.location, v.json_pointer, v.value_type
-            ORDER BY v.location, v.json_pointer, v.value_type
-            LIMIT 1000
-            """,
-            (
-                node_id,
-                _storage_timestamp(started_from),
-                _storage_timestamp(started_to),
-            ),
-        ).fetchall()
+        rows = list_history_field_rows(
+            connection, node_id, _storage_timestamp(started_from), _storage_timestamp(started_to)
+        )
     return {
         "node_id": node_id,
         "fields": [dict(row) for row in rows],
@@ -1427,6 +1427,7 @@ def read_node_execution_detail(path: Path | str, *, execution_key: str) -> dict[
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
@@ -1463,7 +1464,8 @@ def read_node_execution_detail(path: Path | str, *, execution_key: str) -> dict[
         return payload
 
 
-def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[Any]]:
+def _filter_clause(item: Mapping[str, Any], *, alias: str,
+                   storage: HistoryIndexStorage | None = None) -> tuple[str, list[Any]]:
     location = str(item.get("location") or "")
     pointer = str(item.get("path") or "")
     operator = str(item.get("operator") or "")
@@ -1472,6 +1474,9 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
         f"AND {alias}.json_pointer = ?"
     )
     params: list[Any] = [location, pointer]
+    if storage is not None and storage.interned and operator in {"exists", "not_exists"}:
+        predicate, direct_params = storage.exists_sql(alias, location, pointer, "")
+        return (f"NOT ({predicate})" if operator == "not_exists" else predicate), direct_params
     if operator == "exists":
         return (
             f"EXISTS (SELECT 1 FROM workflow_node_execution_current_values {alias} WHERE {base})",
@@ -1513,6 +1518,8 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
             f"AND execution_history_numeric_compare({alias}.text_value, ?) {sql_operator} 0"
         )
         params.append(_canonical_number_text(value))
+    if storage is not None and storage.interned:
+        return storage.exists_sql(alias, location, pointer, comparison, params[2:])
     return (
         f"EXISTS (SELECT 1 FROM workflow_node_execution_current_values {alias} WHERE {base}{comparison})",
         params,
@@ -1527,6 +1534,7 @@ def _validate_range_filters(
     started_to: datetime,
     statuses: list[str],
     filters: list[Mapping[str, Any]],
+    storage: HistoryIndexStorage | None = None,
 ) -> None:
     """Refuse range filters over pre-v3 float-only scalar rows.
 
@@ -1546,8 +1554,22 @@ def _validate_range_filters(
         if statuses:
             where.append(f"h.status IN ({', '.join('?' for _ in statuses)})")
             params.extend(statuses)
-        row = connection.execute(
-            f"""
+        if storage is not None and storage.interned:
+            predicate, direct_params = storage.exists_sql(
+                "v",
+                str(item.get("location") or ""),
+                str(item.get("path") or ""),
+                " AND v.value_type='number' AND v.text_value IS NULL",
+            )
+            row = connection.execute(
+                f"SELECT 1 FROM workflow_node_execution_history h {storage.search_joins} "
+                f"WHERE {' AND '.join(where)} AND {predicate} "
+                "AND NOT EXISTS(SELECT 1 FROM workflow_history_index_jobs j WHERE j.execution_key=h.execution_key) LIMIT 1",
+                [*params, *direct_params],
+            ).fetchone()
+        else:
+            row = connection.execute(
+                f"""
             SELECT 1
             FROM workflow_node_execution_current_values v
             JOIN workflow_node_execution_history h ON h.execution_key = v.execution_key
@@ -1558,8 +1580,8 @@ def _validate_range_filters(
               AND v.text_value IS NULL
             LIMIT 1
             """,
-            [*params, str(item.get("location") or ""), str(item.get("path") or "")],
-        ).fetchone()
+                [*params, str(item.get("location") or ""), str(item.get("path") or "")],
+            ).fetchone()
         if row is not None:
             raise ValueError(
                 "numeric range filters are unavailable for legacy history values without an "
@@ -1572,19 +1594,23 @@ def _history_row_payload(
     row: sqlite3.Row,
     *,
     filters: list[Mapping[str, Any]],
+    storage: HistoryIndexStorage | None = None,
 ) -> dict[str, Any]:
     matched_values: dict[str, Any] = {}
     for item in filters:
         if item.get("operator") == "not_exists":
             continue
-        value_row = connection.execute(
-            """
+        if storage is not None and storage.interned:
+            value_row = storage.matched_value(row, item.get("location"), item.get("path"))
+        else:
+            value_row = connection.execute(
+                """
             SELECT value_type, text_value, numeric_value, boolean_value
             FROM workflow_node_execution_current_values
             WHERE execution_key = ? AND location = ? AND json_pointer = ?
             """,
-            (row["execution_key"], item.get("location"), item.get("path")),
-        ).fetchone()
+                (row["execution_key"], item.get("location"), item.get("path")),
+            ).fetchone()
         if value_row is not None:
             matched_values[f"{item.get('location')}:{item.get('path')}"] = _indexed_value(value_row)
     keys = set(row.keys())

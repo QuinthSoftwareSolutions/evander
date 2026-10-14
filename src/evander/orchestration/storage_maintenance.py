@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from evander.repositories.history_index_storage import scalar_gc_complete
 from evander.repositories.orchestration_db import (
     OrchestrationWalCheckpointResult,
     _try_orchestration_retention_lock,
@@ -36,8 +37,7 @@ def _restart_completed_gc_sweeps(connection) -> None:
     history = metadata.get("history_scalar_gc_cursor", {})
     payload = metadata.get("operational_payload_gc_cursor", {})
     if (
-        history.get("current_completed") is True
-        and history.get("legacy_completed") is True
+        scalar_gc_complete(connection, history)
         and payload.get("completed") is True
     ):
         connection.executemany(
@@ -152,10 +152,7 @@ def run_storage_maintenance(
                             "WHERE key='history_scalar_gc_cursor'"
                         ).fetchone()
                         state = json_loads_object(row[0]) if row else {}
-                        details["remaining"] = not (
-                            state.get("current_completed") is True
-                            and state.get("legacy_completed") is True
-                        )
+                        details["remaining"] = not scalar_gc_complete(connection, state)
                     garbage_collection_phases[phase] = details["remaining"]
                 elif phase == "payload_gc":
                     from evander.repositories.operational_payloads import (

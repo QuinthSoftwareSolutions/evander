@@ -274,3 +274,142 @@ with connect_orchestration_db_read_only(path) as connection:
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=5)
+
+
+def test_reused_reader_finalizes_cursors_releases_wal_and_sees_new_commits(tmp_path):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as writer:
+        writer.executemany(
+            "INSERT INTO orchestration_metadata VALUES (?,?)", [("a", "old"), ("b", "other")]
+        )
+    with connect_orchestration_db_read_only(path, reuse_connection=True) as first:
+        cursor = first.execute("SELECT value_json FROM orchestration_metadata ORDER BY key")
+        assert cursor.fetchone()[0] == "old"
+        # Leave the cursor unfinished, without an explicit BEGIN.
+    with pytest.raises(sqlite3.ProgrammingError):
+        cursor.fetchone()
+    with connect_orchestration_db(path) as writer:
+        writer.execute("UPDATE orchestration_metadata SET value_json='new' WHERE key='a'")
+    with sqlite3.connect(path) as checkpointer:
+        busy, frames, copied = checkpointer.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        assert busy == 0 and frames == copied
+    with connect_orchestration_db_read_only(path, reuse_connection=True) as second:
+        assert second is first  # The report reuses its parsed schema and page cache.
+        assert not second.in_transaction
+        assert second.execute("SELECT value_json FROM orchestration_metadata WHERE key='a'").fetchone()[0] == "new"
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            second.execute("DELETE FROM orchestration_metadata")
+    close_sqlite_runtimes(path)
+
+
+def test_reused_reader_gets_fresh_snapshot_deadline_and_callbacks(tmp_path):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    statements = []
+    with connect_orchestration_db(path) as writer:
+        writer.execute("INSERT INTO orchestration_metadata VALUES ('probe','old')")
+    with connect_orchestration_db_read_only(path, reuse_connection=True, deadline_seconds=0.1) as first:
+        first.set_trace_callback(statements.append)
+        first.execute("BEGIN")
+        assert first.execute("SELECT value_json FROM orchestration_metadata WHERE key='probe'").fetchone()[0] == "old"
+        with connect_orchestration_db(path) as writer:
+            writer.execute("UPDATE orchestration_metadata SET value_json='new' WHERE key='probe'")
+        assert first.execute("SELECT value_json FROM orchestration_metadata WHERE key='probe'").fetchone()[0] == "old"
+    prior_statements = list(statements)
+    time.sleep(0.11)
+    with connect_orchestration_db_read_only(path, reuse_connection=True, deadline_seconds=1) as second:
+        assert second is first
+        second.execute("BEGIN")
+        assert second.execute("SELECT value_json FROM orchestration_metadata WHERE key='probe'").fetchone()[0] == "new"
+    assert statements == prior_statements
+    close_sqlite_runtimes(path)
+
+
+def test_reused_reader_deadline_failure_does_not_poison_next_report(tmp_path):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with pytest.raises(SqliteOperationDeadlineExceeded), connect_orchestration_db_read_only(
+        path, reuse_connection=True, deadline_seconds=0.01,
+    ) as first:
+        first.execute("BEGIN")
+        first.execute("""WITH RECURSIVE numbers(x) AS (
+            VALUES(1) UNION ALL SELECT x+1 FROM numbers WHERE x<100000000
+        ) SELECT sum(x) FROM numbers""").fetchone()
+    with connect_orchestration_db_read_only(path, reuse_connection=True, deadline_seconds=1) as second:
+        assert second is not first
+        assert second.execute("SELECT 6*7").fetchone()[0] == 42
+    close_sqlite_runtimes(path)
+
+
+def test_reused_reader_detects_database_replacement_and_runtime_retirement(tmp_path):
+    path = tmp_path / "state.db"
+    replacement = tmp_path / "replacement.db"
+    for database, value in ((path, 41), (replacement, 42)):
+        with sqlite3.connect(database) as writer:
+            writer.execute("CREATE TABLE values_table(value INTEGER)")
+            writer.execute("INSERT INTO values_table VALUES (?)", (value,))
+    with open_sqlite_connection(path, read_only=True, reuse_read_only=True) as first:
+        assert first.execute("SELECT value FROM values_table").fetchone()[0] == 41
+    replacement.replace(path)
+    with open_sqlite_connection(path, read_only=True, reuse_read_only=True) as second:
+        assert second is not first
+        assert second.execute("SELECT value FROM values_table").fetchone()[0] == 42
+        # An active lease retired by shutdown must not return to the idle pool.
+        close_sqlite_runtimes(path)
+    with open_sqlite_connection(path, read_only=True, reuse_read_only=True) as third:
+        assert third is not second
+        assert third.execute("SELECT value FROM values_table").fetchone()[0] == 42
+    close_sqlite_runtimes(path)
+
+
+def test_reused_readers_do_not_share_active_connections_across_threads(tmp_path):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    barrier = threading.Barrier(2)
+    readers = []
+    failures = []
+
+    def read():
+        try:
+            with connect_orchestration_db_read_only(path, reuse_connection=True) as first:
+                first.execute("BEGIN")
+                readers.append(first)
+                barrier.wait(timeout=3)
+                assert first.execute("SELECT 6*7").fetchone()[0] == 42
+            with connect_orchestration_db_read_only(path, reuse_connection=True) as second:
+                assert second is first
+                assert not second.in_transaction
+                assert second.execute("SELECT 40+2").fetchone()[0] == 42
+        except BaseException as error:
+            failures.append(error)
+
+    threads = [threading.Thread(target=read) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert not failures
+    assert len(readers) == 2 and readers[0] is not readers[1]
+    close_sqlite_runtimes(path)
+
+
+def test_reused_reader_pool_bounds_idle_handles(tmp_path, monkeypatch):
+    from evander.repositories import sqlite_runtime
+
+    close_sqlite_runtimes()
+    monkeypatch.setattr(sqlite_runtime, "_MAX_IDLE_READERS", 2)
+    paths = [tmp_path / f"state-{i}.db" for i in range(3)]
+    first = None
+    for path in paths:
+        with sqlite3.connect(path) as writer:
+            writer.execute("CREATE TABLE values_table(value INTEGER)")
+        with open_sqlite_connection(path, read_only=True, reuse_read_only=True) as reader:
+            reader.execute("SELECT * FROM values_table").fetchall()
+            if first is None:
+                first = reader
+    # Check physical disposal, bypassing the lease's logical-close guard.
+    with pytest.raises(sqlite3.ProgrammingError):
+        sqlite3.Connection.execute(first, "SELECT 1")
+    close_sqlite_runtimes()
