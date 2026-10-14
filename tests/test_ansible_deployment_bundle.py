@@ -1,6 +1,84 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+import yaml
+from jinja2 import StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
+
+
+@pytest.mark.parametrize(
+    "services,override,expected",
+    [
+        (None, None, True),
+        ({"ado_worker": True}, None, True),
+        ({"proxy_issue_sync": True}, None, True),
+        ({"ado_worker": False, "proxy_issue_sync": False}, None, False),
+        ({}, None, False),
+        ({}, True, True),
+        ({}, False, False),
+    ],
+)
+def test_python_env_installs_azure_devops_for_selected_services(services, override, expected):
+    repo = Path(__file__).resolve().parents[1]
+    tasks = yaml.safe_load((repo / "ansible/roles/python_env/tasks/main.yml").read_text())
+    addon_tasks = [
+        task for task in tasks
+        if "./packages/azure-devops-addon"
+        in task.get("ansible.builtin.command", {}).get("cmd", "")
+    ]
+    assert len(addon_tasks) == 1, "Selected ADO workers require their optional distribution"
+    task = addon_tasks[0]
+    defaults = yaml.safe_load((repo / "ansible/group_vars/all/defaults.yml").read_text())
+    context = {
+        "evander_services": defaults["evander_services"] if services is None else services,
+        "evander_deploy_path": "/opt/evander",
+        "evander_run_user": "evander",
+        "evander_python_install_env": {"UV_INDEX_URL": "https://packages.example.test/simple"},
+    }
+    if override is not None:
+        context["evander_azure_devops_addon_enabled"] = override
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    selected = environment.from_string("{{ " + task["when"] + " }}").render(**context)
+    assert selected is expected
+    assert environment.from_string(task["ansible.builtin.command"]["cmd"]).render(**context) == (
+        "uv pip install --python /opt/evander/.venv/bin/python -e ./packages/azure-devops-addon"
+    )
+    assert environment.from_string(task["environment"]).render(**context) == {
+        "UV_INDEX_URL": "https://packages.example.test/simple"
+    }
+    assert environment.from_string(task["args"]["chdir"]).render(**context) == "/opt/evander"
+    assert environment.from_string(task["become_user"]).render(**context) == "evander"
+
+
+@pytest.mark.parametrize("unit", ["evander-ado-worker.service", "evander-proxy-issue-sync.service"])
+@pytest.mark.parametrize(
+    "enabled,installed,expected",
+    [(False, False, False), (False, True, True), (True, False, True), (True, True, True)],
+)
+def test_service_runtime_skips_absent_disabled_optional_services(unit, enabled, installed, expected):
+    repo = Path(__file__).resolve().parents[1]
+    tasks = yaml.safe_load((repo / "ansible/roles/service_runtime/tasks/main.yml").read_text())
+    reconcile = next(task for task in tasks if "loop" in task and "ansible.builtin.systemd" in task)
+    facts_indices = [index for index, task in enumerate(tasks) if "ansible.builtin.service_facts" in task]
+    assert facts_indices and facts_indices[-1] < tasks.index(reconcile)
+    units = next(task["ansible.builtin.set_fact"]["evander_systemd_units"] for task in tasks
+                 if "ansible.builtin.set_fact" in task)
+    item = next(item for item in units if item["unit"] == unit)
+    context = {
+        "item": item,
+        "evander_services": {item["key"]: enabled},
+        "ansible_facts": {"services": {unit: {}} if installed else {}},
+    }
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    assert environment.from_string("{{ " + reconcile["when"] + " }}").render(**context) is expected
+    assert environment.from_string(reconcile["ansible.builtin.systemd"]["enabled"]).render(**context) is enabled
+    assert environment.from_string(reconcile["ansible.builtin.systemd"]["state"]).render(**context) == (
+        "started" if enabled else "stopped"
+    )
+
 
 def test_ansible_bundle_exists_with_expected_roles() -> None:
     repo = Path(__file__).resolve().parents[1]

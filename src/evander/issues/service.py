@@ -1120,7 +1120,16 @@ class GitHubIssueAdapter:
     def _normalize_datetime(value: object) -> str | None:
         if value is None:
             return None
-        return AzureDevOpsIssueAdapter._normalize_datetime(str(value))
+        normalized = str(value)
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError:
+            return normalized
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _next_page_url(response: httpx.Response) -> str | None:
@@ -1132,7 +1141,15 @@ class GitHubIssueAdapter:
 
     @staticmethod
     def _json_safe(value: Any) -> Any:
-        return AzureDevOpsIssueAdapter._json_safe(value)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if isinstance(value, list):
+            return [GitHubIssueAdapter._json_safe(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): GitHubIssueAdapter._json_safe(item) for key, item in value.items()}
+        return str(value)
 
 
 

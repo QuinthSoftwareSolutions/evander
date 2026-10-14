@@ -16,6 +16,20 @@
   become_user: "{{ evander_run_user }}"
   changed_when: false
 
+- name: Install the optional Azure DevOps integration for selected ADO services
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/azure-devops-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when: >-
+    evander_azure_devops_addon_enabled | default(
+      (evander_services.ado_worker | default(false) | bool)
+      or (evander_services.proxy_issue_sync | default(false) | bool)
+    ) | bool
+
 - name: Install the optional Teams Graph integration for selected Teams services
   ansible.builtin.command:
     cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/teams-graph-addon"

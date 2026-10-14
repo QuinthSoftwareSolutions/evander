@@ -718,3 +718,16 @@ Graph mail is needed. To omit the integration, set it to `false` and disable `te
 `teams_notifications`, and `teams_meeting_ingest` in `evander_services`. If the provider loader uses
 an explicit enabled list, include `teams-graph` when using the package. See the
 [package upgrade notes](../packages/teams-graph-addon/README.md).
+
+### Optional Azure DevOps package
+
+The Python environment role installs `packages/azure-devops-addon` when `ado_worker` or
+`proxy_issue_sync` is selected. This preserves the full-stack defaults. Set
+`evander_azure_devops_addon_enabled: true` when only Azure DevOps workflow nodes or tools are
+needed. To omit the integration, set it to `false` and disable both services in
+`evander_services`. If the provider loader uses an explicit enabled list, include
+`azure-devops` when using the package. See the
+[package upgrade notes](../packages/azure-devops-addon/README.md).
+
+Service reconciliation skips uninstalled services that are disabled. Previously installed
+services are still stopped and disabled when deselected.

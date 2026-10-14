@@ -6,6 +6,7 @@
 - Extract Azure DevOps work items, pull requests, builds, personal connections and workers into the separately installed `packages/azure-devops-addon` project. Preserve legacy workflow IDs, configuration and durable state; core startup no longer needs the integration.
 - Add an editable single-issue delivery starter with a managed repository picker, exact-commit CI and review checks, bounded repair attempts, existing approval-queue integration and verified merge completion.
 - Preserve graph metadata when previewing/installing stateful starters and support completion evidence from later workflow events.
+- Keep GitHub issue and comment normalization independent of Azure DevOps. Install the optional Azure DevOps package for selected Ansible services and skip absent disabled units during service reconciliation.
 
 ## 2026-10-14 - Guided workflow starters (0.89.0)
 
