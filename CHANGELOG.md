@@ -53,6 +53,15 @@
 - Keep service preflight read-only on uninitialized runtimes and include the gateway in
   restart guidance when enabling or disabling Teams/Graph.
 
+## 2026-10-14 - Show active agent run settings (0.88.0)
+
+- Show the model, speed, and reasoning settings of active container and VM
+  agent runs in Admin Web, preserving per-prompt overrides and identifying
+  unavailable values without substituting session defaults.
+- Refresh the displayed settings when the selected agent's execution changes.
+- Read settings from the active execution records after worker reconciliation,
+  excluding runs that have completed and retaining refreshed settings.
+
 ## 2026-10-14 - Anchor workflow graph labels beside their first node (0.87.1)
 
 - Place each graph label just left of the uppermost node in its leftmost column,
