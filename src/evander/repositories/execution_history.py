@@ -1203,6 +1203,7 @@ def search_node_executions(
     with connect_orchestration_db_read_only(
         path,
         deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         storage = (
@@ -1328,6 +1329,7 @@ def list_node_execution_authorization_paths(
     )
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         rows = connection.execute(
@@ -1350,6 +1352,7 @@ def read_node_execution_authorization_path(
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
@@ -1408,6 +1411,7 @@ def list_node_execution_fields(
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         rows = list_history_field_rows(
@@ -1423,6 +1427,7 @@ def read_node_execution_detail(path: Path | str, *, execution_key: str) -> dict[
     ensure_orchestration_schema(path)
     with connect_orchestration_db_read_only(
         path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        reuse_connection=True,
     ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(

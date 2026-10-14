@@ -125,6 +125,7 @@ def connect_orchestration_db_read_only(
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     deadline_seconds: float | None = None,
     operation: str = "orchestration_read",
+    reuse_connection: bool = False,
 ) -> Iterator[sqlite3.Connection]:
     """Read initialized state without schema writes or WAL negotiation."""
     with open_sqlite_connection(
@@ -133,6 +134,7 @@ def connect_orchestration_db_read_only(
         timeout_ms=busy_timeout_ms,
         deadline_seconds=deadline_seconds,
         operation=operation,
+        reuse_read_only=reuse_connection,
     ) as connection:
         connection.create_function(
             "execution_history_numeric_compare", 2, _compare_execution_history_numbers

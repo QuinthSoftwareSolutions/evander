@@ -10,6 +10,8 @@
   to the requested execution window before reading scalar values.
 - Provide a separate legacy-format output for rollback and reject payload downgrade
   until the scalar index has been converted back.
+- Reuse bounded read-only history-report connections to avoid repeated schema
+  parsing, releasing cursors and snapshots between reports and renewing deadlines.
 
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 

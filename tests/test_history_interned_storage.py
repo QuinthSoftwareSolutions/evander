@@ -185,6 +185,32 @@ def test_batch_rollback_stale_work_and_dictionary_reuse(tmp_path):
         assert not c.execute("PRAGMA foreign_key_check").fetchall()
 
 
+def test_reused_reports_follow_format_conversion_and_generation_changes(tmp_path):
+    path = tmp_path / "history.db"
+    repository = SqliteExecutionStore(path)
+    entry = record("changing", {"amount": 2**100})
+    repository.put(entry)
+    drain(path)
+    old_filter = [{"location": "output", "path": "/amount", "operator": "eq", "value": 2**100}]
+    assert search(path, old_filter)["matched"] == 1
+    assert history.read_node_execution_detail(path, execution_key="effect:changing")["output"] == {"amount": 2**100}
+    # Keep the inode and the report's idle connection while changing its schema.
+    intern(path)
+    assert search(path, old_filter)["matched"] == 1
+    entry.outputs = {"amount": 2**100 + 1}
+    repository.put(entry)
+    assert search(path, old_filter)["matched"] == 0
+    drain(path)
+    assert search(path, old_filter)["matched"] == 0
+    new_filter = [{"location": "output", "path": "/amount", "operator": "eq", "value": 2**100 + 1}]
+    assert search(path, new_filter)["matched"] == 1
+    with connect_orchestration_db(path) as connection:
+        storage.convert_history_index_storage(connection, interned=False)
+    assert search(path, new_filter)["matched"] == 1
+    assert history.read_node_execution_detail(path, execution_key="effect:changing")["output"] == {"amount": 2**100 + 1}
+    close_sqlite_runtimes(path)
+
+
 def test_direct_reads_cover_current_and_legacy_without_compatibility_view(tmp_path, monkeypatch):
     path = tmp_path / "history.db"
     repository = SqliteExecutionStore(path)

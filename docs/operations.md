@@ -388,6 +388,13 @@ field queries, retention and garbage collection support both formats; the origin
 scalar table names remain readable views in the compact format. Those views are for
 inspection, and applications must use the repository write APIs.
 
+History reports reuse up to 16 idle read-only connections per process, partitioned
+by database file identity and thread. Reports release every cursor and transaction
+before idling; each subsequent report opens a fresh snapshot with its own deadline.
+Database replacement, runtime shutdown and failed operations discard affected
+connections. Writers and background indexing/retention connections remain transient.
+This optimization supports both scalar formats and requires no database migration.
+
 Rehearse conversion on a consistent copy before planning a production cutover:
 
 ```bash
