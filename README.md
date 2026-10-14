@@ -25,6 +25,9 @@ Git, and HTTP surfaces.
 
 ## Capabilities
 
+- Optional [integration contracts](docs/optional-integrations.md) for add-on settings,
+  host credentials, readiness checks, worker factories and editable workflow starters
+
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
   shared editing, review, and immutable snapshots through agent tools and workflows, with

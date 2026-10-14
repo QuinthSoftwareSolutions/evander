@@ -34,6 +34,7 @@ from evander.addons import (
     addon_runtime_dir,
     load_addons,
 )
+from evander.admin.services.integration_admin_service import IntegrationAdminService
 from evander.admin.directory import DirectoryAdminService
 from evander.admin.operations_helpers import PrivilegedHelperSession
 from evander.admin.payloads import AdminRevisionConflict
@@ -255,6 +256,7 @@ class AdminRuntimeComponents:
     worker_control_admin: WorkerControlAdminService
     workflow_config_admin: WorkflowConfigAdminService
     addon_admin: AddonAdminService
+    integration_admin: IntegrationAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
     credential_admin: CredentialAdminService
@@ -453,6 +455,15 @@ def _build_admin_runtime_components(
 
     def normalize_directory_reference(reference: str | None) -> str:
         return DirectoryService(runtime.directories).show(reference or "root").directory.path
+
+    integration_admin = IntegrationAdminService(
+        catalog=addon_catalog,
+        project_dir=project_dir,
+        runtime_dir=config.runtime_dir,
+        config=config,
+        services=runtime,
+        resolve_directory=normalize_directory_reference,
+    )
 
     directory_ownership = DirectoryOwnershipQueries(
         directories=directory_admin._directories,
@@ -846,6 +857,7 @@ def _build_admin_runtime_components(
         worker_control_admin=worker_control_admin,
         workflow_config_admin=workflow_config_admin,
         addon_admin=addon_admin,
+        integration_admin=integration_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         credential_admin=CredentialAdminService(store=connector_service.credentials,

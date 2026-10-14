@@ -13,6 +13,7 @@ import types
 from typing import Any
 
 from evander.outbound_identity import OutboundIdentityResolverFactory
+from evander.integration_contracts import AddonIntegration
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -100,6 +101,7 @@ class AddonContext:
     config: Any | None = None
     service: Any | None = None
     auth: Any | None = None
+    directory_path: str = "root"
 
 
 AddonRouteFactory = Callable[[AddonContext], Sequence[Any]]
@@ -144,6 +146,7 @@ class AddonRegistration:
     outbound_identity_resolver: OutboundIdentityResolverFactory | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
+    integration: AddonIntegration | Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
@@ -162,6 +165,13 @@ class AddonRegistration:
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         object.__setattr__(self, "connector_drivers", dict(self.connector_drivers or {}))
         object.__setattr__(self, "website_session_adapters", dict(self.website_session_adapters or {}))
+        if self.integration is not None:
+            integration = self.integration
+            if not isinstance(integration, AddonIntegration):
+                integration = AddonIntegration(**dict(integration))
+            if self.addon_id in integration.required_addons:
+                raise ValueError("an integration cannot depend on itself")
+            object.__setattr__(self, "integration", integration)
         tool_catalog: list[AddonMcpTool] = []
         seen_tool_names: set[str] = set()
         for raw_tool in self.mcp_tool_catalog or ():
@@ -840,6 +850,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             workflow_providers=value.get("workflow_providers"),
             connector_drivers=value.get("connector_drivers") or {},
             website_session_adapters=value.get("website_session_adapters") or {},
+            integration=value.get("integration"),
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
 
@@ -855,6 +866,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         workflow_providers=getattr(value, "workflow_providers", None),
         connector_drivers=getattr(value, "connector_drivers", {}),
         website_session_adapters=getattr(value, "website_session_adapters", {}),
+        integration=getattr(value, "integration", None),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )
 
