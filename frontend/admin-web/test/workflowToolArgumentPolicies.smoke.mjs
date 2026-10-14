@@ -445,7 +445,7 @@ test("workflow editor structured tool argument policies support structured editi
   await structuredConstraint.getByLabel("Fixed value").fill("seed-demo");
 
   const graphsSection = page.locator(".workflow-graphs-section");
-  await graphsSection.locator("summary").click();
+  await page.getByRole("button", { name: "Graphs", exact: true }).click();
   await graphsSection.locator(".workflow-graph-item").filter({ hasText: "Tool argument policies smoke" }).click();
   const graphNameInput = graphsSection.locator(".inspector-label").filter({ hasText: "Graph name" }).locator("input");
   await page.waitForFunction(
@@ -455,6 +455,7 @@ test("workflow editor structured tool argument policies support structured editi
   await assert.equal(await graphNameInput.inputValue(), "");
   await graphsSection.getByRole("button", { name: "Apply graph details" }).click();
   await page.getByText("Graph name is required.").first().waitFor({ state: "visible" });
+  await page.getByRole("dialog", { name: "Graphs", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
 
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
@@ -493,7 +494,7 @@ test("workflow editor structured tool argument policies support structured editi
   await invalidConstraint.getByLabel("Fixed value").fill("seed-demo");
 
   saveRequests.length = 0;
-  await page.getByRole("button", { name: "Save workflow" }).click();
+  assert.equal(await page.getByRole("button", { name: "Save workflow" }).isDisabled(), true);
   await assert.equal(saveRequests.length, 0);
   await page.waitForFunction(
     () => [...document.querySelectorAll(".error-text")].some((element) => element.textContent?.includes("path must be a non-empty string")),

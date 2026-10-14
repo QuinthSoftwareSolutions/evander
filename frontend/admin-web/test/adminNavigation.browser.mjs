@@ -621,8 +621,8 @@ test("admin shell shows full section navigation on fresh load", { timeout: brows
   );
   await assert.doesNotReject(() => page.getByRole("button", { name: "Collapse sections" }).waitFor({ state: "visible" }));
 
-  for (const label of ["Dashboard", "Agents", "Subscriptions", "Workflow"]) {
-    await assert.doesNotReject(() => page.getByRole("button", { name: new RegExp(`^${label}\\b`) }).waitFor({ state: "visible" }));
+  for (const label of ["Dashboard", "Agents", "Subscriptions", "Workflow starters", "Workflow"]) {
+    await assert.doesNotReject(() => page.getByRole("button", { name: label, exact: true }).waitFor({ state: "visible" }));
   }
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "false");
 });
@@ -703,7 +703,7 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
     await page.locator(".admin-shell-nav-group-label").allTextContents(),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 22);
+  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 23);
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();
@@ -739,7 +739,7 @@ test("privacy page previews an exact scoped revision and exposes incomplete cove
   await page.getByRole("button", { name: "Preview retention", exact: true }).click();
   await page.getByText("after-preview", { exact: true }).waitFor();
   assert.deepEqual(actions, [{ expected_revision: "reviewed-revision", payload: { dataset: "voice" } }]);
-  await page.getByLabel("Action", { exact: true }).selectOption("jobs.approve");
+  await page.getByRole("combobox", { name: /^Action/ }).selectOption("jobs.approve");
   assert.equal(await page.getByRole("button", { name: "Approve reviewed job", exact: true }).isDisabled(), true);
 });
 
@@ -788,7 +788,7 @@ test("privacy reviewer downloads require scoped unexpired exports and independen
   const download = await downloadPromise;
   assert.equal(download.suggestedFilename(), "evander-privacy-review.json");
   assert.deepEqual(requestedDownloads, ["/api/privacy/exports/review-job"]);
-  await page.getByLabel("Action", { exact: true }).selectOption("exports.release");
+  await page.getByRole("combobox", { name: /^Action/ }).selectOption("exports.release");
   assert.equal(await page.getByRole("button", { name: "Record independent export review", exact: true }).isDisabled(), true);
 });
 
@@ -816,7 +816,7 @@ test("privacy approval requires inspection of the same current persisted job", {
   });
   page.setDefaultTimeout(10_000);
   await page.goto(`http://127.0.0.1:${address.port}/#privacy`, { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Action", { exact: true }).selectOption("jobs.approve");
+  await page.getByRole("combobox", { name: /^Action/ }).selectOption("jobs.approve");
   const approve = page.getByRole("button", { name: "Approve reviewed job", exact: true });
   const inspect = page.getByRole("button", { name: "Inspect persisted selection", exact: true });
   const job = page.getByLabel("Reviewed job ID", { exact: true });

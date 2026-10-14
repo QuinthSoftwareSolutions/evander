@@ -3892,7 +3892,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
     assert queue_payload["event-gate-retry-1"]["delivery_state"] == "inflight"
     assert len(counting_factory.execute_calls) == 0
 
-    worker.run_once()
+    _run_until_effect_statuses(worker, {"effect-1": "succeeded"})
 
     gate_payload = gate_execution_payload(worker_config)
     gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]

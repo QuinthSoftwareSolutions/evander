@@ -34,9 +34,15 @@ class FakeAuth:
         return False
 
 
-class PrivilegedFakeAuth(FakeAuth):
-    def privileged_for_request(self, _request: Request) -> bool:
-        return True
+class HeaderFakeAuth(FakeAuth):
+    def require(self, request: Request) -> dict[str, Any]:
+        return json.loads(request.headers["x-test-auth"])
+
+    def authentication_payload(self, request: Request) -> dict[str, Any]:
+        return self.require(request)
+
+    def privileged_for_request(self, request: Request) -> bool:
+        return request.headers.get("x-test-privileged") == "true"
 
 
 class FakeVmAgentAdmin:
@@ -76,6 +82,7 @@ class FakeAdminService:
         self.operations_admin = self
         self.published_chat_events: list[dict[str, Any]] = []
         self.assistant_enabled = True
+        self.chat_app: Starlette | None = None
 
     def read_assistant_settings(self) -> dict[str, Any]:
         return {
@@ -102,8 +109,16 @@ def _client_for_user(
     *,
     privileged: bool = False,
 ) -> TestClient:
-    auth = PrivilegedFakeAuth(payload) if privileged else FakeAuth(payload)
-    return TestClient(Starlette(routes=chat_routes(service, auth)))
+    # Match the server: all users share one app and one chat store.
+    if service.chat_app is None:
+        service.chat_app = Starlette(routes=chat_routes(service, HeaderFakeAuth({})))
+    return TestClient(
+        service.chat_app,
+        headers={
+            "x-test-auth": json.dumps(payload),
+            "x-test-privileged": "true" if privileged else "false",
+        },
+    )
 
 
 def _wait_for(predicate, *, timeout: float = 2.0) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +20,48 @@ from evander.model_usage import DEFAULT_MODEL_PRICING_FILENAME, seed_default_mod
 from evander.repositories.audit_index import ToolCallAuditIndex, audit_index_path_for_log_path
 
 from . import cli_app, cli_common, cli_runtime
+
+
+@cli_app.app.command("convert-history-index", rich_help_panel="Health and State")
+def convert_history_index_command(
+    database: Annotated[Path, typer.Option("--database", help="Read-only source database.")],
+    output: Annotated[
+        Path, typer.Option("--output", help="New output path; existing files are refused.")
+    ],
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Confirm the output will not be used during conversion."),
+    ] = False,
+    legacy: Annotated[
+        bool, typer.Option("--legacy", help="Produce text-keyed tables for an older binary.")
+    ] = False,
+    cache_mib: Annotated[
+        int,
+        typer.Option(
+            "--cache-mib", min=1, help="SQLite cache limit in MiB; sorts use extra memory."
+        ),
+    ] = 1024,
+) -> None:
+    """Write a separate, verified history-index conversion without changing source."""
+    if not offline:
+        raise typer.BadParameter(
+            "--offline is required; do not use the output until conversion finishes"
+        )
+    from evander.orchestration.history_index_migration import copy_history_index_storage
+
+    try:
+        result = copy_history_index_storage(
+            database,
+            output,
+            interned=not legacy,
+            cache_mib=cache_mib,
+            progress=lambda phase: typer.echo(
+                f"{datetime.now(UTC).isoformat()} history-index: {phase}", err=True
+            ),
+        )
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 @cli_app.app.command("migrate-orchestration-storage", rich_help_panel="Health and State")
@@ -43,7 +86,8 @@ def migrate_orchestration_storage_command(
         ),
     ] = False,
     indexes_only: Annotated[
-        bool, typer.Option("--indexes-only", help="Build maintenance indexes without converting rows."),
+        bool,
+        typer.Option("--indexes-only", help="Build maintenance indexes without converting rows."),
     ] = False,
     verify: Annotated[
         bool, typer.Option("--verify", help="Read and verify every operational payload.")

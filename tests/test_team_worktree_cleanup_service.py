@@ -2664,6 +2664,7 @@ def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path)
     assert "/home/agent/.evander/locks/task-worktree-project.lock" in command
     assert 'exec 9>"$lock"' in command
     assert "flock 9" in command
+    assert "base_fetch_ref=refs/heads/main" in command
     fresh_base_fetch = "\n".join(
         (
             '  if [ -z "$pinned_base_commit" ]; then',

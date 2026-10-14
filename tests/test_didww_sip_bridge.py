@@ -6243,7 +6243,6 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
     stop_event = asyncio.Event()
-    answer_injected = asyncio.Event()
 
     class FakeRealtime:
         def __init__(self) -> None:
@@ -6264,12 +6263,13 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
             self.tool_outputs: list[dict[str, object]] = []
             self.responses: list[str | None] = []
             self.injected: list[dict[str, object]] = []
+            self.answer_injected = asyncio.Event()
 
         async def recv_json(self) -> dict[str, Any]:
             while self.events:
                 event = self.events.pop(0)
                 if event["type"] == "__wait_for_answer__":
-                    await answer_injected.wait()
+                    await self.answer_injected.wait()
                     continue
                 return event
             await asyncio.sleep(0.01)
@@ -6289,7 +6289,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
             request_response: bool = True,
         ) -> None:
             self.injected.append(query)
-            answer_injected.set()
+            self.answer_injected.set()
 
     class FakeController:
         configured = True

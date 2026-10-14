@@ -438,7 +438,7 @@ test("workflow editor keeps read-only workflow users in inspect mode but disable
   });
 
   await page.waitForSelector(".canvas-shell .react-flow__pane");
-  await page.getByText("Current runs").click();
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
   await page.locator(".runtime-run-card").waitFor({ state: "visible" });
   await assert.equal(await page.getByRole("button", { name: "Generate workflow" }).isDisabled(), true);
   await assert.equal(await page.getByRole("button", { name: "Validate" }).isDisabled(), false);
@@ -676,7 +676,7 @@ test("workflow editor opens workflow definitions without workflow run read acces
   });
 
   await page.waitForSelector(".canvas-shell .react-flow__pane");
-  await page.locator(".workflow-graphs-section summary").click();
+  await page.getByRole("button", { name: "Graphs", exact: true }).click();
   await page.locator(".workflow-graph-name", { hasText: "Definition-only graph" }).waitFor({ state: "visible" });
 
   assert.equal(await page.getByText("Current runs", { exact: true }).count(), 0);

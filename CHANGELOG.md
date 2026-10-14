@@ -12,6 +12,7 @@
   checks with private refs, and test chat ownership through one shared application.
 - Isolate simulated polling clocks and wait for observed asynchronous outcomes
   instead of assuming a fixed number of cycles or a short scheduling delay.
+- Keep navigation and tutorial checks unambiguous when workflow starters are available.
 
 ## 2026-10-14 - Honor disabled Azure DevOps feedback integration (0.90.1)
 
@@ -41,6 +42,30 @@
 - Follow persisted continuation links when checking completion or downstream failures.
   Include integration-owned workers in restart guidance and exit Teams workers cleanly
   when the add-on is disabled.
+
+## 2026-10-14 - Edit workflows in a lower workbench (0.89.0)
+
+- Give the workflow canvas a full-width lower editor with a remembered, resizable
+  split, expanded editing, and Configuration, Outputs, and History tabs.
+- Move graph selection and the node catalog into toolbar popovers, and keep runs
+  and validation checks available in the workbench.
+- Keep tutorial node actions reachable from the toolbar and move tutorial hints
+  beside their target when the shorter canvas leaves no room above or below it.
+- Edit map outputs through typed rows and upstream binding selectors, retaining
+  raw JSON, nested values, existing layouts, and revision-checked workflow saves.
+
+## 2026-10-14 - Compact execution-history scalar storage (0.88.1)
+
+- Add explicit conversion to a separate verified database with shared execution,
+  generation and field-path dictionaries, retaining every scalar value and row ID.
+  Existing databases keep their original format until an operator converts them.
+- Support transactional indexing, direct integer-ID field queries, bounded retention
+  and dictionary collection in the compact format. Restrict field-catalog aggregation
+  to the requested execution window before reading scalar values.
+- Provide a separate legacy-format output for rollback and reject payload downgrade
+  until the scalar index has been converted back.
+- Reuse bounded read-only history-report connections to avoid repeated schema
+  parsing, releasing cursors and snapshots between reports and renewing deadlines.
 
 ## 2026-10-14 - Optional Teams and Graph integration (0.88.0)
 
