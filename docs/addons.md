@@ -57,6 +57,13 @@ tests cover generic extension contracts using synthetic add-ons; they must work
 without optional projects installed. Global documentation links to project-owned
 guides, and the repository release notes record shared platform changes.
 
+## Optional integration contracts
+
+Add-ons can opt into the versioned settings, credential, readiness, worker and
+workflow starter contracts described in [Optional integrations](optional-integrations.md).
+Existing registrations need no changes. These declarations do not grant capabilities
+or start services, and they do not replace the workflow engine or editor.
+
 ## Boundary Contract
 
 Add-ons may register generic integration points:

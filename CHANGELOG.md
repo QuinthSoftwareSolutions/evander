@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 - Optional integration extension contracts (0.87.0)
+
+- Add opt-in, versioned add-on contracts for settings schemas, host credential
+  providers, readiness checks, background worker factories, and editable workflow
+  starters. Preserve existing add-on registrations and workflow loading.
+- Expose an owner-only integration inventory and explicit directory-scoped
+  readiness checks. Report unavailable dependencies without executing callbacks;
+  keep provider error details and credential material out of readiness responses.
+- Keep worker supervision, integration extraction, configuration writes and
+  starter installation outside this foundational stage.
+
 ## 2026-10-12 - Isolate private Git refs from upstream branches (0.86.8)
 
 - Store session, review, and Team refs under `refs/evander/` so upstream
