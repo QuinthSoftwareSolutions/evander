@@ -18,6 +18,12 @@ from evander.repositories.maintenance_indexes import (
     MAINTENANCE_INDEXES,
     MaintenanceIndexesRequired,
 )
+from evander.repositories.history_index_storage import (
+    delete_history_values,
+    ensure_legacy_values_schema,
+    interned_schema_is_current,
+    uses_interned_history,
+)
 from evander.repositories.sqlite_runtime import (
     DEFAULT_BUSY_TIMEOUT_MS,
     MAINTENANCE_TIMEOUT_MS,
@@ -183,6 +189,10 @@ def ensure_orchestration_schema(path: Path | str, *, force: bool = False) -> Non
 
 
 def _initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
+    if uses_interned_history(connection) and not interned_schema_is_current(connection):
+        # Rebuilding large indexes or repairing an incomplete conversion belongs
+        # to the explicit offline path, never a service's startup transaction.
+        raise ValueError("Incomplete or unsupported interned history index; restore a verified converted copy")
     fresh = (
         connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
@@ -463,31 +473,10 @@ def _initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
                 ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS workflow_node_execution_history_values (
-            execution_key TEXT NOT NULL,
-            location TEXT NOT NULL,
-            json_pointer TEXT NOT NULL,
-            value_type TEXT NOT NULL,
-            value_hash TEXT,
-            text_value TEXT,
-            numeric_value REAL,
-            boolean_value INTEGER,
-            PRIMARY KEY(execution_key, location, json_pointer),
-            FOREIGN KEY(execution_key)
-                REFERENCES workflow_node_execution_history(execution_key)
-                ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_lookup
-            ON workflow_node_execution_history_values(
-                location, json_pointer, value_type, value_hash, execution_key
-            );
-        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_numeric
-            ON workflow_node_execution_history_values(
-                location, json_pointer, value_type, numeric_value, execution_key
-            );
         """
     )
+    if not uses_interned_history(connection):
+        ensure_legacy_values_schema(connection)
     v3_applied = connection.execute(
         "SELECT 1 FROM schema_migrations WHERE version = ?", (3,)
     ).fetchone()
@@ -508,14 +497,15 @@ def _initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
             )
             """
         )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
-            ON workflow_node_execution_history_values(
-                location, json_pointer, value_type, text_value, execution_key
+        if not uses_interned_history(connection):
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
+                ON workflow_node_execution_history_values(
+                    location, json_pointer, value_type, text_value, execution_key
+                )
+                """
             )
-            """
-        )
         # Execution-history comparisons require a fixed-width UTC representation.
         # Rows written by schema v2 at an exact second used the shorter ``...00Z``
         # spelling, which is not lexicographically ordered with fractional seconds.
@@ -869,24 +859,9 @@ def _delete_compact_history_batch(
     connection.executemany(
         "INSERT OR IGNORE INTO workflow_history_retirements VALUES (?)", [(key,) for key in keys]
     )
-    tables = (
-        "workflow_node_execution_history_values", "workflow_history_index_values",
-    )
-    removed = 0
-    for table in tables:
-        if removed >= index_batch_size:
-            break
-        removed += connection.execute(
-            f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} "
-            f"WHERE execution_key IN ({placeholders}) LIMIT ?)",
-            [*keys, index_batch_size - removed],
-        ).rowcount
+    removed, empty = delete_history_values(connection, keys, index_batch_size)
     # Scalar indexes can contain thousands of rows per execution. Drain them
     # before parent cascades; retirement hides partial indexes from readers.
-    empty = " AND ".join(
-        f"NOT EXISTS(SELECT 1 FROM {table} v WHERE v.execution_key=h.execution_key)"
-        for table in tables
-    )
     deleted = connection.execute(
         f"DELETE FROM workflow_node_execution_history AS h "
         f"WHERE execution_key IN ({placeholders}) AND {empty}", keys,

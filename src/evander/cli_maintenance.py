@@ -21,6 +21,34 @@ from evander.repositories.audit_index import ToolCallAuditIndex, audit_index_pat
 from . import cli_app, cli_common, cli_runtime
 
 
+@cli_app.app.command("convert-history-index", rich_help_panel="Health and State")
+def convert_history_index_command(
+    database: Annotated[Path, typer.Option("--database", help="Read-only source database.")],
+    output: Annotated[
+        Path, typer.Option("--output", help="New output path; existing files are refused.")
+    ],
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Confirm the output will not be used during conversion."),
+    ] = False,
+    legacy: Annotated[
+        bool, typer.Option("--legacy", help="Produce text-keyed tables for an older binary.")
+    ] = False,
+) -> None:
+    """Write a separate, verified history-index conversion without changing source."""
+    if not offline:
+        raise typer.BadParameter(
+            "--offline is required; do not use the output until conversion finishes"
+        )
+    from evander.orchestration.history_index_migration import copy_history_index_storage
+
+    try:
+        result = copy_history_index_storage(database, output, interned=not legacy)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+
+
 @cli_app.app.command("migrate-orchestration-storage", rich_help_panel="Health and State")
 def migrate_orchestration_storage_command(
     database: Annotated[
@@ -43,7 +71,8 @@ def migrate_orchestration_storage_command(
         ),
     ] = False,
     indexes_only: Annotated[
-        bool, typer.Option("--indexes-only", help="Build maintenance indexes without converting rows."),
+        bool,
+        typer.Option("--indexes-only", help="Build maintenance indexes without converting rows."),
     ] = False,
     verify: Annotated[
         bool, typer.Option("--verify", help="Read and verify every operational payload.")

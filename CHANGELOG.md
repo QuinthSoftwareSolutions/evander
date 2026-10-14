@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 - Compact execution-history scalar storage (0.88.1)
+
+- Add explicit conversion to a separate verified database with shared execution,
+  generation and field-path dictionaries, retaining every scalar value and row ID.
+  Existing databases keep their original format until an operator converts them.
+- Support transactional indexing, direct integer-ID field queries, bounded retention
+  and dictionary collection in the compact format. Restrict field-catalog aggregation
+  to the requested execution window before reading scalar values.
+- Provide a separate legacy-format output for rollback and reject payload downgrade
+  until the scalar index has been converted back.
+
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 
 - Show the model, speed, and reasoning settings of active container and VM

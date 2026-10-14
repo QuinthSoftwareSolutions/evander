@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from evander.repositories import execution_history as history
+from evander.repositories.history_index_storage import convert_history_index_storage
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
     connect_orchestration_db_read_only,
@@ -19,7 +20,12 @@ from evander.repositories.sqlite_runtime import (
 )
 
 
-def _seed_job(path, *, limit=None):
+@pytest.fixture(params=[False, True], ids=["text-keys", "integer-keys"])
+def interned_history(request):
+    return request.param
+
+
+def _seed_job(path, *, limit=None, interned=False):
     ensure_orchestration_schema(path)
     with connect_orchestration_db(path) as connection:
         history.archive_execution_record(
@@ -30,6 +36,8 @@ def _seed_job(path, *, limit=None):
                 "input_payload": {f"field-{i:03d}": i for i in range(220)}, "outputs": {},
             },
         )
+        if interned:
+            convert_history_index_storage(connection)
         if limit is not None:
             _set_limit(connection, limit)
 
@@ -53,10 +61,10 @@ def _read_limit(path):
     (None, None, 50), (1, None, 1), (None, 2, 2),
 ])
 def test_deadline_rolls_back_then_persists_backoff_and_recovers_after_restart(
-    tmp_path, monkeypatch, initial_limit, concurrent_limit, expected_limit,
+    tmp_path, monkeypatch, initial_limit, concurrent_limit, expected_limit, interned_history,
 ):
     path = tmp_path / "orchestration.db"
-    _seed_job(path, limit=initial_limit)
+    _seed_job(path, limit=initial_limit, interned=interned_history)
     original_prepare = history.prepare_pending_history_indexing
     original_apply = history.run_pending_history_indexing
 
@@ -109,9 +117,9 @@ def test_deadline_rolls_back_then_persists_backoff_and_recovers_after_restart(
         assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_current_values").fetchone()[0] == 220
 
 
-def test_writer_contention_keeps_the_field_limit_and_cursor_unchanged(tmp_path):
+def test_writer_contention_keeps_the_field_limit_and_cursor_unchanged(tmp_path, interned_history):
     path = tmp_path / "orchestration.db"
-    _seed_job(path, limit=32)
+    _seed_job(path, limit=32, interned=interned_history)
     with connect_orchestration_db(path) as foreground:
         foreground.execute("BEGIN IMMEDIATE")
         with pytest.raises(sqlite3.OperationalError) as caught:
@@ -123,9 +131,9 @@ def test_writer_contention_keeps_the_field_limit_and_cursor_unchanged(tmp_path):
         assert connection.execute("SELECT next_offset FROM workflow_history_index_jobs").fetchone()[0] == 0
 
 
-def test_fast_indexing_preserves_a_concurrent_limit_reduction(tmp_path, monkeypatch):
+def test_fast_indexing_preserves_a_concurrent_limit_reduction(tmp_path, monkeypatch, interned_history):
     path = tmp_path / "orchestration.db"
-    _seed_job(path, limit=16)
+    _seed_job(path, limit=16, interned=interned_history)
     original = history.prepare_pending_history_indexing
 
     def prepare(*args, **kwargs):
