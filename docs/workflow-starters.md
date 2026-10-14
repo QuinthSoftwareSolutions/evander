@@ -31,7 +31,9 @@ required by this starter.
 After activation, **Run task once now** executes those instructions through the normal
 workflow queue. It can perform the actions authorized for that agent. Queued and running
 states are not verification: success requires the agent's completed lifecycle event and
-the downstream completion node. Open the run report to inspect its actual result.
+the downstream completion node. Verification follows persisted continuation links
+from the originating event and checks later failures in that chain. Open the run
+report to inspect its actual result.
 
 The generated workflow also has a normal `trigger:event` node for manual execution.
 Use the editor for other schedules, additional steps, conditions, and retries.

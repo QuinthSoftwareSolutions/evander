@@ -281,15 +281,27 @@ class WorkflowStarterAdminService:
         ):
             raise ValueError("This run predates starter activation.")
         result["event_id"] = run.event_id
+        runs, evidence_complete = self._continuation_runs(run)
         completed = any(
             node.node_id == spec["completion_node_id"] and node.status == "succeeded"
-            for node in run.nodes
+            for continuation in runs
+            for node in continuation.nodes
         )
-        if run.run_state in {"errored", "error_routed", "cleared"} or run.failed_node_id:
+        if any(
+            continuation.run_state in {"errored", "error_routed", "cleared"}
+            or continuation.failed_node_id
+            for continuation in runs
+        ):
             return {
                 **result,
                 "state": "failed",
                 "message": "The workflow reported an error. Open the run report for details.",
+            }
+        if not evidence_complete:
+            return {
+                **result,
+                "state": "needs_attention",
+                "message": "Some continuation evidence is unavailable. Inspect the workflow run before verifying it.",
             }
         if not completed:
             return {
@@ -298,11 +310,12 @@ class WorkflowStarterAdminService:
                 "message": "The run was received. Waiting for the task to complete.",
             }
         if spec["required_tool"]:
+            run_ids = {continuation.event_id for continuation in runs}
             delivered = any(
                 link.tool_name == spec["required_tool"]
                 and link.status == "success"
                 and (
-                    link.workflow_run_id == run.event_id
+                    link.workflow_run_id in run_ids
                     or (run.trace_id and link.trace_id == run.trace_id)
                 )
                 and all(
@@ -310,8 +323,13 @@ class WorkflowStarterAdminService:
                     for key, value in spec["required_tool_arguments"].items()
                 )
                 for link in [
-                    *run.tool_call_links,
-                    *(link for node in run.nodes for link in node.tool_call_links),
+                    *(link for continuation in runs for link in continuation.tool_call_links),
+                    *(
+                        link
+                        for continuation in runs
+                        for node in continuation.nodes
+                        for link in node.tool_call_links
+                    ),
                 ]
             )
             if not delivered:
@@ -325,3 +343,27 @@ class WorkflowStarterAdminService:
             "state": "verified",
             "message": "The task completed and its required outcome was recorded.",
         }
+
+    def _continuation_runs(self, root) -> tuple[list[Any], bool]:
+        """Follow persisted publication links, never unrelated runs sharing a session or trace."""
+        runs = [root]
+        seen = {root.event_id}
+        for run in runs:
+            for node in run.nodes:
+                records = [node, *getattr(node, "records", ())]
+                for record in records:
+                    event_id = getattr(record, "published_event_id", None)
+                    if not event_id or event_id in seen:
+                        continue
+                    # A starter normally has only a few events. Bound corrupted/cyclic evidence.
+                    if len(seen) >= 64:
+                        return runs, False
+                    seen.add(event_id)
+                    try:
+                        continuation = self.reports.read_workflow_run_detail(event_id=event_id)
+                    except ValueError:
+                        return runs, False
+                    if continuation.trace_id != root.trace_id:
+                        return runs, False
+                    runs.append(continuation)
+        return runs, True

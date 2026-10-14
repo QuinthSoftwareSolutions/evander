@@ -24,6 +24,10 @@ list, also append `teams-graph`; preserve the other entries. Configure this thro
 operator configuration interfaces. The legacy default with no explicit list continues to permit
 Teams/Graph when the package is installed.
 
+After changing enablement, restart every service listed by Admin Web, including
+Teams ingest, notifications, and meeting ingest. A disabled Teams worker exits
+successfully at startup before opening a listener or performing provider work.
+
 Reinstall the service definitions after installing the package:
 
 ```bash

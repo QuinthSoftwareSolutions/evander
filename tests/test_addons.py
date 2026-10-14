@@ -82,6 +82,7 @@ def test_load_addons_preserves_explicit_gateway_restart_dependency(monkeypatch, 
         "addon_id": "synthetic-restart",
         "display_name": "Synthetic restart dependency",
         "requires_gateway_restart": True,
+        "required_restart_services": ["evander-synthetic-worker"],
     }
     module.register_addon = lambda: fields if as_mapping else SimpleNamespace(**fields)
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -89,6 +90,7 @@ def test_load_addons_preserves_explicit_gateway_restart_dependency(monkeypatch, 
     catalog = load_addons(AddonLoaderConfig(modules=[module.__name__], package_dirs=[]))
 
     assert catalog.registrations[0].requires_gateway_restart is True
+    assert catalog.registrations[0].required_restart_services == ("evander-synthetic-worker",)
     assert catalog.registrations[0].mcp_tools is None
 
 
@@ -96,6 +98,12 @@ def test_load_addons_preserves_explicit_gateway_restart_dependency(monkeypatch, 
 def test_registration_rejects_non_boolean_gateway_restart_dependency(value):
     with pytest.raises(ValueError, match="requires_gateway_restart must be a boolean"):
         AddonRegistration("synthetic-restart", "Synthetic", requires_gateway_restart=value)
+
+
+@pytest.mark.parametrize("value", [None, "evander-worker", ["../worker"], ["evander-worker.service"], [1]])
+def test_registration_rejects_invalid_restart_services(value):
+    with pytest.raises(ValueError, match="required_restart_services"):
+        AddonRegistration("synthetic-restart", "Synthetic", required_restart_services=value)
 
 
 def test_bundled_team_addon_packaging_contract_is_declared() -> None:

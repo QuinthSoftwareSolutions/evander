@@ -772,7 +772,8 @@ def test_addon_enablement_honors_declared_gateway_restart_without_mcp_factory(
         "def register_addon():\n"
         "    return AddonRegistration(addon_id='restart-dependency', "
         "display_name='Restart dependency', "
-        f"requires_gateway_restart={requires_gateway_restart!r})\n"
+        f"requires_gateway_restart={requires_gateway_restart!r}, "
+        "required_restart_services=('evander-synthetic-ingest', 'evander-synthetic-notifications'))\n"
     )
     monkeypatch.syspath_prepend(str(module_root))
     sys.modules.pop("synthetic_restart_dependency", None)
@@ -794,6 +795,9 @@ def test_addon_enablement_honors_declared_gateway_restart_without_mcp_factory(
         assert addon["pending_disable" if enabled else "pending_enable"] is True
         assert ("evander-gateway" in addon["required_restart_services"]) is requires_gateway_restart
         assert ("evander-gateway" in saved["required_restart_services"]) is requires_gateway_restart
+        for worker in ("evander-synthetic-ingest", "evander-synthetic-notifications"):
+            assert worker in addon["required_restart_services"]
+            assert worker in saved["required_restart_services"]
 
 
 def test_admin_web_addon_management_discovers_root_addon_packages_without_config(

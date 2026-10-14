@@ -258,6 +258,11 @@ def main() -> None:
 
     runtime_dir = Path(args.runtime_dir).expanduser().resolve()
     config = load_runtime_gateway_config(runtime_dir=runtime_dir)
+    from evander.optional_integrations import teams_graph_enabled
+
+    if not teams_graph_enabled(config):
+        logging.getLogger(__name__).info("Teams/Graph is disabled; worker not started.")
+        return
     worker = build_teams_meeting_ingest_worker(config, project_dir=runtime_dir.parent)
     if args.once:
         result = worker.run_once_with_lock()

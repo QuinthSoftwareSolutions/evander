@@ -129,6 +129,7 @@ class AddonAdminService:
                                 or bool(registration and registration.requires_gateway_restart)
                             ),
                             has_website_session_adapters=has_website_session_adapters,
+                            additional_services=registration.required_restart_services if registration else (),
                         )
                     ),
                 }
@@ -192,6 +193,10 @@ class AddonAdminService:
                 self._required_restart_services(
                     has_mcp_tools=has_gateway_change,
                     has_website_session_adapters=has_relay_change,
+                    additional_services=tuple(
+                        service for addon in addons if addon["restart_required"]
+                        for service in addon["required_restart_services"]
+                    ),
                 )
             )
             if restart_required
@@ -676,11 +681,12 @@ class AddonAdminService:
         return updated
 
     def _required_restart_services(
-        self, *, has_mcp_tools: bool, has_website_session_adapters: bool = False
+        self, *, has_mcp_tools: bool, has_website_session_adapters: bool = False,
+        additional_services: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
         services = _RESTART_SERVICES_BASE
         if has_mcp_tools:
             services += ("evander-gateway",)
         if has_website_session_adapters:
             services += ("evander-http-target-relay",)
-        return services
+        return tuple(dict.fromkeys((*services, *additional_services)))

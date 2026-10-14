@@ -29,6 +29,9 @@ def test_registration_and_readiness_do_not_resolve_tokens_or_start_workers(tmp_p
     )
     addon = register_addon()
     assert addon.requires_gateway_restart is True
+    assert set(addon.required_restart_services) == {
+        "evander-teams-ingest", "evander-teams-notifications", "evander-teams-meeting-ingest",
+    }
     registry = IntegrationRegistry(LoadedAddonCatalog((addon,), ("test",)))
     context = AddonContext("teams-graph", tmp_path, tmp_path / "addons/teams-graph", config=config)
     assert registry.readiness("teams-graph", context)["status"] == "ready"

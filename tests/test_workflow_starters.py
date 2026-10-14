@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,6 +21,14 @@ from evander.integration_contracts import (
     IntegrationReadinessCheck,
 )
 from evander.models import SessionManifest
+from evander.daemons.effect_orchestrator import (
+    EffectExecutionRecord,
+    GateExecutionRecord,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
+from evander.events.models import TriggerEvent
+from evander.triggers.queue import SqliteTriggerEventQueue
 
 
 @pytest.fixture
@@ -173,41 +180,126 @@ def test_manual_verification_uses_real_queue_and_retries_do_not_duplicate(admin)
     assert state["state"] == "running"
 
 
-def test_completion_and_delivery_need_actual_evidence(admin):
+@pytest.mark.parametrize("outcome", ["succeeded", "failed", "unrelated", "foreign_trace"])
+def test_verification_follows_persisted_gate_and_effect_continuations(admin, outcome):
     receipt = activate(admin)
-    pending = SimpleNamespace(
-        source_node_id="starter-daily-check-test",
-        event_id="test-run",
-        trace_id="trace-test",
-        occurred_at=datetime.now(UTC),
-        run_state="completed",
-        failed_node_id=None,
-        nodes=[],
-        tool_call_links=[],
+    started = admin.workflow_starter_admin.run_test(
+        receipt["id"],
+        "root",
+        request_id="chain-test",
+        source=InternalEventSource(user_id="operator"),
+        authorize_directory=lambda _: None,
     )
-    admin.workflow_starter_admin.reports = SimpleNamespace(
-        read_workflow_run_detail=lambda **_: pending
+    stores = admin.workflow_config_admin.workflow_run_store_paths()
+    queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
+    effects = SqliteExecutionStore(stores["orchestration_store_path"])
+    now = datetime.now(UTC)
+    common = dict(
+        trace_id=started["trace_id"],
+        started_at=now,
+        finished_at=now,
+        resolved_config_hash="fixture-config",
     )
-    assert (
-        admin.workflow_starter_admin.verification(receipt["id"], "root", event_id="test-run")[
-            "state"
-        ]
-        == "running"
-    )
-    pending.nodes = [
-        SimpleNamespace(
-            node_id="starter-daily-check-completed", status="succeeded", tool_call_links=[]
+    gate_store.record_execution(
+        GateExecutionRecord(
+            **common,
+            execution_id="merge-execution",
+            idempotency_key="merge-execution",
+            event_id=started["event_id"],
+            source_node_id="starter-daily-check-test",
+            source_trigger_type="trigger:event",
+            gate_id="starter-daily-check-start",
+            gate_type="gate:merge",
+            status="succeeded",
+            published_event_id="merge-completed",
         )
-    ]
-    assert (
-        admin.workflow_starter_admin.verification(receipt["id"], "root", event_id="test-run")[
-            "state"
-        ]
-        == "verified"
     )
-    pending.source_node_id = "unrelated-workflow"
+    queue.publish(
+        TriggerEvent(
+            event_id="merge-completed",
+            trigger_id="starter-daily-check-start",
+            trigger_type="gate:merge",
+            occurred_at=now,
+            trace_id=started["trace_id"],
+            payload={},
+        )
+    )
+    effects.record_execution(
+        EffectExecutionRecord(
+            **common,
+            execution_id="task-execution",
+            idempotency_key="task-execution",
+            event_id="merge-completed",
+            source_node_id="starter-daily-check-start",
+            source_trigger_type="gate:merge",
+            effect_id="starter-daily-check-task",
+            effect_type="effect:agent:enqueue-prompt",
+            status="failed" if outcome == "failed" else "succeeded",
+            error="Task failed" if outcome == "failed" else None,
+            published_event_id="task-completed"
+            if outcome in {"succeeded", "foreign_trace"}
+            else None,
+        )
+    )
+    queue.publish(
+        TriggerEvent(
+            event_id="task-completed",
+            trigger_id="starter-daily-check-task",
+            trigger_type="effect:agent:enqueue-prompt",
+            occurred_at=now,
+            trace_id="another-trace" if outcome == "foreign_trace" else started["trace_id"],
+            payload={},
+        )
+    )
+    effects.record_execution(
+        EffectExecutionRecord(
+            **{
+                **common,
+                "trace_id": "another-trace" if outcome == "foreign_trace" else started["trace_id"],
+            },
+            execution_id="marker-execution",
+            idempotency_key="marker-execution",
+            event_id="task-completed",
+            source_node_id="starter-daily-check-task",
+            source_trigger_type="effect:agent:enqueue-prompt",
+            effect_id="starter-daily-check-completed",
+            effect_type="effect:event:emit",
+            status="succeeded",
+        )
+    )
+    origin = admin.workflow_config_admin.read_workflow_run_detail(event_id=started["event_id"])
+    assert all(node.node_id != "starter-daily-check-completed" for node in origin.nodes)
+    result = admin.workflow_starter_admin.verification(
+        receipt["id"], "root", event_id=started["event_id"]
+    )
+    assert (
+        result["state"]
+        == {
+            "succeeded": "verified",
+            "failed": "failed",
+            "unrelated": "running",
+            "foreign_trace": "needs_attention",
+        }[outcome]
+    )
+    assert result["event_id"] == started["event_id"]
+
+
+def test_verification_rejects_an_unrelated_originating_trigger(admin):
+    receipt = activate(admin)
+    stores = admin.workflow_config_admin.workflow_run_store_paths()
+    queue = SqliteTriggerEventQueue(stores["orchestration_store_path"])
+    queue.publish(
+        TriggerEvent(
+            event_id="unrelated-run",
+            trigger_id="unrelated-trigger",
+            trigger_type="trigger:event",
+            occurred_at=datetime.now(UTC),
+            payload={},
+        )
+    )
     with pytest.raises(ValueError, match="does not belong"):
-        admin.workflow_starter_admin.verification(receipt["id"], "root", event_id="test-run")
+        admin.workflow_starter_admin.verification(receipt["id"], "root", event_id="unrelated-run")
 
 
 def test_unconfigured_addon_starter_exposes_setup_check_without_resolving_credentials(admin):

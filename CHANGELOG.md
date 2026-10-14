@@ -12,6 +12,9 @@
   make activation retries idempotent; upgrades never overwrite generated workflows.
 - Distinguish queued tasks from completion and require correlated successful reply
   evidence for Teams verification. Keep the existing editor and arbitrary workflows.
+- Follow persisted continuation links when checking completion or downstream failures.
+  Include integration-owned workers in restart guidance and exit Teams workers cleanly
+  when the add-on is disabled.
 
 ## 2026-10-14 - Optional Teams and Graph integration (0.88.0)
 

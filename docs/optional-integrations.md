@@ -18,6 +18,11 @@ Import the types from `evander.integration_contracts`, then supply the optional
 mapping, as do the contribution collections. Old registrations, including
 positional registrations, need no changes.
 
+An add-on can declare `required_restart_services` on its registration to include
+its own `evander-...` workers in enable/disable restart guidance. Use unit names
+without the `.service` suffix. The host combines these with its standard restart
+list; each worker must honor disabled configuration when it restarts.
+
 ```python
 from evander.addons import AddonRegistration
 from evander.integration_contracts import (

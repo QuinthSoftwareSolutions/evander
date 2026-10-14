@@ -85,6 +85,12 @@ def test_teams_verification_requires_a_correlated_successful_reply_to_selected_c
     completion = SimpleNamespace(
         node_id="starter-teams-assistant-completed", status="succeeded", tool_call_links=[]
     )
+    reply_node = SimpleNamespace(
+        node_id="starter-teams-assistant-reply",
+        status="succeeded",
+        tool_call_links=[],
+        published_event_id="reply-completed",
+    )
     run = SimpleNamespace(
         source_node_id="starter-teams-assistant-message",
         event_id="run",
@@ -92,10 +98,16 @@ def test_teams_verification_requires_a_correlated_successful_reply_to_selected_c
         occurred_at=datetime.now(UTC),
         run_state="completed",
         failed_node_id=None,
-        nodes=[completion],
+        nodes=[reply_node],
         tool_call_links=[],
     )
-    service.reports = SimpleNamespace(read_workflow_run_detail=lambda **_: run)
+    continuation = SimpleNamespace(
+        **{**vars(run), "event_id": "reply-completed", "nodes": [completion]}
+    )
+    reports = {"run": run, "reply-completed": continuation}
+    service.reports = SimpleNamespace(
+        read_workflow_run_detail=lambda **lookup: reports[lookup["event_id"]]
+    )
     assert service.verification(receipt["id"], "root", event_id="run")["state"] == "needs_attention"
     reply = SimpleNamespace(
         tool_name="teams_post_status",
@@ -106,7 +118,7 @@ def test_teams_verification_requires_a_correlated_successful_reply_to_selected_c
     )
     completion.tool_call_links = [reply]
     assert service.verification(receipt["id"], "root", event_id="run")["state"] == "needs_attention"
-    reply.workflow_run_id = "run"
+    reply.workflow_run_id = "reply-completed"
     reply.args = {"channel_target": "chat:other"}
     assert service.verification(receipt["id"], "root", event_id="run")["state"] == "needs_attention"
     reply.args = {"channel_target": "chat:example"}
