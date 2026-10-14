@@ -7,6 +7,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from evander.repositories.history_index_storage import uses_interned_history
 from evander.repositories.operational_payloads import FORMAT_KEY, TABLES, load_record, store_record
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
@@ -68,6 +69,10 @@ def check_orchestration_storage(path: Path, *, verify: bool = False) -> dict[str
             not result["errors"]
             and all(item["referenced_records"] == 0 for item in result["tables"].values())
             and not any(modern_state.values())
+            and not uses_interned_history(connection)
+        )
+        result["history_index_format"] = (
+            "interned" if uses_interned_history(connection) else "legacy"
         )
     return result
 
@@ -84,6 +89,12 @@ def migrate_orchestration_storage(
         raise ValueError("batch_size must be between 1 and 100")
     if not path.is_file():
         raise ValueError("Database does not exist")
+    if downgrade:
+        with connect_orchestration_db_read_only(path) as connection:
+            if uses_interned_history(connection):
+                raise ValueError(
+                    "Convert to a separate legacy history index with convert-history-index --legacy before payload downgrade"
+                )
     ensure_orchestration_schema(path)
     # An interrupted conversion owns its checkpoints until completion. Mixing
     # directions would let a resumed cursor skip records rewritten by the other
