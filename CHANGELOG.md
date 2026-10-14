@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-14 - Edit workflows in a lower workbench (0.89.0)
+
+- Give the workflow canvas a full-width lower editor with a remembered, resizable
+  split, expanded editing, and Configuration, Outputs, and History tabs.
+- Move graph selection and the node catalog into toolbar popovers, and keep runs
+  and validation checks available in the workbench.
+- Edit map outputs through typed rows and upstream binding selectors, retaining
+  raw JSON, nested values, existing layouts, and revision-checked workflow saves.
+
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 
 - Show the model, speed, and reasoning settings of active container and VM

@@ -35,11 +35,6 @@ import {
   NODE_TYPE_DESCRIPTIONS,
   NODE_TYPE_DRAG_DATA_MIME,
   WORKFLOW_COMPACT_BREAKPOINT,
-  WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH,
-  WORKFLOW_SIDEBAR_DEFAULT_WIDTH,
-  WORKFLOW_SIDEBAR_MAX_WIDTH,
-  WORKFLOW_SIDEBAR_MIN_WIDTH,
-  WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./editorConstants";
 import {
   type GraphNodeData,
@@ -56,27 +51,6 @@ import {
   nodeCollections,
   nodeKindFromType,
 } from "./graphModel";
-
-export function readStoredWorkflowSidebarWidth(): number {
-  if (typeof window === "undefined") return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
-  const raw = window.localStorage.getItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY);
-  if (!raw) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
-  return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
-}
-
-export function maxWorkflowSidebarWidth(containerWidth: number): number {
-  return Math.max(
-    WORKFLOW_SIDEBAR_MIN_WIDTH,
-    Math.min(WORKFLOW_SIDEBAR_MAX_WIDTH, Math.floor(containerWidth - WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)),
-  );
-}
-
-export function clampWorkflowSidebarWidth(width: number, containerWidth: number): number {
-  const maxWidth = maxWorkflowSidebarWidth(containerWidth);
-  return Math.min(Math.max(width, WORKFLOW_SIDEBAR_MIN_WIDTH), maxWidth);
-}
 
 export function isCompactCanvasTouchViewport(): boolean {
   if (typeof window === "undefined") return false;

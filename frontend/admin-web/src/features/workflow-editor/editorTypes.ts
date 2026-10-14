@@ -17,6 +17,7 @@ import {
 import { type WorkflowConnectionRouteOption } from "../../workflowRoutes";
 import { type ToolArgumentPolicyDraftRow } from "../../workflowToolArgumentPolicies";
 import { type WorkflowTutorialStep } from "../../workflowTutorials";
+import { type MapTemplateDraftRow } from "./mapTemplateDraft";
 import { EFFECT_TARGET_KEYS } from "./editorConstants";
 
 export type GraphNodeData = {
@@ -166,6 +167,7 @@ export type InspectorDraftSnapshot = {
   effectTargetKey?: EffectTargetKey;
   jsonDrafts: Record<string, string>;
   toolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
+  mapTemplateDrafts: Record<string, MapTemplateDraftRow[]>;
   jsonDisplayModes: Record<string, JsonDisplayMode>;
   stringListDrafts: Record<string, string>;
   stringMapDrafts: Record<string, StringMapDraftRow[]>;
@@ -261,12 +263,6 @@ export type RuntimePulseContext = {
 };
 
 export type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
-
-export type SidebarResizeState = {
-  pointerId: number;
-  startX: number;
-  startWidth: number;
-};
 
 export type NodeTypeDragPayload = {
   kind: WorkflowNodeKind;

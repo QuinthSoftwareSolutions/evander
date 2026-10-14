@@ -914,6 +914,20 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
   `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
   on Nexus-backed registry defaults so only audit sessions opt into the facade.
+- The Workflow editor keeps the canvas above a full-width workbench. Drag the
+  horizontal divider, or focus it and use the arrow keys, to adjust the split.
+  **Expand editor**, **Collapse editor**, and the toolbar's **Show editor** or
+  **Show canvas** controls change the visible panes without rearranging nodes or
+  resetting the canvas view. The split and node-detail tab are remembered locally.
+  Open **Graphs** or **Add node** from the toolbar. The workbench includes
+  **Inspector**, **Runs**, and **Checks**; node details use **Configuration**,
+  **Outputs**, and **History** tabs. Narrow screens retain the touch canvas and
+  full-width inspector sheet.
+- For `gate:map`, add named output rows and choose an upstream binding, text,
+  templated text, number, boolean, null, object, or array. Objects and arrays use
+  JSON sub-editors. **Raw JSON** and **Structured form** switch views without
+  changing stored value types or bindings. Resolve duplicate names and invalid
+  values before saving; switching tabs retains unfinished row input.
 - In the Workflow editor, node inspector edits are staged into the local workflow document as soon
   as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset

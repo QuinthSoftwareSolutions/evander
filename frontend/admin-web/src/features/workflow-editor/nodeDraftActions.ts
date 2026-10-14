@@ -20,6 +20,7 @@ import {
 } from "../../workflowToolArgumentPolicies";
 import { type WorkflowTutorialRequiredAction, type WorkflowTutorialSession } from "../../workflowTutorials";
 import { AGENT_CREATE_NODE_TYPE, EFFECT_TARGET_KEYS } from "./editorConstants";
+import { mapTemplateDraftRowsFromValue, mapTemplateDraftRowsToValue, parseMapTemplateJson, type MapTemplateDraftRow } from "./mapTemplateDraft";
 import {
   type InspectorDraftSnapshot,
   type JsonDisplayMode,
@@ -68,6 +69,7 @@ type NodeDraftActionsInputs = {
   setInspectorUnknownValues: Dispatch<SetStateAction<Record<string, unknown>>>;
   setInspectorJsonDrafts: Dispatch<SetStateAction<Record<string, string>>>;
   setInspectorToolArgumentPolicyDrafts: Dispatch<SetStateAction<Record<string, ToolArgumentPolicyDraftRow[]>>>;
+  setInspectorMapTemplateDrafts: Dispatch<SetStateAction<Record<string, MapTemplateDraftRow[]>>>;
   setInspectorJsonDisplayModes: Dispatch<SetStateAction<Record<string, JsonDisplayMode>>>;
   setInspectorStringListDrafts: Dispatch<SetStateAction<Record<string, string>>>;
   setInspectorStringMapDrafts: Dispatch<SetStateAction<Record<string, StringMapDraftRow[]>>>;
@@ -101,6 +103,7 @@ type NodeDraftActionsInputs = {
   inspectorEffectTargetKey: "target" | "session_id" | "vm_name";
   inspectorJsonDrafts: Record<string, string>;
   inspectorToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
+  inspectorMapTemplateDrafts: Record<string, MapTemplateDraftRow[]>;
   inspectorJsonDisplayModes: Record<string, JsonDisplayMode>;
   inspectorStringListDrafts: Record<string, string>;
   inspectorStringMapDrafts: Record<string, StringMapDraftRow[]>;
@@ -115,6 +118,7 @@ export function createNodeDraftActions({
   setInspectorUnknownValues,
   setInspectorJsonDrafts,
   setInspectorToolArgumentPolicyDrafts,
+  setInspectorMapTemplateDrafts,
   setInspectorJsonDisplayModes,
   setInspectorStringListDrafts,
   setInspectorStringMapDrafts,
@@ -148,6 +152,7 @@ export function createNodeDraftActions({
   inspectorEffectTargetKey,
   inspectorJsonDrafts,
   inspectorToolArgumentPolicyDrafts,
+  inspectorMapTemplateDrafts,
   inspectorJsonDisplayModes,
   inspectorStringListDrafts,
   inspectorStringMapDrafts,
@@ -164,6 +169,7 @@ export function createNodeDraftActions({
       setInspectorUnknownValues({});
       setInspectorJsonDrafts({});
       setInspectorToolArgumentPolicyDrafts({});
+      setInspectorMapTemplateDrafts({});
       setInspectorJsonDisplayModes({});
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
@@ -187,6 +193,7 @@ export function createNodeDraftActions({
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
     const nextToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]> = {};
+    const nextMapTemplateDrafts: Record<string, MapTemplateDraftRow[]> = {};
     const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
@@ -197,6 +204,14 @@ export function createNodeDraftActions({
     for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
+      if (nextNode.type === "gate:map" && field.key === "template") {
+        const value = nextKnownValues.template ?? {};
+        const rows = mapTemplateDraftRowsFromValue(value);
+        nextJsonDisplayModes.template = rows ? "structured" : "raw";
+        nextMapTemplateDrafts.template = rows ?? [];
+        nextJsonDrafts.template = JSON.stringify(value, null, 2);
+        continue;
+      }
       if (isExactBindingValue(nextKnownValues[field.key])) {
         const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
         const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
@@ -259,6 +274,7 @@ export function createNodeDraftActions({
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
     setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
+    setInspectorMapTemplateDrafts(nextMapTemplateDrafts);
     setInspectorJsonDisplayModes(nextJsonDisplayModes);
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
@@ -290,8 +306,18 @@ export function createNodeDraftActions({
     }
     for (const field of selectedCatalogEntry?.fields ?? []) {
       if (field.kind !== "json") continue;
-      if (isExactBindingValue(nextKnownValues[field.key])) continue;
       if (field.read_only) continue;
+      if (selectedNode.type === "gate:map" && field.key === "template") {
+        if (draft.jsonDisplayModes.template === "structured") {
+          const validation = mapTemplateDraftRowsToValue(draft.mapTemplateDrafts.template ?? []);
+          if (!validation.value) throw new Error(validation.errors.map(error => error.message).join(" "));
+          nextKnownValues.template = validation.value;
+        } else {
+          nextKnownValues.template = parseMapTemplateJson(draft.jsonDrafts.template ?? "{}");
+        }
+        continue;
+      }
+      if (isExactBindingValue(nextKnownValues[field.key])) continue;
       if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(selectedNode.type)) {
         if (draft.jsonDisplayModes[field.key] === "structured") {
           const validation = toolArgumentPolicyDraftRowsToValue(draft.toolArgumentPolicyDrafts[field.key] ?? []);
@@ -576,6 +602,7 @@ export function createNodeDraftActions({
         effectTargetKey: nextDraft.effectTargetKey ?? inspectorEffectTargetKey,
         jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
         toolArgumentPolicyDrafts: nextDraft.toolArgumentPolicyDrafts ?? inspectorToolArgumentPolicyDrafts,
+        mapTemplateDrafts: nextDraft.mapTemplateDrafts ?? inspectorMapTemplateDrafts,
         jsonDisplayModes: nextDraft.jsonDisplayModes ?? inspectorJsonDisplayModes,
         stringListDrafts: nextDraft.stringListDrafts ?? inspectorStringListDrafts,
         stringMapDrafts: nextDraft.stringMapDrafts ?? inspectorStringMapDrafts,

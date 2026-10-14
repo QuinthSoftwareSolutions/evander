@@ -654,7 +654,7 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
   await assert.doesNotReject(() => dispatchAgentNode.waitFor({ state: "visible" }));
   assert.equal(await dispatchAgentNode.locator(".node-runtime-badge.status-error_routed").count(), 0);
 
-  await page.getByText("Current runs").click();
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
   const currentRunCard = page.locator(".runtime-run-card").first();
   await assert.doesNotReject(() => currentRunCard.getByText("error_routed", { exact: true }).waitFor({ state: "visible" }));
   assert.equal(await currentRunCard.getByRole("button", { name: "Resume from failure" }).count(), 0);
@@ -669,7 +669,7 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
   await assert.doesNotReject(() => page.getByText("Inspected run").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Historical graph snapshot").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Exit inspect mode" }).waitFor({ state: "visible" }));
-  assert.equal(await page.getByText("Current runs").count(), 0);
+  assert.equal(await page.getByText("Current runs", { exact: true }).isVisible(), false);
   assert.equal(await page.getByRole("button", { name: "Save workflow" }).count(), 0);
   assert.equal(await page.locator(".node-card.inspect-ghost").count(), 0);
   assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated command" }).count(), 0);
