@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 - Repair modular-release test isolation (0.90.2)
+
+- Keep Azure DevOps query result-shape coverage with the extracted add-on and
+  retain provider-independent query coverage in core.
+- Isolate tests from a parent service's systemd invocation so retry tests exercise
+  their temporary runtime, while explicit service-generation guard tests remain active.
+- Load optional add-on source for their own test suites and subprocesses without
+  requiring package-path overrides for the complete test runner.
+- Keep ADO comment and publication tests with their integration, align Git-command
+  checks with private refs, and test chat ownership through one shared application.
+
 ## 2026-10-14 - Honor disabled Azure DevOps feedback integration (0.90.1)
 
 - Check the resolved directory's Azure DevOps enablement before the legacy pull-request

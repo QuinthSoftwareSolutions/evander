@@ -2670,7 +2670,7 @@ def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path)
             '    if [ "$base" = "HEAD" ]; then',
             "      git fetch --no-tags origin HEAD",
             "    else",
-            '      git fetch --no-tags origin "refs/heads/$base"',
+            '      git fetch --no-tags origin "$base_fetch_ref"',
             "    fi",
             '    base_commitish="$(git rev-parse --verify FETCH_HEAD^{commit})"',
             "  fi",
