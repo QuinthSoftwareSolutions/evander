@@ -1,7 +1,9 @@
 """Pull-request feedback, queries, replies, and publication."""
 
 from __future__ import annotations
-from evander.pr_feedback.identity import normalize_azure_devops_repo_identifier as _normalize_azure_devops_repo_identifier
+from evander.pr_feedback.identity import (
+    normalize_azure_devops_repo_identifier as _normalize_azure_devops_repo_identifier,  # noqa: F401 - legacy services export
+)
 from evander.optional_integrations import optional_azure_devops_class, require_azure_devops_module
 from contextlib import contextmanager
 import fcntl
