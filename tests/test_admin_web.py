@@ -1,33 +1,81 @@
 from __future__ import annotations
 
+
 from config_helpers import canonical_worker_config
 
+
 import asyncio
+
+
 import hashlib
+
+
 import hmac
+
+
 import io
+
+
 import json
+
+
 import logging
+
+
 import subprocess
+
+
 import tarfile
+
+
 import time
+
+
 from datetime import datetime, timedelta, timezone
+
+
 from pathlib import Path
+
+
 from types import MethodType
+
+
 from types import SimpleNamespace
 
+
 import httpx
+
+
 import pytest
+
+
 from starlette.requests import Request
+
+
 from starlette.responses import JSONResponse
+
+
 from starlette.routing import Mount, Route
+
+
 from starlette.testclient import TestClient
 
+
 import evander.admin.services.workflow_reports_service as workflow_reports_service
+
+
 import evander.admin.web.app as admin_web_app
+
+
 import evander.admin.web.vms_issues as vms_issues_module
+
+
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+
+
 from evander.admin.services.vm_agent.common_models import AgentCreateOperation
+
+
 from evander.admin.payloads import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
@@ -44,10 +92,20 @@ from evander.admin.payloads import (
     WorkflowRunRecentNodeActivityPayload,
     WorkflowRunSnapshotPayload,
 )
+
+
 from evander.admin import release_metadata as release_metadata_module
+
+
 from evander.admin.web.cache import AdminWebJsonResponseCache
+
+
 from evander.admin.web.app import _workflow_run_events, create_app as _create_app
+
+
 from evander.admin.web.shared import AdminWebConfig, request_has_privileged_operations
+
+
 from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     AUDITOR_GROUP_ID,
@@ -63,7 +121,11 @@ from evander.admin.web.rbac import (
     WORKFLOW_RUNS_READ_PERMISSION,
     WORKFLOW_VIEWER_GROUP_ID,
 )
+
+
 from evander.admin.web.user_store import AdminWebUserStore
+
+
 from evander.capacity_health import (
     DiskThresholds,
     DiskUsageTelemetry,
@@ -73,48 +135,84 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
+
+
 from evander.codex_auth import CodexAuthMode
+
+
 from evander.config import GatewayConfig
+
+
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
+
+
 from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+
+
 from evander.artifact_spaces import ArtifactSpaceStore
+
+
 from evander.communication_artifact_links import (
     issue_communication_artifact_download_link,
 )
+
+
 from evander.communication_artifacts import CommunicationArtifactStore
+
+
 from evander.directory_config import DirectoryConfigStore
+
+
 from evander.directories import DirectoryService
+
+
 from evander.published_artifacts import PublishedArtifactStore
+
+
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
+
+
 from evander.execution.models import (
     ExecutionBackendKind,
     ExecutionStatus,
     ExecutionStatusKind,
 )
+
+
 from evander.messaging.targets import (
     COMMUNICATION_TARGETS_DOMAIN,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+
+
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
+
+
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
     seed_default_model_pricing_catalog,
 )
+
+
 from evander.model_usage.runtime import register_model_usage_correlation_context
+
+
 from evander.operator_steering import operator_steering_note_store
+
+
 from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -127,13 +225,29 @@ from evander.models import (
     VmSummary,
     WorkerSummary,
 )
+
+
 from evander.events.internal import InternalEventBus
+
+
 from evander.events.models import TriggerEvent
+
+
 from evander.orchestration.host_polling import wake_socket_path_for_lock
+
+
 from evander.repositories.orchestration_db import connect_orchestration_db
+
+
 from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+
+
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
+
+
 from evander.worker.models import WorkerSessionRecord
+
+
 from config_helpers import (
     canonical_workflow_payload,
     canonicalize_workflow_files,
@@ -14627,43 +14741,6 @@ def test_admin_web_startup_marks_abandoned_agent_create_operations_failed(
     assert operation.status == "failed"
     assert operation.error == "Admin Web process exited before this create operation finished."
     assert operation.finished_at is not None
-
-
-def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
-    tmp_path: Path, monkeypatch
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    captured: dict[str, object] = {}
-
-    def create_vm(self, **payload):
-        captured.update(payload)
-        return VmActionResult(
-            success=True,
-            vm_name=payload["vm_name"],
-            action="create_vm",
-            message="created",
-            provider="libvirt",
-        )
-
-    monkeypatch.setattr(
-        service.vm_agent_admin,
-        "create_vm",
-        MethodType(create_vm, service.vm_agent_admin),
-    )
-    client = TestClient(create_app(service))
-    _unlock_privileged_operations(client)
-
-    response = client.post(
-        "/api/admin/agents",
-        json={
-            "backend": "libvirt_vm",
-            "vm_name": "lab-vm",
-            "teams_chat_allowlist": [" chat:chat-1 ", "chat:chat-2"],
-        },
-    )
-
-    assert response.status_code == 201
-    assert captured["teams_chat_allowlist"] == ["chat:chat-1", "chat:chat-2"]
 
 
 def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, monkeypatch) -> None:

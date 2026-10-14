@@ -1549,3 +1549,10 @@ and the coverage-preservation rules.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
 - Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; `11777` is the path-based HTTP target relay and `11778` is the authenticated browser forward proxy. The remaining defaults continue to cover SSH, MCP, model/package relays, and package caches.
+
+## Optional Microsoft Teams and Graph integration
+
+Teams messaging, Graph mail, delegated sign-in, and Teams meeting/voice adapters are supplied by
+[`evander-teams-graph-addon`](packages/teams-graph-addon/README.md). Install it alongside core in
+the same virtualenv before using those providers. Existing configurations and workflows need no
+data migration. The core installation remains usable without it.

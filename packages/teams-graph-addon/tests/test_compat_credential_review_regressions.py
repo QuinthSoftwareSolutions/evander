@@ -1,21 +1,46 @@
 from __future__ import annotations
 
+
 import asyncio
+
+
 import json
 
+
 import httpx
+
+
 import pytest
+
+
 from starlette.applications import Starlette
 
+
 from evander.admin.services.teams_service import TeamsGraphClient
+
+
 from evander.admin.web.teams_auth import teams_auth_routes
+
+
 from evander.credentials.bindings import teams_binding
+
+
 from evander.credentials.migration import _overlay, config_revision, migrate_teams
+
+
 from evander.credentials.teams import ManagedTeamsCredentialStore
+
+
 from evander.directories import DirectoryService
+
+
 from evander.messaging.teams_auth import TeamsAuthenticationRequiredError
+
+
 from evander.services import GraphTeamsService, TeamsAuthenticationError
-from test_managed_credentials_integrations import (
+
+
+from test_compat_managed_credentials_integrations import (
     Auth,
     admin as admin_fixture,
     create_teams,
@@ -25,7 +50,10 @@ from test_managed_credentials_integrations import (
     teams_values,
 )
 
+
 admin = admin_fixture
+
+
 custody = custody_fixture
 
 
@@ -232,14 +260,18 @@ def test_owner_cannot_sign_into_inactive_reference(admin, monkeypatch, status):
 
 
 @pytest.mark.parametrize("status", ["disabled", "deleted"])
-def test_teams_identity_listing_preserves_other_entries_when_credential_unavailable(admin, monkeypatch, status):
+def test_teams_identity_listing_preserves_other_entries_when_credential_unavailable(
+    admin, monkeypatch, status
+):
     from starlette.testclient import TestClient
     from typer.testing import CliRunner
     from evander.cli import app
 
     record = shared_teams(admin, root_identity=True)
     requests = fake_microsoft(monkeypatch)
-    admin.credential_admin.store.update(record["id"], expected_revision=record["revision"], status=status)
+    admin.credential_admin.store.update(
+        record["id"], expected_revision=record["revision"], status=status
+    )
     entries = {entry["directory_path"]: entry for entry in admin.teams_admin.list()}
     assert entries["root"]["authenticated"]
     for directory in ("root/a", "root/b"):
@@ -253,7 +285,9 @@ def test_teams_identity_listing_preserves_other_entries_when_credential_unavaila
     assert response.status_code == 200
     assert len(response.json()["items"]) == 3
     assert "original-teams-token" not in response.text
-    result = CliRunner().invoke(app, ["teams-auth", "list", "--config", str(admin.config.runtime_dir)])
+    result = CliRunner().invoke(
+        app, ["teams-auth", "list", "--config", str(admin.config.runtime_dir)]
+    )
     assert result.exit_code == 0, result.output
     assert "unavailable" in result.output and "authenticated" in result.output
     assert requests == []

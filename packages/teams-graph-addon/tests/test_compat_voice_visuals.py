@@ -1,28 +1,63 @@
 from __future__ import annotations
 
+
 import asyncio
+
+
 import base64
+
+
 import io
+
+
 import json
+
+
 from concurrent.futures import ThreadPoolExecutor
+
+
 from datetime import UTC, datetime, timedelta
 
+
 import httpx
+
+
 import pytest
+
+
 from PIL import Image
+
+
 from mcp.server.fastmcp.exceptions import ToolError
 
+
 from evander.config import GatewayConfig
+
+
 from evander.directories import DirectoryService
+
+
 from evander.gateway import create_app, create_server
+
+
 from evander.models import SessionManifest, ToolName
+
+
 from evander.runtime import build_runtime
+
+
 from evander.voice_sessions import VoiceQueryDelegator
+
+
 from evander.voice_visuals import MAX_IMAGE_BYTES, MAX_REQUEST_BYTES, VoiceVisualStore
+
+
 from gateway_tool_support import call_tool
 
 
 TENANT = "11111111-1111-4111-8111-111111111111"
+
+
 CALLER = "22222222-2222-4222-8222-222222222222"
 
 

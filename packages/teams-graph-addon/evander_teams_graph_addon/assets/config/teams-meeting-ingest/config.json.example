@@ -1,0 +1,7 @@
+{
+  "runtime_dir": "runtime",
+  "directories": [],
+  "poll_interval_seconds": 5,
+  "jitter_seconds": 2,
+  "backoff_seconds": 60
+}

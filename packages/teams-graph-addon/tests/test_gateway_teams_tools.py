@@ -1,4 +1,3 @@
-
 from http_client_support import patch_httpx_client
 
 from gateway_tool_support import call_tool

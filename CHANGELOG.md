@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 - Optional Teams and Graph integration (0.88.0)
+
+- Extract Teams/Graph network clients, authentication, workers, admin and MCP handlers,
+  and deployment assets into the independently installed `evander-teams-graph-addon` project.
+  Register settings, credentials, readiness, and worker factories through the integration contract.
+- Preserve existing workflow and tool IDs, directory settings, credential references, stored
+  messages, meeting state, legacy imports, and CLI commands. Core remains usable without the
+  package; dependent operations report that the integration is unavailable.
+- Install Teams services only when the integration is available and enabled. Keep Ansible's
+  existing selected-service behavior and move provider tests into the optional project.
+
 ## 2026-10-14 - Optional integration extension contracts (0.87.0)
 
 - Add opt-in, versioned add-on contracts for settings schemas, host credential

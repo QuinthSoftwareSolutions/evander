@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 def _script_text() -> str:
     return (Path(__file__).resolve().parents[1] / "scripts" / "install_systemd_units.sh").read_text(
@@ -264,7 +266,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "--socket-path /run/evander/managed-git-refresh.sock" in managed_git_refresh
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh" in managed_git_refresh
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
-    assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-teams-ingest" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest
     assert "PartOf=evander-teams-ingest.service" in teams_notifications
     assert (
@@ -315,7 +317,8 @@ def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake
 
 
-def test_credential_delivery_renders_only_the_explicit_host_consumers(tmp_path):
+@pytest.mark.parametrize("teams_enabled", [False, True])
+def test_credential_delivery_renders_only_the_explicit_host_consumers(tmp_path, teams_enabled):
     import os
     import subprocess
     script = _script_text()
@@ -327,15 +330,19 @@ def test_credential_delivery_renders_only_the_explicit_host_consumers(tmp_path):
     credstore = tmp_path / "credstore"
     environment = {**os.environ, "SYSTEMD_DIR": str(unit_dir),
                    "EVANDER_CREDENTIALS_KEY_SOURCE": str(key),
-                   "EVANDER_CREDENTIALS_CREDSTORE_DIR": str(credstore)}
+                   "EVANDER_CREDENTIALS_CREDSTORE_DIR": str(credstore),
+                   "TEAMS_GRAPH_ASSETS_DIR": str(tmp_path) if teams_enabled else ""}
     subprocess.run(["bash", "-c", invocation], env=environment, check=True, timeout=10,
                    capture_output=True, text=True)
     assert not credstore.exists() and not key.exists()
-    assert {path.parent.name.removesuffix(".d") for path in unit_dir.glob("*/30-credential-store.conf")} == {
+    expected = {
         "evander-gateway.service", "evander-admin-web.service", "evander-effect-orchestrator.service",
-        "evander-trigger-orchestrator.service", "evander-teams-ingest.service",
-        "evander-teams-notifications.service", "evander-teams-meeting-ingest.service",
+        "evander-trigger-orchestrator.service",
     }
+    if teams_enabled:
+        expected.update({"evander-teams-ingest.service", "evander-teams-notifications.service",
+                         "evander-teams-meeting-ingest.service"})
+    assert {path.parent.name.removesuffix(".d") for path in unit_dir.glob("*/30-credential-store.conf")} == expected
     for path in unit_dir.glob("*/30-credential-store.conf"):
         assert path.read_text() == "[Service]\nImportCredential=evander-credentials-key\n"
     key.write_bytes(b"x" * 32)

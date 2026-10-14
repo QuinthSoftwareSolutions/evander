@@ -80,4 +80,6 @@ def register_communication_tools(
         "email_send_approved_with_attachments",
         "email_send_approved",
     ):
+        if name.startswith("teams_") and name not in handlers:
+            continue
         server.tool()(handlers[name])

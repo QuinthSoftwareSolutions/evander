@@ -1,24 +1,46 @@
 """Local storage safety only; these tests do not establish cross-store erasure."""
+
 from __future__ import annotations
 
+
 from datetime import UTC, datetime, timedelta
+
+
 import json
+
+
 from multiprocessing import get_context
+
+
 from pathlib import Path
+
+
 import stat
+
+
 import time
 
+
 from cryptography.fernet import Fernet
+
+
 import pytest
 
+
 from evander.didww_sip_bridge import DidwwBridgeStore, PhoneCallStartRequest
+
+
 from evander.messaging.teams_auth import (
     JsonTeamsCredentialStore,
     JsonTeamsIdentityCredentialStore,
     TeamsAuthCredentials,
     TeamsAuthProtocolError,
 )
+
+
 from evander.teams_meeting import TeamsMeetingBinding, TeamsMeetingStore
+
+
 from evander.voice_sessions import VoiceSessionStore
 
 
@@ -37,8 +59,12 @@ def _prepare_store(kind: str, path: Path):
     if kind == "voice":
         store = VoiceSessionStore(path)
         record, _ = store.prepare_session(
-            origin_session_id="origin", directory_path="root/test", channel="phone",
-            request_id="request", prompt_metadata={}, projection={},
+            origin_session_id="origin",
+            directory_path="root/test",
+            channel="phone",
+            request_id="request",
+            prompt_metadata={},
+            projection={},
         )
         return store, record.voice_session_id
     if kind == "meeting":
@@ -47,9 +73,13 @@ def _prepare_store(kind: str, path: Path):
         return store, "meeting"
     if kind == "bridge":
         store = DidwwBridgeStore(path)
-        store.create_call(PhoneCallStartRequest(
-            voice_session_id="voice", request_id="request", to_number="+15555550100",
-        ))
+        store.create_call(
+            PhoneCallStartRequest(
+                voice_session_id="voice",
+                request_id="request",
+                to_number="+15555550100",
+            )
+        )
         return store, "voice"
     return JsonTeamsIdentityCredentialStore(path, "owner"), "identities"
 
@@ -59,21 +89,28 @@ def _append_in_process(kind: str, path: str, record_id: str, index: int, start) 
     if kind == "identities":
         store = JsonTeamsIdentityCredentialStore(Path(path), f"identity-{index}")
         read = store._read_object_unlocked
+
         def delayed_read():
             payload = read()
             time.sleep(0.03)
             return payload
+
         store._read_object_unlocked = delayed_read
         store.save(_credentials(str(index)))
         return
-    store_type = {"voice": VoiceSessionStore, "meeting": TeamsMeetingStore,
-                  "bridge": DidwwBridgeStore}[kind]
+    store_type = {
+        "voice": VoiceSessionStore,
+        "meeting": TeamsMeetingStore,
+        "bridge": DidwwBridgeStore,
+    }[kind]
     store = store_type(Path(path))
     read = store._read_raw
+
     def delayed_read():
         payload = read()
         time.sleep(0.03)
         return payload
+
     store._read_raw = delayed_read
     for offset in range(3):
         text = f"message-{index}-{offset}"
@@ -89,8 +126,10 @@ def test_communication_transactions_preserve_cross_process_writes(tmp_path: Path
     store, record_id = _prepare_store(kind, path)
     context = get_context("spawn")
     start = context.Barrier(4)
-    processes = [context.Process(target=_append_in_process,
-                 args=(kind, str(path), record_id, index, start)) for index in range(3)]
+    processes = [
+        context.Process(target=_append_in_process, args=(kind, str(path), record_id, index, start))
+        for index in range(3)
+    ]
     try:
         for process in processes:
             process.start()
@@ -140,8 +179,10 @@ def test_communication_corrupt_state_fails_without_replacing_data(tmp_path, kind
 def test_communication_reads_do_not_rewrite_state(tmp_path, kind, monkeypatch):
     path = tmp_path / "store.json"
     store, record_id = _prepare_store(kind, path)
+
     def unexpected_write(*args):
         pytest.fail("read attempted a write")
+
     monkeypatch.setattr(store, "_write_object_unlocked", unexpected_write)
     if kind == "voice":
         assert store.get_by_voice_session_id(record_id)
@@ -159,8 +200,11 @@ def test_teams_credentials_migrate_all_secrets_atomically(tmp_path, identities):
     if identities:
         legacy = {"one": legacy, "two": _credentials("two").model_dump(mode="json")}
     path.write_text(json.dumps(legacy))
-    store = (JsonTeamsIdentityCredentialStore(path, "one") if identities
-             else JsonTeamsCredentialStore(path))
+    store = (
+        JsonTeamsIdentityCredentialStore(path, "one")
+        if identities
+        else JsonTeamsCredentialStore(path)
+    )
     assert store.load() == credentials
     serialized = path.read_text()
     assert json.loads(serialized)["format"] == "evander.teams-credentials.fernet.v1"
@@ -217,8 +261,10 @@ def test_teams_migration_write_failure_preserves_plaintext_for_recovery(tmp_path
     raw = _credentials().model_dump_json()
     path.write_text(raw)
     store = JsonTeamsCredentialStore(path)
+
     def fail_write(*args):
         raise OSError("simulated disk failure")
+
     monkeypatch.setattr(store, "_write_json_payload", fail_write)
     with pytest.raises(OSError, match="simulated disk failure"):
         store.load()

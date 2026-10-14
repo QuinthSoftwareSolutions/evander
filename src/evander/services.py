@@ -202,7 +202,6 @@ from evander.integration_services.pull_requests import (
 )
 
 from evander.integration_services.teams import (
-    GraphTeamsService as GraphTeamsService,
     StubTeamsService as StubTeamsService,
     TeamsAuthenticationError as TeamsAuthenticationError,
     TeamsInlineMediaProvider as TeamsInlineMediaProvider,
@@ -247,3 +246,11 @@ from evander.integration_services.teams import (
     resolve_teams_send_target as resolve_teams_send_target,
     teams_target_from_message as teams_target_from_message,
 )
+
+
+def __getattr__(name: str):
+    if name == "GraphTeamsService":
+        from evander.optional_integrations import require_teams_graph_module
+
+        return require_teams_graph_module("evander_teams_graph_addon.service").GraphTeamsService
+    raise AttributeError(name)
