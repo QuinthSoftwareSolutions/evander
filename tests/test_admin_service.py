@@ -855,6 +855,269 @@ def test_read_session_artifact_text_routes_vm_sessions_to_vm_exec(
     assert result["execution_backend"] == "libvirt_vm"
 
 
+@pytest.mark.parametrize("remaining_active", [True, False])
+def test_agent_detail_settings_use_reconciled_container_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remaining_active: bool
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="reconciled-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for execution_id in ("run-completed", "run-active"):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=execution_id,
+                session_id="reconciled-session",
+                worker_job_id=execution_id,
+                worker_url="http://worker.test",
+                target_name="reconciled-target",
+                last_status="running",
+                metadata={"model": "cached-model"},
+            )
+        )
+
+    inspected = []
+
+    class Worker:
+        def inspect(self, execution_id):
+            inspected.append(execution_id)
+            record = repository.get(execution_id)
+            still_running = remaining_active and execution_id == "run-active"
+            repository.put(
+                record.model_copy(
+                    update={
+                        "last_status": "running" if still_running else "exited",
+                        "finished_at": None if still_running else datetime.now(UTC),
+                        "metadata": {
+                            "model": "current-model",
+                            "fast_mode": False,
+                            "fast_mode_source": "prompt",
+                            "reasoning_effort": "low",
+                            "reasoning_effort_source": "prompt",
+                        },
+                    }
+                )
+            )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin, "container_worker_backend", lambda **kwargs: Worker()
+    )
+    agent = service.vm_agent_admin.get_agent(
+        "reconciled-session", backend="container_worker_vm", reconcile_containers=True
+    )
+    assert set(inspected) == {"run-completed", "run-active"}
+    assert agent.host["active_execution_count"] == int(remaining_active)
+    assert agent.host["active_execution_settings"] == (
+        [
+            {
+                "execution_id": "run-active",
+                "model": "current-model",
+                "fast_mode": False,
+                "fast_mode_source": "prompt",
+                "reasoning_effort": "low",
+                "reasoning_effort_source": "prompt",
+            }
+        ]
+        if remaining_active
+        else []
+    )
+
+
+@pytest.mark.parametrize("speed", [False, True, "ultrafast"])
+def test_agent_detail_reports_active_run_snapshots_instead_of_session_defaults(
+    tmp_path: Path, speed: bool | str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="settings-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            directory_path="root",
+            model="session-model",
+            reasoning_effort="max",
+            fast_mode=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    now = datetime.now(UTC)
+    records = [
+        ContainerWorkerExecutionRecord(
+            execution_id=execution_id,
+            session_id=session_id,
+            worker_job_id=execution_id,
+            worker_url="http://worker.test",
+            target_name="settings-target",
+            created_at=now + timedelta(seconds=index),
+            last_status=status,
+            metadata=metadata,
+        )
+        for index, (execution_id, session_id, status, metadata) in enumerate(
+            [
+                (
+                    "active-run",
+                    "settings-session",
+                    "running",
+                    {
+                        "model": "run-model",
+                        "fast_mode": speed,
+                        "fast_mode_source": "prompt",
+                        "reasoning_effort": "low",
+                        "reasoning_effort_source": "prompt",
+                        "private_context": "not part of the display payload",
+                    },
+                ),
+                ("legacy-run", "settings-session", "running", {}),
+                (
+                    "failed-run",
+                    "settings-session",
+                    "running",
+                    {"codex_outcome": {"status": "failed"}},
+                ),
+                ("completed-run", "settings-session", "exited", {"model": "completed-model"}),
+                ("other-session-run", "other-session", "running", {"model": "other-model"}),
+            ]
+        )
+    ]
+    for record in records:
+        repository.put(record)
+
+    def no_full_history(*args, **kwargs):
+        pytest.fail(
+            "Reading current settings must not hydrate the session's full execution history"
+        )
+
+    monkeypatch.setattr(ContainerWorkerExecutionRepository, "list_by_session", no_full_history)
+    agent = service.vm_agent_admin.get_agent("settings-session", backend="container_worker_vm")
+    assert agent.host["session_policy"]["model"] == "session-model"
+    assert agent.host["latest_execution_id"] == "completed-run"
+    assert agent.host["active_execution_settings"] == [
+        {
+            "execution_id": "legacy-run",
+            "model": None,
+            "fast_mode": None,
+            "reasoning_effort": None,
+            "reasoning_effort_source": None,
+            "fast_mode_source": None,
+        },
+        {
+            "execution_id": "active-run",
+            "model": "run-model",
+            "fast_mode": speed,
+            "reasoning_effort": "low",
+            "reasoning_effort_source": "prompt",
+            "fast_mode_source": "prompt",
+        },
+    ]
+    for record in records[:3]:
+        record.last_status = "exited"
+        repository.put(record)
+    assert (
+        service.vm_agent_admin.get_agent("settings-session", backend="container_worker_vm").host[
+            "active_execution_settings"
+        ]
+        == []
+    )
+
+
+@pytest.mark.parametrize("effect_type", ["effect:agent:prompt", "effect:agent:enqueue-prompt"])
+def test_vm_agent_detail_uses_only_the_current_session_dispatch_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, effect_type: str
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-session",
+            vm_id="settings-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    summary = VmSummary(
+        vm_name="settings-vm",
+        session_ids=["vm-session"],
+        directory_paths=["root"],
+        agent_state="running",
+        power_state="running",
+        dispatch_id="current-dispatch",
+    )
+
+    def selected_vm_only(**kwargs):
+        assert kwargs["target_vm_name"] == "settings-vm"
+        assert kwargs["omit_state"] is False
+        return [summary]
+
+    monkeypatch.setattr(service.vm_agent_admin, "list_vms", selected_vm_only)
+    store = SqliteExecutionStore(
+        service.workflow_config_admin.workflow_run_store_paths()["orchestration_store_path"]
+    )
+    now = datetime.now(UTC)
+    for index, (session_id, dispatch_id) in enumerate(
+        [
+            ("vm-session", "current-dispatch"),
+            ("vm-session", "old-dispatch"),
+            ("other-session", "current-dispatch"),
+        ]
+    ):
+        store.put(
+            EffectExecutionRecord(
+                execution_id=f"receipt-{index}",
+                idempotency_key=f"receipt-{index}",
+                event_id="settings-event",
+                trace_id="settings-trace",
+                source_node_id="settings-node",
+                source_trigger_type="trigger:event",
+                effect_id="settings-effect",
+                effect_type=effect_type,
+                status="waiting",
+                started_at=now,
+                finished_at=now,
+                resolved_config_hash="settings-hash",
+                outputs={
+                    "session_id": session_id,
+                    "dispatch_id": dispatch_id,
+                    "model": "vm-run-model",
+                    "fast_mode": False,
+                    "fast_mode_source": "prompt",
+                    "reasoning_effort": None,
+                    "reasoning_effort_source": "default",
+                },
+            )
+        )
+    assert service.vm_agent_admin.get_agent(
+        "settings-vm", backend="libvirt_vm", omit_vm_state=False
+    ).host["active_execution_settings"] == [
+        {
+            "execution_id": "current-dispatch",
+            "model": "vm-run-model",
+            "fast_mode": False,
+            "fast_mode_source": "prompt",
+            "reasoning_effort": None,
+            "reasoning_effort_source": "default",
+        }
+    ]
+    summary.agent_state = "idle"
+    assert (
+        service.vm_agent_admin.get_agent(
+            "settings-vm", backend="libvirt_vm", omit_vm_state=False
+        ).host["active_execution_settings"]
+        == []
+    )
+
+
 def test_list_agents_groups_container_executions_under_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

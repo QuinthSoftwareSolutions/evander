@@ -17,6 +17,7 @@ import {
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { AgentCreateDialog } from "./AgentCreateDialog";
+import { AgentRuntimeSettings } from "./AgentRuntimeSettings";
 import {
   createOperationIsActive,
   createOperationMessage,
@@ -259,7 +260,7 @@ async function loadAgentDetail(
   const query = new URLSearchParams({
     backend: agent.backend,
     directory_path: agent.directory_path,
-    omit_vm_state: String(!options.live),
+    omit_vm_state: String(agent.backend !== "libvirt_vm" && !options.live),
     reconcile_containers: String(Boolean(options.live && agent.backend === "container_worker_vm")),
   });
   return fetchJson<AgentRecord>(
@@ -1102,23 +1103,32 @@ export function AgentsPage() {
       };
     }
 
-    void loadAgentDetail(agent, { live: loadLiveState })
-      .then((detail) => {
-        if (!cancelled) setSelectedAgentDetail(detail);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setAgentExecutionHistory((current) => ({
-            ...current,
-            error: reason instanceof Error ? reason.message : String(reason),
-          }));
-        }
-      });
+    let detailLoading = false;
+    const refreshDetail = (live = false) => {
+      if (detailLoading) return;
+      detailLoading = true;
+      void loadAgentDetail(agent, { live })
+        .then((detail) => {
+          if (!cancelled) setSelectedAgentDetail(detail);
+        })
+        .catch((reason: unknown) => {
+          if (!cancelled) {
+            setAgentExecutionHistory((current) => ({
+              ...current,
+              error: reason instanceof Error ? reason.message : String(reason),
+            }));
+          }
+        })
+        .finally(() => { detailLoading = false; });
+    };
+    refreshDetail(loadLiveState);
+    const detailTimer = window.setInterval(refreshDetail, REFRESH_MS);
 
     if (agent.backend !== "container_worker_vm") {
       setAgentExecutionHistory(EMPTY_AGENT_EXECUTION_HISTORY);
       return () => {
         cancelled = true;
+        window.clearInterval(detailTimer);
       };
     }
 
@@ -1146,6 +1156,7 @@ export function AgentsPage() {
       });
     return () => {
       cancelled = true;
+      window.clearInterval(detailTimer);
     };
   }, [agentDetailReloadNonce, selectedAgentKey]);
 
@@ -2744,6 +2755,9 @@ export function AgentsPage() {
 
             {selectedAgent ? (
               <>
+                {selectedExecutionDisplay?.isActive ? (
+                  <AgentRuntimeSettings settings={selectedAgent.host.active_execution_settings} />
+                ) : null}
                 <div className="feature-grid">
                   <article className="panel">
                     <div className="panel-header">

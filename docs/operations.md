@@ -1181,6 +1181,12 @@ Storage layout for directory config:
 
 ### Codex provider bootstrap
 
+Selecting a running agent in **Agents** shows its **Current run** model, speed,
+and reasoning settings. These values come from the active execution, including
+prompt overrides, rather than the session's current defaults. Multiple active
+container runs are shown separately. Older runs without recorded settings show
+**Not reported**. Speed describes the requested service tier.
+
 Agent reasoning effort can be set per session in **Sessions → Settings** and
 overridden for one run in **Agents → Prompt** or either agent prompt workflow
 effect. Existing sessions retain Codex `high` or the Claude/Copilot harness default

@@ -200,6 +200,15 @@ export type AgentPromptQueueSummary = {
   read_error: string | null;
 };
 
+export type AgentExecutionSettings = {
+  execution_id: string;
+  model: string | null;
+  reasoning_effort: string | null;
+  fast_mode: boolean | "ultrafast" | null;
+  reasoning_effort_source: "prompt" | "session" | "default" | null;
+  fast_mode_source: "prompt" | "session" | "default" | null;
+};
+
 export type AgentRecord = {
   agent_id: string;
   backend: AgentBackend;
@@ -211,7 +220,7 @@ export type AgentRecord = {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string | null;
-  host: Record<string, unknown>;
+  host: Record<string, unknown> & { active_execution_settings?: AgentExecutionSettings[] };
   capabilities: AgentCapabilities;
   prompt_queue?: AgentPromptQueueSummary;
 };

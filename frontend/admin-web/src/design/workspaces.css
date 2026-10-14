@@ -1,4 +1,14 @@
 /* Table workbenches, settings, and expandable records share the same surfaces. */
+[data-admin-design] .property-grid.agent-runtime-settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+[data-admin-design] .agent-runtime-setting-source {
+  display: block;
+  margin-top: 4px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
 [data-admin-design] .addons-detail-grid {
   align-items: start;
 }
