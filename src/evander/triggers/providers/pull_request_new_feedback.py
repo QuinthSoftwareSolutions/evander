@@ -209,6 +209,9 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             ).strip()
             return GitHubFeedbackAdapter(token=token)
         if provider == "ado":
+            from evander.optional_integrations import require_azure_devops_module
+            config = getattr(self.runtime_context.provider_config_resolver, "config", None) or self.runtime_context.resolved_config
+            require_azure_devops_module(config=config)
             pat_env_name = self.runtime_context.resolved_config.azure_devops_pr_pat_env
             pat = self.runtime_context.env.get(pat_env_name, "").strip()
             return AzureDevOpsFeedbackAdapter(

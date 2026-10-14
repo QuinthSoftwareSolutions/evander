@@ -57,6 +57,13 @@ tests cover generic extension contracts using synthetic add-ons; they must work
 without optional projects installed. Global documentation links to project-owned
 guides, and the repository release notes record shared platform changes.
 
+## Optional integration contracts
+
+Add-ons can opt into the versioned settings, credential, readiness, worker and
+workflow starter contracts described in [Optional integrations](optional-integrations.md).
+Existing registrations need no changes. These declarations do not grant capabilities
+or start services, and they do not replace the workflow engine or editor.
+
 ## Boundary Contract
 
 Add-ons may register generic integration points:
@@ -140,6 +147,13 @@ live workflow-pack file directly.
 
 Disabling an add-on means it will not load after restart. It does not delete
 private state under `runtime/addons/<addon_id>/`.
+
+If an add-on changes gateway behavior through a compatibility adapter rather than
+an `mcp_tools` or `connector_drivers` registration, set
+`AddonRegistration.requires_gateway_restart=True`. Admin includes the gateway in
+both the add-on's and the overall restart guidance for enabling and disabling it.
+This declaration defaults to `False`; MCP tools and connector drivers continue to
+imply a gateway restart automatically.
 
 An add-on module should expose `register_addon()` and return either an
 `AddonRegistration` or a compatible mapping:

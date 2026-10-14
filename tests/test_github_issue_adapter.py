@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
 from typing import Any
 
+import pytest
+
 from evander.issues.service import GitHubIssueAdapter
+
+
+@pytest.fixture(autouse=True)
+def without_azure_devops_addon(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "evander_azure_devops_addon", None)
 
 
 @dataclass
@@ -179,7 +187,20 @@ def test_github_issue_adapter_omits_state_all_from_search_query(monkeypatch) -> 
     assert result["items"][0]["state"] == "closed"
 
 
-def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "created_at,expected_created_at",
+    [
+        ("2026-06-01T09:00:00Z", "2026-06-01T09:00:00Z"),
+        ("2026-06-01T11:00:00+02:00", "2026-06-01T09:00:00Z"),
+        ("2026-06-01T09:00:00", "2026-06-01T09:00:00Z"),
+        ("unknown", "unknown"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_github_issue_adapter_reads_issue_comments(
+    monkeypatch, created_at, expected_created_at,
+) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr("evander.issues.service.httpx.Client", _Client)
     _Client.requests = []
@@ -192,7 +213,7 @@ def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
                 "labels": [],
                 "assignees": [],
                 "user": {"login": "alice", "id": 1},
-                "created_at": "2026-06-01T09:00:00Z",
+                "created_at": created_at,
                 "updated_at": "2026-06-01T10:00:00Z",
                 "html_url": "https://github.com/owner/repo/issues/42",
                 "body": "Steps",
@@ -204,7 +225,7 @@ def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
                     "id": 9001,
                     "body": "I can reproduce this.",
                     "user": {"login": "bob", "id": 2},
-                    "created_at": "2026-06-01T10:01:00Z",
+                    "created_at": "2026-06-01T12:01:00+02:00",
                     "html_url": "https://github.com/owner/repo/issues/42#issuecomment-9001",
                 }
             ]
@@ -221,5 +242,10 @@ def test_github_issue_adapter_reads_issue_comments(monkeypatch) -> None:
 
     assert "Authorization" not in _Client.requests[0]["headers"]
     assert result["remote_issue_id"] == "42"
+    assert result["created_at"] == expected_created_at
+    assert result["closed_at"] is None
+    assert result["raw"]["user"] == {"login": "alice", "id": 1}
     assert result["comments"][0]["comment_id"] == "9001"
     assert result["comments"][0]["created_by"] == "bob"
+    assert result["comments"][0]["created_at"] == "2026-06-01T10:01:00Z"
+    assert result["comments"][0]["raw"]["user"] == {"login": "bob", "id": 2}

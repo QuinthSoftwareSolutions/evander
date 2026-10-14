@@ -621,8 +621,8 @@ test("admin shell shows full section navigation on fresh load", { timeout: brows
   );
   await assert.doesNotReject(() => page.getByRole("button", { name: "Collapse sections" }).waitFor({ state: "visible" }));
 
-  for (const label of ["Dashboard", "Agents", "Subscriptions", "Workflow"]) {
-    await assert.doesNotReject(() => page.getByRole("button", { name: new RegExp(`^${label}\\b`) }).waitFor({ state: "visible" }));
+  for (const label of ["Dashboard", "Agents", "Subscriptions", "Workflow starters", "Workflow"]) {
+    await assert.doesNotReject(() => page.getByRole("button", { name: label, exact: true }).waitFor({ state: "visible" }));
   }
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "false");
 });
@@ -703,7 +703,7 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
     await page.locator(".admin-shell-nav-group-label").allTextContents(),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 22);
+  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 23);
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();

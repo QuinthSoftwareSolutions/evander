@@ -212,12 +212,23 @@ def test_chat_transcript_and_stream_read_off_the_event_loop(tmp_path: Path, monk
 
 def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(
-        service,
-        {"username": "  ", "display_name": " Alice "},
-        privileged=True,
-    )
-    bob = _client_for_user(service, {"username": "bob"})
+
+    class RequestAuth(FakeAuth):
+        def authentication_payload(self, request: Request) -> dict[str, Any]:
+            if request.headers["x-test-user"] == "alice":
+                return {"username": "  ", "display_name": " Alice "}
+            return {"username": "bob"}
+
+        def require(self, request: Request) -> dict[str, Any]:
+            return self.authentication_payload(request)
+
+        def privileged_for_request(self, request: Request) -> bool:
+            return request.headers["x-test-user"] == "alice"
+
+    # Both users access the same application and ChatStore, as in production.
+    app = Starlette(routes=chat_routes(service, RequestAuth({})))
+    alice = TestClient(app, headers={"x-test-user": "alice"})
+    bob = TestClient(app, headers={"x-test-user": "bob"})
 
     alice_session_response = alice.post("/api/chat/session")
     bob_session_response = bob.post("/api/chat/session")

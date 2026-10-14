@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from evander.azure_devops import resolve_azure_devops_organization_url
+from evander.optional_integrations import require_azure_devops_module
 from evander.pr_feedback import (
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
@@ -91,6 +92,7 @@ class PullRequestFeedbackQueryProvider(PullRequestQueryProviderBase):
         if provider_name != "azure_devops":
             raise ValueError(f"{self.NODE_TYPE} provider {provider_name!r} is not supported")
 
+        require_azure_devops_module(config=config)
         resolved_organization_url = resolve_azure_devops_organization_url(
             ado_organization=ado_organization,
             legacy_organization_url=getattr(config, "azure_devops_organization_url", None),

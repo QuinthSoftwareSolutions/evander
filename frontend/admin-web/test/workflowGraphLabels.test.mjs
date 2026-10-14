@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { after, before, test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 let server;
 let workflowGraphLabels;
+let cacheDir;
 
 before(async () => {
+  cacheDir = await mkdtemp(join(tmpdir(), "evander-graph-labels-"));
   server = await createServer({
     root: fileURLToPath(new URL("..", import.meta.url)),
+    cacheDir,
     server: { middlewareMode: true, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
     logLevel: "error",
@@ -17,7 +23,10 @@ before(async () => {
     "/src/features/workflow-editor/canvasModel.tsx",
   ));
 });
-after(async () => { await server?.close(); });
+after(async () => {
+  await server?.close();
+  if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
+});
 
 function graph(nodeIds) {
   return { id: "test-flow", name: "Test flow", directory_path: "root", user_ids: [], node_ids: nodeIds };

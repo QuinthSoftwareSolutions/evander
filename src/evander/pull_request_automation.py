@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from evander.optional_integrations import azure_devops_enabled, require_azure_devops_module
 from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.services import (
     AzureDevOpsPrReplyProvider,
@@ -36,6 +37,7 @@ def build_pull_request_provider(
         raise RuntimeError(f"{node_type} provider_config_resolver cannot resolve directories")
 
     config = resolve_for_directory(directory_path)
+    require_azure_devops_module(config=config)
     resolved_organization_url = resolve_azure_devops_organization_url(
         ado_organization=ado_organization,
         legacy_organization_url=getattr(config, "azure_devops_organization_url", None),
@@ -96,7 +98,9 @@ def build_pr_reply_service(
             provider="github",
             directory_path=directory_path,
         )
-    if azure_pat and selected_provider in {None, "azure_devops"}:
+    if selected_provider == "azure_devops":
+        require_azure_devops_module(config=config)
+    if azure_pat and azure_devops_enabled(config) and selected_provider in {None, "azure_devops"}:
         configured_organization_url = _normalize_optional_string(
             getattr(config, "azure_devops_organization_url", None)
         )

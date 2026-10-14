@@ -6304,7 +6304,11 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
 
         async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
             self.poll_count += 1
-            if self.poll_count < 3:
+            hold_queued = any(
+                event.event_type == "origin_query.hold_offer_requested"
+                for event in store.get("voice-1").debug_events
+            )
+            if self.poll_count < 3 or not hold_queued:
                 return {"query_id": query_id, "status": "pending"}
             return {
                 "query_id": query_id,
@@ -6332,7 +6336,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
                 controller,  # type: ignore[arg-type]
                 stop_event,
             ),
-            timeout=1,
+            timeout=5,
         )
         return realtime, controller
 

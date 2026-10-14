@@ -12,6 +12,7 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Task | Runbook |
 |---|---|
 | Inspect sessions, approvals, configuration, or capacity | [Admin Web](#admin-web-operator-console) and [directory operations](#directory-operations) |
+| Activate a common workflow after installation | [Workflow starters](workflow-starters.md) |
 | Configure or troubleshoot execution | [Execution backends](execution-backends.md) and [container workers](container-worker-backend.md) |
 | Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
 | Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
@@ -4313,3 +4314,20 @@ manually scheduled baseline. Search changed and dirty files in the agent checkou
 See
 [Repository indexing](repository-indexing.md) for image preparation, App configuration,
 the reconciliation workflow, CLI commands, recovery, retention and external queries.
+
+## Installing the optional Teams/Graph provider
+
+For Teams messaging, Graph mail, or Teams meetings, install core and
+`packages/teams-graph-addon` into the same host virtualenv before reinstalling service definitions.
+Follow the [Teams/Graph upgrade instructions](../packages/teams-graph-addon/README.md). Existing
+worker names, directory settings, secrets, and runtime stores are preserved. The systemd installer
+skips Teams service installation when the integration is missing or explicitly disabled.
+
+### Optional Azure DevOps integration
+
+Azure DevOps operations and the `evander-ado-worker` / `evander-proxy-issue-sync`
+commands now come from [the Azure DevOps package](../packages/azure-devops-addon/README.md).
+Install it in the control-plane Python environment before enabling these services.
+The systemd installer includes its deployment assets only when installed and enabled.
+After disabling it, follow the add-on restart list; both workers exit without polling.
+Keep existing runtime configuration and credentials in place for later re-enablement.

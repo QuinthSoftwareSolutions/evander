@@ -15,6 +15,7 @@ Git, and HTTP surfaces.
 |---|---|
 | Install a host or troubleshoot services | [Operations](docs/operations.md) and [Ansible deployment](ansible/README.md) |
 | Use the operator interface | [Admin Web manual](docs/admin-ui-user-manual.md) |
+| Start a common workflow | [Workflow starters](docs/workflow-starters.md) |
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
@@ -24,6 +25,9 @@ Git, and HTTP surfaces.
 | Find a subsystem or read the complete manual | [Documentation map](docs/README.md) |
 
 ## Capabilities
+
+- Optional [integration contracts](docs/optional-integrations.md) for add-on settings,
+  host credentials, readiness checks, worker factories and editable workflow starters
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
@@ -1546,3 +1550,12 @@ and the coverage-preservation rules.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
 - Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; `11777` is the path-based HTTP target relay and `11778` is the authenticated browser forward proxy. The remaining defaults continue to cover SSH, MCP, model/package relays, and package caches.
+
+## Optional Microsoft Teams and Graph integration
+
+Teams messaging, Graph mail, delegated sign-in, and Teams meeting/voice adapters are supplied by
+[`evander-teams-graph-addon`](packages/teams-graph-addon/README.md). Install it alongside core in
+the same virtualenv before using those providers. Existing configurations and workflows need no
+data migration. The core installation remains usable without it.
+
+Azure DevOps is available as a [separately installed integration](packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.

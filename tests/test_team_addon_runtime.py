@@ -8972,8 +8972,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
         ],
         task_author_identity=ProjectGitIdentity(name="Task O'Connor", email="task@example.test"),
         dependency_merge_author_identity=ProjectGitIdentity(
-            name="Jonathan Quinth",
-            email="jonathan.quinth@exampleindustry.com",
+            name="Integration Author",
+            email="integration@example.test",
         ),
     )
 
@@ -8988,8 +8988,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert syntax.returncode == 0, syntax.stderr
     assert "config --worktree author.name" in command
     assert "config --worktree author.email task@example.test" in command
-    assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
-    assert "export GIT_AUTHOR_EMAIL=jonathan.quinth@exampleindustry.com" in command
+    assert "export GIT_AUTHOR_NAME='Integration Author'" in command
+    assert "export GIT_AUTHOR_EMAIL=integration@example.test" in command
     assert 'ls-remote --exit-code origin "refs/evander/$branch"' in command
     assert 'push origin "HEAD:refs/evander/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command

@@ -382,7 +382,7 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", { ti
   await page.getByText("Learn the basics of selecting, adding, connecting, and binding workflow nodes.", { exact: true }).waitFor({
     state: "visible",
   });
-  await page.getByRole("button", { name: "Start" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Start", exact: true }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Skip" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-chooser-backdrop"));
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));

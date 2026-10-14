@@ -43,6 +43,7 @@ from evander.admin.web.git_repositories import git_repository_routes
 from evander.admin.web.repository_index import repository_index_routes
 from evander.admin.web.agents import agent_routes
 from evander.admin.web.addons import addon_routes
+from evander.admin.web.workflow_starters import workflow_starter_routes
 from evander.admin.web.capacity import capacity_routes
 from evander.admin.web.artifacts import artifact_routes
 from evander.admin.web.chat import chat_routes
@@ -761,6 +762,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_routes(service, auth, dashboard_cache))
     routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(addon_routes(service, auth))
+    routes.extend(workflow_starter_routes(service, auth))
     routes.extend(connector_routes(service, auth))
     routes.extend(event_schema_routes(service, auth))
     routes.extend(discord_webhook_routes(service, auth))

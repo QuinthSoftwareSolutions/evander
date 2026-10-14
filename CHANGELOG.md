@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-10-14 - Repair modular-release test isolation (0.90.2)
+
+- Keep Azure DevOps query result-shape coverage with the extracted add-on and
+  retain provider-independent query coverage in core.
+- Isolate tests from a parent service's systemd invocation so retry tests exercise
+  their temporary runtime, while explicit service-generation guard tests remain active.
+- Load optional add-on source for their own test suites and subprocesses without
+  requiring package-path overrides for the complete test runner.
+- Keep ADO comment and publication tests with their integration, align Git-command
+  checks with private refs, and test chat ownership through one shared application.
+- Isolate simulated polling clocks and wait for observed asynchronous outcomes
+  instead of assuming a fixed number of cycles or a short scheduling delay.
+- Keep navigation and tutorial checks unambiguous when workflow starters are available.
+
+## 2026-10-14 - Honor disabled Azure DevOps feedback integration (0.90.1)
+
+- Check the resolved directory's Azure DevOps enablement before the legacy pull-request
+  feedback query reads credentials or makes requests. Preserve GitHub feedback behavior.
+
+## 0.90.0
+
+- Extract Azure DevOps work items, pull requests, builds, personal connections and workers into the separately installed `packages/azure-devops-addon` project. Preserve legacy workflow IDs, configuration and durable state; core startup no longer needs the integration.
+- Add an editable single-issue delivery starter with a managed repository picker, exact-commit CI and review checks, bounded repair attempts, existing approval-queue integration and verified merge completion.
+- Preserve graph metadata when previewing/installing stateful starters and support completion evidence from later workflow events.
+- Keep GitHub issue and comment normalization independent of Azure DevOps. Install the optional Azure DevOps package for selected Ansible services and skip absent disabled units during service reconciliation.
+- Keep delivery stages within the default worker execution depth and validate configured limits before activation. Preserve unchanged starter verification and manual tests when other workflows are installed, while retaining revision checks for edits.
+
+## 2026-10-14 - Guided workflow starters (0.89.0)
+
+- Add an outcome-based starter catalog, short setup forms, dependency checks,
+  workflow preview, explicit activation, and first-run verification in Admin Web.
+  Link the starter experience from the operations dashboard.
+- Include a provider-independent scheduled agent task and a Teams direct-message
+  assistant contributed by the separately installed Teams/Graph add-on 0.2.
+- Generate ordinary editable workflow packs with scoped agents, existing permissions,
+  revision checks, cursor seeding, and change history. Preserve customizations and
+  make activation retries idempotent; upgrades never overwrite generated workflows.
+- Distinguish queued tasks from completion and require correlated successful reply
+  evidence for Teams verification. Keep the existing editor and arbitrary workflows.
+- Follow persisted continuation links when checking completion or downstream failures.
+  Include integration-owned workers in restart guidance and exit Teams workers cleanly
+  when the add-on is disabled.
+
 ## 2026-10-14 - Edit workflows in a lower workbench (0.89.0)
 
 - Give the workflow canvas a full-width lower editor with a remembered, resizable
@@ -23,6 +66,19 @@
   until the scalar index has been converted back.
 - Reuse bounded read-only history-report connections to avoid repeated schema
   parsing, releasing cursors and snapshots between reports and renewing deadlines.
+
+## 2026-10-14 - Optional Teams and Graph integration (0.88.0)
+
+- Extract Teams/Graph network clients, authentication, workers, admin and MCP handlers,
+  and deployment assets into the independently installed `evander-teams-graph-addon` project.
+  Register settings, credentials, readiness, and worker factories through the integration contract.
+- Preserve existing workflow and tool IDs, directory settings, credential references, stored
+  messages, meeting state, legacy imports, and CLI commands. Core remains usable without the
+  package; dependent operations report that the integration is unavailable.
+- Install Teams services only when the integration is available and enabled. Keep Ansible's
+  existing selected-service behavior and move provider tests into the optional project.
+- Keep service preflight read-only on uninitialized runtimes and include the gateway in
+  restart guidance when enabling or disabling Teams/Graph.
 
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 
@@ -49,6 +105,17 @@
   support token, JSON-object and cookie response mappings in guided setup.
 - Allow returning from the advanced editor to the WordPress wizard without
   losing the current step, selected connection, or edited settings.
+
+## 2026-10-14 - Optional integration extension contracts (0.87.0)
+
+- Add opt-in, versioned add-on contracts for settings schemas, host credential
+  providers, readiness checks, background worker factories, and editable workflow
+  starters. Preserve existing add-on registrations and workflow loading.
+- Expose an owner-only integration inventory and explicit directory-scoped
+  readiness checks. Report unavailable dependencies without executing callbacks;
+  keep provider error details and credential material out of readiness responses.
+- Keep worker supervision, integration extraction, configuration writes and
+  starter installation outside this foundational stage.
 
 ## 2026-10-12 - Isolate private Git refs from upstream branches (0.86.8)
 

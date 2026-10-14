@@ -60,7 +60,7 @@ from evander.execution import (
 )
 from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
-from evander.messaging.teams_auth import TeamsAuthError
+from evander.messaging.teams_auth_errors import TeamsAuthError
 from evander.migrations import (
     migrate_directory_ownership_defaults,
     migrate_issue_setup_env_to_root,
@@ -88,7 +88,6 @@ from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.runtime_generation import read_runtime_generation_status
 from evander.setup import setup_doctor_payload, setup_plan_payload
 from evander.setup.tui import run_setup_tui
-from evander.teams_meeting import TeamsMeetingService
 from evander.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from evander.vm_to_container_migration import (
     build_session_migration_plan,
@@ -353,3 +352,11 @@ from .cli_workers import (
 
 if __name__ == "__main__":
     app()
+
+
+def __getattr__(name):
+    if name == "TeamsMeetingService":
+        from evander.optional_integrations import require_teams_graph_module
+
+        return require_teams_graph_module("evander_teams_graph_addon.meetings").TeamsMeetingService
+    raise AttributeError(name)
