@@ -10,6 +10,8 @@
   requiring package-path overrides for the complete test runner.
 - Keep ADO comment and publication tests with their integration, align Git-command
   checks with private refs, and test chat ownership through one shared application.
+- Isolate simulated polling clocks and wait for observed asynchronous outcomes
+  instead of assuming a fixed number of cycles or a short scheduling delay.
 
 ## 2026-10-14 - Honor disabled Azure DevOps feedback integration (0.90.1)
 

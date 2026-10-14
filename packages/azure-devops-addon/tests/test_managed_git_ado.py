@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from evander.admin.services.managed_git_service import (
     ManagedGitAdminService,
@@ -7,6 +8,16 @@ from evander.admin.services.managed_git_service import (
 )
 
 from test_managed_git_service import _service
+
+
+def _patch_clock(monkeypatch, now, *, sleep=None):
+    def advance(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(
+        "evander_azure_devops_addon.managed_git.time",
+        SimpleNamespace(monotonic=lambda: now[0], sleep=sleep or advance),
+    )
 
 
 @pytest.mark.parametrize("reuse_existing", [True, False])
@@ -36,14 +47,7 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
             "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
             1.0,
         )
-        monkeypatch.setattr(
-            "evander_azure_devops_addon.managed_git.time.monotonic",
-            lambda: now[0],
-        )
-        monkeypatch.setattr(
-            "evander_azure_devops_addon.managed_git.time.sleep",
-            lambda seconds: now.__setitem__(0, now[0] + seconds),
-        )
+        _patch_clock(monkeypatch, now)
     responses = iter(
         [
             {"value": [pr_item]},
@@ -166,19 +170,11 @@ def test_azure_pr_reuse_waits_for_latest_iteration_source_commit(
         return next(responses)
 
     monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
-    monkeypatch.setattr(
-        "evander_azure_devops_addon.managed_git.time.monotonic",
-        lambda: now[0],
-    )
-
     def _sleep(seconds: float) -> None:
         sleeps.append(seconds)
         now[0] += seconds
 
-    monkeypatch.setattr(
-        "evander_azure_devops_addon.managed_git.time.sleep",
-        _sleep,
-    )
+    _patch_clock(monkeypatch, now, sleep=_sleep)
 
     result = service._create_or_reuse_azure_pr(
         record,
@@ -248,14 +244,7 @@ def test_azure_pr_reuse_does_not_confirm_older_matching_iteration(
         }
 
     monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
-    monkeypatch.setattr(
-        "evander_azure_devops_addon.managed_git.time.monotonic",
-        lambda: now[0],
-    )
-    monkeypatch.setattr(
-        "evander_azure_devops_addon.managed_git.time.sleep",
-        lambda seconds: now.__setitem__(0, now[0] + seconds),
-    )
+    _patch_clock(monkeypatch, now)
 
     with pytest.raises(
         ManagedGitConflictError,
@@ -330,10 +319,7 @@ def test_azure_pr_reuse_confirmation_enforces_wall_clock_request_timeout(
         }
 
     monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
-    monkeypatch.setattr(
-        "evander_azure_devops_addon.managed_git.time.monotonic",
-        lambda: now[0],
-    )
+    _patch_clock(monkeypatch, now)
 
     with pytest.raises(ManagedGitConflictError, match="source branch moved"):
         service._create_or_reuse_azure_pr(
