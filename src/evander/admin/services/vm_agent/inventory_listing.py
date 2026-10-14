@@ -53,13 +53,16 @@ class VmAgentInventoryListingMixin:
                         else None
                     )
                     executions = []
-                return self._agent_record_from_container_session(
+                agent = self._agent_record_from_container_session(
                     session,
                     executions=executions,
                     execution_summary=summary,
                     reconcile=reconcile_containers,
                     include_effective_tool_policy=True,
                     include_execution_history=False,
+                )
+                return self._agent_with_runtime_settings(
+                    agent, container_records=executions if reconcile_containers else None
                 )
             if selected_backend == "container_worker_vm":
                 raise ValueError(f"Unknown agent {normalized_agent_id}.")
@@ -74,10 +77,11 @@ class VmAgentInventoryListingMixin:
                 summary_only=False,
                 backend="libvirt_vm",
                 include_prompt_queue=True,
+                target_vm_name=normalized_agent_id,
             )
             for record in records:
                 if record.agent_id == normalized_agent_id:
-                    return record
+                    return self._agent_with_runtime_settings(record)
 
         raise ValueError(f"Unknown agent {normalized_agent_id}.")
 
@@ -127,6 +131,7 @@ class VmAgentInventoryListingMixin:
         backend: str | None = None,
         all_directories: bool = False,
         include_prompt_queue: bool = False,
+        target_vm_name: str | None = None,
     ) -> list[AgentRecord]:
         normalized_directory = self._normalize_directory_path(directory_path)
         selected_backend = self._normalize_agent_backend_filter(backend)
@@ -142,6 +147,7 @@ class VmAgentInventoryListingMixin:
                     omit_state=omit_vm_state,
                     directory_path=None if all_directories else normalized_directory,
                     direct_only=False if all_directories else direct_only,
+                    **({"target_vm_name": target_vm_name} if target_vm_name else {}),
                 )
             except Exception as exc:
                 vm_inventory_error = str(exc)
@@ -163,6 +169,8 @@ class VmAgentInventoryListingMixin:
                 reverse=True,
             ):
                 vm_name = str(session.vm_id or "").strip()
+                if target_vm_name and vm_name != target_vm_name:
+                    continue
                 if not vm_name or self._is_container_session(session):
                     continue
                 if vm_name in inventoried_vm_names or session.session_id in inventoried_session_ids:

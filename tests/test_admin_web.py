@@ -13258,7 +13258,14 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
             target_name="target-a",
             last_status="running",
             directory_path="root/team-a",
-            metadata={"image": "runner:latest"},
+            metadata={
+                "image": "runner:latest",
+                "model": "active-model",
+                "fast_mode": False,
+                "fast_mode_source": "prompt",
+                "reasoning_effort": "low",
+                "reasoning_effort_source": "session",
+            },
         )
     )
     repository.put(
@@ -13391,6 +13398,14 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     assert "metadata" in detail_item["host"]
     assert "executions" not in detail_item["host"]
     assert detail_item["capabilities"]["logs"] is True
+    assert detail_item["host"]["active_execution_settings"] == [{
+        "execution_id": "exec-a-2",
+        "model": "active-model",
+        "fast_mode": False,
+        "fast_mode_source": "prompt",
+        "reasoning_effort": "low",
+        "reasoning_effort_source": "session",
+    }]
 
     history_response = client.get(
         "/api/admin/agents/container-session-a/executions?directory_path=root/team-a&limit=1"
