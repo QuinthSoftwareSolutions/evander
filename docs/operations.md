@@ -407,6 +407,13 @@ source writes are not copied. A cutover therefore requires stopping every source
 writer before taking the final copy and keeping them stopped until the verified
 output is installed using the normal backup/restore procedure.
 
+The command reports each conversion/check phase on stderr and returns phase timings
+in its JSON result. SQLite's cache defaults to 1 GiB; use `--cache-mib` to size it for
+the maintenance host (for example, `--cache-mib 4096` on a workstation with spare
+memory). Bulk index sorts can use additional memory beyond this cache. Foreign-key
+enforcement is deferred only within the unpublished temporary copy; full integrity
+and foreign-key checks still have to pass before the output becomes available.
+
 To prepare rollback, use the new executable to produce another separate output:
 
 ```bash

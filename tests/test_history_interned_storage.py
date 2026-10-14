@@ -344,6 +344,68 @@ def test_failed_conversion_leaves_source_intact_and_no_published_output(tmp_path
     }
 
 
+@pytest.mark.parametrize("damage", ["source_reference", "converted_reference"])
+def test_deferred_foreign_keys_cannot_publish_invalid_copy(tmp_path, monkeypatch, damage):
+    from evander.orchestration import history_index_migration
+
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    SqliteExecutionStore(source).put(record("copy", {"value": "retained"}))
+    drain(source)
+    close_sqlite_runtimes(source)
+    with sqlite3.connect(source) as c:
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        c.execute("PRAGMA journal_mode=DELETE")
+        if damage == "source_reference":
+            c.execute("UPDATE workflow_node_execution_history SET output_blob_sha256='missing'")
+    before = hashlib.sha256(source.read_bytes()).digest()
+    if damage == "converted_reference":
+        original = history_index_migration.convert_history_index_storage
+
+        def corrupt(connection, **kwargs):
+            result = original(connection, **kwargs)
+            connection.execute(f"UPDATE {storage.CURRENT} SET path_ref=-999")
+            return result
+
+        monkeypatch.setattr(history_index_migration, "convert_history_index_storage", corrupt)
+    phases = []
+
+    def observe(phase):
+        assert not target.exists()
+        phases.append(phase)
+
+    with pytest.raises(ValueError, match="integrity or foreign-key"):
+        copy_history_index_storage(source, target, cache_mib=8, progress=observe)
+    assert "foreign_key_check" in phases
+    assert not target.exists()
+    assert not list(tmp_path.glob(".history-index-*"))
+    assert hashlib.sha256(source.read_bytes()).digest() == before
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_missing_scalar_reference_cannot_be_hidden_by_conversion_join(tmp_path, compact):
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    SqliteExecutionStore(source).put(record("copy", {"value": "retained"}))
+    drain(source)
+    if compact:
+        intern(source)
+    close_sqlite_runtimes(source)
+    with sqlite3.connect(source) as c:
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        c.execute("PRAGMA journal_mode=DELETE")
+        table = storage.CURRENT if compact else storage.OLD_CURRENT
+        column, missing = ("path_ref", -999) if compact else ("execution_key", "missing")
+        c.execute(
+            f"UPDATE {table} SET {column}=? WHERE rowid=(SELECT MIN(rowid) FROM {table})",
+            (missing,),
+        )
+    before = hashlib.sha256(source.read_bytes()).digest()
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+        copy_history_index_storage(source, target, interned=not compact, cache_mib=8)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".history-index-*"))
+    assert hashlib.sha256(source.read_bytes()).digest() == before
+
+
 def test_conversion_cli_requires_separate_offline_output(tmp_path):
     from typer.testing import CliRunner
 
@@ -356,11 +418,14 @@ def test_conversion_cli_requires_separate_offline_output(tmp_path):
     refused = runner.invoke(app, args)
     assert refused.exit_code != 0
     assert not target.exists()
-    converted = runner.invoke(app, [*args, "--offline"])
+    converted = runner.invoke(app, [*args, "--offline", "--cache-mib", "8"])
     assert converted.exit_code == 0, converted.output
-    result = json.loads(converted.output)
+    result = json.loads(converted.stdout)
     assert result["format"] == "interned"
     assert result["integrity_check"] == "ok"
+    assert result["cache_mib"] == 8
+    assert "history-index: integrity_check" in converted.stderr
+    assert "integrity_check" in result["phase_seconds"]
     assert history.read_node_execution_detail(target, execution_key="effect:copy")["output"] == {
         "n": 17
     }

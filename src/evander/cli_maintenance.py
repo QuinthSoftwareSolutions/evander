@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -34,6 +35,12 @@ def convert_history_index_command(
     legacy: Annotated[
         bool, typer.Option("--legacy", help="Produce text-keyed tables for an older binary.")
     ] = False,
+    cache_mib: Annotated[
+        int,
+        typer.Option(
+            "--cache-mib", min=1, help="SQLite cache limit in MiB; sorts use extra memory."
+        ),
+    ] = 1024,
 ) -> None:
     """Write a separate, verified history-index conversion without changing source."""
     if not offline:
@@ -43,7 +50,15 @@ def convert_history_index_command(
     from evander.orchestration.history_index_migration import copy_history_index_storage
 
     try:
-        result = copy_history_index_storage(database, output, interned=not legacy)
+        result = copy_history_index_storage(
+            database,
+            output,
+            interned=not legacy,
+            cache_mib=cache_mib,
+            progress=lambda phase: typer.echo(
+                f"{datetime.now(UTC).isoformat()} history-index: {phase}", err=True
+            ),
+        )
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(json.dumps(result, indent=2, sort_keys=True))

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 EXECUTIONS = "workflow_history_execution_keys"
@@ -154,7 +154,10 @@ def interned_schema_is_current(connection: sqlite3.Connection) -> bool:
 
 
 def convert_history_index_storage(
-    connection: sqlite3.Connection, *, interned: bool = True
+    connection: sqlite3.Connection,
+    *,
+    interned: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Convert an offline disposable copy, retaining every value and rowid.
 
@@ -166,37 +169,47 @@ def convert_history_index_storage(
         return {"changed": False, "format": "interned" if interned else "legacy"}
     if not connection.in_transaction:
         connection.execute("BEGIN IMMEDIATE")
-    counts = {
-        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in (OLD_CURRENT, OLD_LEGACY)
-    }
+
+    def report(phase: str) -> None:
+        if progress is not None:
+            progress(phase)
+
+    counts = {}
     if interned:
+        report("create_interned_tables")
         ensure_interned_history_schema(connection, indexes=False)
+        report("execution_dictionary")
         connection.execute(
             f"INSERT INTO {EXECUTIONS}(value) SELECT execution_key FROM workflow_node_execution_history ORDER BY execution_key"
         )
+        report("generation_dictionary")
         connection.execute(f"""INSERT INTO {GENERATIONS}(value)
             SELECT generation FROM {OLD_CURRENT}
             UNION SELECT generation FROM workflow_history_index_state
             UNION SELECT input_blob_sha256 || ':' || output_blob_sha256 FROM workflow_history_index_jobs ORDER BY 1""")
+        report("path_dictionary")
         connection.execute(
             f"INSERT INTO {PATHS}(value) SELECT json_pointer FROM {OLD_CURRENT} UNION SELECT json_pointer FROM {OLD_LEGACY} ORDER BY 1"
         )
         for old, new, current in ((OLD_CURRENT, CURRENT, True), (OLD_LEGACY, LEGACY, False)):
+            report("copy_current_values" if current else "copy_legacy_values")
             gen_select = "g.id," if current else ""
-            gen_join = f"JOIN {GENERATIONS} g ON g.value=v.generation" if current else ""
-            connection.execute(f"""INSERT INTO {new}
+            gen_join = f"LEFT JOIN {GENERATIONS} g ON g.value=v.generation" if current else ""
+            # LEFT JOIN retains every source row. Unique dictionary values
+            # prevent multiplication, and NOT NULL target references reject
+            # missing keys instead of silently dropping history at a join.
+            copied = connection.execute(f"""INSERT INTO {new}
                 SELECT v.rowid,e.id,{gen_select}v.location,p.id,{",".join("v." + c for c in VALUE_COLUMNS.split(","))}
-                FROM {old} v JOIN {EXECUTIONS} e ON e.value=v.execution_key
-                JOIN {PATHS} p ON p.value=v.json_pointer {gen_join} ORDER BY v.rowid""")
-            if connection.execute(f"SELECT COUNT(*) FROM {new}").fetchone()[0] != counts[old]:
-                raise ValueError(
-                    "History conversion lost a reference; transaction must be rolled back"
-                )
+                FROM {old} v LEFT JOIN {EXECUTIONS} e ON e.value=v.execution_key
+                LEFT JOIN {PATHS} p ON p.value=v.json_pointer {gen_join} ORDER BY v.rowid""")
+            counts[old] = copied.rowcount
+        report("retire_text_tables")
         connection.execute("DROP VIEW workflow_node_execution_current_values")
         for old in (OLD_CURRENT, OLD_LEGACY):
             connection.execute(f"DROP TABLE {old}")
+        report("build_interned_indexes")
         ensure_interned_history_schema(connection)
+        report("create_compatibility_views")
         create_history_views(connection)
         connection.execute(
             "INSERT INTO orchestration_metadata(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
@@ -204,6 +217,7 @@ def convert_history_index_storage(
         )
     else:
         for old, current in ((OLD_CURRENT, True), (OLD_LEGACY, False)):
+            report("restore_current_values" if current else "restore_legacy_values")
             table = old + "_restore"
             gen = "generation TEXT NOT NULL," if current else ""
             gen_key = "generation," if current else ""
@@ -217,19 +231,24 @@ def convert_history_index_storage(
                 {gen}location TEXT NOT NULL,json_pointer TEXT NOT NULL,value_type TEXT NOT NULL,
                 value_hash TEXT,text_value TEXT,numeric_value REAL,boolean_value INTEGER,
                 PRIMARY KEY(execution_key,{gen_key}location,json_pointer))""")
-            connection.execute(
-                f"INSERT INTO {table}(rowid,{columns}) SELECT rowid,{columns} FROM {old} ORDER BY rowid"
-            )
-            if connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] != counts[old]:
-                raise ValueError(
-                    "History rollback lost a reference; transaction must be rolled back"
-                )
+            source = CURRENT if current else LEGACY
+            gen_select = "g.value," if current else ""
+            gen_join = f"LEFT JOIN {GENERATIONS} g ON g.id=v.generation_ref" if current else ""
+            # Read physical entries, not the inspection view: that view's
+            # inner joins could conceal broken references in a damaged source.
+            copied = connection.execute(f"""INSERT INTO {table}(rowid,{columns})
+                SELECT v.rowid,e.value,{gen_select}v.location,p.value,{",".join("v." + c for c in VALUE_COLUMNS.split(","))}
+                FROM {source} v LEFT JOIN {EXECUTIONS} e ON e.id=v.execution_ref
+                LEFT JOIN {PATHS} p ON p.id=v.path_ref {gen_join} ORDER BY v.rowid""")
+            counts[old] = copied.rowcount
+        report("retire_interned_tables")
         for view in ("workflow_node_execution_current_values", OLD_CURRENT, OLD_LEGACY):
             connection.execute(f"DROP VIEW {view}")
         for table in (CURRENT, LEGACY, EXECUTIONS, GENERATIONS, PATHS):
             connection.execute(f"DROP TABLE {table}")
         for old in (OLD_CURRENT, OLD_LEGACY):
             connection.execute(f"ALTER TABLE {old}_restore RENAME TO {old}")
+        report("build_legacy_indexes")
         ensure_legacy_values_schema(connection)
         for table, prefix, current in (
             (OLD_CURRENT, "idx_history_generation", True),
