@@ -124,3 +124,10 @@ existing revision-checked workflow save path. Building a pack does neither.
 New integration packages follow [the add-on project layout](addons.md#project-ownership)
 and remain separate installations. Core contract tests use synthetic add-ons;
 provider migrations, supervisors and the starter gallery are later release stages.
+
+## Teams and Graph
+
+[`packages/teams-graph-addon`](../packages/teams-graph-addon/README.md) is the first extracted
+provider integration. Its registration exposes local configuration readiness, credential access,
+and host-supervised workers. Existing workflows continue using their current node and tool IDs.
+The core distribution does not depend on or install this project.

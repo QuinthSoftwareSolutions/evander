@@ -126,18 +126,20 @@ def test_idle_notification_queue_compacts_terminal_rows_without_workflow_prepara
         ("retry", "retry", None),
         ("leased", "leased", None),
     ):
-        worker.store.enqueue_notification(TeamsNotificationQueueEntry(
-            idempotency_key=key,
-            notification_kind="message",
-            subscription_id="subscription",
-            tenant_id="tenant",
-            resource="chats/chat/messages/message",
-            received_at=origin,
-            next_attempt_at=wall_now[0] + timedelta(days=90),
-            state=state,
-            completed_at=completed_at,
-            leased_until=wall_now[0] + timedelta(days=90) if state == "leased" else None,
-        ))
+        worker.store.enqueue_notification(
+            TeamsNotificationQueueEntry(
+                idempotency_key=key,
+                notification_kind="message",
+                subscription_id="subscription",
+                tenant_id="tenant",
+                resource="chats/chat/messages/message",
+                received_at=origin,
+                next_attempt_at=wall_now[0] + timedelta(days=90),
+                state=state,
+                completed_at=completed_at,
+                leased_until=wall_now[0] + timedelta(days=90) if state == "leased" else None,
+            )
+        )
 
     class WallClock(datetime):
         @classmethod
@@ -160,15 +162,16 @@ def test_idle_notification_queue_compacts_terminal_rows_without_workflow_prepara
         raise AssertionError("an idle notification worker must not prepare workflow/session state")
 
     monkeypatch.setattr(worker, "_capture_trigger_config_snapshot", unexpected_preparation)
-    monkeypatch.setattr(
-        worker.session_repository, "list_active_sessions", unexpected_preparation
-    )
+    monkeypatch.setattr(worker.session_repository, "list_active_sessions", unexpected_preparation)
 
     assert worker.process_notification_queue_once() == 0
     with worker.store._connect() as connection:
-        assert {row[0] for row in connection.execute(
-            "SELECT idempotency_key FROM teams_inbox_notification_queue"
-        )} == {"completed-at-cutoff", "failed-at-cutoff", "retry", "leased"}
+        assert {
+            row[0]
+            for row in connection.execute(
+                "SELECT idempotency_key FROM teams_inbox_notification_queue"
+            )
+        } == {"completed-at-cutoff", "failed-at-cutoff", "retry", "leased"}
 
     # Wall-clock changes affect retention cutoffs, never the monotonic schedule.
     wall_now[0] += timedelta(days=7)
@@ -179,9 +182,12 @@ def test_idle_notification_queue_compacts_terminal_rows_without_workflow_prepara
     assert worker.process_notification_queue_once() == 0
     assert len(compaction_calls) == 2
     with worker.store._connect() as connection:
-        assert {row[0]: row[1] for row in connection.execute(
-            "SELECT idempotency_key, state FROM teams_inbox_notification_queue"
-        )} == {"retry": "retry", "leased": "leased"}
+        assert {
+            row[0]: row[1]
+            for row in connection.execute(
+                "SELECT idempotency_key, state FROM teams_inbox_notification_queue"
+            )
+        } == {"retry": "retry", "leased": "leased"}
     for _ in range(3):
         assert worker.process_notification_queue_once() == 0
     assert len(compaction_calls) == 2
@@ -196,11 +202,19 @@ def test_idle_notification_compaction_retries_failure_without_per_pass_writes(
         GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
     )
     origin = datetime.now(UTC)
-    worker.store.enqueue_notification(TeamsNotificationQueueEntry(
-        idempotency_key="expired", notification_kind="message", subscription_id="subscription",
-        tenant_id="tenant", resource="resource", received_at=origin, next_attempt_at=origin,
-        state="completed", completed_at=origin,
-    ))
+    worker.store.enqueue_notification(
+        TeamsNotificationQueueEntry(
+            idempotency_key="expired",
+            notification_kind="message",
+            subscription_id="subscription",
+            tenant_id="tenant",
+            resource="resource",
+            received_at=origin,
+            next_attempt_at=origin,
+            state="completed",
+            completed_at=origin,
+        )
+    )
 
     class WallClock(datetime):
         @classmethod
@@ -222,7 +236,10 @@ def test_idle_notification_compaction_retries_failure_without_per_pass_writes(
     monkeypatch.setattr(worker.store, "compact_notifications", fail_once)
     assert worker.process_notification_queue_once() == 0
     with worker.store._connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0]
+            == 1
+        )
     monotonic_now[0] += 59.0
     assert worker.process_notification_queue_once() == 0
     assert len(calls) == 1
@@ -230,7 +247,10 @@ def test_idle_notification_compaction_retries_failure_without_per_pass_writes(
     assert worker.process_notification_queue_once() == 0
     assert len(calls) == 2
     with worker.store._connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0]
+            == 0
+        )
     monotonic_now[0] += 3599.0
     assert worker.process_notification_queue_once() == 0
     assert len(calls) == 2
@@ -248,11 +268,19 @@ def test_idle_notification_compaction_resumes_bounded_slices(
     wall_now = origin + timedelta(days=31)
     for state in ("completed", "failed"):
         for number in range(101):
-            worker.store.enqueue_notification(TeamsNotificationQueueEntry(
-                idempotency_key=f"{state}-{number}", notification_kind="message",
-                subscription_id="subscription", tenant_id="tenant", resource="resource",
-                received_at=origin, next_attempt_at=origin, state=state, completed_at=origin,
-            ))
+            worker.store.enqueue_notification(
+                TeamsNotificationQueueEntry(
+                    idempotency_key=f"{state}-{number}",
+                    notification_kind="message",
+                    subscription_id="subscription",
+                    tenant_id="tenant",
+                    resource="resource",
+                    received_at=origin,
+                    next_attempt_at=origin,
+                    state=state,
+                    completed_at=origin,
+                )
+            )
 
     class WallClock(datetime):
         @classmethod
@@ -264,17 +292,25 @@ def test_idle_notification_compaction_resumes_bounded_slices(
     monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
     assert worker.process_notification_queue_once() == 0
     with worker.store._connect() as connection:
-        assert dict(connection.execute(
-            "SELECT state, COUNT(*) FROM teams_inbox_notification_queue GROUP BY state"
-        )) == {"completed": 1, "failed": 1}
+        assert dict(
+            connection.execute(
+                "SELECT state, COUNT(*) FROM teams_inbox_notification_queue GROUP BY state"
+            )
+        ) == {"completed": 1, "failed": 1}
     monotonic_now[0] += 59.0
     assert worker.process_notification_queue_once() == 0
     with worker.store._connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 2
+        assert (
+            connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0]
+            == 2
+        )
     monotonic_now[0] += 1.0
     assert worker.process_notification_queue_once() == 0
     with worker.store._connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0]
+            == 0
+        )
 
 
 def test_teams_workflow_cache_keeps_cursors_fresh_and_adopts_valid_config_edits(
@@ -362,12 +398,17 @@ def test_cached_teams_workflow_observes_target_moves_and_read_revocation(tmp_pat
         "policy": {"capabilities": ["read"]},
     }
     write_root_communication_targets(worker, [target])
-    write_trigger_config(tmp_path, [{
-        "id": "communication-policy",
-        "display_name": "Communication",
-        "type": "trigger:communication:new-message",
-        "communication_target_ids": ["teams-policy"],
-    }])
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "communication-policy",
+                "display_name": "Communication",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["teams-policy"],
+            }
+        ],
+    )
     now = datetime.now(UTC)
     first = worker._capture_trigger_config_snapshot(captured_at=now)
     assert first.poll_targets_by_directory["root"] == frozenset({"team-a/channel-a"})

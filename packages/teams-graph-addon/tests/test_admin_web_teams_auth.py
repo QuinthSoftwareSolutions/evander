@@ -78,7 +78,7 @@ def test_admin_web_teams_auth_routes_use_focused_admin_services(
     async def run_inline(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr("evander.admin.web.teams_auth.run_in_threadpool", run_inline)
+    monkeypatch.setattr("evander_teams_graph_addon.admin.routes.run_in_threadpool", run_inline)
 
     class TeamsService:
         def normalize_directory_reference(self, value: str) -> str:

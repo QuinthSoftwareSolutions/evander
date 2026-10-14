@@ -771,11 +771,11 @@ def test_graph_teams_direct_history_retries_retry_after_response(
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setattr(
-        "evander.integration_services.teams.time",
+        "evander_teams_graph_addon.service.time",
         SimpleNamespace(monotonic=time.monotonic, sleep=sleeps.append),
     )
     monkeypatch.setattr(
-        "evander.integration_services.teams.random",
+        "evander_teams_graph_addon.service.random",
         SimpleNamespace(uniform=lambda _low, _high: 0.5),
     )
     service = GraphTeamsService(

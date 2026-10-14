@@ -15,3 +15,18 @@
   environment: "{{ evander_python_install_env | default({}) }}"
   become_user: "{{ evander_run_user }}"
   changed_when: false
+
+- name: Install the optional Teams Graph integration for selected Teams services
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/teams-graph-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when: >-
+    evander_teams_graph_addon_enabled | default(
+      (evander_services.teams_ingest | default(false) | bool)
+      or (evander_services.teams_notifications | default(false) | bool)
+      or (evander_services.teams_meeting_ingest | default(false) | bool)
+    ) | bool

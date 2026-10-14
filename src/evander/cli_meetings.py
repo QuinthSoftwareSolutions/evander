@@ -7,9 +7,18 @@ from typing import Annotated
 import httpx
 import typer
 
-from evander.teams_meeting import TeamsMeetingService
+from evander.optional_integrations import require_teams_graph_module, OptionalIntegrationUnavailable
 
 from . import cli_app, cli_common, cli_runtime
+
+
+def _meeting_service_type(config):
+    try:
+        return require_teams_graph_module(
+            "evander_teams_graph_addon.meetings", config
+        ).TeamsMeetingService
+    except OptionalIntegrationUnavailable as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 @cli_app.teams_meeting_app.command("start", short_help="Start a live Teams meeting agent session.")
@@ -49,6 +58,8 @@ def teams_meeting_start(
 ) -> None:
     cfg = cli_runtime._load_runtime_config_from_option(config)
     runtime = cli_runtime.build_runtime(cfg)
+    TeamsMeetingService = _meeting_service_type(cfg)
+
     service = TeamsMeetingService(
         config=cfg,
         runtime=runtime,
@@ -78,6 +89,8 @@ def teams_meeting_stop(
 ) -> None:
     cfg = cli_runtime._load_runtime_config_from_option(config)
     runtime = cli_runtime.build_runtime(cfg)
+    TeamsMeetingService = _meeting_service_type(cfg)
+
     service = TeamsMeetingService(
         config=cfg,
         runtime=runtime,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 from pathlib import Path
 
 from evander.messaging.agent_prompt_store import AgentPromptStore
@@ -18,7 +18,6 @@ from evander.config import GatewayConfig, MailboxConfig
 from evander.directory_config import load_root_gateway_config
 from evander.repositories.cursors import EmailCursorRepository, JsonEmailCursorRepository
 from evander.email.gmail_provider import GmailEmailProvider
-from evander.email.graph_provider import GraphEmailProvider
 from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.policy import PolicyEngine
 from evander.policy_config import PolicyConfigResolver
@@ -63,7 +62,6 @@ from evander.services import (
     DiscordInboxService,
     DiscordService,
     EmailService,
-    GraphTeamsService,
     GitHubPrQueryProvider,
     GitHubPrPublishProvider,
     PrFeedbackService,
@@ -74,11 +72,13 @@ from evander.services import (
     StubTeamsService,
     TeamsService,
 )
-from evander.storage import JsonStore
-from evander.messaging.teams_auth import (
-    MicrosoftDeviceCodeAuthConfig,
-    TeamsDeviceCodeTokenProvider,
+from evander.integration_services.teams import ManagedTeamsService
+from evander.optional_integrations import (
+    UnavailableTeamsGraphService,
+    require_teams_graph_module,
+    teams_graph_enabled,
 )
+from evander.storage import JsonStore
 from evander.messaging.wake_store import WakeRequestRepository, WakeRequestStore
 from evander.outbound_identity import (
     OutboundIdentityRegistry,
@@ -86,7 +86,6 @@ from evander.outbound_identity import (
     OutboundIdentityResolver,
 )
 from evander.teams_meeting import (
-    TeamsMeetingBridgeClient,
     TeamsMeetingStore,
     build_teams_meeting_bridge_client,
 )
@@ -176,7 +175,7 @@ class RuntimeContext:
     voice_session_store: VoiceSessionStore
     voice_session_reconciler: VoiceSessionReconciler
     teams_meeting_store: TeamsMeetingStore
-    teams_meeting_bridge_client: TeamsMeetingBridgeClient
+    teams_meeting_bridge_client: Any
     outbound_identity_registry: OutboundIdentityRegistry = field(
         default_factory=OutboundIdentityRegistry
     )
@@ -194,15 +193,22 @@ class RuntimeContext:
 
     @property
     def teams_voice_service(self):
-        from evander.admin.services.teams_voice_service import TeamsVoiceService
-
-        return TeamsVoiceService(self)
+        if not teams_graph_enabled(self.config):
+            return UnavailableTeamsGraphService(self.config)
+        module = require_teams_graph_module("evander_teams_graph_addon.admin.voice", self.config)
+        return module.TeamsVoiceService(self)
 
     @property
     def voice_visual_store(self):
         from evander.voice_visuals import VoiceVisualStore
 
         return VoiceVisualStore(self.config.runtime_dir)
+
+    @property
+    def voice_visual_service(self):
+        from evander.admin.services.voice_visual_service import VoiceVisualService
+
+        return VoiceVisualService(self)
 
     def register_outbound_identity_resolver(
         self, source: str, resolver: OutboundIdentityResolver
@@ -358,13 +364,13 @@ class RuntimeContext:
         )
 
     def teams_service_for_session(self, session_id: str) -> TeamsService:
-        if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
+        if not isinstance(self.teams_service, ManagedTeamsService):
             return self.teams_service
         session = self.session_repository.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
-        if resolved_config == self.config and not isinstance(self.teams_service, GraphTeamsService):
+        if resolved_config == self.config and isinstance(self.teams_service, StubTeamsService):
             return self.teams_service
         return _build_teams_service(
             resolved_config,
@@ -393,7 +399,7 @@ class RuntimeContext:
         allowed_channel_targets: Sequence[str],
         allowed_user_targets: Sequence[str] = (),
     ) -> TeamsService:
-        if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
+        if not isinstance(self.teams_service, ManagedTeamsService):
             return self.teams_service
         resolved_config = self.provider_config.resolve_for_directory(directory_path)
         exact_targets = sorted(
@@ -534,7 +540,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     runtime_context.policy.set_approval_notification_dispatcher(
         ApprovalNotificationDispatcher(runtime=runtime_context, project_dir=Path.cwd())
     )
-    runtime_context.teams_voice_service.cleanup_visual_context()
+    runtime_context.voice_visual_service.cleanup_visual_context()
     return runtime_context
 
 
@@ -558,9 +564,7 @@ def _build_email_provider(
     if all(mailbox.provider == "json_store" for mailbox in mailbox_configs):
         return JsonEmailProvider(emails, drafts)
 
-    providers_by_mailbox: dict[
-        str, JsonEmailProvider | GmailEmailProvider | GraphEmailProvider
-    ] = {}
+    providers_by_mailbox: dict[str, Any] = {}
     for mailbox in mailbox_configs:
         if mailbox.provider == "json_store":
             providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
@@ -576,6 +580,12 @@ def _build_email_provider(
             )
             continue
         if mailbox.provider == "graph":
+            if not teams_graph_enabled(config):
+                providers_by_mailbox[mailbox.mailbox_id] = UnavailableTeamsGraphService(config)
+                continue
+            GraphEmailProvider = require_teams_graph_module(
+                "evander_teams_graph_addon.email", config
+            ).GraphEmailProvider
             _validate_mailbox_auth_environment(mailbox)
             providers_by_mailbox[mailbox.mailbox_id] = GraphEmailProvider(
                 account_identifier=mailbox.account_identifier,
@@ -750,6 +760,11 @@ def _build_teams_service(
             allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
             read_reaction_emoji=config.teams_read_reaction_emoji,
         )
+    if not teams_graph_enabled(config):
+        return UnavailableTeamsGraphService(config)
+    GraphTeamsService = require_teams_graph_module(
+        "evander_teams_graph_addon.service", config
+    ).GraphTeamsService
     if config.teams_backend == "graph_api":
         env_var_name = config.teams_graph_access_token_env.strip()
         if not env_var_name:
@@ -823,7 +838,10 @@ def _build_teams_service(
     )
 
 
-def _build_delegated_teams_token_provider(config: GatewayConfig, directory_path: str = "root") -> TeamsDeviceCodeTokenProvider:
+def _build_delegated_teams_token_provider(config: GatewayConfig, directory_path: str = "root"):
+    module = require_teams_graph_module("evander_teams_graph_addon.auth", config)
+    MicrosoftDeviceCodeAuthConfig = module.MicrosoftDeviceCodeAuthConfig
+    TeamsDeviceCodeTokenProvider = module.TeamsDeviceCodeTokenProvider
     identity_id = str(config.teams_delegated_identity_id or "").strip()
     if not identity_id:
         raise RuntimeError(

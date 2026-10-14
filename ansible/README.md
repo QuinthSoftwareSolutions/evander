@@ -709,3 +709,12 @@ export EVANDER_WORKER_TOKEN='<same token>'
 The worker playbook verifies Docker, the daemon systemd unit, and `/healthz`. It does not run the
 control-plane smoke command because that check belongs on the control-plane side and depends on the
 selected runner image and private network path.
+
+### Optional Teams and Graph package
+
+The Python environment role installs `packages/teams-graph-addon` when a Teams service is selected.
+This preserves the full-stack defaults. Set `evander_teams_graph_addon_enabled: true` when only
+Graph mail is needed. To omit the integration, set it to `false` and disable `teams_ingest`,
+`teams_notifications`, and `teams_meeting_ingest` in `evander_services`. If the provider loader uses
+an explicit enabled list, include `teams-graph` when using the package. See the
+[package upgrade notes](../packages/teams-graph-addon/README.md).

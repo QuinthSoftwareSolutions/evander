@@ -6,7 +6,6 @@ from evander.admin.services.privacy_service import PrivacyAdminService
 from evander.classification.service import ClassificationService
 from evander.admin.services.credential_admin_service import CredentialAdminService
 from evander.admin.services.repository_index_service import RepositoryIndexService
-from evander.admin.services.teams_voice_service import TeamsVoiceService
 from evander.admin.services.inbound_phone_routing_service import InboundPhoneRoutingService
 
 import os
@@ -18,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
@@ -74,8 +73,6 @@ from evander.admin.services import (
     SkillAdminService,
     SessionAdminDependencies,
     SessionAdminService,
-    TeamsAdminDependencies,
-    TeamsAdminService,
     VmAgentAdminDependencies,
     VmAgentAdminService,
     VmAgentAdminSupport,
@@ -119,6 +116,16 @@ from evander.runtime import RuntimeContext, build_runtime
 from evander.storage import JsonStore
 from evander.models import LocalIssueRecord
 
+
+from evander.optional_integrations import (
+    UnavailableTeamsGraphService,
+    require_teams_graph_module,
+    teams_graph_enabled,
+)
+
+if TYPE_CHECKING:
+    from evander.admin.services.teams_service import TeamsAdminService
+    from evander.admin.services.teams_voice_service import TeamsVoiceService
 
 LOGGER = logging.getLogger(__name__)
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
@@ -542,12 +549,18 @@ def _build_admin_runtime_components(
             config=config,
         )
     )
-    teams_admin = TeamsAdminService(
-        TeamsAdminDependencies(
-            runtime=runtime,
-            normalize_directory_reference=normalize_directory_reference,
+    if teams_graph_enabled(config):
+        teams_module = require_teams_graph_module("evander_teams_graph_addon.admin.service", config)
+        teams_admin = teams_module.TeamsAdminService(
+            teams_module.TeamsAdminDependencies(
+                runtime=runtime,
+                normalize_directory_reference=normalize_directory_reference,
+            )
         )
-    )
+    else:
+        teams_admin = UnavailableTeamsGraphService(
+            config, normalize_directory_reference=normalize_directory_reference
+        )
     discord_webhook_admin = DiscordWebhookAdminService(
         DiscordWebhookAdminDependencies(
             runtime=runtime,
@@ -860,17 +873,26 @@ def _build_admin_runtime_components(
         integration_admin=integration_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
-        credential_admin=CredentialAdminService(store=connector_service.credentials,
-            provider_config=runtime.provider_config, operations_admin=operations_admin,
-            connector_admin=connector_admin, audit=runtime.audit, directories=runtime.directories),
+        credential_admin=CredentialAdminService(
+            store=connector_service.credentials,
+            provider_config=runtime.provider_config,
+            operations_admin=operations_admin,
+            connector_admin=connector_admin,
+            audit=runtime.audit,
+            directories=runtime.directories,
+        ),
         connector_admin=connector_admin,
-        event_schema_admin=EventSchemaAdminService(workflow_config_admin.event_schemas, directory_admin, host.admin_config_mutation_lock),
+        event_schema_admin=EventSchemaAdminService(
+            workflow_config_admin.event_schemas, directory_admin, host.admin_config_mutation_lock
+        ),
         connector_service=connector_service,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
         ),
         classification_admin=ClassificationAdminService(
-            operations_admin, runtime.provider_config, runtime.audit,
+            operations_admin,
+            runtime.provider_config,
+            runtime.audit,
             ClassificationService(config.runtime_dir),
         ),
         privacy_admin=PrivacyAdminService(operations_admin, runtime.provider_config, config),

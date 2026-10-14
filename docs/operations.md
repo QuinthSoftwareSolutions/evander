@@ -4242,3 +4242,11 @@ manually scheduled baseline. Search changed and dirty files in the agent checkou
 See
 [Repository indexing](repository-indexing.md) for image preparation, App configuration,
 the reconciliation workflow, CLI commands, recovery, retention and external queries.
+
+## Installing the optional Teams/Graph provider
+
+For Teams messaging, Graph mail, or Teams meetings, install core and
+`packages/teams-graph-addon` into the same host virtualenv before reinstalling service definitions.
+Follow the [Teams/Graph upgrade instructions](../packages/teams-graph-addon/README.md). Existing
+worker names, directory settings, secrets, and runtime stores are preserved. The systemd installer
+skips Teams service installation when the integration is missing or explicitly disabled.
