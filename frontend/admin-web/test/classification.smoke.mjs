@@ -232,6 +232,7 @@ test("workflow inspector saves inline questions and switches to a fixed profile 
   profileSnapshot = structuredClone(profileSnapshot);
   profileSnapshot.effective_config.profiles.triage.questions = {urgent: {type: "boolean", instructions: "Urgent?"}};
   await inspector.getByRole("button", {name: "Refresh answer suggestions", exact: true}).click();
+  await inspector.getByRole("tab", {name: "Outputs", exact: true}).click();
   await inspector.getByText("classify.answers.urgent.probability_true", {exact: true}).waitFor();
   await page.getByRole("button", {name: "Save workflow", exact: true}).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);

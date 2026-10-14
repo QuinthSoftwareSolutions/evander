@@ -8990,8 +8990,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "config --worktree author.email task@example.test" in command
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
     assert "export GIT_AUTHOR_EMAIL=jonathan.quinth@exampleindustry.com" in command
-    assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
-    assert 'push origin "HEAD:refs/heads/$branch"' in command
+    assert 'ls-remote --exit-code origin "refs/evander/$branch"' in command
+    assert 'push origin "HEAD:refs/evander/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
     assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
     assert "evander.dependencyCompositionRootCommit" in command

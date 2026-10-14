@@ -626,6 +626,7 @@ test("tool calls default load uses recent mode and filtered reads stay exact", a
   await searchClear;
 
   const sessionRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("session_id") === "session-filter");
+  await filterSidebar.getByText("More filters", { exact: true }).click();
   await filterSidebar.getByLabel("Session").fill("session-filter");
   assert.equal((await sessionRequest).searchParams.get("recent_only"), null);
 
