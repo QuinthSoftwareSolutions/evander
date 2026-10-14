@@ -3143,7 +3143,7 @@ export default function App() {
         </div>
         {!isCompactCanvasTouchMode ? <div className="workflow-command-tools">
           <button type="button" aria-expanded={compactActivePanel === "graphs"} onClick={() => setCompactActivePanel(current => current === "graphs" ? null : "graphs")}>Graphs</button>
-          {!isInspectMode ? <button type="button" aria-expanded={compactActivePanel === "create"} onClick={() => setCompactActivePanel(current => current === "create" ? null : "create")} disabled={workflowMutationLocked}>Add node</button> : null}
+          {!isInspectMode ? <button type="button" aria-expanded={compactActivePanel === "create"} onClick={() => setCompactActivePanel(current => current === "create" ? null : "create")} disabled={workflowMutationLocked && tutorialCurrentRequiredAction()?.kind !== "add-node"}>Add node</button> : null}
           {renderWorkflowTutorialLauncher()}
           {workbench.view === "canvas" ? <button type="button" onClick={() => workbench.setView("split")}>Show editor</button> : null}
           {workbench.view === "editor" ? <button type="button" onClick={() => workbench.setView("split")}>Show canvas</button> : null}

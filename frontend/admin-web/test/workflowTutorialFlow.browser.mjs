@@ -410,7 +410,15 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", { ti
   await page.getByRole("dialog", { name: "Trigger entrypoints" }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("dialog", { name: "Add a downstream node" }).waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Prompt agent" }).click();
+  const addNodeButton = page.getByRole("button", { name: "Add node", exact: true });
+  assert.equal(await addNodeButton.isEnabled(), true, "the required tutorial action must be reachable from the toolbar");
+  await addNodeButton.click();
+  const nodePalette = page.getByRole("dialog", { name: "Add node", exact: true });
+  await nodePalette.waitFor({ state: "visible" });
+  await nodePalette.getByText("Triggers", { exact: true }).click();
+  assert.equal(await nodePalette.getByRole("button", { name: "Agent run completed", exact: true }).isEnabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Save workflow", exact: true }).isEnabled(), false);
+  await nodePalette.getByRole("button", { name: "Prompt agent", exact: true }).click();
   await page.getByRole("dialog", { name: "Connect the nodes" }).waitFor({ state: "visible" });
   const triggerNode = page.locator('.react-flow__node[data-id="tutorial-trigger"]');
   const nodeContextMenu = page.locator(".node-context-menu");

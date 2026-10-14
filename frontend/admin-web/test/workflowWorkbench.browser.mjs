@@ -152,6 +152,7 @@ test("mobile mapping controls fit the sheet and read-only operators cannot mutat
   await panel.getByRole("tab",{name:"Outputs",exact:true}).click();await panel.getByRole("tab",{name:"Configuration",exact:true}).click();
   assert.equal(await panel.getByLabel("Output value 3",{exact:true}).inputValue(),"5");
   const readonly=await editor(t,{locked:true});
+  assert.equal(await readonly.page.getByRole("button",{name:"Add node",exact:true}).isDisabled(),true);
   assert.equal(await readonly.panel.getByLabel("Output name 1",{exact:true}).isDisabled(),true);
   assert.equal(await readonly.panel.getByRole("button",{name:"Raw JSON",exact:true}).isDisabled(),true);
   assert.equal(await readonly.panel.getByRole("button",{name:"Add output",exact:true}).isDisabled(),true);
