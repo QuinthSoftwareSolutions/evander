@@ -27,18 +27,14 @@ def _settings_payload(execution_id: str, values: Mapping[str, Any]) -> dict[str,
 
 
 class VmAgentRuntimeSettingsInventoryMixin:
-    def _agent_with_runtime_settings(
-        self, agent: AgentRecord, *, container_records: list[Any] | None = None
-    ) -> AgentRecord:
+    def _agent_with_runtime_settings(self, agent: AgentRecord) -> AgentRecord:
         """Expose dispatch snapshots only; mutable session defaults are not run settings."""
         settings: list[dict[str, Any]] = []
         if agent.backend == "container_worker_vm" and agent.session_id:
-            records = container_records
-            if records is None:
-                repository = self._container_worker_execution_repository()
-                records = repository.list_active_by_session(
-                    agent.session_id, {"created", "starting", "running"}
-                )
+            repository = self._container_worker_execution_repository()
+            records = repository.list_active_by_session(
+                agent.session_id, {"created", "starting", "running"}
+            )
             for record in sorted(records, key=self._container_execution_sort_key, reverse=True):
                 if self._agent_status_is_active(self._container_execution_status(record)):
                     settings.append(_settings_payload(record.execution_id, record.metadata))

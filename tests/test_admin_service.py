@@ -855,6 +855,83 @@ def test_read_session_artifact_text_routes_vm_sessions_to_vm_exec(
     assert result["execution_backend"] == "libvirt_vm"
 
 
+@pytest.mark.parametrize("remaining_active", [True, False])
+def test_agent_detail_settings_use_reconciled_container_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remaining_active: bool
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="reconciled-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    for execution_id in ("run-completed", "run-active"):
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=execution_id,
+                session_id="reconciled-session",
+                worker_job_id=execution_id,
+                worker_url="http://worker.test",
+                target_name="reconciled-target",
+                last_status="running",
+                metadata={"model": "cached-model"},
+            )
+        )
+
+    inspected = []
+
+    class Worker:
+        def inspect(self, execution_id):
+            inspected.append(execution_id)
+            record = repository.get(execution_id)
+            still_running = remaining_active and execution_id == "run-active"
+            repository.put(
+                record.model_copy(
+                    update={
+                        "last_status": "running" if still_running else "exited",
+                        "finished_at": None if still_running else datetime.now(UTC),
+                        "metadata": {
+                            "model": "current-model",
+                            "fast_mode": False,
+                            "fast_mode_source": "prompt",
+                            "reasoning_effort": "low",
+                            "reasoning_effort_source": "prompt",
+                        },
+                    }
+                )
+            )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin, "container_worker_backend", lambda **kwargs: Worker()
+    )
+    agent = service.vm_agent_admin.get_agent(
+        "reconciled-session", backend="container_worker_vm", reconcile_containers=True
+    )
+    assert set(inspected) == {"run-completed", "run-active"}
+    assert agent.host["active_execution_count"] == int(remaining_active)
+    assert agent.host["active_execution_settings"] == (
+        [
+            {
+                "execution_id": "run-active",
+                "model": "current-model",
+                "fast_mode": False,
+                "fast_mode_source": "prompt",
+                "reasoning_effort": "low",
+                "reasoning_effort_source": "prompt",
+            }
+        ]
+        if remaining_active
+        else []
+    )
+
+
 @pytest.mark.parametrize("speed", [False, True, "ultrafast"])
 def test_agent_detail_reports_active_run_snapshots_instead_of_session_defaults(
     tmp_path: Path, speed: bool | str, monkeypatch: pytest.MonkeyPatch

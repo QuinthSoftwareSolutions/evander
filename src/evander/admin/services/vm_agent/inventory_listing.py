@@ -61,9 +61,7 @@ class VmAgentInventoryListingMixin:
                     include_effective_tool_policy=True,
                     include_execution_history=False,
                 )
-                return self._agent_with_runtime_settings(
-                    agent, container_records=executions if reconcile_containers else None
-                )
+                return self._agent_with_runtime_settings(agent)
             if selected_backend == "container_worker_vm":
                 raise ValueError(f"Unknown agent {normalized_agent_id}.")
 
