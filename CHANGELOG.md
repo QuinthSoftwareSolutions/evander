@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-14 - Guide website login setup (0.87.0)
+
+- Add step-by-step website login setup with WordPress and custom JSON API paths,
+  a review before saving, and explicit connection checks after saving.
+- Reuse configured WordPress connections without asking for their credentials or
+  response mappings. Explain missing prerequisites and distinguish configuration
+  checks from authenticated browser access.
+- Keep the advanced editor available, preserve drafts after failed saves, and
+  support token, JSON-object and cookie response mappings in guided setup.
+
 ## 2026-10-12 - Isolate private Git refs from upstream branches (0.86.8)
 
 - Store session, review, and Team refs under `refs/evander/` so upstream

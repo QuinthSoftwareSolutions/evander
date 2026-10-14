@@ -1,38 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchJson } from "../admin/api";
-
-type Binding = {response_pointer: string; encoding: "json" | "string"};
-type Profile = {
-  enabled: boolean; browser_origin: string; login_url: string;
-  adapter?: string; adapter_config?: Record<string, unknown>; cookies_response_pointer?: string | null;
-  credential_source: "stored" | "environment"; credential_ref?: string | null;
-  credential_fields: Record<string, string>; public_credential_fields: string[];
-  static_fields: Record<string, unknown>; local_storage: Record<string, Binding>; session_storage: Record<string, Binding>;
-  jwt_response_pointer: string | null; expires_in_response_pointer: string | null;
-  max_age_seconds: number; renew_before_seconds: number; timeout_seconds: number; max_response_bytes: number;
-};
-type Entry = {id: string; profile: Profile; local: boolean;
-  credentials: {configured_fields: string[]; managed_by?: string; updated_at: number | null; owner_directory: string | null};
-  last_test: {status: string; checked_at: number; expires_at: number | null} | null};
-type Snapshot = {directory_path: string; revision: string; profiles: Entry[]};
-type Credential = {name: string; reference: string; value: string; public: boolean};
-type Storage = {name: string; location: "local" | "session"; pointer: string; encoding: "json" | "string"};
-type Draft = {id: string; existing: boolean; profile: Profile; credentials: Credential[]; storage: Storage[]; staticJson: string};
-
-function makeDraft(entry?: Entry): Draft {
-  const profile: Profile = entry ? structuredClone(entry.profile) : {
-    enabled: true, browser_origin: "", login_url: "", credential_source: "stored",
-    credential_fields: {username: "username", password: "password"}, public_credential_fields: ["username"],
-    static_fields: {}, local_storage: {accessToken: {response_pointer: "/token", encoding: "string"}}, session_storage: {},
-    jwt_response_pointer: null, expires_in_response_pointer: null,
-    max_age_seconds: 3600, renew_before_seconds: 60, timeout_seconds: 20, max_response_bytes: 262144,
-  };
-  return {id: entry?.id ?? "", existing: Boolean(entry), profile,
-    credentials: Object.entries(profile.credential_fields).map(([name, reference]) => ({name, reference, value: "", public: profile.public_credential_fields.includes(name)})),
-    storage: (["local", "session"] as const).flatMap(location => Object.entries(location === "local" ? profile.local_storage : profile.session_storage)
-      .map(([name, binding]) => ({name, location, pointer: binding.response_pointer, encoding: binding.encoding}))),
-    staticJson: JSON.stringify(profile.static_fields, null, 2)};
-}
+import { WebsiteLoginWizard } from "./WebsiteLoginWizard";
+import { makeDraft, type Binding, type Draft, type Entry, type Profile, type Snapshot, type Storage } from "./websiteLoginModel";
 
 export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChange}: {
   directoryPath: string; disabled: boolean; onDirtyChange?: (dirty: boolean) => void;
@@ -43,11 +12,13 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [guided, setGuided] = useState(false);
+  const [wizardKey, setWizardKey] = useState(0);
   const generation = useRef(0);
   const endpoint = `/api/managed-website-sessions?directory_path=${encodeURIComponent(directoryPath)}`;
   useEffect(() => {
     const current = ++generation.current;
-    setSnapshot(null); setDraft(null); setDirty(false); setError(null); setMessage(null); setBusy(true);
+    setSnapshot(null); setDraft(null); setGuided(false); setDirty(false); setError(null); setMessage(null); setBusy(true);
     fetchJson<Snapshot>(endpoint).then(data => {if (generation.current === current) setSnapshot(data);})
       .catch(() => {if (generation.current === current) setError("Could not load website logins. Directory owner access is required.");})
       .finally(() => {if (generation.current === current) setBusy(false);});
@@ -62,9 +33,9 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
 
   function choose(entry?: Entry) {
     if (dirty && !window.confirm("Discard unsaved website login changes?")) return;
-    setDraft(makeDraft(entry)); setDirty(false); setError(null); setMessage(null);
+    setDraft(makeDraft(entry)); setGuided(!entry); setWizardKey(value => value + 1); setDirty(false); setError(null); setMessage(null);
   }
-  function update(patch: Partial<Draft>) {setDraft(current => current ? {...current, ...patch} : current); setDirty(true); setMessage(null);}
+  function update(patch: Partial<Draft>) {setDraft(current => current ? {...current, ...patch} : current); setDirty(true); setError(null); setMessage(null);}
   function profile(patch: Partial<Profile>) {if (draft) update({profile: {...draft.profile, ...patch}});}
   async function mutate(id: string, method: string, suffix: string, body: Record<string, unknown>) {
     if (!snapshot) return;
@@ -145,7 +116,14 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
         {entry.last_test?.expires_at ? <span>Tested session valid until {new Date(entry.last_test.expires_at * 1000).toLocaleString()}</span> : null}
       </div>)}
     </div>
-    {draft ? <form onSubmit={event => {event.preventDefault(); save();}} autoComplete="off">
+    {draft && guided ? <WebsiteLoginWizard key={directoryPath + ":" + wizardKey} draft={draft} directoryPath={directoryPath}
+      profiles={snapshot?.profiles ?? []} locked={locked} saved={draft.existing && !dirty}
+      update={update} onSave={save} onTest={() => void mutate(draft.id, "POST", "/test", {})}
+      onAdvanced={() => setGuided(false)} onClose={() => {
+        if (dirty && !window.confirm("Discard unsaved website login changes?")) return;
+        setDraft(null); setGuided(false); setDirty(false); setError(null); setMessage(null);
+      }} /> : null}
+    {draft && !guided ? <form onSubmit={event => {event.preventDefault(); save();}} autoComplete="off">
       {selected && !selected.local ? <div className="callout">This profile is inherited. Saving creates an override in {directoryPath}. Removing credentials or deleting it must be done in its owning directory.</div> : null}
       <fieldset disabled={locked} className="website-login-fields">
         <legend>{draft.existing ? `Edit ${draft.id}` : "New website login"}</legend>
@@ -173,6 +151,10 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
         <button type="button" onClick={() => update({credentials: [...draft.credentials, {name: "", reference: "", value: "", public: false}]})}>Add login field</button>
         <h3>Browser authentication state</h3>
         <p className="field-description">Map selected login response values into browser storage. A JSON pointer such as /token selects a response field; an empty pointer selects the whole response.</p>
+        <label className="checkbox-row"><input type="checkbox" checked={draft.profile.cookies_response_pointer != null}
+          onChange={e => profile({cookies_response_pointer: e.target.checked ? "/cookies" : null})} /><span>Read cookies from login response</span></label>
+        {draft.profile.cookies_response_pointer != null ? <label className="field-stack"><span>Cookie list response pointer</span>
+          <input value={draft.profile.cookies_response_pointer} onChange={e => profile({cookies_response_pointer: e.target.value})} /></label> : null}
         {draft.storage.map((binding, index) => <div key={index} className="website-login-grid website-login-row">
           <label className="field-stack"><span>Storage key {index + 1}</span><input required value={binding.name} onChange={e => update({storage: draft.storage.map((b, i) => i === index ? {...b, name: e.target.value} : b)})} /></label>
           <label className="field-stack"><span>Storage location {index + 1}</span><select value={binding.location} onChange={e => update({storage: draft.storage.map((b, i) => i === index ? {...b, location: e.target.value as Storage["location"]} : b)})}><option value="local">Local storage</option><option value="session">Session storage</option></select></label>

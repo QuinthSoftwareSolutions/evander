@@ -73,6 +73,7 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
   const address = server.httpServer.address();
   await page.goto(`http://127.0.0.1:${address.port}/website-login-fixture`);
   await page.getByRole("button", {name:"New website login",exact:true}).click();
+  await page.getByRole("button", {name:"Use advanced editor",exact:true}).click();
   await page.getByLabel("Profile ID",{exact:true}).fill("training");
   await page.getByLabel("Website origin",{exact:true}).fill("https://training.example.test");
   await page.getByLabel("Login endpoint",{exact:true}).fill("https://training.example.test/auth");
