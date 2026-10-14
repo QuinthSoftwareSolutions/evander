@@ -23,8 +23,8 @@ function suggestedId(origin: string, profiles: Entry[]): string {
   return id;
 }
 
-export function WebsiteLoginWizard({draft, directoryPath, profiles, locked, saved, update, onSave, onTest, onAdvanced, onClose}: {
-  draft: Draft; directoryPath: string; profiles: Entry[]; locked: boolean; saved: boolean;
+export function WebsiteLoginWizard({active, draft, directoryPath, profiles, locked, saved, update, onSave, onTest, onAdvanced, onClose}: {
+  active: boolean; draft: Draft; directoryPath: string; profiles: Entry[]; locked: boolean; saved: boolean;
   update: (patch: Partial<Draft>) => void; onSave: () => void; onTest: () => void;
   onAdvanced: () => void; onClose: () => void;
 }) {
@@ -43,7 +43,9 @@ export function WebsiteLoginWizard({draft, directoryPath, profiles, locked, save
   const selectedSite = sites[String(draft.profile.adapter_config?.site_id ?? "")];
   const matchingSites = Object.entries(sites).filter(([, site]) => site.origin === draft.profile.browser_origin && site.capabilities.includes("browser"));
 
-  useEffect(() => {heading.current?.focus(); setError(null);}, [step]);
+  useEffect(() => {
+    if (active) {heading.current?.focus(); setError(null);}
+  }, [active, step]);
   useEffect(() => {
     if (kind !== "wordpress") return;
     let current = true;
@@ -108,6 +110,9 @@ export function WebsiteLoginWizard({draft, directoryPath, profiles, locked, save
       } else setStep(step + 1);
     } catch (reason) {setError(reason instanceof Error ? reason.message : "Check these settings before continuing.");}
   }
+
+  // Keep the step and connection selection while the shared draft is edited in the advanced editor.
+  if (!active) return null;
 
   return <form className="website-login-wizard" autoComplete="off" onSubmit={event => {event.preventDefault(); if (!saved) forward();}}>
     <fieldset disabled={locked}>

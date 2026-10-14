@@ -128,6 +128,67 @@ test("missing WordPress setup prevents saving, respects locking, and directory c
   assert.deepEqual(errors, []);
 });
 
+test("an incomplete WordPress login returns to the wizard with advanced settings intact", {timeout: browserTestTimeout}, async t => {
+  const {page, state, errors} = await fixture(t, {sites: {
+    main: {origin: "https://wordpress.example.test", enabled: true, capabilities: ["browser"], recovery_verified: "fixture-stamp"},
+  }});
+  await page.getByRole("radio", {name: /^WordPress/}).check();
+  await page.getByLabel("Website address", {exact: true}).fill("https://wordpress.example.test");
+  await page.getByRole("button", {name: "Continue", exact: true}).click();
+  await page.getByRole("button", {name: "Use advanced editor", exact: true}).click();
+  await page.getByLabel("Profile ID", {exact: true}).fill("company-login");
+  await page.getByLabel("Maximum age (seconds)", {exact: true}).fill("600");
+  await page.getByLabel("Login timeout (seconds)", {exact: true}).fill("35");
+  await page.getByRole("checkbox", {name: "Enabled", exact: true}).uncheck();
+  await page.getByRole("button", {name: "Toggle lock", exact: true}).click();
+  assert.equal(await page.getByRole("button", {name: "Return to WordPress wizard", exact: true}).isDisabled(), true);
+  await page.getByRole("button", {name: "Toggle lock", exact: true}).click();
+  await page.getByRole("button", {name: "Return to WordPress wizard", exact: true}).click();
+  await page.getByRole("heading", {name: "WordPress connection", exact: true}).waitFor();
+  assert.equal(state.writes.length, 0);
+  await page.getByLabel("WordPress site", {exact: true}).selectOption("main");
+  await page.getByRole("button", {name: "Continue", exact: true}).click();
+  await page.getByRole("button", {name: "Save website login", exact: true}).click();
+  await page.getByRole("heading", {name: "Website login saved", exact: true}).waitFor();
+  const saved = state.writes[0];
+  assert.equal(saved.path, "/api/managed-website-sessions/company-login");
+  assert.equal(saved.body.profile.enabled, false);
+  assert.equal(saved.body.profile.max_age_seconds, 600);
+  assert.equal(saved.body.profile.timeout_seconds, 35);
+  assert.equal(saved.body.profile.login_url, "https://wordpress.example.test/wp-json/evander/v1/browser/ticket");
+  assert.deepEqual(saved.body.profile.adapter_config, {site_id: "main"});
+  assert.deepEqual(saved.body.credentials, {});
+  assert.deepEqual(errors, []);
+});
+
+test("WordPress review resumes with its selected connection after repeated editor switches", {timeout: browserTestTimeout}, async t => {
+  const {page, state, errors} = await fixture(t, {sites: {
+    main: {origin: "https://wordpress.example.test", rest_path: "/blog/wp-json/", enabled: true, capabilities: ["browser"], recovery_verified: "fixture-stamp"},
+  }});
+  await page.getByRole("radio", {name: /^WordPress/}).check();
+  await page.getByLabel("Website address", {exact: true}).fill("https://wordpress.example.test");
+  await page.getByRole("button", {name: "Continue", exact: true}).click();
+  await page.getByLabel("WordPress site", {exact: true}).selectOption("main");
+  await page.getByRole("button", {name: "Continue", exact: true}).click();
+  await page.getByRole("button", {name: "Use advanced editor", exact: true}).click();
+  await page.getByLabel("Maximum age (seconds)", {exact: true}).fill("720");
+  await page.getByRole("button", {name: "Return to WordPress wizard", exact: true}).click();
+  await page.getByRole("heading", {name: "Review & test", exact: true}).waitFor();
+  await page.getByText("WordPress · main", {exact: true}).waitFor();
+  await page.getByRole("button", {name: "Use advanced editor", exact: true}).click();
+  assert.equal(await page.getByLabel("Maximum age (seconds)", {exact: true}).inputValue(), "720");
+  await page.getByLabel("Renew before expiry (seconds)", {exact: true}).fill("45");
+  await page.getByRole("button", {name: "Return to WordPress wizard", exact: true}).click();
+  assert.equal(state.writes.length, 0);
+  await page.getByRole("button", {name: "Save website login", exact: true}).click();
+  await page.getByRole("heading", {name: "Website login saved", exact: true}).waitFor();
+  assert.deepEqual(state.writes[0].body.profile.adapter_config, {site_id: "main"});
+  assert.equal(state.writes[0].body.profile.login_url, "https://wordpress.example.test/blog/wp-json/evander/v1/browser/ticket");
+  assert.equal(state.writes[0].body.profile.max_age_seconds, 720);
+  assert.equal(state.writes[0].body.profile.renew_before_seconds, 45);
+  assert.deepEqual(errors, []);
+});
+
 test("a second login starts a fresh wizard and cannot overwrite the first profile", {timeout: browserTestTimeout}, async t => {
   const {page, state, errors} = await fixture(t);
   await customLogin(page);

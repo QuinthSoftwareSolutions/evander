@@ -9,6 +9,8 @@
   checks from authenticated browser access.
 - Keep the advanced editor available, preserve drafts after failed saves, and
   support token, JSON-object and cookie response mappings in guided setup.
+- Allow returning from the advanced editor to the WordPress wizard without
+  losing the current step, selected connection, or edited settings.
 
 ## 2026-10-12 - Isolate private Git refs from upstream branches (0.86.8)
 

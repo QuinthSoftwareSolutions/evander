@@ -45,6 +45,8 @@ changes, and login tests require unlocked privileged operations.
 **Use advanced editor** preserves the current draft and exposes environment-backed
 credentials, additional login fields, multiple storage mappings, cookies, response
 expiry, request limits and fixed JSON fields. Existing profiles open in that editor.
+For a WordPress login started in guided setup, **Return to WordPress wizard** resumes
+the same step and connection selection, keeping changes made in the advanced editor.
 Only public identifiers such as a username should be marked as public. The wizard's
 review never displays credential values, and failed saves preserve entered values.
 Saving a login does not grant an assistant website access or permission to publish.

@@ -13,12 +13,13 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [guided, setGuided] = useState(false);
+  const [hasWizard, setHasWizard] = useState(false);
   const [wizardKey, setWizardKey] = useState(0);
   const generation = useRef(0);
   const endpoint = `/api/managed-website-sessions?directory_path=${encodeURIComponent(directoryPath)}`;
   useEffect(() => {
     const current = ++generation.current;
-    setSnapshot(null); setDraft(null); setGuided(false); setDirty(false); setError(null); setMessage(null); setBusy(true);
+    setSnapshot(null); setDraft(null); setGuided(false); setHasWizard(false); setDirty(false); setError(null); setMessage(null); setBusy(true);
     fetchJson<Snapshot>(endpoint).then(data => {if (generation.current === current) setSnapshot(data);})
       .catch(() => {if (generation.current === current) setError("Could not load website logins. Directory owner access is required.");})
       .finally(() => {if (generation.current === current) setBusy(false);});
@@ -33,7 +34,7 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
 
   function choose(entry?: Entry) {
     if (dirty && !window.confirm("Discard unsaved website login changes?")) return;
-    setDraft(makeDraft(entry)); setGuided(!entry); setWizardKey(value => value + 1); setDirty(false); setError(null); setMessage(null);
+    setDraft(makeDraft(entry)); setGuided(!entry); setHasWizard(!entry); setWizardKey(value => value + 1); setDirty(false); setError(null); setMessage(null);
   }
   function update(patch: Partial<Draft>) {setDraft(current => current ? {...current, ...patch} : current); setDirty(true); setError(null); setMessage(null);}
   function profile(patch: Partial<Profile>) {if (draft) update({profile: {...draft.profile, ...patch}});}
@@ -116,17 +117,20 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
         {entry.last_test?.expires_at ? <span>Tested session valid until {new Date(entry.last_test.expires_at * 1000).toLocaleString()}</span> : null}
       </div>)}
     </div>
-    {draft && guided ? <WebsiteLoginWizard key={directoryPath + ":" + wizardKey} draft={draft} directoryPath={directoryPath}
+    {draft && hasWizard ? <WebsiteLoginWizard key={directoryPath + ":" + wizardKey} active={guided} draft={draft} directoryPath={directoryPath}
       profiles={snapshot?.profiles ?? []} locked={locked} saved={draft.existing && !dirty}
       update={update} onSave={save} onTest={() => void mutate(draft.id, "POST", "/test", {})}
       onAdvanced={() => setGuided(false)} onClose={() => {
         if (dirty && !window.confirm("Discard unsaved website login changes?")) return;
-        setDraft(null); setGuided(false); setDirty(false); setError(null); setMessage(null);
+        setDraft(null); setGuided(false); setHasWizard(false); setDirty(false); setError(null); setMessage(null);
       }} /> : null}
     {draft && !guided ? <form onSubmit={event => {event.preventDefault(); save();}} autoComplete="off">
       {selected && !selected.local ? <div className="callout">This profile is inherited. Saving creates an override in {directoryPath}. Removing credentials or deleting it must be done in its owning directory.</div> : null}
       <fieldset disabled={locked} className="website-login-fields">
         <legend>{draft.existing ? `Edit ${draft.id}` : "New website login"}</legend>
+        {hasWizard && draft.profile.adapter === "wordpress" ? <div className="inline-actions">
+          <button type="button" onClick={() => setGuided(true)}>Return to WordPress wizard</button>
+        </div> : null}
         <div className="website-login-grid">
           <label className="field-stack"><span>Profile ID</span><input required pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" value={draft.id} disabled={draft.existing} onChange={e => update({id: e.target.value})} /></label>
           <label className="field-stack"><span>Website origin</span><input required type="url" placeholder="https://training.example.org" value={draft.profile.browser_origin} onChange={e => profile({browser_origin: e.target.value})} /></label>
