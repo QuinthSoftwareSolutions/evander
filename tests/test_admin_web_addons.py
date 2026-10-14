@@ -760,6 +760,42 @@ def test_website_session_adapter_enablement_requires_relay_restart(tmp_path, mon
         assert "evander-http-target-relay" in saved["required_restart_services"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("requires_gateway_restart", [False, True])
+def test_addon_enablement_honors_declared_gateway_restart_without_mcp_factory(
+    tmp_path, monkeypatch, enabled, requires_gateway_restart,
+):
+    module_root = tmp_path / "restart_modules"
+    module_root.mkdir()
+    (module_root / "synthetic_restart_dependency.py").write_text(
+        "from evander.addons import AddonRegistration\n"
+        "def register_addon():\n"
+        "    return AddonRegistration(addon_id='restart-dependency', "
+        "display_name='Restart dependency', "
+        f"requires_gateway_restart={requires_gateway_restart!r})\n"
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    sys.modules.pop("synthetic_restart_dependency", None)
+    runtime_dir = write_runtime_config(tmp_path, addon_loader={
+        "modules": ["synthetic_restart_dependency"],
+        "enabled_addon_ids": ["restart-dependency"] if enabled else [],
+    })
+    with TestClient(create_app(build_admin_runtime(runtime_dir))) as client:
+        state = client.get("/api/admin/addons").json()
+        client.post("/api/admin/privileged/unlock")
+        response = client.put("/api/admin/addons/enabled", json={
+            "expected_revision": state["revision"],
+            "enabled_addon_ids": [] if enabled else ["restart-dependency"],
+        })
+        assert response.status_code == 200, response.text
+        saved = response.json()
+        addon = next(item for item in saved["addons"] if item["addon_id"] == "restart-dependency")
+        assert addon["has_mcp_tools"] is False
+        assert addon["pending_disable" if enabled else "pending_enable"] is True
+        assert ("evander-gateway" in addon["required_restart_services"]) is requires_gateway_restart
+        assert ("evander-gateway" in saved["required_restart_services"]) is requires_gateway_restart
+
+
 def test_admin_web_addon_management_discovers_root_addon_packages_without_config(
     tmp_path: Path,
 ) -> None:

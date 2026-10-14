@@ -5,7 +5,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from starlette.routing import Route
@@ -62,7 +62,9 @@ def test_load_addons_defaults_to_empty_catalog(tmp_path: Path, monkeypatch) -> N
 
 
 def test_registration_preserves_legacy_positional_identity_resolver() -> None:
-    resolver = lambda context: "synthetic-identity"
+    def resolver(context):
+        return "synthetic-identity"
+
     registration = AddonRegistration(
         "legacy-addon", "Legacy Add-on", None, (), (), None, (), None, {}, resolver,
         {"source": "legacy"},
@@ -70,6 +72,30 @@ def test_registration_preserves_legacy_positional_identity_resolver() -> None:
     assert registration.outbound_identity_resolver is resolver
     assert registration.metadata == {"source": "legacy"}
     assert registration.website_session_adapters == {}
+    assert registration.requires_gateway_restart is False
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_load_addons_preserves_explicit_gateway_restart_dependency(monkeypatch, as_mapping):
+    module = ModuleType("synthetic_restart_addon")
+    fields = {
+        "addon_id": "synthetic-restart",
+        "display_name": "Synthetic restart dependency",
+        "requires_gateway_restart": True,
+    }
+    module.register_addon = lambda: fields if as_mapping else SimpleNamespace(**fields)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    catalog = load_addons(AddonLoaderConfig(modules=[module.__name__], package_dirs=[]))
+
+    assert catalog.registrations[0].requires_gateway_restart is True
+    assert catalog.registrations[0].mcp_tools is None
+
+
+@pytest.mark.parametrize("value", [None, 1, "true"])
+def test_registration_rejects_non_boolean_gateway_restart_dependency(value):
+    with pytest.raises(ValueError, match="requires_gateway_restart must be a boolean"):
+        AddonRegistration("synthetic-restart", "Synthetic", requires_gateway_restart=value)
 
 
 def test_bundled_team_addon_packaging_contract_is_declared() -> None:

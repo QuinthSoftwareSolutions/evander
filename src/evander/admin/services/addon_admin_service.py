@@ -123,7 +123,11 @@ class AddonAdminService:
                     "load_error": candidate.error,
                     "required_restart_services": list(
                         self._required_restart_services(
-                            has_mcp_tools=has_mcp_tools or has_connector_drivers,
+                            has_mcp_tools=(
+                                has_mcp_tools
+                                or has_connector_drivers
+                                or bool(registration and registration.requires_gateway_restart)
+                            ),
                             has_website_session_adapters=has_website_session_adapters,
                         )
                     ),
@@ -169,7 +173,8 @@ class AddonAdminService:
 
         restart_required = any(item["restart_required"] for item in addons)
         has_gateway_change = any(
-            item["restart_required"] and (item["has_mcp_tools"] or item["has_connector_drivers"])
+            item["restart_required"]
+            and "evander-gateway" in item["required_restart_services"]
             for item in addons
         )
         has_relay_change = any(

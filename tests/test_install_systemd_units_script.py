@@ -25,6 +25,67 @@ def test_install_systemd_units_runs_preflight_before_install() -> None:
     assert "Aborting install because preflight checks failed." in text
 
 
+@pytest.mark.parametrize("configuration", ["absent", "enabled", "disabled"])
+def test_optional_service_discovery_reads_host_config_without_initializing_runtime(
+    tmp_path, configuration,
+):
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    from evander.host_config import HostConfig
+
+    project = tmp_path / "project"
+    python_bin = project / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True)
+    python_bin.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    python_bin.chmod(0o755)
+    module_root = project / "modules"
+    package_root = module_root / "evander_teams_graph_addon"
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text(
+        "raise AssertionError('Discovery must not load the provider')\n"
+    )
+    runtime = project / "runtime"
+    if configuration != "absent":
+        runtime.mkdir()
+        config = HostConfig(
+            runtime_dir=runtime,
+            addon_loader={
+                "enabled_addon_ids": ["teams-graph"] if configuration == "enabled" else [],
+            },
+        )
+        (runtime / "host-config.json").write_text(config.model_dump_json())
+
+    def snapshot():
+        return {
+            str(path.relative_to(project)): (
+                ("symlink", str(path.readlink())) if path.is_symlink()
+                else ("directory",) if path.is_dir()
+                else ("file", path.read_bytes())
+            )
+            for path in project.rglob("*")
+        }
+
+    before = snapshot()
+    function = _script_text().split("teams_graph_assets_dir() {", 1)[1].split("\n}\n", 1)[0]
+    invocation = "set -euo pipefail\nteams_graph_assets_dir() {" + function + "\n}\nteams_graph_assets_dir\n"
+    result = subprocess.run(
+        ["bash", "-c", invocation], check=True, capture_output=True, text=True, timeout=15,
+        env={
+            **os.environ,
+            "ROOT_DIR": str(project),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": os.pathsep.join((str(module_root), str(Path(__file__).resolve().parents[1] / "src"))),
+        },
+    )
+
+    expected = "" if configuration == "disabled" else str(package_root / "assets")
+    assert result.stdout.strip() == expected
+    assert snapshot() == before
+
+
 def test_install_systemd_units_root_without_sudo_user_uses_repo_owner() -> None:
     text = _script_text()
 

@@ -10,6 +10,8 @@
   package; dependent operations report that the integration is unavailable.
 - Install Teams services only when the integration is available and enabled. Keep Ansible's
   existing selected-service behavior and move provider tests into the optional project.
+- Keep service preflight read-only on uninitialized runtimes and include the gateway in
+  restart guidance when enabling or disabling Teams/Graph.
 
 ## 2026-10-14 - Optional integration extension contracts (0.87.0)
 

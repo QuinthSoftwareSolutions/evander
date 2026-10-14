@@ -147,6 +147,7 @@ class AddonRegistration:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
     integration: AddonIntegration | Mapping[str, Any] | None = None
+    requires_gateway_restart: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
@@ -154,6 +155,8 @@ class AddonRegistration:
         if not display_name:
             raise ValueError("display_name must be a non-empty string")
         object.__setattr__(self, "display_name", display_name)
+        if type(self.requires_gateway_restart) is not bool:
+            raise ValueError("requires_gateway_restart must be a boolean")
         if self.admin_navigation is not None and not isinstance(
             self.admin_navigation, AddonAdminNavigation
         ):
@@ -851,6 +854,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             connector_drivers=value.get("connector_drivers") or {},
             website_session_adapters=value.get("website_session_adapters") or {},
             integration=value.get("integration"),
+            requires_gateway_restart=value.get("requires_gateway_restart", False),
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
 
@@ -867,6 +871,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         connector_drivers=getattr(value, "connector_drivers", {}),
         website_session_adapters=getattr(value, "website_session_adapters", {}),
         integration=getattr(value, "integration", None),
+        requires_gateway_restart=getattr(value, "requires_gateway_restart", False),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )
 

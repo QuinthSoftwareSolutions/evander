@@ -91,10 +91,15 @@ import sys
 
 spec = find_spec("evander_teams_graph_addon")
 if spec is not None:
-    from evander.bootstrap import load_runtime_gateway_config
+    from evander.host_config import HostConfig, host_config_path, load_host_config
     from evander.optional_integrations import teams_graph_enabled
 
-    config = load_runtime_gateway_config(runtime_dir=Path(sys.argv[1]))
+    runtime_dir = Path(sys.argv[1])
+    config = (
+        load_host_config(runtime_dir)
+        if host_config_path(runtime_dir).exists()
+        else HostConfig(runtime_dir=runtime_dir)
+    )
     if teams_graph_enabled(config):
         print(Path(spec.origin).parent / "assets")
 PY

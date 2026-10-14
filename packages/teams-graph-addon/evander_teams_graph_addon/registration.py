@@ -94,6 +94,7 @@ def register_addon():
     return AddonRegistration(
         addon_id="teams-graph",
         display_name="Microsoft Teams and Graph",
+        requires_gateway_restart=True,
         metadata={
             "description": "Teams messaging, Graph mail, and meeting/voice integration.",
             "configuration": "Existing directory provider settings and credential references.",

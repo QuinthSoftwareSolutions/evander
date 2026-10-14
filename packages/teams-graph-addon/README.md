@@ -29,7 +29,10 @@ sudo ./scripts/install_systemd_units.sh
 
 The installer resolves the package's own service templates and includes the three Teams
 services only when the package is available and enabled. It does not start, stop, remove, or
-delete existing services. Restart the services you use during your normal maintenance window.
+delete existing services. Preflight reads existing host configuration without initializing
+runtime state. Restart the services listed by Admin during your normal maintenance window;
+enabling or disabling this integration includes the gateway because it registers Teams tools
+at startup.
 The existing `evander-cli teams-ingest`, `teams-auth`, and `teams-meeting` commands remain valid.
 The package supplies `evander-teams-ingest`, `evander-teams-notifications`, and
 `evander-teams-meeting-ingest` console commands.
