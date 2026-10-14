@@ -346,15 +346,16 @@ export function workflowGraphLabels(
       .map((nodeId) => nodesById.get(nodeId))
       .filter((node): node is Node<GraphNodeData> => Boolean(node));
     if (graphNodes.length === 0) return [];
-    const bounds = graphNodes.map((node) => nodeBounds(node));
-    const left = Math.min(...bounds.map((bound) => bound.left));
-    const top = Math.min(...bounds.map((bound) => bound.top));
-    const bottom = Math.max(...bounds.map((bound) => bound.bottom));
+    const anchor = graphNodes.map((node) => nodeBounds(node)).reduce((first, bounds) => (
+      bounds.left < first.left || (bounds.left === first.left && bounds.top < first.top)
+        ? bounds
+        : first
+    ));
     return [
       {
         graph,
-        left: left * viewport.zoom + viewport.x - 24,
-        top: ((top + bottom) / 2) * viewport.zoom + viewport.y,
+        left: anchor.left * viewport.zoom + viewport.x - 24,
+        top: anchor.centerY * viewport.zoom + viewport.y,
       },
     ];
   });

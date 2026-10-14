@@ -42,6 +42,23 @@
 - Keep service preflight read-only on uninitialized runtimes and include the gateway in
   restart guidance when enabling or disabling Teams/Graph.
 
+## 2026-10-14 - Anchor workflow graph labels beside their first node (0.87.1)
+
+- Place each graph label just left of the uppermost node in its leftmost column,
+  keeping labels beside the entry node as other branches grow or move.
+
+## 2026-10-14 - Guide website login setup (0.87.0)
+
+- Add step-by-step website login setup with WordPress and custom JSON API paths,
+  a review before saving, and explicit connection checks after saving.
+- Reuse configured WordPress connections without asking for their credentials or
+  response mappings. Explain missing prerequisites and distinguish configuration
+  checks from authenticated browser access.
+- Keep the advanced editor available, preserve drafts after failed saves, and
+  support token, JSON-object and cookie response mappings in guided setup.
+- Allow returning from the advanced editor to the WordPress wizard without
+  losing the current step, selected connection, or edited settings.
+
 ## 2026-10-14 - Optional integration extension contracts (0.87.0)
 
 - Add opt-in, versioned add-on contracts for settings schemas, host credential

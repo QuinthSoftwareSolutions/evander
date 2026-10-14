@@ -18,17 +18,38 @@ In Admin Web, select the directory and open **Configuration → Access, approval
 audit → Website logins**. Directory owners can inspect profiles; editing, credential
 changes, and login tests require unlocked privileged operations.
 
-1. Choose **New website login**, enter a profile ID, website origin, and login endpoint.
-2. Select **Encrypted host storage**, define the login request fields, and enter their
-   values. Only public identifiers such as a username should be marked as public.
-3. Add browser storage mappings and configure the expiry source and renewal margin.
-   Additional nonsecret request values can be entered under **Fixed login fields**.
-4. Save, then choose **Test saved login**. The UI shows the test result and time;
-   temporary tokens stay on the host during this test.
+1. Choose **New website login** to open guided setup. Select **WordPress** or
+   **Custom login API**, then enter the website's HTTPS address. The wizard suggests
+   an unused profile ID; review or change it before saving.
+2. For **WordPress**, choose a site already configured with browser capability in
+   this directory's WordPress add-on. Setup derives the exact login endpoint and
+   uses the site's existing connector credentials; it does not ask for them again.
+   If no matching site exists, follow **Open WordPress setup**, then refresh the
+   connections. This wizard does not install the companion plugin or configure
+   the WordPress site, recovery workflow, or connector for you.
+3. For a **Custom login API**, enter the HTTPS JSON login endpoint and credentials,
+   then select the response token, JSON object, or cookie list that the application
+   uses for authentication. Your application administrator must supply the endpoint
+   and response/storage details. Ordinary HTML sign-in forms, SSO and MFA are not
+   automatically supported. The default uses encrypted host storage, a one-hour
+   maximum session age and renewal one minute before expiry.
+4. Review and save. **Test saved login** signs into a custom login API on the host;
+   temporary tokens stay there. **Check WordPress configuration** only validates
+   the adapter's saved configuration. Actual WordPress browser access additionally
+   requires an enabled site with verified recovery and an authorized prepared change.
 5. In **Sessions → Policy → HTTP targets**, add the website and select the profile in
    **Managed website login**. The same selector is available during agent creation.
    Include any separate login/API origins as additional HTTP targets. Provision the
    assistant with Playwright and use the managed context helper below.
+
+**Use advanced editor** preserves the current draft and exposes environment-backed
+credentials, additional login fields, multiple storage mappings, cookies, response
+expiry, request limits and fixed JSON fields. Existing profiles open in that editor.
+For a WordPress login started in guided setup, **Return to WordPress wizard** resumes
+the same step and connection selection, keeping changes made in the advanced editor.
+Only public identifiers such as a username should be marked as public. The wizard's
+review never displays credential values, and failed saves preserve entered values.
+Saving a login does not grant an assistant website access or permission to publish.
 
 Saved credential values are never returned to the UI. Leave a configured field blank
 to keep its value, or enter a replacement and save to rotate it. Failed saves retain
