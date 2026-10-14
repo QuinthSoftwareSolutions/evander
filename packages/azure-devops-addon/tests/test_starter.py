@@ -6,7 +6,11 @@ import pytest
 from config_helpers import write_runtime_config
 from evander.addons import AddonLoaderConfig
 from evander.admin.composition import build_admin_runtime
+from evander.config import OrchestrationCoreConfig
+from evander.daemons.effect_orchestrator import _build_execution_graph
 from evander.models import SessionManifest
+from evander.workflow.graph import compute_downstream_depth
+from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 
 def values(**overrides):
@@ -100,6 +104,17 @@ def test_starter_previews_and_installs_editable_workflow_without_expanding_permi
     assert nodes["starter-selected-issue-pr"]["config"]["base_branch"] == "main"
     assert nodes["starter-selected-issue-claim"]["config"]["max_repairs"] == 3
     assert nodes["starter-selected-issue-merge"]["type"] == "effect:ado:merge-approved"
+    worker_config = load_trigger_orchestrator_worker_global_config(
+        service.project_dir, base_config=service.config
+    )
+    graph = _build_execution_graph(worker_config)
+    assert worker_config.max_graph_depth == OrchestrationCoreConfig.model_fields["max_graph_depth"].default
+    for edge in worker_config.edges:
+        assert compute_downstream_depth(edge.target_id, graph.downstream_index) <= worker_config.max_graph_depth
+    assert {
+        graph.node_graph_metadata_by_id[node_id].graph_id
+        for node_id in nodes
+    } == {"starter-selected-issue"}
 
 
 def test_starter_refuses_a_repository_not_cloned_into_the_selected_agent(admin):

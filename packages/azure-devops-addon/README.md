@@ -57,6 +57,7 @@ CI, status checks, repair budgeting, approval, merge, and verification are separ
 nodes. Workflow state uses the existing directory/graph-scoped state store; there
 is no additional delivery daemon. The PR worker is needed by existing event-based
 PR feedback/completion workflows; this starter checks its selected PR itself.
+Its independently triggered stages fit the default worker execution-depth limit.
 
 A queued pipeline or accepted merge request is not success. A changed source
 commit, missing or mismatched build, missing reviewer, unresolved thread, failed

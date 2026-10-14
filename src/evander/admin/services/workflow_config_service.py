@@ -101,6 +101,7 @@ from evander.workflow.catalog import (
     WorkflowInternalEventCatalogEntry,
 )
 from evander.workflow.events import SqliteWorkflowEventJournal
+from evander.workflow.graph import build_downstream_index, compute_downstream_depth
 from evander.workflow.node_state import workflow_node_is_enabled
 from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
@@ -1229,6 +1230,22 @@ class WorkflowConfigAdminService:
             raise ValueError(
                 "Starter workflow validation failed: "
                 + "; ".join(str(item.get("message", "Invalid workflow")) for item in errors)
+            )
+        downstream = build_downstream_index(edge for edge in pack.ir.edges if not edge.allow_cycle)
+        required_depth = max(
+            (compute_downstream_depth(edge.target_id, downstream) for edge in pack.ir.edges),
+            default=0,
+        )
+        max_depth = int(
+            candidate.get(
+                "max_graph_depth",
+                TriggerOrchestratorWorkerGlobalConfig.model_fields["max_graph_depth"].default,
+            )
+        )
+        if required_depth > max_depth:
+            raise ValueError(
+                f"Worker max_graph_depth must be at least {required_depth} for this starter "
+                f"(currently {max_depth}). Shorten the workflow or update the worker setting through Admin."
             )
         current = self._read_composed_workflow_editor_document()
         return {

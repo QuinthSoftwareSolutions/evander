@@ -7,6 +7,7 @@
 - Add an editable single-issue delivery starter with a managed repository picker, exact-commit CI and review checks, bounded repair attempts, existing approval-queue integration and verified merge completion.
 - Preserve graph metadata when previewing/installing stateful starters and support completion evidence from later workflow events.
 - Keep GitHub issue and comment normalization independent of Azure DevOps. Install the optional Azure DevOps package for selected Ansible services and skip absent disabled units during service reconciliation.
+- Keep delivery stages within the default worker execution depth and validate configured limits before activation. Preserve unchanged starter verification and manual tests when other workflows are installed, while retaining revision checks for edits.
 
 ## 2026-10-14 - Guided workflow starters (0.89.0)
 

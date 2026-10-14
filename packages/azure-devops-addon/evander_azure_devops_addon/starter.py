@@ -227,6 +227,7 @@ def build(context, values):
             patch={"done": True},
         ),
         completion_node(prefix),
+        node("activity", "gate:merge", "Stage finished"),
         filter_node(
             "repairable",
             "CI or review needs a code repair",
@@ -275,7 +276,13 @@ def build(context, values):
         ["status", "repairable", "claim", "allowed", "repair"],
     ]
     edges = [edge(a, b) for chain in chains for a, b in zip(chain, chain[1:])]
-    edges += [edge("remember", "check"), edge("implement", "check", "completed")]
+    # Join terminal paths to preserve one graph/state scope without making intake
+    # and publication inherit the depth of the independently scheduled monitor.
+    edges += [
+        edge("implement", "activity", "completed"),
+        edge("remember", "activity"),
+        edge("completed", "activity"),
+    ]
     return starter_pack(
         context,
         values,

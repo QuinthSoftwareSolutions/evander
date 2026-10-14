@@ -117,6 +117,95 @@ def test_activation_retry_preserves_subsequent_operator_customization(admin):
     assert retried["id"] == receipt["id"]
     assert "Customized by the operator" in path.read_text()
     assert admin.workflow_starter_admin.verification(receipt["id"], "root")["state"] == "changed"
+    with pytest.raises(AdminRevisionConflict):
+        admin.workflow_starter_admin.run_test(
+            receipt["id"], "root", request_id="edited-workflow",
+            source=InternalEventSource(user_id="operator"), authorize_directory=lambda _: None,
+        )
+
+
+def test_installing_another_starter_preserves_existing_verification_and_manual_tests(admin):
+    receipt = activate(admin)
+    activate(admin, name="another-task")
+    service = admin.workflow_starter_admin
+    assert service.verification(receipt["id"], "root")["state"] == "waiting"
+    args = dict(
+        request_id="original-task",
+        source=InternalEventSource(user_id="operator"),
+        authorize_directory=lambda _: None,
+    )
+    started = service.run_test(receipt["id"], "root", **args)
+    activate(admin, name="third-task")
+    assert service.run_test(receipt["id"], "root", **args) == started
+    assert service.verification(receipt["id"], "root", event_id=started["event_id"])["state"] == "running"
+
+
+def test_manual_test_still_rejects_an_edit_racing_with_revision_refresh(admin, monkeypatch):
+    receipt = activate(admin)
+    activate(admin, name="another-task")
+    workflows = admin.workflow_config_admin
+    trigger = workflows.trigger_workflow_event_node
+    edits = []
+
+    def edit_then_trigger(*args, **kwargs):
+        edits.append(True)
+        path = admin.project_dir / "config/workflow-packs" / receipt["workflow_pack"]
+        pack = json.loads(path.read_text())
+        pack["ir"]["nodes"][-1]["node"]["config"]["payload"] = {"changed": True}
+        path.write_text(json.dumps(pack))
+        return trigger(*args, **kwargs)
+
+    monkeypatch.setattr(workflows, "trigger_workflow_event_node", edit_then_trigger)
+    with pytest.raises(AdminRevisionConflict):
+        admin.workflow_starter_admin.run_test(
+            receipt["id"], "root", request_id="racing-edit",
+            source=InternalEventSource(user_id="operator"), authorize_directory=lambda _: None,
+        )
+    assert edits == [True]
+    stores = workflows.workflow_run_store_paths()
+    assert SqliteTriggerEventQueue(stores["orchestration_store_path"]).read_all() == {}
+
+
+def test_legacy_receipt_keeps_revision_checks_without_new_pack_fingerprint(admin):
+    receipt = activate(admin)
+    path = admin.runtime_dir / "workflow-starter-instances.json"
+    receipts = json.loads(path.read_text())
+    del receipts[receipt["id"]]["workflow_pack_revision"]
+    path.write_text(json.dumps(receipts))
+    service = admin.workflow_starter_admin
+    assert service.verification(receipt["id"], "root")["state"] == "waiting"
+    service.run_test(
+        receipt["id"], "root", request_id="legacy-receipt",
+        source=InternalEventSource(user_id="operator"), authorize_directory=lambda _: None,
+    )
+    pack_path = admin.project_dir / "config/workflow-packs" / receipt["workflow_pack"]
+    pack = json.loads(pack_path.read_text())
+    task = next(node["node"] for node in pack["ir"]["nodes"]
+                if node["node"]["type"] == "effect:agent:enqueue-prompt")
+    task["config"]["prompt"] = "Edited since activation"
+    pack_path.write_text(json.dumps(pack))
+    with pytest.raises(AdminRevisionConflict):
+        service.run_test(
+            receipt["id"], "root", request_id="legacy-after-edit",
+            source=InternalEventSource(user_id="operator"), authorize_directory=lambda _: None,
+        )
+
+
+def test_preview_rejects_a_starter_above_the_configured_execution_depth(admin):
+    preview = admin.workflow_starter_admin.preview("core/scheduled-task", "root", inputs())
+    path = admin.project_dir / "config/trigger-orchestrator/config.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    config["max_graph_depth"] = 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="max_graph_depth must be at least 3"):
+        admin.workflow_starter_admin.preview("core/scheduled-task", "root", inputs())
+    with pytest.raises(ValueError, match="max_graph_depth must be at least 3"):
+        admin.workflow_starter_admin.activate(
+            "core/scheduled-task", "root", inputs(), preview_revision=preview["preview_revision"]
+        )
+    assert not (admin.project_dir / "config/workflow-packs/starter-daily-check.v1.json").exists()
+    assert not (admin.runtime_dir / "workflow-starter-instances.json").exists()
 
 
 def test_starter_name_cannot_collide_with_another_pack_version(admin):

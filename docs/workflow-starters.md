@@ -84,6 +84,10 @@ workflow, use its ordinary run report to verify the changed version. Starter or 
 upgrades never regenerate existing packs. Use the existing pack controls to disable or
 remove a workflow.
 
+Installing another workflow does not invalidate an unchanged starter's verification or
+manual test. Preview also checks the configured worker execution depth before activation;
+if it is too low, shorten the workflow or update that setting through Admin.
+
 Legacy configurations with inline workflows continue to run. The starter installer
 requires pack-based configuration and reports when inline workflows need to be moved
 into packs through the workflow editor first.

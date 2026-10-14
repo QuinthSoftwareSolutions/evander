@@ -208,6 +208,7 @@ class WorkflowStarterAdminService:
                 "directory_path": preview["directory_path"],
                 "workflow_pack": preview["workflow_pack"],
                 "workflow_revision": document.revision,
+                "workflow_pack_revision": document.selected_workflow_pack.revision,
                 "created_at": datetime.now(UTC).isoformat(),
                 "verification": preview["verification"],
                 "preview_revision": preview_revision,
@@ -231,17 +232,34 @@ class WorkflowStarterAdminService:
         node_id = verification.get("manual_trigger_node_id")
         if not node_id:
             raise ValueError("This starter is tested through its normal trigger.")
+        document = self.workflows.read_workflow_editor_document(
+            workflow_pack=receipt["workflow_pack"]
+        )
+        if not self._matches_installed_pack(receipt, document):
+            raise AdminRevisionConflict(
+                "This workflow was edited. Use its run report to verify the current version.",
+                details={"current_revision": document.revision},
+            )
         return self.workflows.trigger_workflow_event_node(
             node_id,
             WorkflowNodeTriggerRequestPayload(
                 workflow_pack=receipt["workflow_pack"],
-                expected_revision=receipt["workflow_revision"],
+                expected_revision=document.revision,
                 request_id=request_id,
                 payload={},
             ),
             source=source,
             authorize_directory=authorize_directory,
         ).model_dump(mode="json")
+
+    @staticmethod
+    def _matches_installed_pack(receipt, document) -> bool:
+        pack_revision = receipt.get("workflow_pack_revision")
+        if pack_revision is None:
+            # Older receipts cannot prove that only an unrelated pack changed.
+            return document.revision == receipt["workflow_revision"]
+        selected = document.selected_workflow_pack
+        return selected is not None and selected.revision == pack_revision
 
     def verification(self, instance_id: str, directory_path: str, *, event_id: str | None = None):
         receipt = self.instance(instance_id, directory_path)
@@ -250,7 +268,7 @@ class WorkflowStarterAdminService:
         document = self.workflows.read_workflow_editor_document(
             workflow_pack=receipt["workflow_pack"]
         )
-        if document.revision != receipt["workflow_revision"]:
+        if not self._matches_installed_pack(receipt, document):
             return {
                 **result,
                 "state": "changed",
