@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-14 - Anchor workflow graph labels beside their first node (0.87.1)
+
+- Place each graph label just left of the uppermost node in its leftmost column,
+  keeping labels beside the entry node as other branches grow or move.
+
 ## 2026-10-14 - Guide website login setup (0.87.0)
 
 - Add step-by-step website login setup with WordPress and custom JSON API paths,
