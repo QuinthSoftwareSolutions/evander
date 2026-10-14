@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from evander.config import GatewayConfig
 from evander.events.provider_models import PullRequestFeedbackQueryDefinition
+from evander.optional_integrations import OptionalIntegrationUnavailable
 from evander.pr_feedback import FeedbackEnvelope, ProviderPollResult
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.queries.providers.pull_request_feedback import (
@@ -42,6 +44,45 @@ def _execute(
         ),
     )
     return provider.execute()
+
+
+@pytest.mark.parametrize("provider_name", ["ado", "azure-devops", "azure_devops"])
+@pytest.mark.parametrize("directory_path", [None, "root/team-a/project"])
+def test_disabled_ado_feedback_rejects_before_reading_credentials_or_making_requests(
+    tmp_path: Path, monkeypatch, provider_name, directory_path,
+) -> None:
+    secret_reads = []
+    requests = []
+    client_type = httpx.Client
+
+    def read_secret(context, name):
+        secret_reads.append(name)
+        return "fixture-pat"
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"value": []})
+
+    monkeypatch.setattr(QueryRuntimeContext, "resolve_secret", read_secret)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs)
+    )
+    resolver = _Resolver(GatewayConfig(
+        runtime_dir=tmp_path,
+        addon_loader={"enabled_addon_ids": []},
+        ado_organization="example",
+        azure_devops_project="Project",
+        azure_devops_pr_pat_env="FIXTURE_ADO_PAT",
+    ))
+    query = PullRequestFeedbackQueryDefinition(
+        id="disabled-feedback", display_name="Feedback", type="query:pull-request:feedback",
+        provider=provider_name, repo="repository", pr_id="17", directory_path=directory_path,
+    )
+    with pytest.raises(OptionalIntegrationUnavailable, match="enable 'azure-devops'"):
+        _execute(query, resolver=resolver)
+    assert resolver.calls == [directory_path or "root/team-a"]
+    assert secret_reads == []
+    assert requests == []
 
 
 def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
@@ -91,6 +132,7 @@ def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
     resolver = _Resolver(
         GatewayConfig(
             runtime_dir=tmp_path,
+            addon_loader={"enabled_addon_ids": ["azure-devops"]},
             azure_devops_organization_url="https://dev.azure.com/example",
             azure_devops_project="Default Project",
             azure_devops_pr_pat_env="TEAM_ADO_PAT",
@@ -311,6 +353,7 @@ def test_pull_request_feedback_query_resolves_github_token(tmp_path: Path, monke
     resolver = _Resolver(
         GatewayConfig(
             runtime_dir=tmp_path,
+            addon_loader={"enabled_addon_ids": []},
             github_token_env="TEAM_GITHUB_TOKEN",
         )
     )
