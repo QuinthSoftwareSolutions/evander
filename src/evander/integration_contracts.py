@@ -138,6 +138,19 @@ class IntegrationBackgroundWorker:
 
 
 @dataclass(frozen=True)
+class IntegrationStarterVerification:
+    """Evidence required after activation; a completion node must follow real work."""
+
+    trigger_node_ids: tuple[str, ...]
+    completion_node_id: str
+    instructions: str
+    manual_trigger_node_id: str | None = None
+    required_tool: str | None = None
+    required_tool_arguments: Mapping[str, Any] = field(default_factory=dict)
+    follow_workflow_completion: bool = False
+
+
+@dataclass(frozen=True)
 class IntegrationWorkflowStarter:
     id: str
     label: str
@@ -146,10 +159,15 @@ class IntegrationWorkflowStarter:
         repr=False
     )
     description: str = ""
+    verification: Callable[[AddonContext, Mapping[str, Any]], IntegrationStarterVerification] | None = field(
+        default=None, repr=False
+    )
 
     def __post_init__(self) -> None:
         _descriptor(self, "build")
         object.__setattr__(self, "input_schema", _schema(self.input_schema))
+        if self.verification is not None and not callable(self.verification):
+            raise ValueError("starter verification must be callable")
 
 
 @dataclass(frozen=True)

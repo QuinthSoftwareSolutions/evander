@@ -15,6 +15,7 @@ Git, and HTTP surfaces.
 |---|---|
 | Install a host or troubleshoot services | [Operations](docs/operations.md) and [Ansible deployment](ansible/README.md) |
 | Use the operator interface | [Admin Web manual](docs/admin-ui-user-manual.md) |
+| Start a common workflow | [Workflow starters](docs/workflow-starters.md) |
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
@@ -1556,3 +1557,5 @@ Teams messaging, Graph mail, delegated sign-in, and Teams meeting/voice adapters
 [`evander-teams-graph-addon`](packages/teams-graph-addon/README.md). Install it alongside core in
 the same virtualenv before using those providers. Existing configurations and workflows need no
 data migration. The core installation remains usable without it.
+
+Azure DevOps is available as a [separately installed integration](packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.

@@ -25,9 +25,10 @@ def test_install_systemd_units_runs_preflight_before_install() -> None:
     assert "Aborting install because preflight checks failed." in text
 
 
+@pytest.mark.parametrize("addon_id,module_name,enabled_check", [("teams-graph", "evander_teams_graph_addon", "teams_graph_enabled"), ("azure-devops", "evander_azure_devops_addon", "azure_devops_enabled")])
 @pytest.mark.parametrize("configuration", ["absent", "enabled", "disabled"])
 def test_optional_service_discovery_reads_host_config_without_initializing_runtime(
-    tmp_path, configuration,
+    tmp_path, configuration, addon_id, module_name, enabled_check,
 ):
     import os
     import shlex
@@ -42,7 +43,7 @@ def test_optional_service_discovery_reads_host_config_without_initializing_runti
     python_bin.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
     python_bin.chmod(0o755)
     module_root = project / "modules"
-    package_root = module_root / "evander_teams_graph_addon"
+    package_root = module_root / module_name
     package_root.mkdir(parents=True)
     (package_root / "__init__.py").write_text(
         "raise AssertionError('Discovery must not load the provider')\n"
@@ -53,7 +54,7 @@ def test_optional_service_discovery_reads_host_config_without_initializing_runti
         config = HostConfig(
             runtime_dir=runtime,
             addon_loader={
-                "enabled_addon_ids": ["teams-graph"] if configuration == "enabled" else [],
+                "enabled_addon_ids": [addon_id] if configuration == "enabled" else [],
             },
         )
         (runtime / "host-config.json").write_text(config.model_dump_json())
@@ -69,8 +70,8 @@ def test_optional_service_discovery_reads_host_config_without_initializing_runti
         }
 
     before = snapshot()
-    function = _script_text().split("teams_graph_assets_dir() {", 1)[1].split("\n}\n", 1)[0]
-    invocation = "set -euo pipefail\nteams_graph_assets_dir() {" + function + "\n}\nteams_graph_assets_dir\n"
+    function = _script_text().split("optional_integration_assets_dir() {", 1)[1].split("\n}\n", 1)[0]
+    invocation = "set -euo pipefail\noptional_integration_assets_dir() {" + function + f"\n}}\noptional_integration_assets_dir {module_name} {enabled_check}\n"
     result = subprocess.run(
         ["bash", "-c", invocation], check=True, capture_output=True, text=True, timeout=15,
         env={
@@ -256,7 +257,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     discord_ingest = (repo / "systemd" / "evander-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
-    proxy_issue_sync = (repo / "systemd" / "evander-proxy-issue-sync.service.template").read_text(
+    proxy_issue_sync = (repo / "packages/azure-devops-addon/evander_azure_devops_addon/assets/systemd/evander-proxy-issue-sync.service.template").read_text(
         encoding="utf-8"
     )
     trigger_orchestrator = (
@@ -339,10 +340,10 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-ingest" in discord_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_ingest
     assert "Environment=ADO_WORKER_LOG_LEVEL=INFO" in (
-        repo / "systemd" / "evander-ado-worker.service.template"
+        repo / "packages/azure-devops-addon/evander_azure_devops_addon/assets/systemd/evander-ado-worker.service.template"
     ).read_text(encoding="utf-8")
     assert "--log-level ${ADO_WORKER_LOG_LEVEL}" in (
-        repo / "systemd" / "evander-ado-worker.service.template"
+        repo / "packages/azure-devops-addon/evander_azure_devops_addon/assets/systemd/evander-ado-worker.service.template"
     ).read_text(encoding="utf-8")
     assert "Environment=PROXY_ISSUE_SYNC_LOG_LEVEL=INFO" in proxy_issue_sync
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-proxy-issue-sync" in (proxy_issue_sync)

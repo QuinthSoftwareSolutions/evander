@@ -66,6 +66,7 @@ if (typeof window !== "undefined") {
 }
 
 const WorkflowEditorApp = lazy(() => import("./App"));
+const WorkflowStartersPage = lazy(() => import("./features/starters/WorkflowStartersPage"));
 const AddonsPage = lazy(() =>
   import("./features/addons/AddonsPage").then(({ AddonsPage }) => ({ default: AddonsPage })),
 );
@@ -2262,6 +2263,8 @@ export default function AdminRoot() {
             >
               {renderedTab === "dashboard" ? (
                 <OperationsDashboard />
+              ) : renderedTab === "starters" ? (
+                <WorkflowStartersPage />
               ) : renderedTab === "workflow" ? (
                 <div className="admin-workflow-panel">
                   <WorkflowEditorApp />

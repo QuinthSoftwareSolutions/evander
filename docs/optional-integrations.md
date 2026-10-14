@@ -6,10 +6,10 @@ workers and useful starting workflows without making a vendor or business
 domain part of core. Existing tools, connector drivers, workflow providers,
 routes and arbitrary custom workflows continue to use their current contracts.
 
-This is the first stage of the modular-workflows release. It adds contracts,
-host-side accessors and read-only operator APIs. It does not move Teams, Azure
-DevOps or other integrations, change enabled add-ons, install packages, start
-workers, save settings, or install starter workflows.
+The modular-workflows release adds contracts, host-side accessors and read-only
+operator APIs. Teams/Graph is now separately installed, and [Workflow starters](workflow-starters.md)
+provides explicit preview, activation, and first-run verification. Registration itself
+never changes enabled add-ons, installs packages, starts workers, or saves settings.
 
 ## Registration
 
@@ -17,6 +17,11 @@ Import the types from `evander.integration_contracts`, then supply the optional
 `integration` field on `AddonRegistration`. It also accepts an equivalent
 mapping, as do the contribution collections. Old registrations, including
 positional registrations, need no changes.
+
+An add-on can declare `required_restart_services` on its registration to include
+its own `evander-...` workers in enable/disable restart guidance. Use unit names
+without the `.service` suffix. The host combines these with its standard restart
+list; each worker must honor disabled configuration when it restarts.
 
 ```python
 from evander.addons import AddonRegistration
@@ -123,7 +128,11 @@ existing revision-checked workflow save path. Building a pack does neither.
 
 New integration packages follow [the add-on project layout](addons.md#project-ownership)
 and remain separate installations. Core contract tests use synthetic add-ons;
-provider migrations, supervisors and the starter gallery are later release stages.
+provider migrations and supervision remain owned by their integration projects.
+The starter gallery uses these contracts, validates the combined workflow graph,
+and installs only after an explicit, revision-checked activation. Builders can supply
+an optional `IntegrationStarterVerification` callback describing a completion node,
+trigger IDs, instructions, and required successful tool-call evidence.
 
 ## Teams and Graph
 
@@ -131,3 +140,14 @@ provider migrations, supervisors and the starter gallery are later release stage
 provider integration. Its registration exposes local configuration readiness, credential access,
 and host-supervised workers. Existing workflows continue using their current node and tool IDs.
 The core distribution does not depend on or install this project.
+
+## Azure DevOps
+
+[`packages/azure-devops-addon`](../packages/azure-devops-addon/README.md) owns Azure
+DevOps API clients, work-item/PR/build workflow implementations, personal connection
+storage implementation, and the existing PR/proxy workers. Core keeps compatibility
+interfaces, provider-neutral Git enforcement, configuration validation, and workflow
+execution. Install the package explicitly and enable `azure-devops` when using an
+explicit add-on list. Existing configurations and runtime files keep their locations.
+The package contributes configuration readiness, credential checks, restart guidance,
+and an ordinary editable issue-to-merge starter.

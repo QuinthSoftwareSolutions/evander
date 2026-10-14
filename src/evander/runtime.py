@@ -74,6 +74,7 @@ from evander.services import (
 )
 from evander.integration_services.teams import ManagedTeamsService
 from evander.optional_integrations import (
+    azure_devops_enabled,
     UnavailableTeamsGraphService,
     require_teams_graph_module,
     teams_graph_enabled,
@@ -886,7 +887,7 @@ def _build_pr_publish_service(config: GatewayConfig) -> PrPublishService:
             token=github_token,
             timeout_seconds=config.email_provider_timeout_seconds,
         )
-    if azure_pat:
+    if azure_pat and azure_devops_enabled(config):
         providers["azure_devops"] = AzureDevOpsPrPublishProvider(
             organization_url=config.azure_devops_organization_url,
             project=config.azure_devops_project,
@@ -909,7 +910,7 @@ def _build_pr_query_service(config: GatewayConfig) -> PrQueryService:
             timeout_seconds=config.email_provider_timeout_seconds,
         )
     }
-    if azure_pat:
+    if azure_pat and azure_devops_enabled(config):
         providers["azure_devops"] = AzureDevOpsPrQueryProvider(
             organization_url=config.azure_devops_organization_url,
             project=config.azure_devops_project,

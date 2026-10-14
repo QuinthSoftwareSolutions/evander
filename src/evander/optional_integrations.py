@@ -52,3 +52,44 @@ class UnavailableTeamsGraphService(ManagedTeamsService):
             raise OptionalIntegrationUnavailable("Rebuild the runtime after enabling Teams/Graph.")
 
         return unavailable
+
+
+AZURE_DEVOPS_ADDON_ID = "azure-devops"
+AZURE_DEVOPS_MODULE = "evander_azure_devops_addon"
+
+
+def azure_devops_enabled(config: Any = None) -> bool:
+    addons = getattr(config, "addon_loader", None)
+    enabled = getattr(addons, "enabled_addon_ids", None)
+    if enabled is not None and AZURE_DEVOPS_ADDON_ID not in enabled:
+        return False
+    return util.find_spec(AZURE_DEVOPS_MODULE) is not None
+
+
+def require_azure_devops_module(module: str = AZURE_DEVOPS_MODULE, config: Any = None):
+    if not azure_devops_enabled(config):
+        raise OptionalIntegrationUnavailable(
+            "Azure DevOps requires the evander-azure-devops-addon package. Install it in "
+            "Evander's Python environment and enable 'azure-devops' if an explicit "
+            "enabled_addon_ids list is configured."
+        )
+    return import_module(module)
+
+
+def optional_azure_devops_class(module: str, name: str, *, base: type = object):
+    """Keep legacy imports/schema types available without loading provider code."""
+    class DeferredMeta(type(base)):
+        def __instancecheck__(cls, instance):
+            if not azure_devops_enabled():
+                return False
+            implementation = getattr(require_azure_devops_module(module), name)
+            return isinstance(instance, implementation)
+
+    class Deferred(base, metaclass=DeferredMeta):
+        def __new__(cls, *args, **kwargs):
+            implementation = getattr(require_azure_devops_module(module), name)
+            return implementation(*args, **kwargs)
+
+    Deferred.__name__ = name
+    Deferred.__qualname__ = name
+    return Deferred

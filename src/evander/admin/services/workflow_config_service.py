@@ -101,6 +101,7 @@ from evander.workflow.catalog import (
     WorkflowInternalEventCatalogEntry,
 )
 from evander.workflow.events import SqliteWorkflowEventJournal
+from evander.workflow.graph import build_downstream_index, compute_downstream_depth
 from evander.workflow.node_state import workflow_node_is_enabled
 from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
@@ -1194,6 +1195,103 @@ class WorkflowConfigAdminService:
                 config_path=config_path,
                 selected_reference=reference,
             )
+
+    def preview_new_workflow_pack_unlocked(self, pack: WorkflowPack) -> dict[str, Any]:
+        """Validate against configured workflows; caller holds the admin mutation lock."""
+        _, _, raw = self._workflow_editor_read_raw_worker_config()
+        if self._workflow_editor_has_inline_workflow(raw):
+            raise ValueError("Move inline workflows into a workflow pack before adding a starter.")
+        reference = self._workflow_pack_reference_for_metadata(
+            pack_id=pack.pack_id, pack_version=pack.pack_version
+        )
+        if self._workflow_editor_pack_path(reference).exists():
+            raise ValueError("A workflow with this name already exists. Choose another name.")
+        references = self._workflow_editor_configured_pack_references(raw)
+        if any(
+            load_workflow_pack(self.project_dir, ref).pack_id == pack.pack_id for ref in references
+        ):
+            raise ValueError("A workflow with this name already exists. Choose another name.")
+        composition = compose_workflow_ir(
+            project_dir=self.project_dir,
+            workflow_packs=references,
+            inline_ir=pack.ir.model_dump(mode="json"),
+        )
+        candidate = self._workflow_editor_config_for_pack_composition(
+            raw_config=raw, composition=composition
+        )
+        candidate.pop("workflow_packs", None)
+        graphs = [graph.model_dump(mode="json") for graph in (*composition.graphs, *pack.graphs)]
+        candidate["workflow_graphs"] = graphs
+        validation = self._validate_workflow_editor_document(config=candidate, graphs=graphs)
+        errors = [
+            item for item in validation.validation_diagnostics if item.get("severity") == "error"
+        ]
+        if errors:
+            raise ValueError(
+                "Starter workflow validation failed: "
+                + "; ".join(str(item.get("message", "Invalid workflow")) for item in errors)
+            )
+        downstream = build_downstream_index(edge for edge in pack.ir.edges if not edge.allow_cycle)
+        required_depth = max(
+            (compute_downstream_depth(edge.target_id, downstream) for edge in pack.ir.edges),
+            default=0,
+        )
+        max_depth = int(
+            candidate.get(
+                "max_graph_depth",
+                TriggerOrchestratorWorkerGlobalConfig.model_fields["max_graph_depth"].default,
+            )
+        )
+        if required_depth > max_depth:
+            raise ValueError(
+                f"Worker max_graph_depth must be at least {required_depth} for this starter "
+                f"(currently {max_depth}). Shorten the workflow or update the worker setting through Admin."
+            )
+        current = self._read_composed_workflow_editor_document()
+        return {
+            "reference": reference,
+            "revision": current.revision,
+            "diagnostics": validation.validation_diagnostics,
+        }
+
+    def install_new_workflow_pack_unlocked(
+        self,
+        pack: WorkflowPack,
+        *,
+        expected_revision: str,
+        actor: WorkflowPackChangeActor | None = None,
+    ) -> WorkflowEditorDocumentPayload:
+        """Install once with cursor seeding and history; caller holds the admin mutation lock."""
+        current = self._read_composed_workflow_editor_document()
+        if current.revision != expected_revision:
+            raise AdminRevisionConflict("Workflows changed. Preview the starter again.", details={})
+        self.preview_new_workflow_pack_unlocked(pack)
+        _, _, raw = self._workflow_editor_read_raw_worker_config()
+        next_config = compose_workflow_ir(
+            project_dir=self.project_dir,
+            workflow_packs=[],
+            inline_ir=pack.ir.model_dump(mode="json"),
+        )
+        seed_config = self._workflow_editor_config_for_pack_composition(
+            raw_config=raw, composition=next_config
+        )
+        seed_config["workflow_graphs"] = [graph.model_dump(mode="json") for graph in pack.graphs]
+        self._seed_new_trigger_cursors(previous_config=current.config, next_config=seed_config)
+        layout = {
+            "nodes": {
+                node.node.id: {"x": index * 320, "y": 120}
+                for index, node in enumerate(pack.ir.nodes)
+            }
+        }
+        _, reference = self.ensure_workflow_pack_payload_unlocked(
+            raw_config=raw,
+            pack_payload=pack.model_dump(mode="json"),
+            layout_payload=layout,
+            overwrite_existing=False,
+            operation="starter_activate",
+            actor=actor,
+        )
+        return self._read_workflow_editor_document(workflow_pack=reference)
 
     def ensure_workflow_pack_payload_unlocked(
         self,

@@ -1,5 +1,6 @@
 export type BuiltinAdminTab =
   | "dashboard"
+  | "starters"
   | "agents"
   | "subscriptions"
   | "approvals"
@@ -86,6 +87,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records.", group: "operations" },
   { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions.", group: "operations" },
   { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives.", group: "operations" },
+  { key: "starters", label: "Workflow starters", shortLabel: "Starters", description: "Start a common workflow with guided setup.", group: "automation" },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity.", group: "automation" },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library.", group: "automation" },
   { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons.", group: "extensions" },

@@ -1,5 +1,30 @@
 # Changelog
 
+
+## 0.90.0
+
+- Extract Azure DevOps work items, pull requests, builds, personal connections and workers into the separately installed `packages/azure-devops-addon` project. Preserve legacy workflow IDs, configuration and durable state; core startup no longer needs the integration.
+- Add an editable single-issue delivery starter with a managed repository picker, exact-commit CI and review checks, bounded repair attempts, existing approval-queue integration and verified merge completion.
+- Preserve graph metadata when previewing/installing stateful starters and support completion evidence from later workflow events.
+- Keep GitHub issue and comment normalization independent of Azure DevOps. Install the optional Azure DevOps package for selected Ansible services and skip absent disabled units during service reconciliation.
+- Keep delivery stages within the default worker execution depth and validate configured limits before activation. Preserve unchanged starter verification and manual tests when other workflows are installed, while retaining revision checks for edits.
+
+## 2026-10-14 - Guided workflow starters (0.89.0)
+
+- Add an outcome-based starter catalog, short setup forms, dependency checks,
+  workflow preview, explicit activation, and first-run verification in Admin Web.
+  Link the starter experience from the operations dashboard.
+- Include a provider-independent scheduled agent task and a Teams direct-message
+  assistant contributed by the separately installed Teams/Graph add-on 0.2.
+- Generate ordinary editable workflow packs with scoped agents, existing permissions,
+  revision checks, cursor seeding, and change history. Preserve customizations and
+  make activation retries idempotent; upgrades never overwrite generated workflows.
+- Distinguish queued tasks from completion and require correlated successful reply
+  evidence for Teams verification. Keep the existing editor and arbitrary workflows.
+- Follow persisted continuation links when checking completion or downstream failures.
+  Include integration-owned workers in restart guidance and exit Teams workers cleanly
+  when the add-on is disabled.
+
 ## 2026-10-14 - Optional Teams and Graph integration (0.88.0)
 
 - Extract Teams/Graph network clients, authentication, workers, admin and MCP handlers,

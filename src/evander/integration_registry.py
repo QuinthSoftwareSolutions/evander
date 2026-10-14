@@ -11,6 +11,7 @@ from evander.credentials.store import CredentialUnavailable, scope_path
 from evander.integration_contracts import (
     AddonIntegration,
     IntegrationCheckResult,
+    IntegrationStarterVerification,
     IntegrationWorker,
     validate_integration_input,
 )
@@ -199,3 +200,11 @@ class IntegrationRegistry:
         if node_ids != graph_node_ids:
             raise ValueError("Starter graphs must account for every workflow node")
         return pack
+
+    def workflow_starter_verification(
+        self, addon_id: str, starter_id: str, context: AddonContext, values: Mapping[str, Any]
+    ) -> IntegrationStarterVerification | None:
+        integration = self._ready_context(addon_id, context)
+        starter = self._find(integration.workflow_starters, starter_id)
+        validate_integration_input(starter.input_schema, values)
+        return starter.verification(context, deepcopy(dict(values))) if starter.verification else None

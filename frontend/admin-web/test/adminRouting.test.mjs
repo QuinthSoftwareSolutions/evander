@@ -154,7 +154,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
     {
       overview: ["dashboard", "reports"],
       operations: ["agents", "sessions", "issues", "approvals", "artifacts"],
-      automation: ["workflow", "skills"],
+      automation: ["starters", "workflow", "skills"],
       extensions: ["addons", "connectors", "host-directories"],
       infrastructure: ["subscriptions", "git-repositories", "vms", "workers"],
       governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "privacy", "users"],

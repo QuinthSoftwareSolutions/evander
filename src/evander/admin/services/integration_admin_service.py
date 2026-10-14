@@ -32,9 +32,12 @@ class IntegrationAdminService:
         return {"contract_version": 1, "integrations": self.registry.describe()}
 
     def readiness(self, addon_id: str, directory_path: str = "root") -> dict[str, Any]:
+        return self.registry.readiness(addon_id, self.context(addon_id, directory_path))
+
+    def context(self, addon_id: str, directory_path: str = "root") -> AddonContext:
         # Both directory aliases and malformed paths go through the platform resolver.
         directory_path = self._resolve_directory(directory_path)
-        context = AddonContext(
+        return AddonContext(
             addon_id=addon_id,
             runtime_dir=self._runtime_dir,
             addon_runtime_dir=addon_runtime_dir(self._runtime_dir, addon_id),
@@ -43,4 +46,13 @@ class IntegrationAdminService:
             service=self._services,
             directory_path=directory_path,
         )
-        return self.registry.readiness(addon_id, context)
+
+
+class IntegrationRuntimeServices:
+    """Expose composed host services while retaining the existing runtime interface."""
+    def __init__(self, runtime, managed_git_admin):
+        self.runtime = runtime
+        self.managed_git_admin = managed_git_admin
+
+    def __getattr__(self, name):
+        return getattr(self.runtime, name)

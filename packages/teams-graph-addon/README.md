@@ -7,6 +7,10 @@ and workflow runtime.
 
 ## Install or upgrade
 
+Version 0.2 requires Evander 0.89 or later and contributes the **Respond to Teams direct
+messages** starter. Once this add-on is loaded, open **Workflow starters** in Admin Web.
+See the [starter guide](../../docs/workflow-starters.md#respond-to-teams-direct-messages).
+
 From an Evander source checkout, install both projects into the same host virtualenv:
 
 ```bash
@@ -19,6 +23,10 @@ To include the integration in the add-on inventory, append
 list, also append `teams-graph`; preserve the other entries. Configure this through the existing
 operator configuration interfaces. The legacy default with no explicit list continues to permit
 Teams/Graph when the package is installed.
+
+After changing enablement, restart every service listed by Admin Web, including
+Teams ingest, notifications, and meeting ingest. A disabled Teams worker exits
+successfully at startup before opening a listener or performing provider work.
 
 Reinstall the service definitions after installing the package:
 

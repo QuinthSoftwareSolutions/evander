@@ -8,6 +8,7 @@ documentation. Start with the task below, then use the subsystem references for 
 |---|---|
 | Install or operate a host | [Operations](operations.md), [Ansible](../ansible/README.md), [live smoke tests](live-smoke-tests.md) |
 | Use Admin Web | [Admin UI manual](admin-ui-user-manual.md) |
+| Start a common workflow | [Workflow starters](workflow-starters.md) |
 | Configure a deployment | [Configuration reference](configuration-reference.md), [configuration migrations](config-migrations.md) |
 | Choose where agents execute | [Execution backends](execution-backends.md), [container workers](container-worker-backend.md) |
 | Build and run a team | [Team Add-on](addons.md#team-module-guidance), [progress boards](case-progress-boards.md), [case context](case-context.md) |
@@ -134,3 +135,5 @@ When behavior changes, update the relevant authoritative document, canonical man
 `./.venv/bin/python scripts/build_evander_user_manual.py --check` to verify publication freshness,
 and `./.venv/bin/pytest -q tests/test_documentation_integrity.py tests/test_evander_user_manual.py`
 to check local links, anchors, assembled links, diagrams, and screenshot assets.
+
+Azure DevOps is available as a [separately installed integration](../packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.

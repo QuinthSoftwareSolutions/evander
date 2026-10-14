@@ -400,6 +400,11 @@ def main() -> None:
     )
     runtime_dir = Path(args.runtime_dir).expanduser().resolve()
     config = load_runtime_gateway_config(runtime_dir=runtime_dir)
+    from evander.optional_integrations import teams_graph_enabled
+
+    if not teams_graph_enabled(config):
+        logging.getLogger(__name__).info("Teams/Graph is disabled; worker not started.")
+        return
     project_dir = runtime_dir.parent
     worker_config = _load_teams_ingest_worker_global_config(project_dir, base_config=config)
     _validate_loopback_listener(worker_config.change_notification_listener_host)

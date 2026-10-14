@@ -71,8 +71,6 @@ EVANDER_UNITS=(
   evander-http-target-relay.service
   evander-http-target-browser-proxy.service
   evander-codex-egress-proxy.service
-  evander-ado-worker.service
-  evander-proxy-issue-sync.service
   evander-discord-ingest.service
   evander-discord-wake.service
   evander-scheduled-wake.service
@@ -82,17 +80,17 @@ EVANDER_UNITS=(
   evander-privacy-maintenance.service
 )
 # Optional service assets are owned by the separately installed distribution.
-teams_graph_assets_dir() {
+optional_integration_assets_dir() {
   [[ -x "${ROOT_DIR}/.venv/bin/python" ]] || return 0
-  "${ROOT_DIR}/.venv/bin/python" - "${ROOT_DIR}/runtime" <<'PY'
+  "${ROOT_DIR}/.venv/bin/python" - "${ROOT_DIR}/runtime" "$1" "$2" <<'PY'
 from importlib.util import find_spec
 from pathlib import Path
 import sys
 
-spec = find_spec("evander_teams_graph_addon")
+spec = find_spec(sys.argv[2])
 if spec is not None:
     from evander.host_config import HostConfig, host_config_path, load_host_config
-    from evander.optional_integrations import teams_graph_enabled
+    from evander import optional_integrations
 
     runtime_dir = Path(sys.argv[1])
     config = (
@@ -100,12 +98,16 @@ if spec is not None:
         if host_config_path(runtime_dir).exists()
         else HostConfig(runtime_dir=runtime_dir)
     )
-    if teams_graph_enabled(config):
+    if getattr(optional_integrations, sys.argv[3])(config):
         print(Path(spec.origin).parent / "assets")
 PY
 }
 
-TEAMS_GRAPH_ASSETS_DIR="$(teams_graph_assets_dir)"
+TEAMS_GRAPH_ASSETS_DIR="$(optional_integration_assets_dir evander_teams_graph_addon teams_graph_enabled)"
+AZURE_DEVOPS_ASSETS_DIR="$(optional_integration_assets_dir evander_azure_devops_addon azure_devops_enabled)"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  EVANDER_UNITS+=(evander-ado-worker.service evander-proxy-issue-sync.service)
+fi
 if [[ -n "${TEAMS_GRAPH_ASSETS_DIR}" ]]; then
   EVANDER_UNITS+=(
     evander-teams-ingest.service
@@ -391,14 +393,16 @@ run_preflight_checks() {
   fi
 
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
-  check_file \
-    "${ROOT_DIR}/config/ado-worker/config.json" \
-    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
-    "${setup_managed_config_severity}"
-  check_file \
-    "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
-    "Run evander-cli migrate-ado-worker-env-to-root or configure the directory after deployment." \
-    "warning"
+  if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+    check_file \
+      "${ROOT_DIR}/config/ado-worker/config.json" \
+      "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
+      "${setup_managed_config_severity}"
+    check_file \
+      "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
+      "Run evander-cli migrate-ado-worker-env-to-root or configure the directory after deployment." \
+      "warning"
+  fi
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
     "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files." \
@@ -579,13 +583,13 @@ render_unit \
   "${ROOT_DIR}/systemd/evander-codex-egress-proxy.service.template" \
   "${SYSTEMD_DIR}/evander-codex-egress-proxy.service"
 
-render_unit \
-  "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
-  "${SYSTEMD_DIR}/evander-ado-worker.service"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  render_unit "${AZURE_DEVOPS_ASSETS_DIR}/systemd/evander-ado-worker.service.template" "${SYSTEMD_DIR}/evander-ado-worker.service"
+fi
 
-render_unit \
-  "${ROOT_DIR}/systemd/evander-proxy-issue-sync.service.template" \
-  "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  render_unit "${AZURE_DEVOPS_ASSETS_DIR}/systemd/evander-proxy-issue-sync.service.template" "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
+fi
 
 render_unit \
   "${ROOT_DIR}/systemd/evander-discord-ingest.service.template" \

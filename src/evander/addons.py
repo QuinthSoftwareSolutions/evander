@@ -148,6 +148,7 @@ class AddonRegistration:
     website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
     integration: AddonIntegration | Mapping[str, Any] | None = None
     requires_gateway_restart: bool = False
+    required_restart_services: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
@@ -157,6 +158,21 @@ class AddonRegistration:
         object.__setattr__(self, "display_name", display_name)
         if type(self.requires_gateway_restart) is not bool:
             raise ValueError("requires_gateway_restart must be a boolean")
+        if (
+            not isinstance(self.required_restart_services, Sequence)
+            or isinstance(self.required_restart_services, str)
+            or any(
+                not isinstance(service, str)
+                or not re.fullmatch(r"evander-[a-z0-9]+(?:-[a-z0-9]+)*", service)
+                for service in self.required_restart_services
+            )
+        ):
+            raise ValueError(
+                "required_restart_services must contain Evander service names without .service"
+            )
+        object.__setattr__(
+            self, "required_restart_services", tuple(dict.fromkeys(self.required_restart_services))
+        )
         if self.admin_navigation is not None and not isinstance(
             self.admin_navigation, AddonAdminNavigation
         ):
@@ -855,6 +871,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             website_session_adapters=value.get("website_session_adapters") or {},
             integration=value.get("integration"),
             requires_gateway_restart=value.get("requires_gateway_restart", False),
+            required_restart_services=value.get("required_restart_services", ()),
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
 
@@ -872,6 +889,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         website_session_adapters=getattr(value, "website_session_adapters", {}),
         integration=getattr(value, "integration", None),
         requires_gateway_restart=getattr(value, "requires_gateway_restart", False),
+        required_restart_services=getattr(value, "required_restart_services", ()),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )
 
