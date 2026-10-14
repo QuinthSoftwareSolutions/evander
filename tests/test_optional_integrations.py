@@ -77,6 +77,9 @@ def test_ado_optional_boundary_keeps_core_usable_and_rejects_only_ado_operations
     from evander.provider_config import ProviderConfigResolver
     from evander.gateway.ado_tools import register_ado_tools
     from evander.runtime import _build_pr_publish_service
+    from evander.events.provider_models import PullRequestFeedbackQueryDefinition
+    from evander.queries.providers.base import QueryRuntimeContext
+    from evander.queries.providers.pull_request_feedback import PullRequestFeedbackQueryProvider
 
     original = util.find_spec
     if mode == "missing":
@@ -89,6 +92,16 @@ def test_ado_optional_boundary_keeps_core_usable_and_rejects_only_ado_operations
     # A valid old environment token must not bypass the add-on's missing/disabled state.
     with pytest.raises(OptionalIntegrationUnavailable, match="evander-azure-devops-addon"):
         IssueService(ProviderConfigResolver(config)).read_remote_issue(provider="azure_devops", remote_issue_id="42", directory_path="root")
+    feedback = PullRequestFeedbackQueryProvider()
+    feedback.initialize(
+        PullRequestFeedbackQueryDefinition(
+            id="feedback", display_name="Feedback", type="query:pull-request:feedback",
+            provider="ado", repo="repository", pr_id="17",
+        ),
+        QueryRuntimeContext(provider_config_resolver=ProviderConfigResolver(config)),
+    )
+    with pytest.raises(OptionalIntegrationUnavailable, match="evander-azure-devops-addon"):
+        feedback.execute()
     register_ado_tools(object(), SimpleNamespace(config=config), None)
 
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-14 - Honor disabled Azure DevOps feedback integration (0.90.1)
+
+- Check the resolved directory's Azure DevOps enablement before the legacy pull-request
+  feedback query reads credentials or makes requests. Preserve GitHub feedback behavior.
 
 ## 0.90.0
 
