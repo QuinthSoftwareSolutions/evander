@@ -4251,3 +4251,12 @@ For Teams messaging, Graph mail, or Teams meetings, install core and
 Follow the [Teams/Graph upgrade instructions](../packages/teams-graph-addon/README.md). Existing
 worker names, directory settings, secrets, and runtime stores are preserved. The systemd installer
 skips Teams service installation when the integration is missing or explicitly disabled.
+
+### Optional Azure DevOps integration
+
+Azure DevOps operations and the `evander-ado-worker` / `evander-proxy-issue-sync`
+commands now come from [the Azure DevOps package](../packages/azure-devops-addon/README.md).
+Install it in the control-plane Python environment before enabling these services.
+The systemd installer includes its deployment assets only when installed and enabled.
+After disabling it, follow the add-on restart list; both workers exit without polling.
+Keep existing runtime configuration and credentials in place for later re-enablement.

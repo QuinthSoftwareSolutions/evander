@@ -115,6 +115,8 @@ class InlineMediaHelpers:
             pat_env_name = (
                 str(resolved_config.azure_devops_pr_pat_env or "").strip() or "AZURE_DEVOPS_PR_PAT"
             )
+        from evander.optional_integrations import require_azure_devops_module
+        require_azure_devops_module(config=resolved_config)
         pat = os.environ.get(pat_env_name, "").strip()
         adapter_cls = _compat_gateway_attr(
             "AzureDevOpsFeedbackAdapter",

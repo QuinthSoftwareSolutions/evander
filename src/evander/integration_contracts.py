@@ -147,6 +147,7 @@ class IntegrationStarterVerification:
     manual_trigger_node_id: str | None = None
     required_tool: str | None = None
     required_tool_arguments: Mapping[str, Any] = field(default_factory=dict)
+    follow_workflow_completion: bool = False
 
 
 @dataclass(frozen=True)

@@ -389,3 +389,29 @@ def test_routes_enforce_write_run_and_global_pack_permissions(admin, monkeypatch
             ).status_code == 403
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("completion_is_current", [True, False])
+def test_long_lived_starter_verification_finds_only_its_current_completion(admin, completion_is_current):
+    receipt = activate(admin)
+    receipts_path = admin.runtime_dir / "workflow-starter-instances.json"
+    receipts = json.loads(receipts_path.read_text())
+    receipts[receipt["id"]]["verification"]["follow_workflow_completion"] = True
+    receipts_path.write_text(json.dumps(receipts))
+    started = admin.workflow_starter_admin.run_test(
+        receipt["id"], "root", request_id="long-lived", source=InternalEventSource(user_id="operator"), authorize_directory=lambda _: None,
+    )
+    stores = admin.workflow_config_admin.workflow_run_store_paths()
+    now = datetime.now(UTC) if completion_is_current else datetime.now(UTC) - timedelta(days=1)
+    SqliteTriggerEventQueue(stores["orchestration_store_path"]).publish(TriggerEvent(
+        event_id="later-completion", trigger_id="starter-daily-check-task", trigger_type="effect:agent:enqueue-prompt",
+        trace_id="independent-followup", occurred_at=now, payload={},
+    ))
+    SqliteExecutionStore(stores["orchestration_store_path"]).record_execution(EffectExecutionRecord(
+        trace_id="independent-followup", execution_id="later-marker", idempotency_key="later-marker",
+        started_at=now, finished_at=now, resolved_config_hash="fixture", event_id="later-completion",
+        source_node_id="starter-daily-check-task", source_trigger_type="effect:agent:enqueue-prompt",
+        effect_id="starter-daily-check-completed", effect_type="effect:event:emit", status="succeeded",
+    ))
+    result = admin.workflow_starter_admin.verification(receipt["id"], "root", event_id=started["event_id"])
+    assert result["state"] == ("verified" if completion_is_current else "running")

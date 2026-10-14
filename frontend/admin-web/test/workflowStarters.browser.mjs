@@ -125,3 +125,29 @@ test("verified status is shown only after the completion check", { timeout: brow
   await page.getByText("Verified", { exact: true }).waitFor();
   assert.match(await page.getByRole("link", { name: /Open workflow & run/ }).getAttribute("href"), /event_id=run-1/);
 });
+
+test("delivery starter selects a scoped repository and submits its identity", { timeout: browserTestTimeout }, async (t) => {
+  const delivery = {
+    id: "azure-devops/issue-to-merge", label: "Deliver an Azure DevOps issue", provider: "Azure DevOps", description: "Issue to approved merge",
+    input_schema: { properties: {
+      name: fields.name, session_id: fields.session_id,
+      managed_repo_id: { type: "string", title: "Managed repository", format: "evander-managed-repository" },
+      work_item_id: { type: "string", title: "Work item number", pattern: "^[1-9][0-9]*$" },
+    }, required: ["name", "session_id", "managed_repo_id", "work_item_id"] },
+  };
+  const { page, mutations, errors } = await open(t, { route: async (route, path) => {
+    if (path !== "/api/admin/workflow-starters") return false;
+    await route.fulfill({ json: { starters: [delivery], agents: [{ value: "coder", label: "Coding agent" }], repositories: [{ value: "mr_scoped", label: "Application repository" }], instances: [] } });
+    return true;
+  } });
+  await page.getByRole("button", { name: /Deliver an Azure DevOps issue/ }).click();
+  await page.getByLabel("Agent", { exact: true }).selectOption("coder");
+  await page.getByLabel("Managed repository").selectOption({ label: "Application repository" });
+  await page.getByLabel("Work item number").fill("42");
+  await page.getByRole("button", { name: "Check & preview" }).click();
+  await page.getByRole("heading", { name: "Ready to activate" }).waitFor();
+  assert.equal(mutations[0].payload.values.managed_repo_id, "mr_scoped");
+  assert.equal(mutations[0].payload.values.session_id, "coder");
+  assert.equal(mutations[0].payload.values.work_item_id, "42");
+  assert.deepEqual(errors, []);
+});

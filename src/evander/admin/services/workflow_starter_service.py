@@ -54,9 +54,12 @@ class WorkflowStarterAdminService:
                     }
                 )
         sessions = self.sessions.list_sessions(directory_path=context.directory_path)
+        managed = getattr(context.service, "managed_git_admin", None)
+        repositories = managed.list_repositories(directory_path=context.directory_path, include_descendants=False) if managed else []
         return {
             "directory_path": context.directory_path,
             "starters": starters,
+            "repositories": [{"value": repo["managed_repo_id"], "label": str(repo.get("display_name") or repo["managed_repo_id"])} for repo in repositories if repo.get("provider") in {"azure_devops", "ado"}],
             "agents": [
                 {
                     "value": session.session_id,
@@ -280,6 +283,20 @@ class WorkflowStarterAdminService:
             receipt["created_at"]
         ):
             raise ValueError("This run predates starter activation.")
+        if spec.get("follow_workflow_completion"):
+            # Long-lived workflows continue through separately triggered events. Search
+            # only this activation's graph and its declared completion node.
+            completed_runs = self.reports.read_workflow_run_search(
+                node_id=spec["completion_node_id"], limit=25
+            ).runs
+            candidates = [item for item in completed_runs if item.occurred_at
+                and item.occurred_at >= datetime.fromisoformat(receipt["created_at"])]
+            for item in sorted(candidates, key=lambda value: value.occurred_at, reverse=True):
+                candidate = self.reports.read_workflow_run_detail(event_id=item.event_id)
+                if any(node.node_id == spec["completion_node_id"] and node.status == "succeeded"
+                       for node in candidate.nodes):
+                    run = candidate
+                    break
         result["event_id"] = run.event_id
         runs, evidence_complete = self._continuation_runs(run)
         completed = any(

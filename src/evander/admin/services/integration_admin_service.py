@@ -46,3 +46,13 @@ class IntegrationAdminService:
             service=self._services,
             directory_path=directory_path,
         )
+
+
+class IntegrationRuntimeServices:
+    """Expose composed host services while retaining the existing runtime interface."""
+    def __init__(self, runtime, managed_git_admin):
+        self.runtime = runtime
+        self.managed_git_admin = managed_git_admin
+
+    def __getattr__(self, name):
+        return getattr(self.runtime, name)

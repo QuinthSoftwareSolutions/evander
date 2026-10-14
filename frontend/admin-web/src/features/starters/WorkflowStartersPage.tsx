@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, CheckCircle2, Clock3, MessageSquare, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock3, GitPullRequest, MessageSquare, Sparkles } from "lucide-react";
 import { adminHash, hashQueryParam } from "../../adminRouting";
 import { fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -9,7 +9,7 @@ type Field = { type?: string; title?: string; description?: string; default?: st
 type Starter = { id: string; label: string; description: string; provider: string; input_schema: { properties: Record<string, Field>; required?: string[] } };
 type Verification = { instructions: string; manual_trigger_node_id: string | null };
 type Instance = { id: string; starter_id: string; workflow_pack: string; created_at: string; verification: Verification | null };
-type Catalog = { starters: Starter[]; agents: { value: string; label: string }[]; instances: Instance[] };
+type Catalog = { repositories?: { value: string; label: string }[]; starters: Starter[]; agents: { value: string; label: string }[]; instances: Instance[] };
 type Preview = { ready: boolean; preview_revision: string; workflow_pack: string; checks: { id: string; label: string; status: string; code?: string }[]; pack?: { graphs: { directory_path: string }[]; ir: { nodes: { node: { id: string; display_name: string; type: string; config: Record<string, unknown> } }[]; edges: unknown[] } }; verification?: Verification };
 type Status = { state: string; message: string; event_id: string | null };
 const endpoint = "/api/admin/workflow-starters";
@@ -120,18 +120,19 @@ function StarterWorkspace({ directory }: { directory: string }) {
     {!catalog && !error && <p role="status">Loading starters…</p>}
     {catalog && !instance && <>
       <div className="starters-catalog">{catalog.starters.map((starter) => <button key={starter.id} type="button" className={`starter-card ${selected?.id === starter.id ? "selected" : ""}`} aria-pressed={selected?.id === starter.id} onClick={() => choose(starter)}>
-        {starter.id === "core/scheduled-task" ? <Clock3 size={24} /> : <MessageSquare size={24} />}<small>{starter.provider}</small><h2>{starter.label}</h2><p>{starter.description}</p><span>Configure <ArrowRight size={15} /></span>
+        {starter.id === "core/scheduled-task" ? <Clock3 size={24} /> : starter.id.startsWith("azure-devops/") ? <GitPullRequest size={24} /> : <MessageSquare size={24} />}<small>{starter.provider}</small><h2>{starter.label}</h2><p>{starter.description}</p><span>Configure <ArrowRight size={15} /></span>
       </button>)}</div>
       <p className="starters-caption">More starters come from enabled <a href={adminHash("addons")}>add-ons</a>. All workflows remain editable in the full editor.</p>
       {!catalog.agents.length && <div className="starters-notice"><strong>First, create an agent.</strong> Starters use an existing agent in {directory}. <a href={adminHash("agents")}>Open Agents to create one <ArrowRight size={14} /></a></div>}
+      {selected?.input_schema.properties.managed_repo_id && !catalog.repositories?.length && <div className="starters-notice"><strong>First, connect a repository.</strong> Register an Azure DevOps repository, then clone it into the selected agent. <a href={adminHash("git-repositories")}>Open Git Repositories <ArrowRight size={14} /></a></div>}
       {selected && <div className="starters-workspace">
         <form onSubmit={review} className="starters-panel">
           <p className="starters-eyebrow">CONFIGURE · {directory}</p><h2>{selected.label}</h2>
           {Object.entries(selected.input_schema.properties).map(([key, field]) => <label key={key} className="starters-field">
             <span>{field.title ?? key}{!selected.input_schema.required?.includes(key) && " (optional)"}</span>
-            {field.format === "evander-session" || field.enum ? <select aria-label={field.title ?? key} value={String(values[key] ?? "")} required={selected.input_schema.required?.includes(key)} onChange={(event) => { sequence.current++; setBusy(false); setValues({ ...values, [key]: event.target.value }); setPreview(null); }}>
-              {!field.enum && <option value="">Choose an agent…</option>}
-              {(field.enum?.map((value) => ({ value, label: value })) ?? catalog.agents).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {["evander-session", "evander-managed-repository"].includes(field.format ?? "") || field.enum ? <select aria-label={field.title ?? key} value={String(values[key] ?? "")} required={selected.input_schema.required?.includes(key)} onChange={(event) => { sequence.current++; setBusy(false); setValues({ ...values, [key]: event.target.value }); setPreview(null); }}>
+              {!field.enum && <option value="">{field.format === "evander-managed-repository" ? "Choose a repository…" : "Choose an agent…"}</option>}
+              {(field.enum?.map((value) => ({ value, label: value })) ?? (field.format === "evander-managed-repository" ? catalog.repositories ?? [] : catalog.agents)).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select> : field.format === "textarea" ? <textarea aria-label={field.title ?? key} rows={5} value={String(values[key] ?? "")} required={selected.input_schema.required?.includes(key)} minLength={field.minLength} maxLength={field.maxLength} onChange={(event) => { sequence.current++; setBusy(false); setValues({ ...values, [key]: event.target.value }); setPreview(null); }} /> :
               <input aria-label={field.title ?? key} value={String(values[key] ?? "")} required={selected.input_schema.required?.includes(key)} pattern={field.pattern} minLength={field.minLength} maxLength={field.maxLength} onChange={(event) => { sequence.current++; setBusy(false); setValues({ ...values, [key]: event.target.value }); setPreview(null); }} />}
             {field.description && <small>{field.description}</small>}

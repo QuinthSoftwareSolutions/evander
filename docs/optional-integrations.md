@@ -140,3 +140,14 @@ trigger IDs, instructions, and required successful tool-call evidence.
 provider integration. Its registration exposes local configuration readiness, credential access,
 and host-supervised workers. Existing workflows continue using their current node and tool IDs.
 The core distribution does not depend on or install this project.
+
+## Azure DevOps
+
+[`packages/azure-devops-addon`](../packages/azure-devops-addon/README.md) owns Azure
+DevOps API clients, work-item/PR/build workflow implementations, personal connection
+storage implementation, and the existing PR/proxy workers. Core keeps compatibility
+interfaces, provider-neutral Git enforcement, configuration validation, and workflow
+execution. Install the package explicitly and enable `azure-devops` when using an
+explicit add-on list. Existing configurations and runtime files keep their locations.
+The package contributes configuration readiness, credential checks, restart guidance,
+and an ordinary editable issue-to-merge starter.

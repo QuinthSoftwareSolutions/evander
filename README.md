@@ -1557,3 +1557,5 @@ Teams messaging, Graph mail, delegated sign-in, and Teams meeting/voice adapters
 [`evander-teams-graph-addon`](packages/teams-graph-addon/README.md). Install it alongside core in
 the same virtualenv before using those providers. Existing configurations and workflows need no
 data migration. The core installation remains usable without it.
+
+Azure DevOps is available as a [separately installed integration](packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.

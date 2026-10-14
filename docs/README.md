@@ -135,3 +135,5 @@ When behavior changes, update the relevant authoritative document, canonical man
 `./.venv/bin/python scripts/build_evander_user_manual.py --check` to verify publication freshness,
 and `./.venv/bin/pytest -q tests/test_documentation_integrity.py tests/test_evander_user_manual.py`
 to check local links, anchors, assembled links, diagrams, and screenshot assets.
+
+Azure DevOps is available as a [separately installed integration](../packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.

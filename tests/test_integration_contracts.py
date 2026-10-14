@@ -513,3 +513,12 @@ def test_admin_inventory_and_readiness_require_owner_and_preserve_directory_scop
             assert response.status_code == 404
 
     asyncio.run(exercise())
+
+
+def test_starter_verification_keeps_existing_positional_arguments():
+    from evander.integration_contracts import IntegrationStarterVerification
+
+    spec = IntegrationStarterVerification(("incoming",), "finished", "Send a message", None, "send_message", {"target": "example"})
+    assert spec.required_tool == "send_message"
+    assert spec.required_tool_arguments == {"target": "example"}
+    assert spec.follow_workflow_completion is False

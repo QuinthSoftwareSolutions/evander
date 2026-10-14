@@ -55,6 +55,20 @@ If audit correlation is missing, the page asks you to inspect the run and reply;
 not infer delivery from unrelated session activity. **Check again** refreshes the evidence.
 Readiness checks inspect configuration; they are not live Graph connectivity tests.
 
+## Deliver an Azure DevOps issue
+
+Install and enable the optional [Azure DevOps add-on](../packages/azure-devops-addon/README.md).
+Choose a registered repository already cloned into the selected agent, one work-item
+number, a base branch, an existing CI pipeline, and reviewer/repair limits. Preview
+and activate the editable graph, then start the issue once from the verification step.
+
+The workflow accepts only that agent's dedicated delivery branch, pins the pushed
+commit, publishes its PR, and checks CI, review, and blocking branch policies. Repairs
+are bounded and deduplicated by commit. Approve the exact merge in **Approvals**.
+Success requires the completed PR and confirmation of the merge commit on its target.
+The run report shows pending checks and actionable blockers throughout.
+
+
 ## Ownership and changes
 
 Each activation installs a uniquely named pack under `config/workflow-packs/` using
@@ -84,6 +98,7 @@ provider-specific target permissions without expanding them.
 
 An optional `verification(context, values)` callback returns `IntegrationStarterVerification`:
 the starter's trigger IDs, a completion node ID, operator instructions, and optionally a
-manual event trigger and required successful tool call/arguments. Place the completion
+manual event trigger and required successful tool call/arguments. Long-lived workflows may set `follow_workflow_completion=True` to find their own
+completion node in subsequent events; evidence must postdate activation. Place the completion
 node after real completion, such as the agent effect's `completed` port. Starters without
 this callback remain usable and direct operators to the normal run report for verification.

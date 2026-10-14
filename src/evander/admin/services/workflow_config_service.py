@@ -1220,6 +1220,7 @@ class WorkflowConfigAdminService:
         )
         candidate.pop("workflow_packs", None)
         graphs = [graph.model_dump(mode="json") for graph in (*composition.graphs, *pack.graphs)]
+        candidate["workflow_graphs"] = graphs
         validation = self._validate_workflow_editor_document(config=candidate, graphs=graphs)
         errors = [
             item for item in validation.validation_diagnostics if item.get("severity") == "error"
@@ -1254,12 +1255,11 @@ class WorkflowConfigAdminService:
             workflow_packs=[],
             inline_ir=pack.ir.model_dump(mode="json"),
         )
-        self._seed_new_trigger_cursors(
-            previous_config=current.config,
-            next_config=self._workflow_editor_config_for_pack_composition(
-                raw_config=raw, composition=next_config
-            ),
+        seed_config = self._workflow_editor_config_for_pack_composition(
+            raw_config=raw, composition=next_config
         )
+        seed_config["workflow_graphs"] = [graph.model_dump(mode="json") for graph in pack.graphs]
+        self._seed_new_trigger_cursors(previous_config=current.config, next_config=seed_config)
         layout = {
             "nodes": {
                 node.node.id: {"x": index * 320, "y": 120}
