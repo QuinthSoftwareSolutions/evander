@@ -47,6 +47,8 @@ import {
 } from "./fieldModels";
 import { SessionListMetadataRules } from "./SessionListMetadataRules";
 import { ToolArgumentPolicyField } from "./ToolArgumentPolicyField";
+import { MapTemplateField } from "./MapTemplateField";
+import { type MapTemplateDraftRow } from "./mapTemplateDraft";
 
 type FieldRenderersInputs = {
   hasCollapsedTargetUi: boolean;
@@ -75,6 +77,9 @@ type FieldRenderersInputs = {
   removeStringMapRow: (fieldKey: string, rowId: string) => void;
   addStringMapRow: (key: string) => void;
   inspectorToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
+  inspectorMapTemplateDrafts: Record<string, MapTemplateDraftRow[]>;
+  setInspectorMapTemplateDrafts: Dispatch<SetStateAction<Record<string, MapTemplateDraftRow[]>>>;
+  setInspectorJsonDisplayModes: Dispatch<SetStateAction<Record<string, JsonDisplayMode>>>;
   inspectorJsonDisplayModes: Record<string, JsonDisplayMode>;
   updateToolArgumentPolicyJsonDisplayMode: (field: WorkflowEditorFieldDefinition, nextMode: JsonDisplayMode) => void;
   mutateToolArgumentPolicyDraftRows: (fieldKey: string, updater: (rows: ToolArgumentPolicyDraftRow[]) => ToolArgumentPolicyDraftRow[]) => void;
@@ -126,6 +131,9 @@ export function createFieldRenderers({
   removeStringMapRow,
   addStringMapRow,
   inspectorToolArgumentPolicyDrafts,
+  inspectorMapTemplateDrafts,
+  setInspectorMapTemplateDrafts,
+  setInspectorJsonDisplayModes,
   inspectorJsonDisplayModes,
   updateToolArgumentPolicyJsonDisplayMode,
   mutateToolArgumentPolicyDraftRows,
@@ -971,6 +979,28 @@ export function createFieldRenderers({
 
     if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(selectedNode?.type)) {
       return renderToolArgumentPolicyField(field, value, mode, isDisabled);
+    }
+
+    if (selectedNodeType === "gate:map" && field.key === "template") {
+      return <MapTemplateField key={selectedNode?.id} rows={inspectorMapTemplateDrafts.template ?? []}
+        draft={inspectorJsonDrafts.template ?? "{}"} mode={inspectorJsonDisplayModes.template ?? "structured"}
+        disabled={isDisabled} bindingOptions={selectedNodeBindingOptions}
+        onRowsChange={rows => {
+          const mapTemplateDrafts = { ...inspectorMapTemplateDrafts, template: rows };
+          setInspectorMapTemplateDrafts(mapTemplateDrafts);
+          stageInspectorDraft({ mapTemplateDrafts });
+        }}
+        onRawChange={text => {
+          const jsonDrafts = { ...inspectorJsonDrafts, template: text };
+          setInspectorJsonDrafts(jsonDrafts); stageInspectorDraft({ jsonDrafts });
+        }}
+        onModeChange={(nextMode, rows, text) => {
+          const mapTemplateDrafts = { ...inspectorMapTemplateDrafts, template: rows };
+          const jsonDrafts = { ...inspectorJsonDrafts, template: text };
+          const jsonDisplayModes = { ...inspectorJsonDisplayModes, template: nextMode };
+          setInspectorMapTemplateDrafts(mapTemplateDrafts); setInspectorJsonDrafts(jsonDrafts); setInspectorJsonDisplayModes(jsonDisplayModes);
+          stageInspectorDraft({ mapTemplateDrafts, jsonDrafts, jsonDisplayModes });
+        }} />;
     }
 
     if (field.kind === "json") {

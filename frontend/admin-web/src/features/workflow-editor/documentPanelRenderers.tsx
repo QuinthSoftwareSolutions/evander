@@ -317,109 +317,7 @@ export function createDocumentPanelRenderers({
     );
   }
 
-    function renderDesktopGraphsPanel() {
-    return (<details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
-              <summary className="collapsible-sidebar-summary">
-                <span className="section-label">Graphs</span>
-                <span className="collapsible-sidebar-meta">
-                  {visibleWorkflowGraphs.length} {visibleWorkflowGraphs.length === 1 ? "graph" : "graphs"}
-                </span>
-              </summary>
-              <p className="runtime-summary">{graphViewContext}</p>
-              <div className="workflow-graph-list">
-                {visibleWorkflowGraphs.length === 0 ? (
-                  <p className="runtime-summary">No graphs associated with this directory.</p>
-                ) : (
-                  visibleWorkflowGraphs.map((graph) => (
-                    <button
-                      type="button"
-                      key={graph.id}
-                      className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
-                      onClick={() => selectWorkflowGraph(graph)}
-                      disabled={workflowEditLocked}
-                    >
-                      <span className="workflow-graph-name">{graph.name}</span>
-                      <span className="workflow-graph-meta">
-                        {graph.node_ids.length} {graph.node_ids.length === 1 ? "node" : "nodes"}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-              {selectedGraph ? (
-                <div className="workflow-graph-editor">
-                  <label className="inspector-label">
-                    <span>Graph name</span>
-                    <input
-                      value={graphNameDraft}
-                      onChange={(event) => setGraphNameDraft(event.target.value)}
-                      disabled={workflowMutationLocked}
-                    />
-                  </label>
-                  <label className="inspector-label">
-                    <span>Description</span>
-                    <textarea
-                      value={graphDescriptionDraft}
-                      rows={3}
-                      onChange={(event) => setGraphDescriptionDraft(event.target.value)}
-                      disabled={workflowMutationLocked}
-                    />
-                  </label>
-                  <label className="inspector-label">
-                    <span>Directory path</span>
-                    <p className="field-description">
-                      Single canonical directory scope for this graph. If omitted in older data, the editor falls back to the selected directory or root.
-                    </p>
-                    <input
-                      value={graphDirectoryDraft}
-                      placeholder={selectedDirectoryPath}
-                      onChange={(event) => setGraphDirectoryDraft(event.target.value)}
-                      disabled={workflowMutationLocked}
-                    />
-                  </label>
-                  <label className="inspector-label">
-                    <span>User IDs</span>
-                    <p className="field-description">
-                      Ownership and audit metadata only. These IDs do not grant visibility or change who can run the graph.
-                    </p>
-                    <textarea
-                      value={graphUsersDraft}
-                      rows={3}
-                      onChange={(event) => setGraphUsersDraft(event.target.value)}
-                      disabled={workflowMutationLocked}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={applyWorkflowGraphChanges}
-                    disabled={workflowMutationLocked}
-                  >
-                    Apply graph details
-                  </button>
-                </div>
-              ) : null}
-            </details>);
-  }
-
-  function renderDesktopCreatePanel() {
-    return (
-      <details
-        className="sidebar-section collapsible-sidebar-section workflow-create-section"
-        open={!isTutorialMode || tutorialCurrentRequiredAction()?.kind === "add-node"}
-      >
-        <summary className="collapsible-sidebar-summary">
-          <span className="section-label">Create</span>
-          <span className="collapsible-sidebar-meta">
-            {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
-          </span>
-        </summary>
-        {renderCreatePanelBody()}
-      </details>
-    );
-  }
-
-  function renderDesktopSourceFilesPanel() {
+  function renderSourceFilesPanel() {
     return document ? (
       <details className="sidebar-section workflow-source-files">
         <summary>Source files</summary>
@@ -435,8 +333,6 @@ export function createDocumentPanelRenderers({
     renderCreatePanelBody,
     renderGraphsPanelContent,
     renderSavePanelContent,
-    renderDesktopGraphsPanel,
-    renderDesktopCreatePanel,
-    renderDesktopSourceFilesPanel,
+    renderSourceFilesPanel,
   };
 }

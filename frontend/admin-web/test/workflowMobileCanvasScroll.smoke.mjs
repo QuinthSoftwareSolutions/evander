@@ -420,9 +420,9 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   const workflowTools = page.getByLabel("Workflow tools");
   await assert.doesNotReject(() => workflowTools.waitFor({ state: "visible" }));
   assert.equal(
-    await page.locator(".sidebar").evaluate((element) => getComputedStyle(element).display),
-    "none",
-    "compact workflow layout should hide the desktop sidebar instead of stacking it above the canvas",
+    await page.getByRole("region", { name: "Workflow workbench", exact: true }).isVisible(),
+    false,
+    "compact workflow layout should not show the desktop workbench above the canvas",
   );
   await positionCanvasForTouch(page);
 

@@ -485,24 +485,10 @@ export function createRunPanelRenderers({
     );
   }
 
-  function renderDesktopRunsPanel() {
-    if (!canReadWorkflowRuns) return null;
-    return (
-      <details className="sidebar-section current-runs-section">
-        <summary className="current-runs-summary">
-          <span className="section-label current-runs-label">Current runs</span>
-          <span className="current-runs-count">{visibleRuns.length}</span>
-        </summary>
-        {renderRunsPanelContent(false)}
-      </details>
-    );
-  }
-
   return {
     renderInspectedRunPanel,
     renderInspectedNodePanel,
     renderRunsPanelContent,
     renderRunSearchResult,
-    renderDesktopRunsPanel,
   };
 }

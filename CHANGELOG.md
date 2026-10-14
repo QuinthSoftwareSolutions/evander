@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 - Edit workflows in a lower workbench (0.89.0)
+
+- Give the workflow canvas a full-width lower editor with a remembered, resizable
+  split, expanded editing, and Configuration, Outputs, and History tabs.
+- Move graph selection and the node catalog into toolbar popovers, and keep runs
+  and validation checks available in the workbench.
+- Keep tutorial node actions reachable from the toolbar and move tutorial hints
+  beside their target when the shorter canvas leaves no room above or below it.
+- Edit map outputs through typed rows and upstream binding selectors, retaining
+  raw JSON, nested values, existing layouts, and revision-checked workflow saves.
+
 ## 2026-10-14 - Compact execution-history scalar storage (0.88.1)
 
 - Add explicit conversion to a separate verified database with shared execution,

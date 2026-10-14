@@ -498,7 +498,7 @@ test("workflow editor keeps node ids read-only and resets display-name edits", a
 
   await page.waitForSelector(".canvas-shell .react-flow__pane");
 
-  const inspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Inspector" });
+  const inspector = page.locator(".workflow-workbench .sidebar-section.inspector");
   const nodeIdMetadata = inspector.locator(".inspector-metadata-field", { hasText: "Node ID" });
   const displayNameInput = inspector.locator(".inspector-label").filter({ hasText: "Display name" }).locator("input");
   async function waitForInspectorNodeId(nodeId) {
@@ -507,7 +507,6 @@ test("workflow editor keeps node ids read-only and resets display-name edits", a
       (expectedNodeId) => {
         const inspectors = Array.from(document.querySelectorAll(".sidebar-section.inspector"));
         return inspectors.some((section) => {
-          if (!section.textContent?.includes("Inspector")) return false;
           return Array.from(section.querySelectorAll(".inspector-metadata-field")).some(
             (field) =>
               field.textContent?.includes("Node ID") &&
