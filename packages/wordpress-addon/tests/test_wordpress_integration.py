@@ -124,9 +124,10 @@ def wordpress():
             "--name",
             wp,
             "--network",
-            network,
+            # Keep fixture traffic on loopback even when host bridge forwarding is denied.
+            f"container:{db}",
             "-e",
-            "WORDPRESS_DB_HOST=database",
+            "WORDPRESS_DB_HOST=127.0.0.1",
             "-e",
             "WORDPRESS_DB_USER=wordpress",
             "-e",
