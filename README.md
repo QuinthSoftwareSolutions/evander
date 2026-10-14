@@ -15,6 +15,7 @@ Git, and HTTP surfaces.
 |---|---|
 | Install a host or troubleshoot services | [Operations](docs/operations.md) and [Ansible deployment](ansible/README.md) |
 | Use the operator interface | [Admin Web manual](docs/admin-ui-user-manual.md) |
+| Start a common workflow | [Workflow starters](docs/workflow-starters.md) |
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |

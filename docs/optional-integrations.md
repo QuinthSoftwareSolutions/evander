@@ -6,10 +6,10 @@ workers and useful starting workflows without making a vendor or business
 domain part of core. Existing tools, connector drivers, workflow providers,
 routes and arbitrary custom workflows continue to use their current contracts.
 
-This is the first stage of the modular-workflows release. It adds contracts,
-host-side accessors and read-only operator APIs. It does not move Teams, Azure
-DevOps or other integrations, change enabled add-ons, install packages, start
-workers, save settings, or install starter workflows.
+The modular-workflows release adds contracts, host-side accessors and read-only
+operator APIs. Teams/Graph is now separately installed, and [Workflow starters](workflow-starters.md)
+provides explicit preview, activation, and first-run verification. Registration itself
+never changes enabled add-ons, installs packages, starts workers, or saves settings.
 
 ## Registration
 
@@ -123,7 +123,11 @@ existing revision-checked workflow save path. Building a pack does neither.
 
 New integration packages follow [the add-on project layout](addons.md#project-ownership)
 and remain separate installations. Core contract tests use synthetic add-ons;
-provider migrations, supervisors and the starter gallery are later release stages.
+provider migrations and supervision remain owned by their integration projects.
+The starter gallery uses these contracts, validates the combined workflow graph,
+and installs only after an explicit, revision-checked activation. Builders can supply
+an optional `IntegrationStarterVerification` callback describing a completion node,
+trigger IDs, instructions, and required successful tool-call evidence.
 
 ## Teams and Graph
 

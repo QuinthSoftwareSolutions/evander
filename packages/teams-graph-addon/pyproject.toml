@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander-teams-graph-addon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Optional Microsoft Teams, Graph mail, and meeting integration for Evander."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "evander>=0.88.0",
+  "evander>=0.89.0",
   "cryptography>=43.0.0",
   "httpx>=0.28.1",
   "pydantic>=2.8.0",

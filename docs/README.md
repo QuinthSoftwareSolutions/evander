@@ -8,6 +8,7 @@ documentation. Start with the task below, then use the subsystem references for 
 |---|---|
 | Install or operate a host | [Operations](operations.md), [Ansible](../ansible/README.md), [live smoke tests](live-smoke-tests.md) |
 | Use Admin Web | [Admin UI manual](admin-ui-user-manual.md) |
+| Start a common workflow | [Workflow starters](workflow-starters.md) |
 | Configure a deployment | [Configuration reference](configuration-reference.md), [configuration migrations](config-migrations.md) |
 | Choose where agents execute | [Execution backends](execution-backends.md), [container workers](container-worker-backend.md) |
 | Build and run a team | [Team Add-on](addons.md#team-module-guidance), [progress boards](case-progress-boards.md), [case context](case-context.md) |

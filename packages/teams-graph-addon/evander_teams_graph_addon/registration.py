@@ -15,6 +15,7 @@ from evander.integration_contracts import (
     IntegrationCredentialProvider,
     IntegrationReadinessCheck,
 )
+from .starter import TEAMS_ASSISTANT_STARTER
 
 
 def _config(context):
@@ -100,6 +101,7 @@ def register_addon():
             "configuration": "Existing directory provider settings and credential references.",
         },
         integration=AddonIntegration(
+            workflow_starters=(TEAMS_ASSISTANT_STARTER,),
             settings=(IntegrationConfigSection("teams", "Teams provider settings", settings),),
             credentials=(
                 IntegrationCredentialProvider(

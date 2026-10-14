@@ -12,6 +12,7 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Task | Runbook |
 |---|---|
 | Inspect sessions, approvals, configuration, or capacity | [Admin Web](#admin-web-operator-console) and [directory operations](#directory-operations) |
+| Activate a common workflow after installation | [Workflow starters](workflow-starters.md) |
 | Configure or troubleshoot execution | [Execution backends](execution-backends.md) and [container workers](container-worker-backend.md) |
 | Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
 | Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |

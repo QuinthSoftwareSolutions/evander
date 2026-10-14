@@ -1195,6 +1195,87 @@ class WorkflowConfigAdminService:
                 selected_reference=reference,
             )
 
+    def preview_new_workflow_pack_unlocked(self, pack: WorkflowPack) -> dict[str, Any]:
+        """Validate against configured workflows; caller holds the admin mutation lock."""
+        _, _, raw = self._workflow_editor_read_raw_worker_config()
+        if self._workflow_editor_has_inline_workflow(raw):
+            raise ValueError("Move inline workflows into a workflow pack before adding a starter.")
+        reference = self._workflow_pack_reference_for_metadata(
+            pack_id=pack.pack_id, pack_version=pack.pack_version
+        )
+        if self._workflow_editor_pack_path(reference).exists():
+            raise ValueError("A workflow with this name already exists. Choose another name.")
+        references = self._workflow_editor_configured_pack_references(raw)
+        if any(
+            load_workflow_pack(self.project_dir, ref).pack_id == pack.pack_id for ref in references
+        ):
+            raise ValueError("A workflow with this name already exists. Choose another name.")
+        composition = compose_workflow_ir(
+            project_dir=self.project_dir,
+            workflow_packs=references,
+            inline_ir=pack.ir.model_dump(mode="json"),
+        )
+        candidate = self._workflow_editor_config_for_pack_composition(
+            raw_config=raw, composition=composition
+        )
+        candidate.pop("workflow_packs", None)
+        graphs = [graph.model_dump(mode="json") for graph in (*composition.graphs, *pack.graphs)]
+        validation = self._validate_workflow_editor_document(config=candidate, graphs=graphs)
+        errors = [
+            item for item in validation.validation_diagnostics if item.get("severity") == "error"
+        ]
+        if errors:
+            raise ValueError(
+                "Starter workflow validation failed: "
+                + "; ".join(str(item.get("message", "Invalid workflow")) for item in errors)
+            )
+        current = self._read_composed_workflow_editor_document()
+        return {
+            "reference": reference,
+            "revision": current.revision,
+            "diagnostics": validation.validation_diagnostics,
+        }
+
+    def install_new_workflow_pack_unlocked(
+        self,
+        pack: WorkflowPack,
+        *,
+        expected_revision: str,
+        actor: WorkflowPackChangeActor | None = None,
+    ) -> WorkflowEditorDocumentPayload:
+        """Install once with cursor seeding and history; caller holds the admin mutation lock."""
+        current = self._read_composed_workflow_editor_document()
+        if current.revision != expected_revision:
+            raise AdminRevisionConflict("Workflows changed. Preview the starter again.", details={})
+        self.preview_new_workflow_pack_unlocked(pack)
+        _, _, raw = self._workflow_editor_read_raw_worker_config()
+        next_config = compose_workflow_ir(
+            project_dir=self.project_dir,
+            workflow_packs=[],
+            inline_ir=pack.ir.model_dump(mode="json"),
+        )
+        self._seed_new_trigger_cursors(
+            previous_config=current.config,
+            next_config=self._workflow_editor_config_for_pack_composition(
+                raw_config=raw, composition=next_config
+            ),
+        )
+        layout = {
+            "nodes": {
+                node.node.id: {"x": index * 320, "y": 120}
+                for index, node in enumerate(pack.ir.nodes)
+            }
+        }
+        _, reference = self.ensure_workflow_pack_payload_unlocked(
+            raw_config=raw,
+            pack_payload=pack.model_dump(mode="json"),
+            layout_payload=layout,
+            overwrite_existing=False,
+            operation="starter_activate",
+            actor=actor,
+        )
+        return self._read_workflow_editor_document(workflow_pack=reference)
+
     def ensure_workflow_pack_payload_unlocked(
         self,
         *,

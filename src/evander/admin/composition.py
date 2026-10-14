@@ -34,6 +34,7 @@ from evander.addons import (
     load_addons,
 )
 from evander.admin.services.integration_admin_service import IntegrationAdminService
+from evander.admin.services.workflow_starter_service import WorkflowStarterAdminService
 from evander.admin.directory import DirectoryAdminService
 from evander.admin.operations_helpers import PrivilegedHelperSession
 from evander.admin.payloads import AdminRevisionConflict
@@ -264,6 +265,7 @@ class AdminRuntimeComponents:
     workflow_config_admin: WorkflowConfigAdminService
     addon_admin: AddonAdminService
     integration_admin: IntegrationAdminService
+    workflow_starter_admin: WorkflowStarterAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
     credential_admin: CredentialAdminService
@@ -871,6 +873,10 @@ def _build_admin_runtime_components(
         workflow_config_admin=workflow_config_admin,
         addon_admin=addon_admin,
         integration_admin=integration_admin,
+        workflow_starter_admin=WorkflowStarterAdminService(
+            integrations=integration_admin, workflows=workflow_config_admin,
+            reports=workflow_config_admin, sessions=session_admin, runtime_dir=config.runtime_dir,
+        ),
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         credential_admin=CredentialAdminService(

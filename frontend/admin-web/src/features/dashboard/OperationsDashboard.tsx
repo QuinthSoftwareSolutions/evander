@@ -2177,6 +2177,7 @@ export function OperationsDashboard() {
           </span>
         </div>
         <div className="inline-actions">
+          <a className="admin-shell-button" href={adminHash("starters")}>Start a workflow</a>
           <button
             type="button"
             className="admin-shell-button dashboard-icon-button"

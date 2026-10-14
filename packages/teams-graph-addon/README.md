@@ -7,6 +7,10 @@ and workflow runtime.
 
 ## Install or upgrade
 
+Version 0.2 requires Evander 0.89 or later and contributes the **Respond to Teams direct
+messages** starter. Once this add-on is loaded, open **Workflow starters** in Admin Web.
+See the [starter guide](../../docs/workflow-starters.md#respond-to-teams-direct-messages).
+
 From an Evander source checkout, install both projects into the same host virtualenv:
 
 ```bash
