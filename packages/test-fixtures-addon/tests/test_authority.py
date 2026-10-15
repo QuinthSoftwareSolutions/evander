@@ -18,6 +18,7 @@ from evander_team_addon.models import (
     Project,
     Team,
     TeamDispatch,
+    TeamDispatchStatus,
     TeamRole,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -47,7 +48,12 @@ def test_composed_runtime_uses_real_team_scope_worker_assignment_and_durable_not
             directory_path="root",
             vm_provider="container_worker_vm",
             expires_at=utc_now() + timedelta(hours=1),
-            allowed_tools=["test_fixtures_acquire", "test_fixtures_get", "test_fixtures_release"],
+            allowed_tools=[
+                "test_fixtures_acquire",
+                "test_fixtures_get",
+                "test_fixtures_release",
+                "test_fixtures_reset",
+            ],
         )
     )
     runtime.session_repository.upsert_session(session)
@@ -147,6 +153,42 @@ def test_composed_runtime_uses_real_team_scope_worker_assignment_and_durable_not
     before = repo.read().revision
     service.reconcile(lease["lease_id"])
     assert repo.read().revision == before
+    service.queue("session-a", lease["lease_id"], "reset")
+
+    def finish_dispatch(state):
+        state.dispatches["dispatch-a"].status = TeamDispatchStatus.COMPLETED
+        state.dispatches["dispatch-a"].completed_at = utc_now()
+        state.agent_runtimes["agent-a"].active_dispatch_id = None
+        state.agent_runtimes["agent-a"].wake_leased_until = None
+        return state
+
+    repo.update(finish_dispatch, expected_revision=repo.read().revision)
+    worker.test_jobs[0].status = "exited"
+    inbox_before = set(repo.read().inbox)
+    waiting = service.reconcile(lease["lease_id"])
+    assert waiting["state"] == "awaiting_job" and waiting["operation"]["kind"] == "reset"
+    state = repo.read()
+    new_items = [item for key, item in state.inbox.items() if key not in inbox_before]
+    assert len(new_items) == 1
+    item = new_items[0]
+    assert item.recipient_agent_id == "agent-a" and item.payload["project_id"] == "project-a"
+    assert item.task_id == "task-a" and item.item_type.value == "operator_directive"
+    assert "reset is pending" in item.payload["message"]
+    assert state.tasks["task-a"].state.value == "blocked"
+    before = state.revision
+    service.reconcile(lease["lease_id"])
+    assert repo.read().revision == before
+
+    # Restore a live dispatch before checking that worker-origin mismatches fail.
+    def resume_dispatch(state):
+        state.dispatches["dispatch-b"] = state.dispatches["dispatch-a"].model_copy(
+            update=dict(id="dispatch-b", status=TeamDispatchStatus.LEASED, completed_at=None)
+        )
+        state.agent_runtimes["agent-a"].active_dispatch_id = "dispatch-b"
+        state.agent_runtimes["agent-a"].wake_leased_until = utc_now() + timedelta(minutes=10)
+        return state
+
+    repo.update(resume_dispatch, expected_revision=repo.read().revision)
     settings.workers["worker-a"].worker_base_url = "http://192.0.2.11:11888"
     service.store.save_settings("root", 1, settings, "test")
     with pytest.raises(FixtureError, match="Actual session worker"):

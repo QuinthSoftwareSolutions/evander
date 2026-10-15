@@ -103,6 +103,9 @@ class Service:
                 lease["state"] = "releasing"
             elif operation == "reset":
                 lease["state"] = "resetting"
+                # A new reset needs its own readiness continuation, including
+                # when it returns to ready in the same dispatch.
+                lease.pop("notification_key", None)
             else:
                 lease["state"] = "controlling"
             self.store.put(lease)
@@ -182,6 +185,18 @@ class Service:
                             result = (
                                 client.call("idle", lease_id) if lease.get("worker_seen") else None
                             )
+                            if (
+                                operation
+                                and operation["kind"] == "reset"
+                                and result
+                                and result.get("state") not in TERMINAL
+                            ):
+                                # Reset still requires a live authorized job.
+                                # Wake its owner instead of silently retaining
+                                # an operation that cannot progress while idle.
+                                result.update(
+                                    state="awaiting_job", config_path=None, bound_job_id=None
+                                )
                         if self.now() >= lease["expires_at"]:
                             result = client.call("release", lease_id)
                     else:
@@ -246,15 +261,22 @@ class Service:
                 elif lease["state"] not in {"cleanup_failed", "released", "expired"}:
                     lease["state"] = "failed"
             self.store.put(lease)
+            notification_key = dict(state=lease["state"])
+            if lease["state"] == "awaiting_job":
+                # A dispatch that exits during provisioning needs a new handoff.
+                # Ordinary rebinds/failures must not wake another dispatch just
+                # because the previous readiness directive caused this one.
+                notification_key["dispatch_id"] = lease["scope"]["dispatch_id"]
             if (
                 lease["state"] in {"ready", "awaiting_job", "failed", "cleanup_failed"}
-                and lease.get("notified") != lease["state"]
+                and lease.get("notification_key") != notification_key
             ):
                 try:
                     # Never wake a reassigned/cancelled task's former agent.
                     if self.authority.owns(Scope.model_validate(lease["scope"])):
                         self.authority.notify(receipt(lease))
                     lease["notified"] = lease["state"]
+                    lease["notification_key"] = notification_key
                     self.store.put(lease)
                 except Exception:
                     pass  # Durable notification is retried by the next poll.

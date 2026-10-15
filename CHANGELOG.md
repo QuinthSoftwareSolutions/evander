@@ -11,6 +11,8 @@
   retryable and cleanable. Existing session database interfaces remain supported.
 - Include opt-in worker deployment assets, an operator lease view and a disabled
   allocation configuration. Remote deployment and pilot activation are separate.
+- Deliver private configuration without container capabilities and resume queued
+  resets through task continuations after their requesting jobs exit.
 
 ## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
 

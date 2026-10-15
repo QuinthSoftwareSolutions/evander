@@ -11,25 +11,40 @@ import subprocess
 from .models import FixtureError, NotReady
 
 
-# Run as container root only to install a private file, never through a shell.
-# Refuse agent-created symlinks and directories before any privileged write.
+# Root prepares and seals directories only. The capability-dropped job creates
+# its own mode0600 file, so neither it nor the root helper needs CAP_CHOWN.
+PREPARE = r"""
+import os, stat, sys
+base, lease=sys.argv[1:3]
+for path in [base, base+'/'+lease]:
+    try:
+        os.mkdir(path, 0o711)
+        os.chmod(path, 0o711)
+    except FileExistsError: pass
+    st=os.lstat(path)
+    allowed={0o700, 0o711, 0o733} if path != base else {0o700, 0o711}
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) not in allowed:
+        raise RuntimeError('Unsafe fixture directory')
+    if stat.S_IMODE(st.st_mode) == 0o700:
+        os.chmod(path, 0o711)
+directory=base+'/'+lease
+try: os.unlink(directory+'/connection.new')
+except FileNotFoundError: pass
+os.chmod(directory, 0o733)
+"""
 PROJECT = r"""
 import json, os, socket, stat, sys
 data=json.load(sys.stdin)
-base=sys.argv[1]
-for path in [base, base+'/'+data['lease_id']]:
-    try: os.mkdir(path, 0o711)
-    except FileExistsError: pass
+base, owner=sys.argv[1], int(sys.argv[2])
+for path, mode in [(base, 0o711), (base+'/'+data['lease_id'], 0o733)]:
     st=os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != owner or stat.S_IMODE(st.st_mode) != mode:
         raise RuntimeError('Unsafe fixture directory')
 directory=base+'/'+data['lease_id']
 temporary=directory+'/connection.new'
-try: os.unlink(temporary)
-except FileNotFoundError: pass
 fd=os.open(temporary, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
 try:
-    os.fchown(fd, data['uid'], data['gid'])
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump(data['connections'], stream)
         stream.flush(); os.fsync(stream.fileno())
@@ -41,6 +56,21 @@ if data.get('probe_connections'):
         host=connection.get('server') or connection['host']
         with socket.create_connection((host, connection['port']), timeout=3): pass
 """
+SEAL = r"""
+import os, stat, sys
+base, lease, uid, gid=sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+for path in [base, base+'/'+lease]:
+    st=os.lstat(path)
+    allowed={0o711, 0o733} if path != base else {0o711}
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) not in allowed:
+        raise RuntimeError('Unsafe fixture directory')
+directory=base+'/'+lease
+os.chmod(directory, 0o711)
+path=directory+'/connection.json'
+st=os.lstat(path)
+if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_gid != gid or stat.S_IMODE(st.st_mode) != 0o600:
+    raise RuntimeError('Unsafe fixture configuration')
+"""
 UNPROJECT = r"""
 import os, stat, sys
 path=sys.argv[1]
@@ -51,7 +81,8 @@ for component in [sys.argv[2]]:
     path+='/'+component
 if os.path.lexists(path):
     st=os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022: raise RuntimeError('Unsafe fixture directory')
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) not in {0o700, 0o711, 0o733}: raise RuntimeError('Unsafe fixture directory')
+    os.chmod(path, 0o711)
     for name in ['connection.json','connection.new']:
         try: os.unlink(path+'/'+name)
         except FileNotFoundError: pass
@@ -277,9 +308,10 @@ class Docker:
         gid = int(self.docker("exec", job.container_id, "/usr/bin/id", "-g").stdout)
         if uid == 0:
             raise FixtureError("Fixtures require an unprivileged owning worker job")
+        base = "/tmp/evander-test-fixtures"
+        lease_id = lease["lease_id"]
         self.docker(
             "exec",
-            "--interactive",
             "--user",
             "0",
             job.container_id,
@@ -287,18 +319,46 @@ class Docker:
             "-I",
             "-S",
             "-c",
-            PROJECT,
-            "/tmp/evander-test-fixtures",
-            data=json.dumps(
-                dict(
-                    lease_id=lease["lease_id"],
-                    uid=uid,
-                    gid=gid,
-                    connections=connections,
-                    probe_connections=True,
-                )
-            ).encode(),
+            PREPARE,
+            base,
+            lease_id,
         )
+        try:
+            # Only this unprivileged process receives credentials. Root-owned
+            # ancestors cannot be replaced by the job, even during this write.
+            self.docker(
+                "exec",
+                "--interactive",
+                job.container_id,
+                "/usr/bin/python3",
+                "-I",
+                "-S",
+                "-c",
+                PROJECT,
+                base,
+                "0",
+                data=json.dumps(
+                    dict(lease_id=lease_id, connections=connections, probe_connections=True)
+                ).encode(),
+            )
+        finally:
+            # Revoke directory writes on success and failure before returning.
+            # This also verifies the completed file without reading its secrets.
+            self.docker(
+                "exec",
+                "--user",
+                "0",
+                job.container_id,
+                "/usr/bin/python3",
+                "-I",
+                "-S",
+                "-c",
+                SEAL,
+                base,
+                lease_id,
+                str(uid),
+                str(gid),
+            )
 
     def unbind(self, lease):
         if "rabbitmq" in lease["profile"]:

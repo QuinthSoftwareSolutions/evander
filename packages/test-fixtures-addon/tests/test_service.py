@@ -22,6 +22,7 @@ class Authority:
         self.owner = True
         self.active = True
         self.notified = []
+        self.denied_tools = set()
 
     def assignment(self, session):
         return "root", "http://192.0.2.10:11888"
@@ -30,6 +31,7 @@ class Authority:
         if (
             not self.active
             or not self.owner
+            or tool in self.denied_tools
             or session != self.scope.session_id
             or task != self.scope.task_id
         ):
@@ -143,10 +145,128 @@ def test_reset_and_fault_are_reconciled_without_touching_task_lifecycle(service,
     service.queue("session-a", lease["lease_id"], "reset")
     assert service.reconcile(lease["lease_id"])["state"] == "ready"
     assert worker.sql.dropped == [lease["lease_id"]]
+    assert service.authority.notified == [(lease["lease_id"], "ready")] * 2
     service.queue(
         "session-a", lease["lease_id"], "control", dict(action="stop", duration_seconds=30)
     )
     assert service.reconcile(lease["lease_id"])["fault_until"] == 1030
+
+
+@pytest.mark.parametrize(
+    "owner_keeps_task,reset_permitted", [(True, True), (False, True), (True, False)]
+)
+def test_reset_wakes_its_owner_and_resumes_in_a_new_authorized_job(
+    service, worker, owner_keeps_task, reset_permitted
+):
+    lease = service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "reset-handoff")
+    lease_id = lease["lease_id"]
+    service.queue("session-a", lease_id, "reset")
+    expiry = worker.get(lease_id)["expires_at"]
+    service.authority.active = False
+    service.authority.owner = owner_keeps_task
+    worker.test_jobs[0].status = "exited"
+    worker.clock[0] += 30
+    worker.tick()
+    result = service.reconcile(lease_id)
+    if not owner_keeps_task:
+        assert result["state"] == "released"
+        assert service.authority.notified == [(lease_id, "ready")]
+        assert not worker.sql.databases and not worker.docker.brokers
+        return
+    assert result["state"] == "awaiting_job"
+    assert result["operation"]["kind"] == "reset"
+    assert result["expires_at"] == expiry
+    assert result["config_path"] is None and result["bound_job_id"] is None
+    assert not worker.sql.dropped and not worker.docker.bindings
+    assert service.authority.notified == [(lease_id, "ready"), (lease_id, "awaiting_job")]
+    for _ in range(3):
+        worker.clock[0] += 30
+        assert service.reconcile(lease_id)["state"] == "awaiting_job"
+    assert len(service.authority.notified) == 2  # One continuation, not a poll storm.
+    service.authority.active = True
+    service.authority.scope = service.authority.scope.model_copy(
+        update={"dispatch_id": "dispatch-b"}
+    )
+    worker.test_jobs[0].status = "running"
+    worker.test_jobs[0].job_id = "job-b"
+    worker.test_jobs[0].metadata["dispatch_id"] = "dispatch-b"
+    if not reset_permitted:
+        service.authority.denied_tools.add("test_fixtures_reset")
+    result = service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "reset-resume")
+    assert result["lease_id"] == lease_id
+    if not reset_permitted:
+        assert result["state"] == "releasing" and not worker.sql.dropped
+        assert service.reconcile(lease_id)["state"] == "released"
+        assert not worker.sql.databases and not worker.docker.brokers
+        return
+    assert result["state"] == "ready" and result["operation"] is None
+    assert result["bound_job_id"] == "job-b"
+    assert worker.sql.dropped == [lease_id]
+    assert len(worker.sql.databases) == 2
+    assert service.authority.notified[-1] == (lease_id, "ready")
+
+
+def test_ordinary_ready_rebinds_do_not_wake_another_dispatch(service, worker):
+    lease = service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "rebind")
+    lease_id = lease["lease_id"]
+    for suffix in ("b", "c", "d"):
+        service.authority.active = False
+        worker.test_jobs[0].status = "exited"
+        worker.tick()
+        assert service.reconcile(lease_id)["state"] == "idle"
+        service.authority.active = True
+        service.authority.scope = service.authority.scope.model_copy(
+            update={"dispatch_id": "dispatch-" + suffix}
+        )
+        worker.test_jobs[0].status = "running"
+        worker.test_jobs[0].job_id = "job-" + suffix
+        worker.test_jobs[0].metadata["dispatch_id"] = "dispatch-" + suffix
+        assert service.reconcile(lease_id)["state"] == "ready"
+    assert service.authority.notified == [(lease_id, "ready")]
+    assert len(worker.sql.databases) == 2 and not worker.sql.dropped
+
+
+def test_readiness_handoff_is_not_suppressed_when_another_dispatch_exits_early(
+    service, worker, monkeypatch
+):
+    from evander_test_fixtures_addon.models import NotReady
+
+    lease = service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "repeat-handoff")
+    lease_id = lease["lease_id"]
+    service.queue("session-a", lease_id, "reset")
+    service.authority.active = False
+    worker.test_jobs[0].status = "exited"
+    service.reconcile(lease_id)
+    service.authority.active = True
+    service.authority.scope = service.authority.scope.model_copy(
+        update={"dispatch_id": "dispatch-b"}
+    )
+    worker.test_jobs[0].status = "running"
+    worker.test_jobs[0].job_id = "job-b"
+    worker.test_jobs[0].metadata["dispatch_id"] = "dispatch-b"
+    original = worker.docker.ensure_broker
+    starting = [False]
+
+    def broker(lease):
+        if starting[0]:
+            raise NotReady("starting")
+        return original(lease)
+
+    original_remove = worker.docker.remove_broker
+
+    def remove(lease):
+        original_remove(lease)
+        starting[0] = True
+
+    monkeypatch.setattr(worker.docker, "ensure_broker", broker)
+    monkeypatch.setattr(worker.docker, "remove_broker", remove)
+    assert service.reconcile(lease_id)["state"] == "provisioning"
+    assert service.store.get(lease_id)["operation"] is None
+    service.authority.active = False
+    worker.test_jobs[0].status = "exited"
+    starting[0] = False
+    assert service.reconcile(lease_id)["state"] == "awaiting_job"
+    assert service.authority.notified.count((lease_id, "awaiting_job")) == 2
 
 
 def test_operator_revision_and_directory_guards(service):

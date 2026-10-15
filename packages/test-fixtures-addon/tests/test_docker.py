@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander_test_fixtures_addon.docker import Docker, PROJECT, UNPROJECT
+from evander_test_fixtures_addon.docker import Docker, PREPARE, PROJECT, SEAL, UNPROJECT
 from evander_test_fixtures_addon.models import FixtureError
 
 LEASE = "fx-" + "a" * 32
@@ -84,19 +84,35 @@ def test_subprocess_failure_and_timeout_never_reflect_stderr_or_arguments(tmp_pa
     assert "private" not in str(exc.value)
 
 
-def project(base, payload):
+def helper(script, base, *args, payload=None):
     return subprocess.run(
-        [sys.executable, "-I", "-S", "-c", PROJECT, str(base)],
-        input=json.dumps(payload),
+        [sys.executable, "-I", "-S", "-c", script, str(base), *map(str, args)],
+        input=json.dumps(payload) if payload is not None else None,
         capture_output=True,
         text=True,
         timeout=5,
         cwd=base.parent,
+        umask=0o077,
     )
 
 
-def test_private_projection_is_atomic_recovers_stale_temporary_and_revokes(tmp_path):
+def project(base, payload):
+    prepared = helper(PREPARE, base, LEASE)
+    if prepared.returncode:
+        return prepared
+    result = helper(PROJECT, base, os.getuid(), payload=payload)
+    sealed = helper(SEAL, base, LEASE, os.getuid(), os.getgid())
+    return sealed if result.returncode == 0 else result
+
+
+@pytest.mark.parametrize("existing_private_dirs", [False, True])
+def test_private_projection_is_atomic_recovers_stale_temporary_and_revokes(
+    tmp_path, existing_private_dirs
+):
     base = tmp_path / "private"
+    if existing_private_dirs:
+        base.mkdir(mode=0o700)
+        (base / LEASE).mkdir(mode=0o700)
     (tmp_path / "json.py").write_text("raise RuntimeError('untrusted repository code ran')")
     payload = dict(
         lease_id=LEASE,
@@ -107,6 +123,8 @@ def test_private_projection_is_atomic_recovers_stale_temporary_and_revokes(tmp_p
     assert project(base, payload).returncode == 0
     path = base / LEASE / "connection.json"
     assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o711
+    assert path.stat().st_uid == os.getuid()
     assert json.loads(path.read_text()) == payload["connections"]
     (base / LEASE / "connection.new").write_text("incomplete crash write")
     assert project(base, payload).returncode == 0
@@ -159,21 +177,75 @@ def test_firewall_permits_only_owning_job_to_broker_amqp(tmp_path):
     assert len([args for args in calls if args[-1] == "DROP"]) == 2
 
 
-def test_privileged_projection_uses_isolated_absolute_interpreter_and_stdin(tmp_path):
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_credentials_are_created_by_job_user_without_adding_capabilities(tmp_path, write_fails):
     calls = []
+    base = tmp_path / "private"
 
     def run(args, **kwargs):
         calls.append((args, kwargs))
-        return SimpleNamespace(returncode=0, stdout=b"1001\n", stderr=b"")
+        assert "--privileged" not in args and "--cap-add" not in args
+        if "/usr/bin/id" in args:
+            value = 1001 if args[-1] == "-u" else 1002
+            return SimpleNamespace(returncode=0, stdout=f"{value}\n".encode(), stderr=b"")
+        command = args[args.index("-c") + 1]
+        if command == PROJECT:
+            # A root exec under the worker's empty capability bounding set
+            # cannot chown a credential file to this unprivileged job.
+            assert "--user" not in args
+            if write_fails:
+                raise OSError("simulated job write failure")
+            payload = json.loads(kwargs["input"])
+            payload["probe_connections"] = False
+            return helper(command, base, os.getuid(), payload=payload)
+        assert kwargs["input"] is None  # Root helpers never receive credentials.
+        assert args[args.index("--user") + 1] == "0"
+        if command == SEAL:
+            assert args[-2:] == ["1001", "1002"]
+            # Emulate the two container identities with this process's UID/GID
+            # so this filesystem test also runs on root and non-root CI hosts.
+            return helper(command, base, LEASE, os.getuid(), os.getgid())
+        extra = args[args.index("-c") + 3 :]
+        return helper(command, base, *extra)
 
     docker = Docker(tmp_path, IMAGE, run=run)
-    docker.bind(
+    args = (
         {"lease_id": LEASE, "profile": "sqlserver"},
         SimpleNamespace(container_id="b" * 64),
         {"source": {"password": "private-secret", "server": "192.0.2.1", "port": 1433}},
     )
-    args, kwargs = calls[-1]
-    assert "/usr/bin/python3" in args
-    assert "-I" in args and "-S" in args
-    assert "private-secret" not in " ".join(args)
-    assert json.loads(kwargs["input"])["probe_connections"] is True
+    if write_fails:
+        with pytest.raises(FixtureError):
+            docker.bind(*args)
+    else:
+        docker.bind(*args)
+    for args, _ in calls:
+        assert "private-secret" not in " ".join(args)
+        if "-c" in args:
+            assert "/usr/bin/python3" in args and "-I" in args and "-S" in args
+    secret_calls = [(args, kw) for args, kw in calls if kw["input"]]
+    assert len(secret_calls) == 1
+    assert json.loads(secret_calls[0][1]["input"])["probe_connections"] is True
+    path = base / LEASE / "connection.json"
+    assert path.parent.stat().st_mode & 0o777 == 0o711
+    if write_fails:
+        assert not path.exists()
+        return
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.stat().st_uid == os.getuid()
+    assert json.loads(path.read_text())["source"]["password"] == "private-secret"
+
+
+def test_failed_projection_seals_the_directory_and_crash_cleanup_revokes_it(tmp_path):
+    base = tmp_path / "private"
+    assert helper(PREPARE, base, LEASE).returncode == 0
+    # An interrupted or rejected job write must not leave the directory writable.
+    (base / LEASE / "connection.new").write_text("interrupted write")
+    result = helper(SEAL, base, LEASE, os.getuid(), os.getgid())
+    assert result.returncode != 0  # Missing final file cannot be reported ready.
+    assert (base / LEASE).stat().st_mode & 0o777 == 0o711
+    # A worker crash before the seal must also remain cleanable without chown.
+    assert helper(PREPARE, base, LEASE).returncode == 0
+    assert (base / LEASE).stat().st_mode & 0o777 == 0o733
+    assert helper(UNPROJECT, base, LEASE).returncode == 0
+    assert not (base / LEASE).exists()

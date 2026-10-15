@@ -61,11 +61,17 @@ class Authority:
         )
 
         scope = lease["scope"]
-        next_step = (
-            "Resources are provisioned. Call test_fixtures_acquire for this task/profile to bind the private configuration in the current job. "
-            if lease["state"] == "awaiting_job"
-            else "Use test_fixtures_get for readiness and the private job configuration path. "
-        )
+        if lease["state"] == "awaiting_job":
+            next_step = (
+                "A reset is pending and requires a new authorized job. "
+                if (lease.get("operation") or {}).get("kind") == "reset"
+                else "Resources are provisioned. "
+            )
+            next_step += "Call test_fixtures_acquire for this task/profile to resume the pending work and bind the private configuration in the current job. "
+        else:
+            next_step = (
+                "Use test_fixtures_get for readiness and the private job configuration path. "
+            )
         message = (
             f"Test fixture lease {lease['lease_id']} is {lease['state']}. "
             + next_step

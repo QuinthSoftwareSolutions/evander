@@ -76,11 +76,20 @@ Failures are deliberately redacted; use root-only service diagnostics and resour
 inspection for details. A lost HTTP response is reconciled using the same lease
 and operation IDs. Reset empties only the lease's two databases and broker; it
 does not restore customer data or touch application repositories.
+If a requesting job exits before its queued reset is applied, reconciliation
+records `awaiting_job` and sends a task-bound continuation. The next authorized
+job reacquires the same task/profile; current scope and operation permissions
+are checked before reset. Waiting does not renew expiry. Fresh resets and new
+provisioning handoffs can send another continuation; ordinary ready rebinds
+and repeated polls do not.
 
 Normal get/list operations never expose passwords or renew expiry. Credentials
-are kept in worker-owned mode0600 stores and projected through stdin into a
-mode0600 file owned by the job's actual numeric UID. The parent directory is
-root-owned and checked against symlink replacement; the file lives in private
+are kept in worker-owned mode0600 stores. Only an unprivileged job process receives
+the JSON through stdin and creates its own mode0600 file; no `CAP_CHOWN` or added
+container capabilities are required. A root helper prepares checked root-owned
+directories, permits writes to the lease directory only during projection, then
+seals it to mode0711 before readiness, including after a failed write. Cleanup
+also seals a directory left open by a worker crash. The file lives in private
 container tmpfs, not the persistent agent home. A replacement dispatch must
 revalidate scope and receive a fresh binding. Task reassignment releases the old
 lease; a new owner acquires new SQL and broker identities.

@@ -29,7 +29,12 @@ poll readiness without extending the lease. A ready receipt provides nonsecret
 endpoints and `/tmp/evander-test-fixtures/<lease>/connection.json` in the current job.
 
 Reset is queued and reports `resetting`; wait for `ready` and no pending
-`operation` before seeding again. Broker control attempts an immediate bounded
+`operation` before seeding again. If its requesting job ends, an `awaiting_job`
+continuation wakes the owning task. Reacquire the same task/profile in the new
+job to finish the reset after permissions are checked again. Fresh resets and
+provisioning handoffs can send new continuations; ordinary rebinds and status
+polling do not repeat readiness notices.
+Broker control attempts an immediate bounded
 worker acknowledgement. Check that no `operation` is pending, that
 `last_control.action` matches the request, `last_control.status == "applied"`, and the active
 `fault_until` deadline before asserting application behavior during a fault.
@@ -37,6 +42,9 @@ Pending, failed or unknown outcomes do not prove the requested fault occurred.
 
 The private JSON contains SQL records under `source`/`target` (including
 `connection_string`) and RabbitMQ `host`, `port`, `username`, `password`, `vhost`.
+The job's unprivileged user creates the mode0600 file. A root helper prepares
+and seals its root-owned directory before readiness, without adding container
+capabilities or receiving the credentials.
 Application tests seed their own schema and synthetic data. Never copy this file
 into artifacts, logs, Team records or Git. Fixture readiness is independent of
 application tests, plan approval and release authorization.
