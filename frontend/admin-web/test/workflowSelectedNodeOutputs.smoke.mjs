@@ -405,17 +405,9 @@ test("workflow editor shows selected-node output contracts and copies binding ex
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-1"]');
   await triggerNode.click();
 
+  await page.getByRole("tab", { name: "Outputs", exact: true }).click();
   const triggerOutputPanel = page.locator(".output-contract-panel");
   await triggerOutputPanel.waitFor({ state: "visible" });
-  const triggerSourceField = page.locator(".sidebar-section.inspector .inspector-field").filter({ hasText: "Source" });
-  const triggerSourceFieldBox = await triggerSourceField.boundingBox();
-  const triggerOutputPanelBox = await triggerOutputPanel.boundingBox();
-  assert.ok(triggerSourceFieldBox, "expected trigger Source field bounds");
-  assert.ok(triggerOutputPanelBox, "expected trigger output panel bounds");
-  assert.ok(
-    triggerOutputPanelBox.y > triggerSourceFieldBox.y,
-    "expected selected-node output contract to render after configuration fields",
-  );
   await assert.equal(
     await triggerOutputPanel.getByText("Pass-through gate: outputs are derived from trigger-1.").count(),
     0,

@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from evander.repositories.history_index_storage import (
+    interned_schema_is_current,
+    uses_interned_history,
+)
+
 THRESHOLD_BYTES = 16 * 1024
 FORMAT_KEY = "__evander_operational_storage_v1__"
 PAYLOAD_FIELDS = frozenset({
@@ -79,23 +84,24 @@ def ensure_operational_schema(connection: sqlite3.Connection) -> None:
                 DELETE FROM workflow_history_retirements WHERE execution_key=NEW.execution_key;
             END""",
     ]
-    statements.extend(
-        [
-            """CREATE TABLE IF NOT EXISTS workflow_history_index_state(
-            execution_key TEXT PRIMARY KEY REFERENCES workflow_node_execution_history(execution_key) ON DELETE CASCADE,
-            generation TEXT NOT NULL)""",
-            """CREATE TABLE IF NOT EXISTS workflow_history_index_values(
+    statements.append("""CREATE TABLE IF NOT EXISTS workflow_history_index_state(
+        execution_key TEXT PRIMARY KEY REFERENCES workflow_node_execution_history(execution_key) ON DELETE CASCADE,
+        generation TEXT NOT NULL)""")
+    if not uses_interned_history(connection):
+        statements.extend(
+            [
+                """CREATE TABLE IF NOT EXISTS workflow_history_index_values(
             execution_key TEXT NOT NULL REFERENCES workflow_node_execution_history(execution_key) ON DELETE CASCADE,
             generation TEXT NOT NULL, location TEXT NOT NULL, json_pointer TEXT NOT NULL,
             value_type TEXT NOT NULL, value_hash TEXT, text_value TEXT, numeric_value REAL, boolean_value INTEGER,
             PRIMARY KEY(execution_key, generation, location, json_pointer))""",
-            """CREATE INDEX IF NOT EXISTS idx_history_generation_lookup ON workflow_history_index_values(
+                """CREATE INDEX IF NOT EXISTS idx_history_generation_lookup ON workflow_history_index_values(
             location, json_pointer, value_type, value_hash, execution_key, generation)""",
-            """CREATE INDEX IF NOT EXISTS idx_history_generation_numeric ON workflow_history_index_values(
+                """CREATE INDEX IF NOT EXISTS idx_history_generation_numeric ON workflow_history_index_values(
             location, json_pointer, value_type, numeric_value, execution_key, generation)""",
-            """CREATE INDEX IF NOT EXISTS idx_history_generation_exact ON workflow_history_index_values(
+                """CREATE INDEX IF NOT EXISTS idx_history_generation_exact ON workflow_history_index_values(
             location, json_pointer, value_type, text_value, execution_key, generation)""",
-            """CREATE VIEW IF NOT EXISTS workflow_node_execution_current_values AS
+                """CREATE VIEW IF NOT EXISTS workflow_node_execution_current_values AS
             SELECT v.execution_key,v.location,v.json_pointer,v.value_type,v.value_hash,v.text_value,v.numeric_value,v.boolean_value
             FROM workflow_history_index_values v
             JOIN workflow_history_index_state s ON s.execution_key=v.execution_key AND s.generation=v.generation
@@ -104,8 +110,8 @@ def ensure_operational_schema(connection: sqlite3.Connection) -> None:
             SELECT v.* FROM workflow_node_execution_history_values v
             WHERE NOT EXISTS(SELECT 1 FROM workflow_history_index_state s WHERE s.execution_key=v.execution_key)
               AND NOT EXISTS(SELECT 1 FROM workflow_history_index_jobs j WHERE j.execution_key=v.execution_key)""",
-        ]
-    )
+            ]
+        )
     for statement in statements:
         connection.execute(statement)
     for kind, (table, key) in TABLES.items():
@@ -127,7 +133,7 @@ def operational_schema_is_current(connection: sqlite3.Connection) -> bool:
         "workflow_execution_projections",
         "workflow_history_index_jobs",
         "workflow_history_retirements",
-    } <= names
+    } <= names and (not uses_interned_history(connection) or interned_schema_is_current(connection))
 
 
 initialize_payload_schema = ensure_operational_schema

@@ -483,7 +483,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await undoButton.isDisabled(), true);
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
-  const createPanel = page.locator(".workflow-create-section");
+  await page.getByRole("button", { name: "Add node", exact: true }).click();
+  const createPanel = page.getByRole("dialog", { name: "Add node", exact: true });
   await createPanel.getByLabel("Search nodes").fill("unknown node type");
   await createPanel.getByText("No matching nodes.").waitFor({ state: "visible" });
   await createPanel.getByLabel("Search nodes").fill("agent");
@@ -493,7 +494,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await page.getByLabel("Unsaved changes").count(), 1, "adding a search result should stage an unsaved workflow change");
   await undoButton.click();
   await page.waitForFunction((count) => document.querySelectorAll(".react-flow__node").length === count, originalNodeCount);
+  await page.getByRole("button", { name: "Add node", exact: true }).click();
   await createPanel.getByLabel("Search nodes").fill("");
+  await createPanel.getByRole("button", { name: "Close", exact: true }).click();
   assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
 
   await Promise.all([
@@ -514,12 +517,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await nodeInspector.waitFor({ state: "visible" });
   const promptField = nodeInspector.locator(".inspector-field").filter({ hasText: "Prompt" });
   const outputsField = nodeInspector.locator(".inspector-field").filter({ hasText: "Outputs" });
+  await nodeInspector.getByRole("tab", { name: "Outputs", exact: true }).click();
   await outputsField.waitFor({ state: "visible" });
-  const promptFieldBox = await promptField.boundingBox();
-  const outputsFieldBox = await outputsField.boundingBox();
-  assert.ok(promptFieldBox, "expected prompt field bounds");
-  assert.ok(outputsFieldBox, "expected outputs field bounds");
-  assert.ok(outputsFieldBox.y > promptFieldBox.y, "expected Outputs to render after selected-node configuration fields");
+  assert.equal(await promptField.isVisible(), false);
+  await nodeInspector.getByRole("tab", { name: "Configuration", exact: true }).click();
+  assert.equal(await promptField.isVisible(), true);
   const changedViewportTransform = await workflowViewportTransform(page);
   await displayNameInput.fill("Dispatch agent v2");
   await page.waitForFunction(

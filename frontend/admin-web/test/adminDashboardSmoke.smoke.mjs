@@ -1295,6 +1295,20 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/admin/reports/inference-costs") {
+      assert.ok(["root", "root/team"].includes(url.searchParams.get("directory_path")));
+      await route.fulfill(jsonResponse({
+        directory_path: url.searchParams.get("directory_path"),
+        timezone: url.searchParams.get("timezone"),
+        period_start: "2026-05-01", period_end: "2026-06-01", currency: "USD",
+        pricing_version: null, total_cost: 0, estimated_cost: 0, reported_cost: 0,
+        coverage: { priced_events: 0, unpriced_events: 0, unknown_billing_events: 0,
+          excluded_subscription_events: 0, excluded_local_events: 0, partial: false },
+        groups: [], accounts: [], daily: [],
+      }));
+      return;
+    }
+
     if (pathname === "/api/managed-website-sessions") {
       await route.fulfill(jsonResponse({directory_path: "root", revision: "fixture", profiles: []}));
       return;
@@ -1340,16 +1354,16 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const releaseBox = await releasePanel.boundingBox();
   const systemHealthBox = await systemHealthPanel.boundingBox();
   assert.ok(releaseBox && systemHealthBox, "expected dashboard panels to have layout boxes");
-  assert.ok(releaseBox.x < systemHealthBox.x, `expected release panel to occupy the left dashboard column, got release x=${releaseBox.x} system x=${systemHealthBox.x}`);
+  assert.ok(systemHealthBox.x < releaseBox.x, `expected operational status before release news, got status x=${systemHealthBox.x} news x=${releaseBox.x}`);
   await assertDashboardFitsViewport(page, "desktop");
   const onboardingWorkflowButton = onboardingPanel.getByRole("button", { name: "Open workflow" });
-  let previousRightColumnY = -Infinity;
+  let previousOperationsY = -Infinity;
   for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
     const panelBox = await panel.boundingBox();
-    assert.ok(panelBox, "expected right-column dashboard panel to have a layout box");
-    assert.ok(Math.abs(panelBox.x - systemHealthBox.x) < 2, `expected right-column panels to share x=${systemHealthBox.x}, got ${panelBox.x}`);
-    assert.ok(panelBox.y >= previousRightColumnY, `expected right-column panels to stack vertically, got y=${panelBox.y} after ${previousRightColumnY}`);
-    previousRightColumnY = panelBox.y;
+    assert.ok(panelBox, "expected operational dashboard panel to have a layout box");
+    assert.ok(Math.abs(panelBox.x - systemHealthBox.x) < 2, `expected operational panels to share x=${systemHealthBox.x}, got ${panelBox.x}`);
+    assert.ok(panelBox.y >= previousOperationsY, `expected operational panels to stack vertically, got y=${panelBox.y} after ${previousOperationsY}`);
+    previousOperationsY = panelBox.y;
   }
   assert.equal(await page.getByRole("button", { name: "Refresh dashboard" }).getAttribute("title"), "Refresh dashboard");
   assert.equal(await onboardingWorkflowButton.getAttribute("title"), "Open workflow");

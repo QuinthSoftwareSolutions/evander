@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { ChatPrompt } from "../chat/api";
 
 export type DirectoryInfo = {
   id: string;
@@ -33,6 +34,9 @@ export type AdminUiState = {
   currentUserLabel: string;
   currentUserPermissions: string[];
   currentUserEffectivePermissions: string[];
+  assistantEnabled: boolean;
+  assistantRequestPending: boolean;
+  openAssistantWithPrompt: (prompt: ChatPrompt) => void;
   canReadWorkflows: boolean;
   canReadWorkflowRuns: boolean;
   canWriteWorkflows: boolean;
@@ -66,6 +70,9 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   currentUserLabel: "anonymous",
   currentUserPermissions: [],
   currentUserEffectivePermissions: [],
+  assistantEnabled: false,
+  assistantRequestPending: false,
+  openAssistantWithPrompt: () => {},
   canReadWorkflows: false,
   canReadWorkflowRuns: false,
   canWriteWorkflows: false,

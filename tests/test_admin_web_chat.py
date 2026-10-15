@@ -34,9 +34,15 @@ class FakeAuth:
         return False
 
 
-class PrivilegedFakeAuth(FakeAuth):
-    def privileged_for_request(self, _request: Request) -> bool:
-        return True
+class HeaderFakeAuth(FakeAuth):
+    def require(self, request: Request) -> dict[str, Any]:
+        return json.loads(request.headers["x-test-auth"])
+
+    def authentication_payload(self, request: Request) -> dict[str, Any]:
+        return self.require(request)
+
+    def privileged_for_request(self, request: Request) -> bool:
+        return request.headers.get("x-test-privileged") == "true"
 
 
 class FakeVmAgentAdmin:
@@ -76,6 +82,7 @@ class FakeAdminService:
         self.operations_admin = self
         self.published_chat_events: list[dict[str, Any]] = []
         self.assistant_enabled = True
+        self.chat_app: Starlette | None = None
 
     def read_assistant_settings(self) -> dict[str, Any]:
         return {
@@ -102,8 +109,16 @@ def _client_for_user(
     *,
     privileged: bool = False,
 ) -> TestClient:
-    auth = PrivilegedFakeAuth(payload) if privileged else FakeAuth(payload)
-    return TestClient(Starlette(routes=chat_routes(service, auth)))
+    # Match the server: all users share one app and one chat store.
+    if service.chat_app is None:
+        service.chat_app = Starlette(routes=chat_routes(service, HeaderFakeAuth({})))
+    return TestClient(
+        service.chat_app,
+        headers={
+            "x-test-auth": json.dumps(payload),
+            "x-test-privileged": "true" if privileged else "false",
+        },
+    )
 
 
 def _wait_for(predicate, *, timeout: float = 2.0) -> None:
@@ -197,12 +212,23 @@ def test_chat_transcript_and_stream_read_off_the_event_loop(tmp_path: Path, monk
 
 def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(
-        service,
-        {"username": "  ", "display_name": " Alice "},
-        privileged=True,
-    )
-    bob = _client_for_user(service, {"username": "bob"})
+
+    class RequestAuth(FakeAuth):
+        def authentication_payload(self, request: Request) -> dict[str, Any]:
+            if request.headers["x-test-user"] == "alice":
+                return {"username": "  ", "display_name": " Alice "}
+            return {"username": "bob"}
+
+        def require(self, request: Request) -> dict[str, Any]:
+            return self.authentication_payload(request)
+
+        def privileged_for_request(self, request: Request) -> bool:
+            return request.headers["x-test-user"] == "alice"
+
+    # Both users access the same application and ChatStore, as in production.
+    app = Starlette(routes=chat_routes(service, RequestAuth({})))
+    alice = TestClient(app, headers={"x-test-user": "alice"})
+    bob = TestClient(app, headers={"x-test-user": "bob"})
 
     alice_session_response = alice.post("/api/chat/session")
     bob_session_response = bob.post("/api/chat/session")
@@ -511,3 +537,70 @@ def test_chat_session_reenabled_disabled_thread_schedules_prewarm(tmp_path: Path
             thread_id=session["thread_id"],
         )
     ]
+
+
+def test_chat_context_is_redacted_for_assistant_and_kept_out_of_visible_transcript(tmp_path: Path) -> None:
+    service = FakeAdminService(tmp_path)
+    client = _client_for_user(service, {"username": "viewer"}, privileged=False)
+    session = client.post("/api/chat/session").json()
+    thread_id = session["thread_id"]
+    response = client.post(
+        "/api/chat/message",
+        json={
+            "thread_id": thread_id,
+            "content": "Explain this graph",
+            "context": {
+                "event_type": "demo.requested",
+                "config": {
+                    "prompt": "Prepare a draft response for the request.",
+                    "body_text": "A request was received.",
+                    "body": {"message": "Request received", "apiKey": "synthetic-body-key"},
+                    "parameters": {
+                        "cycle_id": "${{ request.cycle_id }}",
+                        "attempts": 2,
+                        "clientSecret": "synthetic-parameter-secret",
+                    },
+                    "connectionString": "Password=synthetic-connection",
+                    "headers": {"X-Custom": "synthetic-header"},
+                    "environment": {"PRIVATE_VALUE": "synthetic-env"},
+                    "endpoint": (
+                        "https://synthetic-user:synthetic-pass@example.test/tasks"
+                        "?value=synthetic-query#synthetic-fragment"
+                    ),
+                    "auth_instructions": "Use Bearer synthetic-bearer",
+                    "nested": [{"apiKey": "synthetic-secret", "pat": "synthetic-pat"}],
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["messages"][0]["content"] == "Explain this graph"
+    published = service.published_chat_events[-1]
+    assert published["content"].startswith("Explain this graph\n\n")
+    assert "demo.requested" in published["content"]
+    published_context = json.loads(published["content"].split("\n")[-1])
+    config = published_context["config"]
+    assert config["prompt"] == "Prepare a draft response for the request."
+    assert config["body_text"] == "A request was received."
+    assert config["body"]["message"] == "Request received"
+    assert config["parameters"]["cycle_id"] == "${{ request.cycle_id }}"
+    assert config["parameters"]["attempts"] == 2
+    assert config["auth_instructions"] == "Use Bearer [REDACTED]"
+    assert config["body"]["apiKey"] == "[REDACTED]"
+    assert config["parameters"]["clientSecret"] == "[REDACTED]"
+    assert config["connectionString"] == "[REDACTED]"
+    assert config["headers"] == "[REDACTED]"
+    assert config["environment"] == "[REDACTED]"
+    assert config["nested"] == [{"apiKey": "[REDACTED]", "pat": "[REDACTED]"}]
+    assert "example.test/tasks" in config["endpoint"]
+    assert "synthetic-" not in published["content"]
+    assert published["assistant_capability_mode"] == "read-only"
+    transcript = client.get(f"/api/chat/transcript/{thread_id}").json()
+    assert [message["content"] for message in transcript["messages"]] == ["Explain this graph"]
+
+    invalid = client.post(
+        "/api/chat/message",
+        json={"thread_id": thread_id, "content": "Explain again", "context": "unexpected text"},
+    )
+    assert invalid.status_code == 400
+    assert len(service.published_chat_events) == 1

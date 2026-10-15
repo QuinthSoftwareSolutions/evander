@@ -542,6 +542,22 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     return provider.load_state()
 
 
+def _run_until_effect_statuses(
+    worker: EffectOrchestratorWorker, expected: dict[str, str], *, timeout: float = 5.0
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        worker.run_once()
+        statuses = {
+            record.effect_id: record.status
+            for record in worker.execution_store.read_all().values()
+        }
+        if all(statuses.get(effect_id) == status for effect_id, status in expected.items()):
+            return
+        time.sleep(0.005)
+    pytest.fail(f"Effects did not reach {expected}; observed {statuses}")
+
+
 def _cron_worker_config(runtime_dir: Path, graph: dict[str, object]):
     """Fresh canonical graph using the common deterministic cron trigger."""
     return canonical_worker_config(
@@ -812,8 +828,15 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
         )
     )
 
-    for _ in range(8):
-        worker.run_once()
+    _run_until_effect_statuses(
+        worker,
+        {
+            'effect-alpha-state': 'succeeded',
+            'query-alpha-state': 'succeeded',
+            'effect-beta-state': 'succeeded',
+            'query-beta-state': 'succeeded',
+        },
+    )
 
     execution_payload = effect_execution_payload(worker_config)
     records_by_effect_id = {record["effect_id"]: record for record in execution_payload.values()}
@@ -3869,7 +3892,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
     assert queue_payload["event-gate-retry-1"]["delivery_state"] == "inflight"
     assert len(counting_factory.execute_calls) == 0
 
-    worker.run_once()
+    _run_until_effect_statuses(worker, {"effect-1": "succeeded"})
 
     gate_payload = gate_execution_payload(worker_config)
     gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]
@@ -4658,8 +4681,13 @@ def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
         )
     )
 
-    for _ in range(4):
-        worker.run_once()
+    _run_until_effect_statuses(
+        worker,
+        {
+            'effect-1': 'waiting',
+            'effect-2': 'succeeded',
+        },
+    )
 
     assert [call["model"] for call in resume_calls] == ["resolved-local-model-a"]
     executions = worker.execution_store.read_all().values()
@@ -9078,8 +9106,12 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
         )
     )
 
-    for _ in range(3):
-        worker.run_once()
+    _run_until_effect_statuses(
+        worker,
+        {
+            'effect-1': 'failed',
+        },
+    )
 
     effect_payload = effect_execution_payload(worker_config)
     only = next(iter(effect_payload.values()))
@@ -9167,8 +9199,13 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
         )
     )
 
-    for _ in range(4):
-        worker.run_once()
+    _run_until_effect_statuses(
+        worker,
+        {
+            'effect-1': 'error_routed',
+            'effect-error': 'succeeded',
+        },
+    )
 
     effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
@@ -9290,8 +9327,12 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
         )
     )
 
-    for _ in range(3):
-        worker.run_once()
+    _run_until_effect_statuses(
+        worker,
+        {
+            'effect-1': 'failed',
+        },
+    )
 
     effect_payload = effect_execution_payload(worker_config)
     only = next(iter(effect_payload.values()))

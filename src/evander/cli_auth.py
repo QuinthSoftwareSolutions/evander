@@ -12,7 +12,8 @@ import httpx
 import typer
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.messaging.teams_auth import TeamsAuthError
+from evander.messaging.teams_auth_errors import TeamsAuthError
+from evander.optional_integrations import OptionalIntegrationUnavailable
 
 from . import cli_app, cli_common, cli_runtime
 
@@ -191,7 +192,10 @@ def _teams_auth_call(service: AdminRuntimeComponents, action: str, **kwargs: obj
             f"Teams auth {action} is unavailable in this build. "
             f"Expected TeamsAdminService.{action}()."
         )
-    return method(**kwargs)
+    try:
+        return method(**kwargs)
+    except OptionalIntegrationUnavailable as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _teams_auth_emit_result(title: str, result: object) -> None:

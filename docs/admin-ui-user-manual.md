@@ -912,6 +912,12 @@ draft remains visible so you can reapply intentional changes after reviewing the
 
 ## Workflow
 
+For guided setup, open **Workflow starters** or **Start a workflow** on the dashboard.
+Choose a scheduled agent task or, with its add-on enabled, a Teams direct-message assistant.
+Check prerequisites, preview the generated workflow, activate it, and verify its first run.
+The resulting pack is editable here. See [Workflow starters](workflow-starters.md) for
+setup, permissions, and the distinction between queued work and verified completion.
+
 The Workflow tab is the graph editor and runtime inspector.
 
 ![Workflow](assets/admin-ui/manual-workflow.png)

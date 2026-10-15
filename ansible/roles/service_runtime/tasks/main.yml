@@ -71,6 +71,9 @@
   retries: 3
   delay: 2
 
+- name: Discover installed services before reconciling optional units
+  ansible.builtin.service_facts:
+
 - name: Reconcile systemd service enablement and runtime state
   ansible.builtin.systemd:
     name: "{{ item.unit }}"
@@ -90,3 +93,4 @@
   retries: 3
   delay: 2
   loop: "{{ evander_systemd_units }}"
+  when: (evander_services.get(item.key, false) | bool) or item.unit in ansible_facts.services

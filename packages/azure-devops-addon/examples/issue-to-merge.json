@@ -1,0 +1,10 @@
+{
+  "name": "issue-delivery",
+  "session_id": "coding-agent",
+  "managed_repo_id": "mr_example",
+  "work_item_id": "42",
+  "base_branch": "main",
+  "pipeline_id": "7",
+  "min_reviewers": "1",
+  "max_repairs": "3"
+}

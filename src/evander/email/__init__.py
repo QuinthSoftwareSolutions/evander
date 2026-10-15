@@ -1,6 +1,5 @@
 from .cursor_store import DurableCursorStore, EmailSyncCursor
 from .gmail_provider import GmailEmailProvider
-from .graph_provider import GraphEmailProvider
 from .providers import (
     EmailAttachmentContent,
     EmailAttachmentMetadata,
@@ -28,3 +27,11 @@ __all__ = [
     "JsonEmailProvider",
     "MultiMailboxEmailProvider",
 ]
+
+
+def __getattr__(name):
+    if name == "GraphEmailProvider":
+        from evander.optional_integrations import require_teams_graph_module
+
+        return require_teams_graph_module("evander_teams_graph_addon.email").GraphEmailProvider
+    raise AttributeError(name)

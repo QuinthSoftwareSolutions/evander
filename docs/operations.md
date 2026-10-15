@@ -19,6 +19,7 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Task | Runbook |
 |---|---|
 | Inspect sessions, approvals, configuration, or capacity | [Admin Web](#admin-web-operator-console) and [directory operations](#directory-operations) |
+| Activate a common workflow after installation | [Workflow starters](workflow-starters.md) |
 | Configure or troubleshoot execution | [Execution backends](execution-backends.md) and [container workers](container-worker-backend.md) |
 | Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
 | Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
@@ -387,6 +388,57 @@ a restarted worker resumes the committed position. Ranges with no orphans advanc
 the cursor instead of rechecking the entire retained prefix. Newly unreferenced
 blobs behind the cursor or beyond the upper key wait for the next daily retention
 sweep. No additional tables, indexes or offline migration are needed.
+
+Execution-history scalar indexes can optionally store repeated execution keys,
+generation hashes and field paths in shared dictionaries. New and existing databases
+continue to use text-keyed indexes until explicitly converted. Application indexing,
+field queries, retention and garbage collection support both formats; the original
+scalar table names remain readable views in the compact format. Those views are for
+inspection, and applications must use the repository write APIs.
+
+History reports reuse up to 16 idle read-only connections per process, partitioned
+by database file identity and thread. Reports release every cursor and transaction
+before idling; each subsequent report opens a fresh snapshot with its own deadline.
+Database replacement, runtime shutdown and failed operations discard affected
+connections. Writers and background indexing/retention connections remain transient.
+This optimization supports both scalar formats and requires no database migration.
+
+Rehearse conversion on a consistent copy before planning a production cutover:
+
+```bash
+evander-cli convert-history-index --database /backup/orchestration.db --output /backup/orchestration-compact.db --offline
+```
+
+This command opens the source read-only and uses SQLite's backup API, converts a
+private temporary copy, then publishes a new file only after full integrity and
+foreign-key checks pass. It refuses an existing output, preserves scalar row IDs,
+and compacts the new format with `VACUUM INTO`. Reserve space beside the output for
+the source-sized backup, replacement indexes and compact output together. Only
+verified output is published; rerun from the source to restart an interrupted
+conversion. `--offline` confirms
+that no process will use the output during conversion; the command does not stop
+services or switch any database paths. The new database is a snapshot: subsequent
+source writes are not copied. A cutover therefore requires stopping every source
+writer before taking the final copy and keeping them stopped until the verified
+output is installed using the normal backup/restore procedure.
+
+The command reports each conversion/check phase on stderr and returns phase timings
+in its JSON result. SQLite's cache defaults to 1 GiB; use `--cache-mib` to size it for
+the maintenance host (for example, `--cache-mib 4096` on a workstation with spare
+memory). Bulk index sorts can use additional memory beyond this cache. Foreign-key
+enforcement is deferred only within the unpublished temporary copy; full integrity
+and foreign-key checks still have to pass before the output becomes available.
+
+To prepare rollback, use the new executable to produce another separate output:
+
+```bash
+evander-cli convert-history-index --database /backup/orchestration-compact.db --output /backup/orchestration-legacy.db --offline --legacy
+```
+
+Legacy conversion preserves implicit scalar row IDs and deliberately skips vacuuming.
+Use that output for any further operational-payload downgrade below. Never start an
+older binary on a database with the compact scalar format; the read-only storage
+check reports `history_index_format` and includes this restriction in `downgrade_ready`.
 
 For rollback to a release that only understands inline operational records, keep all database users
 stopped and run the **new release's CLI** before starting the old executable:
@@ -921,11 +973,32 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
   `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
   on Nexus-backed registry defaults so only audit sessions opt into the facade.
+- The Workflow editor keeps the canvas above a full-width workbench. Drag the
+  horizontal divider, or focus it and use the arrow keys, to adjust the split.
+  **Expand editor**, **Collapse editor**, and the toolbar's **Show editor** or
+  **Show canvas** controls change the visible panes without rearranging nodes or
+  resetting the canvas view. The split and node-detail tab are remembered locally.
+  Open **Graphs** or **Add node** from the toolbar. The workbench includes
+  **Inspector**, **Runs**, and **Checks**; node details use **Configuration**,
+  **Outputs**, and **History** tabs. Narrow screens retain the touch canvas and
+  full-width inspector sheet.
+- For `gate:map`, add named output rows and choose an upstream binding, text,
+  templated text, number, boolean, null, object, or array. Objects and arrays use
+  JSON sub-editors. **Raw JSON** and **Structured form** switch views without
+  changing stored value types or bindings. Resolve duplicate names and invalid
+  values before saving; switching tabs retains unfinished row input.
 - In the Workflow editor, node inspector edits are staged into the local workflow document as soon
   as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- To understand a graph, select it in the **Graphs** panel,
+  then click **Explain graph** in its graph details. The built-in assistant opens and
+  explains the graph's triggers, decisions, data flow, and actions using the current
+  editor document, including unsaved node changes. Existing chat history and any
+  message draft are retained, and sensitive configuration fields are redacted from
+  the assistant context. This requires workflow read access and an enabled
+  Admin assistant; it does not save or run the workflow.
 - To run an event workflow manually, select its `trigger:event` node and click
   **Trigger manually** in the inspector. Save or discard any workflow changes first,
   and enable and save the trigger if it is disabled. Fill the generated event fields;
@@ -4255,3 +4328,20 @@ manually scheduled baseline. Search changed and dirty files in the agent checkou
 See
 [Repository indexing](repository-indexing.md) for image preparation, App configuration,
 the reconciliation workflow, CLI commands, recovery, retention and external queries.
+
+## Installing the optional Teams/Graph provider
+
+For Teams messaging, Graph mail, or Teams meetings, install core and
+`packages/teams-graph-addon` into the same host virtualenv before reinstalling service definitions.
+Follow the [Teams/Graph upgrade instructions](../packages/teams-graph-addon/README.md). Existing
+worker names, directory settings, secrets, and runtime stores are preserved. The systemd installer
+skips Teams service installation when the integration is missing or explicitly disabled.
+
+### Optional Azure DevOps integration
+
+Azure DevOps operations and the `evander-ado-worker` / `evander-proxy-issue-sync`
+commands now come from [the Azure DevOps package](../packages/azure-devops-addon/README.md).
+Install it in the control-plane Python environment before enabling these services.
+The systemd installer includes its deployment assets only when installed and enabled.
+After disabling it, follow the add-on restart list; both workers exit without polling.
+Keep existing runtime configuration and credentials in place for later re-enablement.

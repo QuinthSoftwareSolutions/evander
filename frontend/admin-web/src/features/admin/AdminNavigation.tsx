@@ -45,6 +45,7 @@ const TAB_ICONS: Readonly<Record<BuiltinAdminTab, LucideIcon>> = {
   approvals: ShieldCheck,
   artifacts: PackageOpen,
   workflow: Workflow,
+  starters: Sparkles,
   skills: Sparkles,
   addons: Puzzle,
   connectors: Plug,

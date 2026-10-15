@@ -218,5 +218,20 @@ export function tutorialBubblePosition(
   if (step.bubblePlacement === "top" || step.bubblePlacement === "bottom") {
     preferredLeft = centerX - bubbleSize.width / 2;
   }
-  return clampTutorialBubblePosition({ left: preferredLeft, top: preferredTop }, bubbleSize, canvasSize, padding);
+  const preferred = clampTutorialBubblePosition({ left: preferredLeft, top: preferredTop }, bubbleSize, canvasSize, padding);
+  if (step.bubblePlacement === "center" || bubbleSize.width <= 0 || bubbleSize.height <= 0) return preferred;
+
+  const overlapsTarget = (position: { left: number; top: number }) =>
+    position.left < right && position.left + bubbleSize.width > left &&
+    position.top < bottom && position.top + bubbleSize.height > top;
+  if (!overlapsTarget(preferred)) return preferred;
+
+  // A short canvas can clamp a hint over the node the operator must use.
+  const alternatives = [
+    { left: left - bubbleSize.width - gap, top: centerY - bubbleSize.height / 2 },
+    { left: right + gap, top: centerY - bubbleSize.height / 2 },
+    { left: centerX - bubbleSize.width / 2, top: top - bubbleSize.height - gap },
+    { left: centerX - bubbleSize.width / 2, top: bottom + gap },
+  ].map(position => clampTutorialBubblePosition(position, bubbleSize, canvasSize, padding));
+  return alternatives.find(position => !overlapsTarget(position)) ?? preferred;
 }

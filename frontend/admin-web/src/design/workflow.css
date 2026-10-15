@@ -1,5 +1,4 @@
-/* Workflow keeps its canvas geometry. Commands occupy one row; the resizable rail
-   is reserved for the selected node and collapsible libraries. */
+/* Workflow commands, canvas, and the lower editing workbench. */
 [data-admin-design] .workflow-embedded-page {
   display: flex;
   flex-direction: column;
@@ -172,15 +171,6 @@
   --xy-controls-button-background-color-default: var(--ui-surface);
   --xy-controls-button-color-default: var(--ui-text);
   --xy-controls-button-border-color-default: var(--ui-border);
-}
-[data-admin-design] .workflow-sidebar-resize-handle {
-  background: var(--ui-canvas);
-}
-[data-admin-design] .workflow-sidebar-resize-handle::before {
-  background: var(--ui-border);
-}
-[data-admin-design] .workflow-sidebar-resize-handle::after {
-  background: var(--ui-muted);
 }
 [data-admin-design] :is(.workflow-pack-canvas-control, .workflow-generator-canvas-control) {
   gap: 6px;
@@ -380,4 +370,67 @@
   color: var(--ui-accent);
   font-size: 12px;
   padding-block: 8px;
+}
+
+[data-admin-design] .workflow-embedded-page > .workflow-lower-workbench-shell {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(140px, var(--workflow-canvas-share)) 8px minmax(180px, var(--workflow-editor-share));
+}
+[data-admin-design] :is(.workflow-command-tools, .workflow-workbench-bar, .workflow-workbench-panels, .workflow-workbench-actions, .workflow-inspector-tabs, .workflow-tool-popover-heading) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[data-admin-design] .workflow-command-tools .workflow-tutorial-launcher,
+[data-admin-design] .workflow-command-tools .workflow-tutorial-launcher-button { margin: 0; width: auto; }
+[data-admin-design] .workflow-workbench.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: var(--ui-surface);
+  overflow: hidden;
+}
+[data-admin-design] .workflow-workbench.sidebar button { width: auto; }
+[data-admin-design] .workflow-workbench-bar { flex: none; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--ui-border); }
+[data-admin-design] :is(.workflow-workbench-bar, .workflow-inspector-tabs) button { margin: 0; }
+[data-admin-design] :is(.workflow-workbench-panels, .workflow-inspector-tabs) [aria-selected="true"] { color: var(--ui-accent); background: var(--ui-selected); }
+[data-admin-design] .workflow-workbench-content { flex: 1; min-height: 0; padding: 12px 16px; overflow: auto; }
+[data-admin-design] .workflow-workbench .sidebar-section { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+[data-admin-design] .workflow-workbench .inspector-metadata-field { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+[data-admin-design] .workflow-node-inspector-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+[data-admin-design] .workflow-node-inspector-heading > button { margin-left: auto; }
+[data-admin-design] .workflow-inspector-tabs { padding-block: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--ui-border); }
+[data-admin-design] :is(.workflow-workbench, .compact-workflow-sheet) [hidden] { display: none !important; }
+[data-admin-design] .workflow-workbench #node-configuration-panel > .inspector-label { max-width: 440px; }
+[data-admin-design] .workflow-workbench-resize-handle { position: relative; cursor: row-resize; touch-action: none; border-block: 1px solid var(--ui-border); background: var(--ui-navigation); }
+[data-admin-design] .workflow-workbench-resize-handle::after { content: ""; position: absolute; width: 64px; height: 2px; left: calc(50% - 32px); top: 2px; background: var(--ui-muted); }
+[data-admin-design] .workflow-workbench-resize-handle:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
+[data-admin-design] .is-resizing-workbench :is(.canvas-shell, .workflow-workbench) { pointer-events: none; }
+[data-admin-design] .workflow-tool-popover.sidebar { position: absolute; z-index: 25; top: 0; left: 0; width: min(660px, 100%); max-height: 100%; padding: 12px; border: 1px solid var(--ui-border); background: var(--ui-surface); box-shadow: var(--ui-shadow); overflow: auto; }
+[data-admin-design] .workflow-tool-popover-heading { justify-content: space-between; margin-bottom: 8px; }
+[data-admin-design] .workflow-tool-popover .sidebar-section { margin-bottom: 12px; }
+[data-admin-design] .map-template-editor .field-toolbar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+[data-admin-design] .map-template-row { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, .8fr) minmax(180px, 1.8fr) auto; gap: 10px; align-items: start; padding-block: 12px; border-bottom: 1px solid var(--ui-border); }
+[data-admin-design] .map-template-row .inspector-label { margin: 0; min-width: 0; }
+[data-admin-design] .map-template-row :is(input, select, textarea) { min-width: 0; width: 100%; }
+[data-admin-design] .map-remove-output { align-self: start; margin-top: 22px !important; }
+[data-admin-design] .map-output-value { min-width: 0; }
+[data-admin-design] .map-custom-binding { margin-top: 6px; font-size: 12px; }
+[data-admin-design] .map-output-error { grid-column: 1 / -1; margin: 0; color: var(--ui-danger); }
+[data-admin-design] .map-template-editor > button { margin-top: 12px; }
+@media (min-width: 981px) {
+  [data-admin-design] .workflow-lower-workbench-shell:is(.view-canvas, .view-editor) { grid-template-rows: minmax(0, 1fr); }
+  [data-admin-design] .workflow-lower-workbench-shell.view-canvas > :is(.workflow-workbench, .workflow-workbench-resize-handle),
+  [data-admin-design] .workflow-lower-workbench-shell.view-editor > :is(.workflow-canvas-stage, .workflow-workbench-resize-handle) { display: none; }
+}
+@media (max-width: 980px) {
+  [data-admin-design] .workflow-embedded-page > .workflow-lower-workbench-shell { grid-template-rows: minmax(0, 1fr); }
+  [data-admin-design] .map-template-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  [data-admin-design] .map-output-value { grid-column: 1 / -1; }
+  [data-admin-design] .map-remove-output { grid-column: 2; margin-top: 0 !important; justify-self: end; }
 }

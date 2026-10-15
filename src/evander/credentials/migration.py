@@ -8,12 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from evander.directories import DirectoryService
-from evander.messaging.teams_auth import (
-    TeamsAuthCredentials,
-    TeamsAuthProtocolError,
-    decode_legacy_teams_credential_envelope,
-    legacy_teams_credential_key_path,
-)
 
 from .bindings import connector_fields, teams_binding
 from .store import (
@@ -48,6 +42,12 @@ def _write(admin, directory, payload):
 
 def _empty_legacy_teams_source(source: Path) -> bool:
     """Recognize signed-out storage without initializing keys or changing data."""
+    from evander.messaging.teams_auth import (
+        TeamsAuthProtocolError,
+        decode_legacy_teams_credential_envelope,
+        legacy_teams_credential_key_path,
+    )
+
     raw = protected_read(source, limit=4 * 1024 * 1024, legacy_permissions=True)
     try:
         payload = json.loads(raw)
@@ -73,9 +73,10 @@ def prepare_teams(admin, directory, payload) -> dict:
             previous = admin.store.metadata(config.teams_delegated_credential_ref)
             if previous["owner_directory"] == directory and previous["status"] != "deleted":
                 raise CredentialError("Use the existing managed Teams credential")
-        elif (
-            Path(config.teams_delegated_credential_store_path).exists()
-            and not _empty_legacy_teams_source(Path(config.teams_delegated_credential_store_path))
+        elif Path(
+            config.teams_delegated_credential_store_path
+        ).exists() and not _empty_legacy_teams_source(
+            Path(config.teams_delegated_credential_store_path)
         ):
             raise CredentialError(
                 "Existing Teams storage requires the maintenance migration command"
@@ -204,6 +205,10 @@ class _TeamsCredentialMigration:
         )
 
     def _inspect_identity(self, group: dict) -> None:
+        from evander.messaging.teams_auth import (
+            TeamsAuthCredentials,
+        )
+
         consumers = group["consumers"]
         refs = {c["config"].teams_delegated_credential_ref for c in consumers}
         source = Path(group["source"])
@@ -287,6 +292,12 @@ class _TeamsCredentialMigration:
             group["values"] = values
 
     def _capture_source(self, group: dict, source: Path) -> bool:
+        from evander.messaging.teams_auth import (
+            TeamsAuthProtocolError,
+            decode_legacy_teams_credential_envelope,
+            legacy_teams_credential_key_path,
+        )
+
         if source.exists() and group["source"] not in self.sources:
             # Legacy files may predate restrictive modes. Never expose their data;
             # maintenance first makes the source private, then uses no-follow reads.
@@ -353,6 +364,10 @@ class _TeamsCredentialMigration:
             os.chmod(source, 0o600, follow_symlinks=False)
 
     def _import_credentials(self) -> None:
+        from evander.messaging.teams_auth import (
+            TeamsAuthCredentials,
+        )
+
         for group in self.groups:
             if group["already"]:
                 continue

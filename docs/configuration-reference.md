@@ -3098,3 +3098,19 @@ Embeddings use existing directory-scoped semantic provider settings. Cached vect
 drained faster than new embedding requests while retaining the reconciliation time bound.
 See [Repository indexing](repository-indexing.md) and
 `config/repository-indexing/app.json.example` for the complete operator flow.
+
+## Optional Teams/Graph package
+
+The existing `teams_*` provider settings and `email_mailboxes[].provider: graph` select adapters in
+`evander-teams-graph-addon`. Install that distribution separately; see its
+[configuration and upgrade instructions](../packages/teams-graph-addon/README.md). An explicit
+`addon_loader.enabled_addon_ids` must include `teams-graph` to permit provider use. Existing field
+names, defaults, credential references, and storage paths are retained for compatibility.
+
+### Azure DevOps package ownership
+
+The existing `ado_*` and `azure_devops_*` settings retain their names and validation.
+Their remote operations require the separately installed `evander-azure-devops-addon`
+package, with `azure-devops` present in an explicit enabled-add-on list. Personal ADO
+connection files and OAuth environment variables retain their existing locations and
+names. [Package setup and starter reference](../packages/azure-devops-addon/README.md).

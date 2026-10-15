@@ -70,6 +70,18 @@ For one run, an operator usually needs only a small set of landmarks:
 The editor is the authoring view. Runtime events and executions remain separate durable records
 underneath it, which is why opening or closing the browser does not start or stop the workflow.
 
+The canvas sits above a full-width editing workbench. Adjust the horizontal divider
+to give either area more room, or expand the editor while working on a large form.
+Node details have **Configuration**, **Outputs**, and **History** tabs. **Graphs**
+and **Add node** open from the toolbar; **Runs** and **Checks** are workbench panels.
+These presentation controls preserve the workflow's node positions and local edits.
+
+For a Map node, name each output and select its value type. Upstream bindings use
+an output picker; constants retain their string, number, boolean, or null types.
+Nested objects and arrays have JSON sub-editors, and **Raw JSON** remains available
+for the complete template. Fix invalid values or duplicate output names before
+saving the workflow.
+
 ### Configure a Teams direct-message trigger
 
 For `trigger:teams:direct-message`, set **Chat setup** to **Direct chats by UPN**
@@ -88,8 +100,8 @@ for target permissions and ingest settings.
 
 ### Inspect execution history
 
-For a cross-run question, select the relevant node and expand **Execution history** in its
-inspector. Choose a local-time date window (the default is the previous seven days), optionally
+For a cross-run question, select the relevant node, open **History**, and expand
+**Execution history**. Choose a local-time date window (the default is the previous seven days), optionally
 limit statuses, and add exact JSON Pointer filters over input or output fields. Up to eight filters
 are combined with AND. Equality is type-aware and case-sensitive; numeric comparisons and
 presence/absence checks are also available. Array contents are visible in detail but array-element

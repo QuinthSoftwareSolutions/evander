@@ -87,6 +87,7 @@ type SelectionActionsInputs = {
   patchWorkflowDocument: (nextConfig: WorkflowConfig, nextLayout: WorkflowLayout, nextGraphs?: WorkflowGraphMetadata[], selectedNodeIdsAfterPatch?: string[], diagnosticsOverride?: WorkflowValidationDiagnostic[], outputSchemasOverride?: WorkflowOutputSchemas, revisionOverride?: string) => void;
   completeTutorialAction: (action: WorkflowTutorialRequiredAction) => boolean;
   workflowEditLocked: boolean;
+  workflowGraphSelectionLocked: boolean;
   setSelectedGraphId: Dispatch<SetStateAction<string | null>>;
   selectedGraph: WorkflowGraphMetadata | undefined;
   graphNameDraft: string;
@@ -136,6 +137,7 @@ export function createSelectionActions({
   patchWorkflowDocument,
   completeTutorialAction,
   workflowEditLocked,
+  workflowGraphSelectionLocked,
   setSelectedGraphId,
   selectedGraph,
   graphNameDraft,
@@ -437,7 +439,7 @@ export function createSelectionActions({
   }
 
   function selectWorkflowGraph(graph: WorkflowGraphMetadata) {
-    if (workflowEditLocked) return;
+    if (workflowGraphSelectionLocked) return;
     setSelectedGraphId(graph.id);
     setProgrammaticSelection(graph.node_ids, graph.node_ids[0] ?? null);
     setSelectedEdgeId(null);

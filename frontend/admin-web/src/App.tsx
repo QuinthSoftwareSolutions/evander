@@ -26,6 +26,7 @@ import {
 } from "react";
 import { hashQueryParam, updateHashQueryParam } from "./adminRouting";
 import { useAdminUi } from "./features/admin/AdminContext";
+import { workflowGraphExplanationRequest } from "./features/workflow-editor/graphExplanation";
 import { ApiError } from "./features/admin/api";
 import {
   cachedVisibleValidationDiagnostics,
@@ -42,11 +43,9 @@ import { createCanvasConnectionActions } from "./features/workflow-editor/canvas
 import {
   buildEdges,
   buildNodes,
-  clampWorkflowSidebarWidth,
   currentPageVisible,
   currentPositionsFromNodes,
   isCompactCanvasTouchViewport,
-  maxWorkflowSidebarWidth,
   nodeTypes,
   workflowGraphLabels,
 } from "./features/workflow-editor/canvasModel";
@@ -68,8 +67,6 @@ import {
   RUNTIME_NODE_PULSE_DURATION_MS,
   RUNTIME_NODE_PULSE_SEEN_KEY_CAP,
   TARGET_SELECTOR_NODE_TYPES,
-  WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH,
-  WORKFLOW_SIDEBAR_MIN_WIDTH,
   WORKFLOW_TUTORIAL_PROGRESS_API_PATH,
   WORKFLOW_UNDO_HISTORY_LIMIT,
 } from "./features/workflow-editor/editorConstants";
@@ -167,7 +164,8 @@ import {
 } from "./features/workflow-editor/tutorialModel";
 import { createTutorialPanelRenderers } from "./features/workflow-editor/tutorialPanelRenderers";
 import { useNodeExecutionHistory } from "./features/workflow-editor/useNodeExecutionHistory";
-import { useWorkflowSidebar } from "./features/workflow-editor/useWorkflowSidebar";
+import { useWorkflowWorkbench } from "./features/workflow-editor/useWorkflowWorkbench";
+import { type MapTemplateDraftRow } from "./features/workflow-editor/mapTemplateDraft";
 import { createWorkflowPackActions } from "./features/workflow-editor/workflowPackActions";
 import {
   type WorkflowConfig,
@@ -231,6 +229,9 @@ export default function App() {
     selectedDirectoryPath,
     directoryTree,
     setWorkflowHasUnsavedChanges,
+    assistantEnabled,
+    assistantRequestPending,
+    openAssistantWithPrompt,
     canReadWorkflows,
     canReadWorkflowRuns,
     canWriteWorkflows,
@@ -244,7 +245,8 @@ export default function App() {
     "workflow_pack",
   );
   const appShellRef = useRef<HTMLDivElement | null>(null);
-  const { sidebarWidth, setSidebarWidth, isResizingSidebar, startSidebarResize, handleSidebarResizeKeyDown } = useWorkflowSidebar(appShellRef);
+  const workbench = useWorkflowWorkbench(appShellRef);
+  const [workbenchPanel, setWorkbenchPanel] = useState<"inspector" | "runs" | "checks">("inspector");
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const tutorialBubbleRef = useRef<HTMLDivElement | null>(null);
   const tutorialSnapshotRef = useRef<TutorialEditorSnapshot | null>(null);
@@ -362,6 +364,7 @@ export default function App() {
   const [agentWorkerCatalog, setAgentWorkerCatalog] = useState<{ key: string; catalog: WorkflowEditorCatalog } | null>(null);
   const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
   const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
+  const [inspectorMapTemplateDrafts, setInspectorMapTemplateDrafts] = useState<Record<string, MapTemplateDraftRow[]>>({});
   const [inspectorToolArgumentPolicyDrafts, setInspectorToolArgumentPolicyDrafts] = useState<
     Record<string, ToolArgumentPolicyDraftRow[]>
   >({});
@@ -396,6 +399,7 @@ export default function App() {
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
   const workflowMutationLocked = workflowEditLocked || workflowGeneratorOpen;
+  const workflowGraphSelectionLocked = !canReadWorkflows || isInspectMode || Boolean(activeWorkflowTutorial) || workflowGeneratorOpen;
   const workflowPackManageLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || workflowGeneratorOpen || !canManageWorkflowPacks;
   const workflowRunReadLocked = !canReadWorkflowRuns;
   const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
@@ -773,6 +777,9 @@ export default function App() {
     inspectorToolArgumentPolicyDrafts,
     inspectorJsonDisplayModes,
     updateToolArgumentPolicyJsonDisplayMode,
+    inspectorMapTemplateDrafts,
+    setInspectorMapTemplateDrafts,
+    setInspectorJsonDisplayModes,
     mutateToolArgumentPolicyDraftRows,
     inspectorJsonDrafts,
     setInspectorJsonDrafts,
@@ -897,6 +904,7 @@ export default function App() {
     patchWorkflowDocument,
     completeTutorialAction,
     workflowEditLocked,
+    workflowGraphSelectionLocked,
     setSelectedGraphId,
     selectedGraph,
     graphNameDraft,
@@ -1010,6 +1018,8 @@ export default function App() {
   });
 
   const nodeDraftActions = createNodeDraftActions({
+    inspectorMapTemplateDrafts,
+    setInspectorMapTemplateDrafts,
     setInspectorDraftError,
     setInspectorNodeId,
     setInspectorDisplayName,
@@ -1168,6 +1178,11 @@ export default function App() {
   }, [selectedNode?.id]);
 
   useEffect(() => {
+    setWorkbenchPanel("inspector");
+    if ((selectedNodeId || selectedEdgeId || isInspectMode) && workbench.view === "canvas") workbench.setView("split");
+  }, [selectedNodeId, selectedEdgeId, isInspectMode]);
+
+  useEffect(() => {
     let cancelled = false;
     fetchJson<unknown>(WORKFLOW_TUTORIAL_PROGRESS_API_PATH)
       .then((payload) => {
@@ -1193,8 +1208,6 @@ export default function App() {
       setCompactActivePanel(null);
       setCompactCanvasMode("select");
       setCompactCreateSearch("");
-      const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-      setSidebarWidth((current) => clampWorkflowSidebarWidth(current, containerWidth));
     };
 
     handleResize();
@@ -2836,7 +2849,8 @@ export default function App() {
   });
   const createEntryCount = createEntriesByKind.reduce((total, group) => total + group.entries.length, 0);
   const appShellStyle = {
-    "--workflow-sidebar-width": `${sidebarWidth}px`,
+    "--workflow-canvas-share": `${workbench.canvasShare}fr`,
+    "--workflow-editor-share": `${100 - workbench.canvasShare}fr`,
   } as CSSProperties;
   const canvasRect = canvasShellRef.current?.getBoundingClientRect();
   const tutorialBubblePositionValue = isTutorialMode && activeWorkflowTutorialStep && canvasRect
@@ -2976,6 +2990,8 @@ export default function App() {
   });
 
   const inspectorPanelRenderers = createInspectorPanelRenderers({
+    inspectorTab: workbench.tab,
+    setInspectorTab: workbench.setTab,
     selectedNodeIds,
     setProgrammaticSelection,
     workflowEditLocked,
@@ -3012,6 +3028,20 @@ export default function App() {
     error,
   });
 
+  function explainSelectedGraph() {
+    if (!document || !selectedGraph || workflowGraphSelectionLocked || !assistantEnabled || assistantRequestPending) return;
+    openAssistantWithPrompt(workflowGraphExplanationRequest(document, selectedGraph, catalog, hasUnsavedWorkflowChanges));
+    setCompactActivePanel(null);
+  }
+
+  const graphExplanationDisabledReason = workflowGraphSelectionLocked
+    ? "Select a graph in the workflow editor to explain it."
+    : !assistantEnabled
+      ? "The built-in assistant is disabled."
+      : assistantRequestPending
+        ? "An assistant request is being sent."
+        : null;
+
   const documentPanelRenderers = createDocumentPanelRenderers({
     isTutorialMode,
     createEntryCount,
@@ -3039,7 +3069,9 @@ export default function App() {
     graphViewContext,
     selectedGraphId,
     selectWorkflowGraph,
-    workflowEditLocked,
+    workflowGraphSelectionLocked,
+    explainSelectedGraph,
+    graphExplanationDisabledReason,
     selectedGraph,
     graphNameDraft,
     setGraphNameDraft,
@@ -3124,34 +3156,6 @@ export default function App() {
     return compactPanelRenderers.renderCompactBottomSheet();
   }
 
-  function renderDesktopRunsPanel(): ReactNode {
-    return runPanelRenderers.renderDesktopRunsPanel();
-  }
-
-  function renderDesktopGraphsPanel(): ReactNode {
-    return documentPanelRenderers.renderDesktopGraphsPanel();
-  }
-
-  function renderDesktopCreatePanel(): ReactNode {
-    return documentPanelRenderers.renderDesktopCreatePanel();
-  }
-
-  function renderDesktopSourceFilesPanel(): ReactNode {
-    return documentPanelRenderers.renderDesktopSourceFilesPanel();
-  }
-
-  function renderDesktopSelectionInspectorPanel(): ReactNode {
-    return inspectorPanelRenderers.renderDesktopSelectionInspectorPanel();
-  }
-
-  function renderDesktopNodeInspectorPanel(): ReactNode {
-    return inspectorPanelRenderers.renderDesktopNodeInspectorPanel();
-  }
-
-  function renderDesktopEdgeInspectorPanel(): ReactNode {
-    return inspectorPanelRenderers.renderDesktopEdgeInspectorPanel();
-  }
-
   return (
     <div className="admin-page workflow-embedded-page" onKeyDown={handleAppShellKeyDown}>
       <header className="workflow-command-bar">
@@ -3159,6 +3163,13 @@ export default function App() {
           <h1>{isInspectMode ? "Run inspection" : "Workflow"}</h1>
           <span>{selectedWorkflowPack?.display_name || selectedWorkflowPack?.reference || "Workflow editor"}</span>
         </div>
+        {!isCompactCanvasTouchMode ? <div className="workflow-command-tools">
+          <button type="button" aria-expanded={compactActivePanel === "graphs"} onClick={() => setCompactActivePanel(current => current === "graphs" ? null : "graphs")}>Graphs</button>
+          {!isInspectMode ? <button type="button" aria-expanded={compactActivePanel === "create"} onClick={() => setCompactActivePanel(current => current === "create" ? null : "create")} disabled={workflowMutationLocked && tutorialCurrentRequiredAction()?.kind !== "add-node"}>Add node</button> : null}
+          {renderWorkflowTutorialLauncher()}
+          {workbench.view === "canvas" ? <button type="button" onClick={() => workbench.setView("split")}>Show editor</button> : null}
+          {workbench.view === "editor" ? <button type="button" onClick={() => workbench.setView("split")}>Show canvas</button> : null}
+        </div> : null}
         {!isInspectMode ? (
           <>
             <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
@@ -3175,7 +3186,7 @@ export default function App() {
               <button type="button" onClick={fitWorkflowCanvas} disabled={!flowInstance}>Fit</button>
               <button type="button" onClick={() => void validateDocument()} disabled={workflowReadLocked}>Validate</button>
               <button type="button" onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>Undo</button>
-              <button type="button" className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked}>
+              <button type="button" className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked || Boolean(inspectorDraftError)}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
             </div>
@@ -3184,60 +3195,26 @@ export default function App() {
       </header>
       {!isInspectMode && error ? <div className="error-box save-error-box workflow-command-error">{error}</div> : null}
       <div
-        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}${isInspectMode ? " is-inspect-mode" : ""}${isCompactCanvasTouchMode ? ` compact-mode-${compactCanvasMode}` : ""}`}
+        className={`app-shell workflow-editor-shell workflow-lower-workbench-shell view-${workbench.view}${workbench.isResizing ? " is-resizing-workbench" : ""}${isInspectMode ? " is-inspect-mode" : ""}${isCompactCanvasTouchMode ? ` compact-mode-${compactCanvasMode}` : ""}`}
         ref={appShellRef}
         style={appShellStyle}
         tabIndex={-1}
       >
-        <aside className="sidebar">
-          {isInspectMode ? (
-            <>
-              {renderWorkflowTutorialLauncher()}
-              {renderInspectedRunPanel()}
-              {renderInspectedNodePanel()}
-              {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
-              {error ? <div className="error-box">{error}</div> : null}
-            </>
-          ) : (
-            <>
-              {renderWorkflowTutorialLauncher()}
-              {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state.</div> : null}
-
-              {renderDesktopRunsPanel()}
-
-            {renderDesktopGraphsPanel()}
-
-            {renderDesktopCreatePanel()}
-
-            {renderDesktopSourceFilesPanel()}
-
-            {renderDesktopSelectionInspectorPanel()}
-
-            {renderDesktopNodeInspectorPanel()}
-
-            {renderDesktopEdgeInspectorPanel()}
-
-            {error ? <div className="error-box">{error}</div> : null}
-            </>
-          )}
-        </aside>
+        {!isCompactCanvasTouchMode && (compactActivePanel === "create" || compactActivePanel === "graphs") ? (
+          <aside className="sidebar workflow-tool-popover" role="dialog" aria-modal="false" aria-label={compactActivePanel === "create" ? "Add node" : "Graphs"} onKeyDown={event => {
+            if (event.key !== "Escape") return;
+            event.preventDefault(); event.stopPropagation();
+            (globalThis.document.querySelector('.workflow-command-tools button[aria-expanded="true"]') as HTMLButtonElement | null)?.focus();
+            setCompactActivePanel(null);
+          }}>
+            <div className="workflow-tool-popover-heading"><strong>{compactActivePanel === "create" ? "Add node" : "Graphs"}</strong><button type="button" onClick={() => setCompactActivePanel(null)}>Close</button></div>
+            {compactActivePanel === "create" ? documentPanelRenderers.renderCreatePanelBody(true) : <>{documentPanelRenderers.renderGraphsPanelContent()}{documentPanelRenderers.renderSourceFilesPanel()}</>}
+          </aside>
+        ) : null}
 
         {renderWorkflowTutorialChooser()}
         {renderWorkflowPackModal()}
         {manualEventTrigger.dialog}
-          <div
-            className="workflow-sidebar-resize-handle"
-            role="separator"
-            aria-label="Resize workflow sidebar"
-            aria-orientation="vertical"
-            aria-valuemin={WORKFLOW_SIDEBAR_MIN_WIDTH}
-            aria-valuemax={maxWorkflowSidebarWidth(appShellRef.current?.getBoundingClientRect().width ?? sidebarWidth + WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)}
-            aria-valuenow={sidebarWidth}
-            tabIndex={0}
-            onPointerDown={startSidebarResize}
-            onKeyDown={handleSidebarResizeKeyDown}
-          />
-
           <div className="workflow-canvas-stage">
             {renderCompactToolbar()}
           <main
@@ -3437,8 +3414,33 @@ export default function App() {
                 })
               : null}
           </main>
-          {renderCompactBottomSheet()}
+          {isCompactCanvasTouchMode ? renderCompactBottomSheet() : null}
           </div>
+          {!isCompactCanvasTouchMode ? <>
+            <div className="workflow-workbench-resize-handle" role="separator" aria-label="Resize workflow workbench" aria-orientation="horizontal" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(workbench.canvasShare)} tabIndex={0} onPointerDown={workbench.startResize} onKeyDown={workbench.resizeWithKeyboard} />
+            <section className="workflow-workbench sidebar" aria-label="Workflow workbench">
+              <div className="workflow-workbench-bar">
+                <div className="workflow-workbench-panels" role="tablist" aria-label="Workbench panels">
+                  {(["inspector", "runs", "checks"] as const).map(panel => <button key={panel} type="button" role="tab" id={`workbench-${panel}-tab`} aria-controls={`workbench-${panel}-panel`} aria-selected={workbenchPanel === panel} disabled={panel === "runs" && workflowRunReadLocked} onClick={() => setWorkbenchPanel(panel)}>{panel === "inspector" ? isInspectMode ? "Run inspection" : "Inspector" : panel === "runs" ? "Runs" : "Checks"}</button>)}
+                </div>
+                <div className="workflow-workbench-actions">
+                  <button type="button" onClick={() => workbench.setView(workbench.view === "editor" ? "split" : "editor")}>{workbench.view === "editor" ? "Restore canvas" : "Expand editor"}</button>
+                  <button type="button" onClick={() => workbench.setView("canvas")}>Collapse editor</button>
+                </div>
+              </div>
+              <div className="workflow-workbench-content">
+                {editLocked && !isInspectMode ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state.</div> : null}
+                <div role="tabpanel" id="workbench-inspector-panel" aria-labelledby="workbench-inspector-tab" hidden={workbenchPanel !== "inspector"}>{renderCompactInspectorPanelContent()}</div>
+                <div role="tabpanel" id="workbench-runs-panel" aria-labelledby="workbench-runs-tab" hidden={workbenchPanel !== "runs"}>{runPanelRenderers.renderRunsPanelContent()}</div>
+                <div role="tabpanel" id="workbench-checks-panel" aria-labelledby="workbench-checks-tab" hidden={workbenchPanel !== "checks"}>
+                  <div className="section-label">Workflow checks</div>
+                  {inspectorDraftError ? <div className="error-box" role="alert">{inspectorDraftError}</div> : null}
+                  {validationDiagnostics.length === 0 ? <p className="field-description">No current validation diagnostics.</p> : validationDiagnostics.map((diagnostic, index) => <div className="problem-item" key={index}><div className="problem-message">{diagnostic.message}</div><div className="problem-meta">{diagnostic.node_id} {diagnostic.field_path}</div></div>)}
+                  {document ? <div className="path-note">{document.config_path}<br />{document.layout_path}</div> : null}
+                </div>
+              </div>
+            </section>
+          </> : null}
         </div>
     </div>
   );

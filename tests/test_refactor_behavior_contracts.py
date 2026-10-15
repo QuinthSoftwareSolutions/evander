@@ -16,14 +16,13 @@ from evander.cli import app
 from evander.effects.providers import agent_enqueue_prompt, agent_prompt
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.provider_models import (
-    AdoWorkItemsQueryDefinition,
     IssueGetQueryDefinition,
     RemoteIssuesQueryDefinition,
     SessionContextQueryDefinition,
 )
 from evander.local_inference_capacity import LocalInferenceCapacityStore
 from evander.models import SessionManifest
-from evander.queries.providers import ado_work_items, remote_issues
+from evander.queries.providers import remote_issues
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.queries.providers.issue_get import IssueGetQueryProvider
 from evander.queries.providers.session_context import SessionContextQueryProvider
@@ -102,7 +101,7 @@ class _MappingResult(dict):
         pytest.fail("mapping results must take precedence over model_dump")
 
 
-@pytest.mark.parametrize("kind", ["issue", "session", "ado", "remote"])
+@pytest.mark.parametrize("kind", ["issue", "session", "remote"])
 @pytest.mark.parametrize(
     "result, expected",
     [
@@ -118,10 +117,8 @@ def test_query_execution_preserves_result_shape(kind, result, expected, monkeypa
     reader = SimpleNamespace(
         get_issue=lambda **_: result,
         session_context_query=lambda **_: result,
-        query_remote_backlog_items=lambda **_: result,
         query_remote_issues=lambda **_: result,
     )
-    monkeypatch.setattr(ado_work_items, "IssueService", lambda _: reader)
     monkeypatch.setattr(remote_issues, "IssueService", lambda _: reader)
     provider, definition = {
         "issue": (
@@ -140,14 +137,6 @@ def test_query_execution_preserves_result_shape(kind, result, expected, monkeypa
                 display_name="Session",
                 type="query:session-context",
                 target="session-17",
-            ),
-        ),
-        "ado": (
-            ado_work_items.AdoWorkItemsQueryProvider(),
-            AdoWorkItemsQueryDefinition(
-                id="query",
-                display_name="ADO",
-                type="query:ado:work-items",
             ),
         ),
         "remote": (

@@ -11,8 +11,11 @@ import {
 } from "../../types";
 import { type InspectorDraftSnapshot } from "./editorTypes";
 import { NodeExecutionHistory } from "./NodeExecutionHistory";
+import { type WorkflowInspectorTab } from "./useWorkflowWorkbench";
 
 type InspectorPanelRenderersInputs = {
+  inspectorTab: WorkflowInspectorTab;
+  setInspectorTab: (tab: WorkflowInspectorTab) => void;
   selectedNodeIds: string[];
   setProgrammaticSelection: (nextNodeIds: string[], preferredNodeId?: string | null) => void;
   workflowEditLocked: boolean;
@@ -51,6 +54,8 @@ type InspectorPanelRenderersInputs = {
 
 /** Binds inspector panel renderers to the current render state. */
 export function createInspectorPanelRenderers({
+  inspectorTab,
+  setInspectorTab,
   selectedNodeIds,
   setProgrammaticSelection,
   workflowEditLocked,
@@ -122,9 +127,13 @@ export function createInspectorPanelRenderers({
     if (!selectedNode) return null;
     return (
       <div className="sidebar-section compact-panel-section inspector">
-        <div className="section-label">Inspector</div>
-        <div className="inspector-summary">
-          <div>{selectedNode.type}</div>
+        <div className="workflow-node-inspector-heading">
+          <div>
+            <strong>{inspectorDisplayName || selectedNode.id}</strong>
+            <div className="inspector-summary">{selectedNode.type}</div>
+          </div>
+          <div className="inspector-metadata-field"><span>Node ID</span><code>{selectedNode.id}</code></div>
+          <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>Select downstream branch</button>
         </div>
         {selectedNodeDiagnostics.length > 0 ? (
           <div className="problems-panel">
@@ -145,15 +154,12 @@ export function createInspectorPanelRenderers({
             </div>
           </div>
         ) : null}
-        <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
-          Select downstream branch
-        </button>
+        <div className="workflow-inspector-tabs" role="tablist" aria-label="Node details">
+          {(["configuration", "outputs", "history"] as const).map(tab => <button key={tab} type="button" role="tab" id={`node-${tab}-tab`} aria-controls={`node-${tab}-panel`} aria-selected={inspectorTab === tab} onClick={() => setInspectorTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}
+        </div>
+        <div role="tabpanel" id="node-configuration-panel" aria-labelledby="node-configuration-tab" hidden={inspectorTab !== "configuration"}>
         {renderSelectedTriggerToggle()}
         {manualEventTriggerButton}
-        <div className="inspector-metadata-field">
-          <span>Node ID</span>
-          <code>{selectedNode.id}</code>
-        </div>
         <label className="inspector-label">
           <span>Display name</span>
           <input
@@ -178,12 +184,6 @@ export function createInspectorPanelRenderers({
           </details>
         ) : null}
 
-        {inspectorOutputFields.map((field) => renderField(field))}
-
-        {renderSelectedNodeOutputContract()}
-
-        {renderNodeExecutionHistory()}
-
         {selectedNodeHasUnsavedChanges ? (
           <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>
             Reset changes
@@ -193,6 +193,12 @@ export function createInspectorPanelRenderers({
         <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
           Delete node
         </button>
+        </div>
+        <div role="tabpanel" id="node-outputs-panel" aria-labelledby="node-outputs-tab" hidden={inspectorTab !== "outputs"}>
+          {inspectorOutputFields.map(field => renderField(field))}
+          {renderSelectedNodeOutputContract()}
+        </div>
+        <div role="tabpanel" id="node-history-panel" aria-labelledby="node-history-tab" hidden={inspectorTab !== "history"}>{renderNodeExecutionHistory()}</div>
       </div>
     );
   }
@@ -239,126 +245,8 @@ export function createInspectorPanelRenderers({
     );
   }
 
-    function renderDesktopSelectionInspectorPanel() {
-    return (selectedNodeIds.length > 1 ? (
-              <div className="sidebar-section inspector">
-                <div className="section-label">Selection</div>
-                <div className="inspector-summary">
-                  <div>{selectedNodeIds.length} nodes selected</div>
-                </div>
-                <button onClick={() => setProgrammaticSelection([])} disabled={workflowEditLocked}>
-                  Clear selection
-                </button>
-                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
-                  Select downstream branch
-                </button>
-                <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
-                  Delete selected nodes
-                </button>
-              </div>
-            ) : null);
-  }
-
-  function renderDesktopNodeInspectorPanel() {
-    return (selectedNode ? (
-              <div className="sidebar-section inspector">
-                <div className="section-label">Inspector</div>
-                <div className="inspector-summary">
-                  <div>{selectedNode.type}</div>
-                </div>
-                {selectedNodeDiagnostics.length > 0 ? (
-                  <div className="problems-panel">
-                    <div className="problems-heading">
-                      <span>Problems</span>
-                      <span>{selectedNodeDiagnostics.length}</span>
-                    </div>
-                    <div className="problems-list">
-                      {selectedNodeDiagnostics.map((diagnostic, index) => (
-                        <div className="problem-item" key={`${diagnostic.code}-${diagnostic.field_path ?? ""}-${diagnostic.reference ?? ""}-${index}`}>
-                          <div className="problem-message">{diagnostic.message}</div>
-                          <div className="problem-meta">
-                            {diagnostic.field_path ? <span>{diagnostic.field_path}</span> : null}
-                            {diagnostic.reference ? <span>{diagnostic.reference}</span> : null}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
-                  Select downstream branch
-                </button>
-                {renderSelectedTriggerToggle()}
-                {manualEventTriggerButton}
-                <div className="inspector-metadata-field">
-                  <span>Node ID</span>
-                  <code>{selectedNode.id}</code>
-                </div>
-                <label className="inspector-label">
-                  <span>Display name</span>
-                  <input
-                    value={inspectorDisplayName}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      setInspectorDisplayName(nextValue);
-                      stageInspectorDraft({ displayName: nextValue });
-                    }}
-                    disabled={workflowMutationLocked}
-                  />
-                </label>
-
-                {renderEffectTargetField()}
-                {inspectorConfigurationFields.map((field) => renderField(field))}
-
-                {Object.keys(inspectorUnknownValues).length > 0 ? (
-                  <details className="raw-json-panel">
-                    <summary>Additional raw JSON</summary>
-                    <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
-                    <textarea value={rawJsonDraft} rows={8} readOnly />
-                  </details>
-                ) : null}
-
-                {inspectorOutputFields.map((field) => renderField(field))}
-
-                {renderSelectedNodeOutputContract()}
-
-                {renderNodeExecutionHistory()}
-
-                {selectedNodeHasUnsavedChanges ? (
-                  <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>
-                    Reset changes
-                  </button>
-                ) : null}
-
-                <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
-                  Delete node
-                </button>
-              </div>
-            ) : null);
-  }
-
-  function renderDesktopEdgeInspectorPanel() {
-    return (selectedEdge ? (
-              <div className="sidebar-section inspector">
-                <div className="section-label">Edge</div>
-                <div className="inspector-summary">
-                  <div>{selectedEdge.source_id}</div>
-                  <div>Route: {selectedEdgeRouteLabel}</div>
-                  <div>{selectedEdge.target_id}</div>
-                  {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
-                </div>
-                <button className="danger" onClick={deleteSelectedEdge} disabled={workflowMutationLocked}>
-                  Delete edge
-                </button>
-              </div>
-            ) : null);
-  }
-
   return {
     renderCompactInspectorPanelContent,
     renderNodeExecutionHistory,
-    renderDesktopSelectionInspectorPanel,
-    renderDesktopNodeInspectorPanel,
-    renderDesktopEdgeInspectorPanel,
   };
 }

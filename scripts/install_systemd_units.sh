@@ -71,19 +71,53 @@ EVANDER_UNITS=(
   evander-http-target-relay.service
   evander-http-target-browser-proxy.service
   evander-codex-egress-proxy.service
-  evander-ado-worker.service
-  evander-proxy-issue-sync.service
   evander-discord-ingest.service
   evander-discord-wake.service
   evander-scheduled-wake.service
   evander-managed-git-refresh.service
-  evander-teams-ingest.service
-  evander-teams-notifications.service
-  evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
   evander-privacy-maintenance.service
 )
+# Optional service assets are owned by the separately installed distribution.
+optional_integration_assets_dir() {
+  [[ -x "${ROOT_DIR}/.venv/bin/python" ]] || return 0
+  "${ROOT_DIR}/.venv/bin/python" - "${ROOT_DIR}/runtime" "$1" "$2" <<'PY'
+from importlib.util import find_spec
+from pathlib import Path
+import sys
+
+spec = find_spec(sys.argv[2])
+if spec is not None:
+    from evander.host_config import HostConfig, host_config_path, load_host_config
+    from evander import optional_integrations
+
+    runtime_dir = Path(sys.argv[1])
+    config = (
+        load_host_config(runtime_dir)
+        if host_config_path(runtime_dir).exists()
+        else HostConfig(runtime_dir=runtime_dir)
+    )
+    if getattr(optional_integrations, sys.argv[3])(config):
+        print(Path(spec.origin).parent / "assets")
+PY
+}
+
+TEAMS_GRAPH_ASSETS_DIR="$(optional_integration_assets_dir evander_teams_graph_addon teams_graph_enabled)"
+AZURE_DEVOPS_ASSETS_DIR="$(optional_integration_assets_dir evander_azure_devops_addon azure_devops_enabled)"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  EVANDER_UNITS+=(evander-ado-worker.service evander-proxy-issue-sync.service)
+fi
+if [[ -n "${TEAMS_GRAPH_ASSETS_DIR}" ]]; then
+  EVANDER_UNITS+=(
+    evander-teams-ingest.service
+    evander-teams-notifications.service
+    evander-teams-meeting-ingest.service
+  )
+else
+  echo "Teams/Graph add-on is unavailable or disabled; skipping its service installation."
+fi
+
 EVANDER_TIMERS=(evander-privacy-maintenance.timer)
 EVANDER_TARGETS=(
   evander-team-runtime.target
@@ -359,22 +393,26 @@ run_preflight_checks() {
   fi
 
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
-  check_file \
-    "${ROOT_DIR}/config/ado-worker/config.json" \
-    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
-    "${setup_managed_config_severity}"
-  check_file \
-    "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
-    "Run evander-cli migrate-ado-worker-env-to-root or configure the directory after deployment." \
-    "warning"
+  if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+    check_file \
+      "${ROOT_DIR}/config/ado-worker/config.json" \
+      "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
+      "${setup_managed_config_severity}"
+    check_file \
+      "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
+      "Run evander-cli migrate-ado-worker-env-to-root or configure the directory after deployment." \
+      "warning"
+  fi
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
     "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files." \
     "${setup_managed_config_severity}"
-  check_file \
-    "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
-    "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \
-    "warning"
+  if [[ -n "${TEAMS_GRAPH_ASSETS_DIR}" ]]; then
+    check_file \
+      "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
+      "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \
+      "warning"
+  fi
   check_file \
     "${ROOT_DIR}/config/didww-sip-bridge.env" \
     "Copy config/didww-sip-bridge.env.example to config/didww-sip-bridge.env if you want OpenAI Realtime/DIDWW phone calls." \
@@ -469,10 +507,13 @@ configure_credential_delivery() {
       ln -s -- "${key_source}" "${alias}"
     fi
   fi
-  for unit in evander-gateway.service evander-admin-web.service \
-      evander-effect-orchestrator.service evander-trigger-orchestrator.service \
-      evander-teams-ingest.service evander-teams-notifications.service \
-      evander-teams-meeting-ingest.service; do
+  local credential_units=(evander-gateway.service evander-admin-web.service
+    evander-effect-orchestrator.service evander-trigger-orchestrator.service)
+  if [[ -n "${TEAMS_GRAPH_ASSETS_DIR:-}" ]]; then
+    credential_units+=(evander-teams-ingest.service evander-teams-notifications.service
+      evander-teams-meeting-ingest.service)
+  fi
+  for unit in "${credential_units[@]}"; do
     dropin="${SYSTEMD_DIR}/${unit}.d"
     install -d -m 0755 "${dropin}"
     # Import only this named credential. Its absence permits metadata diagnostics;
@@ -542,13 +583,13 @@ render_unit \
   "${ROOT_DIR}/systemd/evander-codex-egress-proxy.service.template" \
   "${SYSTEMD_DIR}/evander-codex-egress-proxy.service"
 
-render_unit \
-  "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
-  "${SYSTEMD_DIR}/evander-ado-worker.service"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  render_unit "${AZURE_DEVOPS_ASSETS_DIR}/systemd/evander-ado-worker.service.template" "${SYSTEMD_DIR}/evander-ado-worker.service"
+fi
 
-render_unit \
-  "${ROOT_DIR}/systemd/evander-proxy-issue-sync.service.template" \
-  "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
+if [[ -n "${AZURE_DEVOPS_ASSETS_DIR}" ]]; then
+  render_unit "${AZURE_DEVOPS_ASSETS_DIR}/systemd/evander-proxy-issue-sync.service.template" "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
+fi
 
 render_unit \
   "${ROOT_DIR}/systemd/evander-discord-ingest.service.template" \
@@ -566,17 +607,11 @@ render_unit \
   "${ROOT_DIR}/systemd/evander-managed-git-refresh.service.template" \
   "${SYSTEMD_DIR}/evander-managed-git-refresh.service"
 
-render_unit \
-  "${ROOT_DIR}/systemd/evander-teams-ingest.service.template" \
-  "${SYSTEMD_DIR}/evander-teams-ingest.service"
-
-render_unit \
-  "${ROOT_DIR}/systemd/evander-teams-notifications.service.template" \
-  "${SYSTEMD_DIR}/evander-teams-notifications.service"
-
-render_unit \
-  "${ROOT_DIR}/systemd/evander-teams-meeting-ingest.service.template" \
-  "${SYSTEMD_DIR}/evander-teams-meeting-ingest.service"
+if [[ -n "${TEAMS_GRAPH_ASSETS_DIR}" ]]; then
+  for unit in evander-teams-ingest.service evander-teams-notifications.service evander-teams-meeting-ingest.service; do
+    render_unit "${TEAMS_GRAPH_ASSETS_DIR}/systemd/${unit}.template" "${SYSTEMD_DIR}/${unit}"
+  done
+fi
 
 render_unit \
   "${ROOT_DIR}/systemd/evander-effect-orchestrator.service.template" \
@@ -601,38 +636,15 @@ render_unit \
 systemctl daemon-reload
 systemctl enable "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}" "${EVANDER_TIMERS[@]}"
 
-cat <<EOF
-Installed systemd units:
-  evander-privacy-maintenance.service
-  evander-privacy-maintenance.timer
-  evander-gateway.service
-  evander-admin-web.service
-  evander-openai-relay.service
-  evander-didww-sip-bridge.service
-  evander-firewall.service
-  evander-nuget-relay.service
-  evander-npm-audit-facade.service
-  evander-http-target-relay.service
-  evander-http-target-browser-proxy.service
-  evander-codex-egress-proxy.service
-  evander-ado-worker.service
-  evander-proxy-issue-sync.service
-  evander-discord-ingest.service
-  evander-discord-wake.service
-  evander-scheduled-wake.service
-  evander-managed-git-refresh.service
-  evander-teams-ingest.service
-  evander-teams-notifications.service
-  evander-teams-meeting-ingest.service
-  evander-effect-orchestrator.service
-  evander-trigger-orchestrator.service
-  evander-team-runtime.target
+printf 'Installed systemd units:\n'
+printf '  %s\n' "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}" "${EVANDER_TIMERS[@]}"
 
+cat <<EOF
 Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
   2. Populate ${ROOT_DIR}/config/ado-worker/config.json via the Admin GUI if you want to override worker defaults.
-  3. Populate ${ROOT_DIR}/config/teams-ingest/config.json from the example file if you want to override Teams ingest defaults.
-  4. Populate ${ROOT_DIR}/config/teams-meeting-ingest/config.json from the example file if you want to override Teams meeting ingest defaults.
+  3. When using the Teams/Graph add-on, populate ${ROOT_DIR}/config/teams-ingest/config.json from the example file if you want to override Teams ingest defaults.
+  4. When using the Teams/Graph add-on, populate ${ROOT_DIR}/config/teams-meeting-ingest/config.json from the example file if you want to override Teams meeting ingest defaults.
   5. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
   6. Populate ${ROOT_DIR}/config/didww-sip-bridge.env from the example file if you want OpenAI Realtime/DIDWW phone calls.
   7. Export the required host secrets in the service manager environment, source ${ROOT_DIR}/secrets.env if you keep one there, or put host-local secrets in ${LOCAL_SECRETS_FILE}.

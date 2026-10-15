@@ -6257,18 +6257,19 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
                         "arguments": json.dumps({"question": "What changed?"}),
                     },
                 },
-                {"type": "__sleep__", "seconds": 0.05},
+                {"type": "__wait_for_answer__"},
                 {"type": "response.done", "response": {"id": "resp-1"}},
             ]
             self.tool_outputs: list[dict[str, object]] = []
             self.responses: list[str | None] = []
             self.injected: list[dict[str, object]] = []
+            self.answer_injected = asyncio.Event()
 
         async def recv_json(self) -> dict[str, Any]:
             while self.events:
                 event = self.events.pop(0)
-                if event["type"] == "__sleep__":
-                    await asyncio.sleep(float(event["seconds"]))
+                if event["type"] == "__wait_for_answer__":
+                    await self.answer_injected.wait()
                     continue
                 return event
             await asyncio.sleep(0.01)
@@ -6288,6 +6289,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
             request_response: bool = True,
         ) -> None:
             self.injected.append(query)
+            self.answer_injected.set()
 
     class FakeController:
         configured = True
@@ -6302,7 +6304,11 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
 
         async def get_query(self, voice_session_id: str, query_id: str) -> dict[str, Any]:
             self.poll_count += 1
-            if self.poll_count < 3:
+            hold_queued = any(
+                event.event_type == "origin_query.hold_offer_requested"
+                for event in store.get("voice-1").debug_events
+            )
+            if self.poll_count < 3 or not hold_queued:
                 return {"query_id": query_id, "status": "pending"}
             return {
                 "query_id": query_id,
@@ -6330,7 +6336,7 @@ def test_slow_origin_query_answer_supersedes_pending_hold_offer(
                 controller,  # type: ignore[arg-type]
                 stop_event,
             ),
-            timeout=1,
+            timeout=5,
         )
         return realtime, controller
 

@@ -26,6 +26,7 @@ DEFAULT_BUSY_TIMEOUT_MS = 30_000
 FOREGROUND_TIMEOUT_MS = 100
 MAINTENANCE_TIMEOUT_MS = 100
 _MAX_IDLE_DATABASES = 32
+_MAX_IDLE_READERS = 16
 _guard = threading.RLock()
 _path_locks: dict[Path, threading.RLock] = {}
 _initialized: set[tuple[Path, int, int, str]] = set()
@@ -105,6 +106,7 @@ class _Anchor:
 
 
 _anchors: OrderedDict[tuple[Path, int, int], _Anchor] = OrderedDict()
+_readers: OrderedDict[tuple[Path, int, int, int], ManagedSqliteConnection] = OrderedDict()
 
 
 def _identity(path: Path) -> tuple[Path, int, int]:
@@ -113,7 +115,7 @@ def _identity(path: Path) -> tuple[Path, int, int]:
 
 
 def _check_process() -> None:
-    global _pid, _guard, _path_locks, _initialized, _anchors
+    global _pid, _guard, _path_locks, _initialized, _anchors, _readers
     if _pid != os.getpid():
         # Inherited SQLite handles must never be used by the forked process.
         _pid = os.getpid()
@@ -121,6 +123,7 @@ def _check_process() -> None:
         _path_locks = {}
         _initialized = set()
         _anchors = OrderedDict()
+        _readers = OrderedDict()
 
 
 def _path_lock(path: Path) -> threading.RLock:
@@ -132,6 +135,9 @@ def _path_lock(path: Path) -> threading.RLock:
 def _retire(anchor: _Anchor) -> None:
     anchor.retired = True
     _anchors.pop(anchor.identity, None)
+    for key in list(_readers):
+        if key[:3] == anchor.identity:
+            sqlite3.Connection.close(_readers.pop(key))
     if not anchor.leases:
         anchor.connection.close()
 
@@ -141,6 +147,9 @@ def close_sqlite_runtimes(path: Path | str | None = None) -> None:
     _check_process()
     resolved = Path(path).resolve() if path is not None else None
     with _guard:
+        for key in list(_readers):
+            if resolved is None or key[0] == resolved:
+                sqlite3.Connection.close(_readers.pop(key))
         for anchor in list(_anchors.values()):
             if resolved is None or anchor.identity[0] == resolved:
                 _retire(anchor)
@@ -278,8 +287,12 @@ class ManagedSqliteConnection(sqlite3.Connection):
     _commit_ms: float = 0.0
     _outcome: str = "succeeded"
     _error_code: int | None = None
+    _reader_key: tuple[Path, int, int, int] | None = None
+    _leased_cursors: list[sqlite3.Cursor] | None = None
 
     def _prepare(self) -> None:
+        if self._closed:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
         now = time.monotonic()
         remaining_ms = self._busy_timeout_ms
         if self._wait_deadline is not None:
@@ -310,7 +323,10 @@ class ManagedSqliteConnection(sqlite3.Connection):
         return self.cursor().executemany(sql, parameters)
 
     def cursor(self, factory=_ManagedCursor):
-        return super().cursor(factory=factory)
+        cursor = super().cursor(factory=factory)
+        if self._leased_cursors is not None:
+            self._leased_cursors.append(cursor)
+        return cursor
 
     def executescript(self, sql):
         self._prepare()
@@ -351,7 +367,30 @@ class ManagedSqliteConnection(sqlite3.Connection):
             return
         started = time.monotonic()
         try:
-            super().close()
+            reusable = self._reader_key is not None and self._outcome == "succeeded"
+            try:
+                # Finalize even partially consumed SELECTs before idling: an
+                # unfinished cursor can retain WAL frames without BEGIN.
+                for cursor in self._leased_cursors or ():
+                    cursor.close()
+                self._leased_cursors = None
+                if self.in_transaction:
+                    self.rollback()
+                self.set_progress_handler(None, 0)
+                self.set_trace_callback(None)
+                self.set_authorizer(None)
+            except sqlite3.Error:
+                reusable = False
+            with _guard:
+                if reusable and self._anchor is not None and not self._anchor.retired:
+                    previous = _readers.pop(self._reader_key, None)
+                    if previous is not None:
+                        sqlite3.Connection.close(previous)
+                    _readers[self._reader_key] = self
+                    while len(_readers) > _MAX_IDLE_READERS:
+                        sqlite3.Connection.close(_readers.popitem(last=False)[1])
+                else:
+                    super().close()
         finally:
             self._closed = True
             if self._anchor is not None:
@@ -388,12 +427,18 @@ def open_sqlite_connection(
     operation: str = "database",
     deadline_seconds: float | None = None,
     managed_checkpoints: bool = False,
+    reuse_read_only: bool = False,
 ) -> ManagedSqliteConnection:
     """Open an initialized DB with independent lock and execution limits.
 
     Only explicit execution deadlines interrupt SQL or expire between statements.
     Exhausting the lock-wait allowance still permits uncontended work. Filesystem fsync/close
     is measured separately: SQLite cannot promise a hard I/O time limit.
+
+    Read-only report callers may reuse a bounded, thread-local idle connection.
+    They must not retain connections or cursors beyond the operation context.
+    Reuse never retains a read transaction, and replacement/retirement discards
+    idle handles. Write connections always remain transient.
     """
     resolved = Path(path).resolve()
     started = time.monotonic()
@@ -412,18 +457,30 @@ def open_sqlite_connection(
     connection = None
     try:
         remaining_ms = max(0, int((wait_deadline - time.monotonic()) * 1000))
-        connection = sqlite3.connect(
-            resolved.as_uri() + ("?mode=ro" if read_only else "?mode=rw"),
-            uri=True,
-            timeout=remaining_ms / 1000,
-            factory=ManagedSqliteConnection,
-        )
+        reader_key = (*anchor.identity, threading.get_ident()) if read_only and reuse_read_only else None
+        if reader_key is not None:
+            with _guard:
+                connection = _readers.pop(reader_key, None)
+        if connection is None:
+            connection = sqlite3.connect(
+                resolved.as_uri() + ("?mode=ro" if read_only else "?mode=rw"),
+                uri=True,
+                timeout=remaining_ms / 1000,
+                factory=ManagedSqliteConnection,
+                check_same_thread=reader_key is None,
+            )
+        connection._closed = False
+        connection._reader_key = reader_key
+        connection._leased_cursors = [] if reader_key is not None else None
         connection._anchor = anchor
         connection._started = started
         connection._operation = operation
         connection._busy_timeout_ms = timeout_ms
         connection._deadline = deadline
         connection._wait_deadline = wait_deadline
+        connection._sql_ms = connection._writer_acquire_ms = connection._commit_ms = 0.0
+        connection._outcome = "succeeded"
+        connection._error_code = None
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON" if read_only else "PRAGMA foreign_keys=ON")
         # Only databases covered by a background checkpoint owner may disable
@@ -437,6 +494,7 @@ def open_sqlite_connection(
         return connection
     except BaseException:
         if connection is not None:
+            connection._outcome = "failed"
             connection.close()
         else:
             _release_anchor(anchor)

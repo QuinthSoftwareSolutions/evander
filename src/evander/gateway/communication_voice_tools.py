@@ -271,7 +271,7 @@ def create_voice_tools(
         )
         args = {"session_id": resolved_session_id, "query_id": query_id}
         try:
-            images = context.teams_voice_service.read_visual_context(
+            images = context.voice_visual_service.read_visual_context(
                 query_id=query_id, origin_session_id=resolved_session_id,
             )
             metadata = [reference.model_dump(mode="json") for reference, _ in images]
@@ -338,7 +338,7 @@ def create_voice_tools(
                 query=query,
                 wake_store=context.wake_store,
             )
-            visual_service = getattr(context, "teams_voice_service", None)
+            visual_service = getattr(context, "voice_visual_service", None)
             if visual_service is not None:
                 visual_service.cleanup_visual_context()
             result = SubmitVoiceQueryResponseResponse(

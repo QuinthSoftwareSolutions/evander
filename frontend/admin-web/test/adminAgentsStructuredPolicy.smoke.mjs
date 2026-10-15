@@ -129,8 +129,6 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
           session_id: "session-123",
           available_login_methods: [],
           azure_sso_login_url: null,
-          permissions: [],
-          effective_permissions: [],
           privileged_operations: {
             unlocked: true,
           },
@@ -161,8 +159,6 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
           permissions: ["admin.owner"],
           effective_permissions: ["admin.owner"],
           can_manage_users: true,
-          permissions: [],
-          effective_permissions: [],
           privileged_operations: {
             unlocked: true,
           },
@@ -307,6 +303,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await page.locator(".agent-list-item.selected").waitFor({ state: "visible" });
 
   const editButton = page.getByRole("button", { name: "Edit Codex usage" });
+  await page.getByText("More actions", { exact: true }).click();
   await editButton.click();
   const editDialog = page.locator(".modal-card[aria-label='Edit Codex usage']");
   await editDialog.waitFor({ state: "visible" });
@@ -341,6 +338,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await page.locator(".modal-card[aria-label='Edit Codex usage']").waitFor({ state: "hidden" });
   await page.getByText("Codex usage: ChatGPT subscription", { exact: true }).waitFor({ state: "visible" });
 
+  await page.getByText("More actions", { exact: true }).click();
   await editButton.click();
   await editDialog.waitFor({ state: "visible" });
   const replacementProfileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
@@ -350,6 +348,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await editDialog.getByRole("button", { name: "Save" }).click();
   await editDialog.waitFor({ state: "hidden" });
 
+  await page.getByText("More actions", { exact: true }).click();
   await editButton.click();
   await editDialog.waitFor({ state: "visible" });
   await editDialog.getByRole("combobox", { name: "Codex usage" }).selectOption("metered_api");
