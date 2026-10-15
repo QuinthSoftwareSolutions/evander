@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-10-15
+
+- Recognize Docker's absent-network inspection response during first allocation and cleanup retries. Daemon outages and unrelated errors still fail explicitly.
+
 ## 0.1.0 - 2026-10-15
 
 - Task-scoped disposable SQL Server and RabbitMQ leases, private configuration,

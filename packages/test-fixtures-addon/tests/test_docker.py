@@ -13,7 +13,16 @@ LEASE = "fx-" + "a" * 32
 IMAGE = "rabbitmq@sha256:" + "b" * 64
 
 
-def test_broker_uses_internal_network_pinned_image_and_recoverable_private_volume(tmp_path):
+@pytest.mark.parametrize(
+    "network_missing_error",
+    [
+        f"Error: No such network: {LEASE}".encode(),
+        f"Error response from daemon: network {LEASE} not found\n".encode(),
+    ],
+)
+def test_broker_uses_internal_network_pinned_image_and_recoverable_private_volume(
+    tmp_path, network_missing_error
+):
     calls = []
     resources = {}
 
@@ -28,7 +37,7 @@ def test_broker_uses_internal_network_pinned_image_and_recoverable_private_volum
             return SimpleNamespace(
                 returncode=0 if value else 1,
                 stdout=json.dumps([value]).encode() if value else b"",
-                stderr=b"No such object",
+                stderr=network_missing_error if kind == "network" else b"No such object",
             )
         if rest[:2] in [["network", "create"], ["volume", "create"]]:
             resources[kind] = {"Internal": True, "Labels": {"evander.fixture": LEASE}}
@@ -64,6 +73,56 @@ def test_broker_uses_internal_network_pinned_image_and_recoverable_private_volum
     assert definitions["vhosts"] == [{"name": LEASE}]
     assert "password" not in definitions["users"][0]
     assert definitions["users"][0]["name"] == "fixture"
+
+
+def test_cleanup_succeeds_when_a_failed_allocation_never_created_its_network(tmp_path):
+    calls = []
+    folder = tmp_path / LEASE
+    folder.mkdir()
+    (folder / "rabbitmq.conf").write_text("synthetic configuration")
+
+    def run(args, **kw):
+        calls.append(args)
+        if args[:3] == ["docker", "network", "inspect"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=b"[]\n",
+                stderr=f"Error response from daemon: network {LEASE} not found\n".encode(),
+            )
+        if len(args) > 2 and args[2] == "inspect":
+            return SimpleNamespace(returncode=1, stdout=b"[]", stderr=b"No such object")
+        if args[0] == "iptables":
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"Chain does not exist")
+        return SimpleNamespace(returncode=0, stdout=b"daemon-id", stderr=b"")
+
+    docker = Docker(tmp_path, IMAGE, run=run)
+    for _ in range(2):
+        docker.remove_broker({"lease_id": LEASE})
+    assert not folder.exists()
+    assert not any("rm" in args for args in calls)
+
+
+@pytest.mark.parametrize(
+    "error,daemon_available",
+    [
+        (f"Error response from daemon: network {LEASE} not found\n".encode(), False),
+        (b"Error response from daemon: network other-network not found\n", True),
+        (b"Error response from daemon: configuration file not found\n", True),
+        (b"permission denied", True),
+    ],
+)
+def test_network_inspection_does_not_hide_daemon_or_unrelated_errors(
+    tmp_path, error, daemon_available
+):
+    def run(args, **kw):
+        if args[1] == "info":
+            return SimpleNamespace(
+                returncode=0 if daemon_available else 1, stdout=b"", stderr=b"daemon unavailable"
+            )
+        return SimpleNamespace(returncode=1, stdout=b"[]", stderr=error)
+
+    with pytest.raises(FixtureError):
+        Docker(tmp_path, IMAGE, run=run).inspect(LEASE, "network")
 
 
 def test_subprocess_failure_and_timeout_never_reflect_stderr_or_arguments(tmp_path):

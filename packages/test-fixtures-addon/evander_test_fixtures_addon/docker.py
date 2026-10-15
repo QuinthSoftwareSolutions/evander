@@ -115,7 +115,11 @@ class Docker:
         if result.returncode:
             # Distinguish missing resources from a stopped/unreachable daemon.
             self.docker("info", "--format", "{{.ID}}")
-            if b"no such" not in result.stderr.lower():
+            error = result.stderr.lower().strip()
+            missing_network = kind == "network" and error.endswith(
+                f"network {name} not found".lower().encode()
+            )
+            if b"no such" not in error and not missing_network:
                 raise FixtureError("Docker resource inspection failed")
             return None
         return json.loads(result.stdout)[0]
