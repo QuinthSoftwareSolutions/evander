@@ -1,5 +1,6 @@
 """Exercise the deployment builder through its CLI without Docker or npm access."""
 
+import gzip
 import hashlib
 import json
 import os
@@ -47,19 +48,33 @@ with open(os.environ['BUILD_LOG'], 'a') as out:
 root = pathlib.Path(sys.argv[sys.argv.index('--prefix') + 1]) / 'node_modules'
 root.mkdir(exist_ok=True)
 (root / 'locked-package').write_text('pinned runtime')
+(root / 'locked-package').chmod(0o666)
+root.chmod(0o777)
 """,
         "docker": """
-import json, os, pathlib, sys
+import json, os, pathlib, stat, sys, time
 with open(os.environ['BUILD_LOG'], 'a') as out:
     out.write(json.dumps(['docker', *sys.argv[1:]]) + '\\n')
 if sys.argv[1] == 'build':
     context = pathlib.Path(sys.argv[-1])
     runtime = context / 'runtime'
     data = {str(p.relative_to(runtime)): p.read_text() for p in runtime.rglob('*') if p.is_file()}
+    data['modes'] = {str(p.relative_to(runtime)): stat.S_IMODE(p.stat().st_mode) for p in [runtime, *runtime.rglob('*')]}
+    data['context_path'] = str(context)
     data['Dockerfile'] = (context / 'Dockerfile').read_text()
     pathlib.Path(os.environ['BUILD_SNAPSHOT']).write_text(json.dumps(data))
 if sys.argv[1] == 'save':
-    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_bytes(b'scanner image archive')
+    context = pathlib.Path(json.loads(pathlib.Path(os.environ['BUILD_SNAPSHOT']).read_text())['context_path'])
+    if context.exists():
+        raise SystemExit('Build context still occupies disk during export')
+    if os.environ.get('STALLED_SAVE'):
+        time.sleep(60)
+    payload = b'' if os.environ.get('EMPTY_SAVE') else b'scanner image archive'
+    if '-o' in sys.argv:
+        pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_bytes(payload)
+    else:
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
     if os.environ.get('FAIL_SAVE'):
         raise SystemExit(42)
 """,
@@ -107,6 +122,9 @@ def test_unchanged_scan_image_reuses_archive_without_install_or_docker(image_bui
     staged = json.loads(image_builder[3].read_text())
     assert staged["runner.py"] == (PACKAGE / "evander_codex_security_addon/runner.py").read_text()
     assert staged["node_modules/locked-package"] == "pinned runtime"
+    assert not (image_builder[0] / "node_modules").exists()
+    assert all(mode & 0o022 == 0 for mode in staged["modes"].values())
+    assert staged["modes"]["node"] == staged["modes"]["codex"] == 0o755
     assert "python3 /opt/evander/codex-security/codex_bridge.py" in staged["codex"]
     assert calls(image_builder) == [
         ["npm", "ci"],
@@ -162,16 +180,49 @@ def test_damaged_or_forced_cache_is_rebuilt(image_builder, damage):
     assert len(calls(image_builder)) == 8
 
 
-def test_failed_save_preserves_previous_verified_cache(image_builder):
-    assert run_builder(image_builder).returncode == 0
-    archive = image_builder[0].parents[1] / "dist/evander-security-scan.tar"
+@pytest.mark.parametrize("suffix", [".tar", ".tar.gz"])
+@pytest.mark.parametrize("failure", ["FAIL_SAVE", "EMPTY_SAVE"])
+def test_failed_save_preserves_previous_verified_cache(image_builder, suffix, failure):
+    archive = image_builder[0].parents[1] / ("dist/evander-security-scan" + suffix)
+    env = {"SECURITY_SCAN_ARCHIVE_PATH": str(archive)}
+    assert run_builder(image_builder, **env).returncode == 0
     manifest = Path(str(archive) + ".manifest")
     before = archive.read_bytes(), manifest.read_bytes()
-    failed = run_builder(image_builder, "--force", FAIL_SAVE="1")
+    failed = run_builder(image_builder, "--force", **env, **{failure: "1"})
     assert failed.returncode != 0
     assert (archive.read_bytes(), manifest.read_bytes()) == before
     assert not list(archive.parent.glob(".scanner-archive-*"))
-    assert "Reused cached" in run_builder(image_builder).stdout
+    assert "Reused cached" in run_builder(image_builder, **env).stdout
+
+
+def test_compressed_export_streams_and_reuses_verified_archive(image_builder):
+    archive = image_builder[0].parents[1] / "dist/evander-security-scan.tar.gz"
+    env = {"SECURITY_SCAN_ARCHIVE_PATH": str(archive)}
+    first = run_builder(image_builder, **env)
+    assert first.returncode == 0, first.stderr
+    assert gzip.decompress(archive.read_bytes()) == b"scanner image archive"
+    manifest = json.loads(Path(str(archive) + ".manifest").read_text())
+    assert manifest["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert manifest["inputs"]["archive_format"] == "tar.gz"
+    last_command = json.loads(image_builder[2].read_text().splitlines()[-1])
+    assert last_command == ["docker", "save", "evander-security-scan:latest"]
+    assert "Reused cached" in run_builder(image_builder, DOCKER="/missing/docker", **env).stdout
+    assert len(calls(image_builder)) == 4
+
+
+def test_compressor_failure_stops_export_and_preserves_cache(image_builder):
+    archive = image_builder[0].parents[1] / "dist/evander-security-scan.tar.gz"
+    env = {"SECURITY_SCAN_ARCHIVE_PATH": str(archive)}
+    assert run_builder(image_builder, **env).returncode == 0
+    manifest = Path(str(archive) + ".manifest")
+    before = archive.read_bytes(), manifest.read_bytes()
+    compressor = Path(image_builder[1]["DOCKER"]).with_name("gzip")
+    compressor.write_text("#!/bin/sh\nexit 19\n")
+    compressor.chmod(0o755)
+    failed = run_builder(image_builder, "--force", STALLED_SAVE="1", **env)
+    assert failed.returncode != 0
+    assert (archive.read_bytes(), manifest.read_bytes()) == before
+    assert not list(archive.parent.glob(".scanner-archive-*"))
 
 
 def test_portable_cache_key_does_not_install_or_build(image_builder, tmp_path):

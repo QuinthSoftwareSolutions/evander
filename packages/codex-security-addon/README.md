@@ -55,6 +55,12 @@ host Node executable; it otherwise resolves `node` on PATH. `DOCKER` selects the
 Docker executable. Builds use the loaded base image with pulling and build
 networking disabled.
 
+Use a `.tar.gz` or `.tgz` destination to stream the image directly through gzip,
+without an intermediate uncompressed image archive. Docker loads either format.
+The builder releases the runtime build context before exporting. Runtime npm
+dependencies are installed in temporary staging, and file permissions are set
+before Docker copies them, avoiding a second runtime layer for `chmod`.
+
 Deployment-specific Dockerfiles and scan isolation policy can be supplied with
 `SECURITY_SCAN_DOCKERFILE` and `SECURITY_SCAN_CONFIGURE_PATH`. The latter replaces
 `configure.mjs` in the image and preserves the packaged implementation as
