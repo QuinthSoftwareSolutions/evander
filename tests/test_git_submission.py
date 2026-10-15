@@ -131,17 +131,26 @@ def submit(s, *, summary_markdown=SUMMARY, **kwargs):
     ],
     ids=["standard", "markdown-whitespace", "outer-whitespace", "crlf", "utf8-near-limit"],
 )
+@pytest.mark.parametrize("ascii_locale", [False, True], ids=["default-locale", "ascii-locale"])
 def test_submits_exact_commit_summary_and_replays_without_changing_refs(
-    setup_submission, summary_markdown
+    setup_submission, summary_markdown, ascii_locale, monkeypatch
 ):
     s = setup_submission
+    _git(s.agent, "config", "core.autocrlf", "input")
+    branch = WORK_BRANCH
+    if ascii_locale:
+        monkeypatch.setenv("LC_ALL", "C")
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONCOERCECLOCALE", "0")
+        branch = "work-é"
+        _git(s.agent, "branch", "-m", branch)
     (s.agent / "file.txt").write_text("uncommitted tracked work\n")
     (s.agent / "untracked.txt").write_text("private pending work\n")
     before = _git(s.agent, "status", "--porcelain").stdout
     receipt = submit(s, summary_markdown=summary_markdown)
     assert receipt["success"], receipt
     assert receipt["commit_sha"] == s.sha
-    assert receipt["agent_ref"] == f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    assert receipt["agent_ref"] == f"refs/evander/agents/{SESSION_ID}/{branch}-vm-test"
     assert receipt["checkout_id"] == s.checkout_id
     assert receipt["changed"] is True
     note_ref = agent_pr_notes_ref_for_session(SESSION_ID)

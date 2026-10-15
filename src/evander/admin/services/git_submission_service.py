@@ -179,7 +179,7 @@ class GitSubmissionService:
                 notes_ref=agent_pr_notes_ref_for_session(fresh.session_id),
             )
             encoded = base64.b64encode(json.dumps(request, ensure_ascii=False).encode()).decode()
-            helper = (self.project_dir / "scripts/guest/push_agent.sh").read_text()
+            helper = (self.project_dir / "scripts/guest/push_agent.sh").read_text(encoding="utf-8")
             command = ["bash", "-c", helper, "evander-submit", "--submit-json", encoded]
             try:
                 # Start from the stable agent home so the helper can distinguish a

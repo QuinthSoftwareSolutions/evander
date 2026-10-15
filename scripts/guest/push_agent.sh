@@ -328,7 +328,8 @@ atomic_publish() {
   flock --exclusive 8
   # Reuse the blob directly: -F applies stripspace and changes Markdown
   # hard breaks, blank lines, and other meaningful summary whitespace.
-  summary_blob="$(git hash-object -w -- "${summary_file}")" || die "Could not store summary."
+  ERROR_CODE="transport_failure"
+  summary_blob="$(git hash-object --no-filters -w -- "${summary_file}")" || die "Could not store summary."
   BRANCH_SYNC_REF="${NOTES_SYNC_REF}-branch"
   while (( attempt <= 4 )); do
     ERROR_CODE="head_moved"
@@ -392,17 +393,17 @@ structured_main() {
   python3 - "$1" "${request_file}" "${summary_file}" <<'PY'
 import base64, json, pathlib, sys
 request = json.loads(base64.b64decode(sys.argv[1], validate=True))
-pathlib.Path(sys.argv[2]).write_text(json.dumps(request))
-pathlib.Path(sys.argv[3]).write_text(request["summary_markdown"])
+pathlib.Path(sys.argv[2]).write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+pathlib.Path(sys.argv[3]).write_bytes(request["summary_markdown"].encode("utf-8"))
 PY
   local -a fields
   mapfile -d '' -t fields < <(python3 - "${request_file}" <<'PY'
 import json, sys
-r = json.load(open(sys.argv[1]))
+r = json.load(open(sys.argv[1], encoding="utf-8"))
 for k in ("session_id", "expected_commit_sha", "remote_url", "notes_ref", "fixed_branch", "prepared_base", "base_branch", "destination_branch", "guest_path"):
     v = r.get(k) or ""
     if "\0" in v: raise ValueError("invalid request")
-    sys.stdout.write(v + "\0")
+    sys.stdout.buffer.write((v + "\0").encode("utf-8"))
 PY
   )
   [[ "${#fields[@]}" == 9 ]] || die "Invalid submission request."
@@ -441,8 +442,9 @@ PY
   NOTES_SYNC_REF="refs/notes/evander-submission-sync/$(printf '%s' "${SESSION_ID}:${branch}:$$" | git hash-object --stdin)"
   atomic_publish "${remote}" "${sha}" "${publish_ref}" "${notes_ref}" "${summary_file}"
   python3 - "${publish_ref}" "${SUBMISSION_CHANGED}" <<'PY'
-import json, sys
-print("EVANDER_GIT_SUBMISSION_RESULT=" + json.dumps({"success": True, "agent_ref": sys.argv[1], "changed": sys.argv[2] == "1"}))
+import json, os, sys
+ref = os.fsencode(sys.argv[1]).decode("utf-8")
+print("EVANDER_GIT_SUBMISSION_RESULT=" + json.dumps({"success": True, "agent_ref": ref, "changed": sys.argv[2] == "1"}))
 PY
 }
 
