@@ -41,7 +41,12 @@ API scans use the session's existing model relay. Subscription scans use a
 job-scoped Unix socket and the selected worker profile; neither access nor refresh
 tokens are written into the session. The same broker authenticates deep-scan
 children. A missing runtime or profile is an error, without an API-billing fallback.
-The scanner requires compatible Codex native permission-profile support.
+The scanner requires compatible Codex native permission-profile and managed
+authentication-policy support. Worker jobs mount a read-only policy at
+`/etc/codex` and verify it before supplying a subscription token. The broker
+accepts scan CLI options and read-only SDK preflight calls; arbitrary app-server
+commands and client-selected authentication routes are rejected. Scan permission
+profiles, resume state and the private `CODEX_HOME` remain available.
 
 ## Workflow configuration
 
@@ -81,6 +86,8 @@ session expiry may leave only the session-local diagnostics.
 Duplicate execution delivery and an orchestrator restart rejoin the original scan.
 A worker restart interrupts brokered scans and reports failure; it never starts a
 new paid scan implicitly. No code fixes, issue publication, or PR creation are run.
+Cancellation prevents subsequent startup and preserves the cancelled receipt
+even if scan cleanup finishes later.
 
 ## Validation
 
@@ -89,5 +96,13 @@ session, scan a small synthetic repository using API and subscription profiles,
 including standard, deep, and two-commit diff targets. Confirm sealed output,
 archive retrieval, original HEAD/index preservation, and timeout cleanup. A
 synthetic provider or protocol test does not establish live model access.
+
+The core opt-in native policy test uses fake credentials and a rejecting local
+proxy, with no model turns. Run it on Linux with `bwrap` installed:
+
+```sh
+EVANDER_TEST_NATIVE_CODEX=/absolute/path/to/codex \
+  PYTHONPATH=src .venv/bin/pytest -q tests/test_codex_runtime_native.py
+```
 
 Provider behavior follows the [Codex Security documentation](https://learn.chatgpt.com/docs/security/cli/reference).

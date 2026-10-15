@@ -8,6 +8,8 @@
   scans against clean snapshots, including worker-brokered subscription runtimes.
 - Preserve scan findings and private report artifacts across workflow restarts,
   and keep scan failures distinct from completed scans that find vulnerabilities.
+- Pin subscription authentication to a read-only worker policy and restrict the
+  scan runtime protocol. Make cancellation terminal across startup and cleanup.
 
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 

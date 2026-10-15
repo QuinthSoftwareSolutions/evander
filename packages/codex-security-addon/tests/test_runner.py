@@ -4,6 +4,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -211,3 +213,147 @@ def test_cancel_stops_only_the_matching_scan_process_group(repo):
             if process.poll() is None:
                 process.kill()
             process.wait()
+
+
+def test_cancel_before_start_is_terminal_for_run_and_launch(repo, monkeypatch):
+    source, _, _ = repo
+    request = {"scan_id": "b" * 32, "repo_path": str(source), "mode": "standard"}
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "snapshot", lambda *args: pytest.fail("Cancelled scan started"))
+    monkeypatch.setattr(
+        runner.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Cancelled scan launched")
+    )
+    receipt = runner.cancel(request["scan_id"])
+    runner.run(request)
+    assert runner.launch(request) == receipt
+    assert runner.cancel(request["scan_id"]) == receipt
+
+
+def test_cancel_waits_for_startup_registration_and_cannot_be_overwritten(repo, monkeypatch):
+    source, _, _ = repo
+    scan_id = "c" * 32
+    publishing = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+    original_write = runner.write_json
+    results = []
+
+    def write(path, value):
+        if path.name == "process.json":
+            publishing.set()
+            assert release.wait(5)
+        original_write(path, value)
+
+    def snapshot(*args):
+        assert cancelled.wait(5)
+        raise RuntimeError("Stopped during preparation")
+
+    def cancel():
+        results.append(runner.cancel(scan_id))
+        cancelled.set()
+
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "write_json", write)
+    monkeypatch.setattr(runner, "snapshot", snapshot)
+    monkeypatch.setattr(runner, "terminate_group", lambda *args: None)
+    worker = threading.Thread(
+        target=runner.run,
+        args=({"scan_id": scan_id, "repo_path": str(source), "mode": "standard"},),
+    )
+    canceller = threading.Thread(target=cancel)
+    worker.start()
+    try:
+        assert publishing.wait(5)
+        canceller.start()
+        assert not cancelled.wait(0.1)
+    finally:
+        release.set()
+        worker.join(5)
+        canceller.join(5)
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert results[0]["status"] == "cancelled"
+    assert runner.status(scan_id) == results[0]
+
+
+def test_cancel_coordinates_detached_child_creation_and_terminal_commit(repo, monkeypatch):
+    source, _, head = repo
+    scan_id = "d" * 32
+    spawning = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+    cancelled = threading.Event()
+    terminated = []
+    results = []
+
+    class Child:
+        pid = 987654321
+
+        def wait(self, **kwargs):
+            assert stopped.wait(5)
+            return 0
+
+        def poll(self):
+            return 0 if stopped.is_set() else None
+
+    def popen(*args, **kwargs):
+        spawning.set()
+        assert release.wait(5)
+        return Child()
+
+    def terminate(pid, started):
+        terminated.append(pid)
+        stopped.set()
+
+    def cancel():
+        results.append(runner.cancel(scan_id))
+        cancelled.set()
+
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "snapshot", lambda *args: (source, None, head))
+    monkeypatch.setattr(runner, "git", lambda *args: "")
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=json.dumps({"plugin_root": "/unused", "environment": {}})
+        ),
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    monkeypatch.setattr(runner, "process_start", lambda pid: "generation")
+    monkeypatch.setattr(runner, "terminate_group", terminate)
+    monkeypatch.setattr(runner, "canonical_result", lambda *args: {"status": "completed"})
+    worker = threading.Thread(
+        target=runner.run,
+        args=(
+            {
+                "scan_id": scan_id,
+                "repo_path": str(source),
+                "mode": "standard",
+                "timeout_seconds": 10,
+            },
+        ),
+    )
+    canceller = threading.Thread(target=cancel)
+    worker.start()
+    try:
+        assert spawning.wait(5)
+        canceller.start()
+        assert not cancelled.wait(0.1)
+    finally:
+        release.set()
+        worker.join(5)
+        canceller.join(5)
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert terminated[0] == Child.pid
+    assert results[0]["status"] == "cancelled"
+    assert runner.status(scan_id) == results[0]
+
+
+def test_cancel_after_completion_preserves_the_result(repo, monkeypatch):
+    root = runner.scan_directory("e" * 32)
+    result = {"status": "completed", "findings": [{"id": "known-finding"}]}
+    runner.write_json(root / "result.json", result)
+    monkeypatch.setattr(
+        runner, "terminate_group", lambda *args: pytest.fail("Completed scan was terminated")
+    )
+    assert runner.cancel("e" * 32) == result

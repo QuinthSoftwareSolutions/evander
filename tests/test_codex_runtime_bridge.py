@@ -9,8 +9,10 @@ from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.codex_runtime_bridge import (
     CodexRuntimeBridge,
     parse_arguments,
+    preflight_request,
     validate_request,
 )
+from evander.worker.codex_runtime_policy import RUNTIME_REQUIRED_VALUES
 from evander.worker.models import WorkerJobRequest
 
 
@@ -58,6 +60,12 @@ def test_deep_scan_cli_arguments_preserve_permission_profiles():
         'model_provider="another"',
         'model_providers.evil.base_url="https://invalid.example"',
         'forced_login_method="api"',
+        'chatgpt_base_url="http://127.0.0.1:8080"',
+        'openai_base_url="http://127.0.0.1:8080"',
+        'experimental_thread_store_endpoint="http://127.0.0.1:8080"',
+        'features={code_mode_host={url="http://127.0.0.1:8080"}}',
+        'agents.scan.config_file="/home/agent/untrusted.toml"',
+        'permissions={scan={filesystem={":root"="read"}}}\nchatgpt_base_url="http://localhost"',
     ],
 )
 def test_runtime_cannot_override_broker_authentication(arg):
@@ -67,6 +75,7 @@ def test_runtime_cannot_override_broker_authentication(arg):
 
 class NativeProcess:
     def __init__(self, command, *, notification_handler, server_request_handlers, **kwargs):
+        self.command = command
         self.notify_handler = notification_handler
         self.handlers = server_request_handlers
         self.calls = []
@@ -84,7 +93,9 @@ class NativeProcess:
 
     def request(self, method, params):
         self.calls.append((method, params))
-        if method == "thread/start":
+        if method == "configRequirements/read":
+            return {"requirements": dict(RUNTIME_REQUIRED_VALUES)}
+        if method in {"thread/start", "thread/resume"}:
             return {"thread": {"id": "thread-test"}}
         if method == "turn/start":
             self.notify_handler(
@@ -270,3 +281,147 @@ def test_runtime_bounds_clients_before_they_supply_a_command(tmp_path):
     finally:
         first.close()
         bridge.close()
+
+
+def exchange(bridge, header, *messages):
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(5)
+        client.connect(str(bridge.path))
+        client.sendall((json.dumps(header) + "\n").encode())
+        for message in messages:
+            client.sendall((json.dumps(message) + "\n").encode())
+        client.shutdown(socket.SHUT_WR)
+        with client.makefile("rb") as stream:
+            return [json.loads(line) for line in stream]
+
+
+@pytest.fixture
+def broker(tmp_path):
+    processes = []
+
+    def factory(*args, **kwargs):
+        process = NativeProcess(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    tokens = CodexExternalAuthTokens("private-token", "account-1", None)
+    bridge = CodexRuntimeBridge(
+        path=tmp_path / "broker.sock",
+        command_factory=lambda env, args: ["native", *args],
+        tokens=tokens,
+        refresh_tokens=lambda **kwargs: tokens,
+        process_factory=factory,
+    )
+    bridge.start()
+    try:
+        yield bridge, processes
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize(
+    "method,params",
+    [
+        ("thread/start", {"config": {"chatgpt_base_url": "http://127.0.0.1"}}),
+        ("thread/resume", {"config": {"modelProvider": "evil"}}),
+        ("thread/fork", {"config": {"openai_base_url": "http://127.0.0.1"}}),
+        ("turn/start", {"threadId": "test"}),
+        ("config/value/write", {"keyPath": "chatgpt_base_url", "value": "http://127.0.0.1"}),
+        ("config/batchWrite", {"edits": []}),
+        ("fs/writeFile", {"path": "/home/agent/config.toml", "data": "untrusted"}),
+        ("externalAgentConfig/import", {}),
+        ("command/exec", {"command": ["untrusted"]}),
+        ("config/mcpServer/reload", {}),
+        ("account/read", {"refreshToken": True}),
+        ("config/read", {"include_layers": True}),
+        ("config/read", {"config": {"chatgpt_base_url": "http://127.0.0.1"}}),
+    ],
+)
+def test_raw_runtime_rejects_mutations_and_unknown_parameter_aliases(broker, method, params):
+    bridge, processes = broker
+    frames = exchange(
+        bridge,
+        {"argv": ["app-server"], "cwd": "/home/agent"},
+        {"id": 10, "method": method, "params": params},
+    )
+    assert frames[-1] == {"exit_code": 1}
+    assert len(processes[0].calls) == 2  # Policy read and worker-owned login only.
+    assert "private-token" not in json.dumps(frames)
+
+
+@pytest.mark.parametrize("params", [{}, {"refreshToken": False}])
+def test_raw_runtime_preserves_read_only_sdk_preflight(broker, params):
+    bridge, processes = broker
+    calls = [
+        ("initialize", {"clientInfo": {"name": "sdk"}}),
+        ("config/read", {"cwd": "/home/agent/repo", "includeLayers": False}),
+        ("permissionProfile/list", {"cwd": "/home/agent/repo", "cursor": None}),
+        ("configRequirements/read", {}),
+        ("account/read", params),
+    ]
+    frames = exchange(
+        bridge,
+        {"argv": ["app-server"], "cwd": "/home/agent"},
+        *[
+            {"id": index, "method": method, "params": value}
+            for index, (method, value) in enumerate(calls)
+        ],
+    )
+    assert len(frames) == len(calls)
+    assert [json.loads(frame["text"])["id"] for frame in frames] == list(range(len(calls)))
+    assert processes[0].calls[2:] == calls[1:]
+
+
+def test_runtime_never_sends_tokens_to_native_without_managed_policy(broker):
+    bridge, processes = broker
+
+    class OldNative(NativeProcess):
+        def request(self, method, params):
+            self.calls.append((method, params))
+            return {"requirements": {}}
+
+    def factory(*args, **kwargs):
+        value = OldNative(*args, **kwargs)
+        processes.append(value)
+        return value
+
+    bridge.process_factory = factory
+    frames = exchange(bridge, {"argv": ["exec", "scan"], "cwd": "/home/agent"})
+    assert frames[-1] == {"exit_code": 1}
+    assert processes[0].calls == [("configRequirements/read", {})]
+    assert "private-token" not in json.dumps(frames)
+
+
+def test_sdk_resume_preserves_permissions_and_discards_auth_store_default(broker):
+    bridge, processes = broker
+    frames = exchange(
+        bridge,
+        {
+            "argv": [
+                "exec",
+                "--experimental-json",
+                "--config",
+                'cli_auth_credentials_store="auto"',
+                "--config",
+                'default_permissions="scanner"',
+                "--config",
+                'permissions.scanner={extends=":read-only"}',
+                "resume",
+                "existing-thread",
+                "continue scan",
+            ],
+            "cwd": "/home/agent",
+        },
+    )
+    assert frames[-1] == {"exit_code": 0}
+    resumed = next(params for method, params in processes[0].calls if method == "thread/resume")
+    assert resumed["threadId"] == "existing-thread"
+    assert resumed["permissions"] == "scanner"
+    assert resumed["config"]["permissions"]["scanner"] == {"extends": ":read-only"}
+    assert "cli_auth_credentials_store" not in resumed["config"]
+    assert all("cli_auth_credentials_store" not in arg for arg in processes[0].command)
+
+
+def test_preflight_cannot_read_configuration_outside_session():
+    with pytest.raises(ValueError):
+        preflight_request("config/read", {"cwd": "/etc"})

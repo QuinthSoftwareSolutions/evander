@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from evander.codex_auth import CodexAuthMode, CodexTurnSpec
+from evander.worker.codex_runtime_policy import RUNTIME_REQUIREMENTS_TOML
 from evander.worker_daemon import (
     DockerContainerRuntime,
     WorkerJobRecord,
@@ -43,6 +44,40 @@ def _record(paths: WorkerSessionPaths) -> WorkerJobRecord:
         artifacts_path=str(paths.artifacts),
         logs_path=str(paths.logs),
     )
+
+
+def test_brokered_runtime_mounts_immutable_native_authentication_policy(tmp_path):
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    request = _request().model_copy(update={"codex_turn": None})
+    request = WorkerJobRequest.model_validate(
+        {**request.model_dump(), "codex_runtime": {"profile_id": "scan"}}
+    )
+    runtime = DockerContainerRuntime(codex_egress_proxy_url="http://proxy.invalid:11889")
+    args = runtime._build_run_args(request=request, record=_record(paths), paths=paths)
+    policy = paths.root / "codex-runtimes/job-1/policy"
+    assert f"{policy}:/etc/codex:ro" in args
+    assert (policy / "requirements.toml").read_text() == RUNTIME_REQUIREMENTS_TOML
+    assert not (policy / "requirements.toml").stat().st_mode & 0o022
+
+
+def test_brokered_native_environment_does_not_inherit_authentication_routes(tmp_path):
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(codex_egress_proxy_url="http://proxy.invalid:11889")
+    command = runtime.codex_runtime_app_server_command(
+        _record(paths),
+        "/opt/evander/codex-security/codex",
+        {"CODEX_HOME": "/home/agent/scan-home"},
+        [],
+    )
+    start = command.index("/usr/bin/env")
+    assert command[start + 1] == "-i"
+    assert "NO_PROXY=" in command[start:]
+    assert "LD_PRELOAD=" in command[:start]
+    assert "LD_LIBRARY_PATH=" in command[:start]
+    assert "LD_AUDIT=" in command[:start]
+    assert "CODEX_HOME=/home/agent/scan-home" in command[start:]
+    assert 'chatgpt_base_url="https://chatgpt.com/backend-api/"' in command
+    assert 'cli_auth_credentials_store="ephemeral"' in command
 
 
 def test_docker_runtime_refuses_host_network() -> None:
@@ -379,14 +414,18 @@ def test_related_mounts_resolve_the_selector_once(tmp_path: Path, monkeypatch) -
     selector = tmp_path / "current"
     selector.symlink_to(first)
     original = Path.resolve
+
     def resolve(path, *args, **kwargs):
         result = original(path, *args, **kwargs)
         if path == selector:
             selector.unlink()
             selector.symlink_to(second)
         return result
+
     monkeypatch.setattr(Path, "resolve", resolve)
-    runtime = DockerContainerRuntime(read_only_mounts=[f"{selector}/sdk:/opt/sdk", f"{selector}/tools:/opt/tools"])
+    runtime = DockerContainerRuntime(
+        read_only_mounts=[f"{selector}/sdk:/opt/sdk", f"{selector}/tools:/opt/tools"]
+    )
     paths = WorkerSessionPaths.resolve(tmp_path / "worker", "session-1")
     resolved = runtime._session_read_only_mounts(paths)
     assert [mount.host_path for mount in resolved] == [str(first / "sdk"), str(first / "tools")]

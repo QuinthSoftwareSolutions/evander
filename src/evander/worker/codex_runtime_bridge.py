@@ -7,6 +7,7 @@ tokens nor accepts host commands, profiles, image names or container selectors.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import select
@@ -19,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_app_server import CodexAppServerProcess
+from .codex_runtime_policy import verify_runtime_requirements
 
 
 class CodexRuntimeProfile(BaseModel):
@@ -132,7 +134,7 @@ def parse_arguments(argv, cwd):
                 model = value
             elif arg in {"--config", "-c"}:
                 parsed = tomllib.loads(value)
-                merge_config(config, parsed)
+                merge_config(config, scan_config(parsed))
             elif arg == "--thread-source":
                 config["_thread_source"] = value
             elif arg == "--cyber-access-program":
@@ -149,13 +151,6 @@ def parse_arguments(argv, cwd):
         else:
             raise ValueError("Unexpected Codex positional argument")
         index += 1
-    if config.get("model_provider", "openai") != "openai" or config.get("model_providers"):
-        raise ValueError("Subscription runtime cannot change the model provider")
-    if any(
-        key in config
-        for key in ("forced_login_method", "cli_auth_credentials_store", "openai_api_key")
-    ):
-        raise ValueError("Subscription authentication is owned by the worker")
     if mode == "exec" and prompt is None:
         raise ValueError("Brokered exec requires an explicit prompt")
     return mode, cwd, config, model, prompt
@@ -167,6 +162,81 @@ def merge_config(target, source):
             merge_config(target[key], value)
         else:
             target[key] = value
+
+
+def scan_config(config):
+    """Accept the pinned scanner's options, never arbitrary native settings."""
+    config = dict(config)
+    for key, allowed in {
+        "model_provider": ("openai",),
+        "model_providers": ({},),
+        "forced_login_method": ("chatgpt",),
+        "cli_auth_credentials_store": ("auto", "ephemeral"),
+    }.items():
+        if key in config:
+            if config.pop(key) not in allowed:
+                raise ValueError("Subscription authentication is owned by the worker")
+    allowed = {
+        "model",
+        "model_reasoning_effort",
+        "model_reasoning_summary",
+        "model_verbosity",
+        "approval_policy",
+        "approvals_reviewer",
+        "default_permissions",
+        "permissions",
+        "mcp_servers",
+        "features",
+        "agents",
+        "show_raw_agent_reasoning",
+        "windows",
+        "allow_login_shell",
+    }
+    if set(config) - allowed:
+        raise ValueError("Unsupported brokered Codex configuration")
+    for key, fields in {
+        "features": {"plugins", "goals", "multi_agent_v2", "enable_fanout"},
+        "agents": {"max_threads"},
+        "windows": {"sandbox"},
+    }.items():
+        if key in config and (not isinstance(config[key], dict) or set(config[key]) - fields):
+            raise ValueError("Unsupported brokered Codex configuration")
+    # Re-encode parsed values instead of forwarding strings with a potentially
+    # different interpretation in the native CLI parser.
+    for value in config.values():
+        toml_value(value)
+    return config
+
+
+def toml_value(value):
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{json.dumps(k)}={toml_value(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(toml_value(item) for item in value) + "]"
+    if isinstance(value, (str, bool, int)) or isinstance(value, float) and math.isfinite(value):
+        return json.dumps(value)
+    raise ValueError("Unsupported Codex configuration value")
+
+
+def preflight_request(method, params):
+    """Raw app-server mode exists only for the SDK's read-only preflight."""
+    fields = {
+        "initialize": {"clientInfo", "capabilities"},
+        "initialized": set(),
+        "config/read": {"cwd", "includeLayers"},
+        "permissionProfile/list": {"cwd", "cursor", "limit"},
+        "configRequirements/read": set(),
+        "account/read": {"refreshToken"},
+    }
+    if method not in fields or not isinstance(params, dict) or set(params) - fields[method]:
+        raise ValueError("Unsupported Codex preflight request")
+    if params.get("cwd") is not None:
+        if not isinstance(params["cwd"], str):
+            raise ValueError("Invalid preflight working directory")
+        allowed_path(params["cwd"])
+    if method == "account/read" and params.get("refreshToken", False) is not False:
+        raise ValueError("Runtime clients cannot refresh authentication")
+    return params
 
 
 class CodexRuntimeBridge:
@@ -256,7 +326,7 @@ class CodexRuntimeBridge:
             if argv == ["--version"]:
                 command = self.command_factory(env, [])
                 result = subprocess.run(
-                    [*command[:-2], "--version"],
+                    [*command[: command.index("app-server")], "--version"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -267,7 +337,9 @@ class CodexRuntimeBridge:
                 return
             mode, cwd, config, model, prompt = parse_arguments(argv, cwd)
             overrides = [
-                argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg in {"-c", "--config"}
+                f"{key}={toml_value(value)}"
+                for key, value in config.items()
+                if not key.startswith("_")
             ]
             done = threading.Event()
             terminal = {}
@@ -327,6 +399,7 @@ class CodexRuntimeBridge:
                 stderr_handler=lambda line: None,
             )
             process.start()
+            verify_runtime_requirements(process.request("configRequirements/read", {}))
             process.request("account/login/start", self.tokens.app_server_login_params())
             if mode == "app-server":
                 while line := reader.readline(16 * 1024 * 1024 + 1):
@@ -334,20 +407,15 @@ class CodexRuntimeBridge:
                         raise ValueError("Codex frame exceeds size limit")
                     message = json.loads(line)
                     method = message.get("method", "")
-                    if method.startswith("account/login") or method in {
-                        "account/logout",
-                        "account/chatgptAuthTokens/refresh",
-                    }:
-                        raise ValueError("Runtime clients cannot change authentication")
+                    params = preflight_request(method, message.get("params") or {})
                     if method == "initialize":
                         result = process.initialization_result
                     elif method == "initialized":
                         continue
                     elif "id" not in message:
-                        process.notify(method, message.get("params"))
-                        continue
+                        raise ValueError("Expected a preflight request identity")
                     else:
-                        result = process.request(method, message.get("params"))
+                        result = process.request(method, params)
                     send(
                         {
                             "stream": "stdout",

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 import importlib.util
 import json
@@ -52,6 +53,15 @@ def read_json(path):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 32 * 1024 * 1024:
         raise ValueError("Invalid scan artifact")
     return json.loads(path.read_text())
+
+
+@contextmanager
+def state_lock(root):
+    # This lock covers process publication and terminal state only. The lifetime
+    # runner lock must never prevent cancellation of a running scan.
+    with (root / "state.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def git_environment():
@@ -241,10 +251,13 @@ def run(request):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        if (root / "result.json").exists():
-            return
-        write_json(root / "process.json", {"pid": os.getpid(), "start": process_start(os.getpid())})
-        write_json(root / "request.json", request)
+        with state_lock(root):
+            if (root / "result.json").exists():
+                return
+            write_json(
+                root / "process.json", {"pid": os.getpid(), "start": process_start(os.getpid())}
+            )
+            write_json(root / "request.json", request)
         child = None
         result = {"status": "failed", "error": "Scan ended before producing a result"}
         try:
@@ -314,22 +327,30 @@ def run(request):
                     prompt,
                 ]
                 with (root / "scan.log").open("w") as log:
-                    child = subprocess.Popen(
-                        command,
-                        env=env,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                    )
-                    write_json(
-                        root / "process.json",
-                        {
-                            "pid": os.getpid(),
-                            "start": process_start(os.getpid()),
-                            "child_pid": child.pid,
-                            "child_start": process_start(child.pid),
-                        },
-                    )
+                    with state_lock(root):
+                        if (root / "result.json").exists():
+                            return
+                        child = subprocess.Popen(
+                            command,
+                            env=env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=True,
+                        )
+                        try:
+                            write_json(
+                                root / "process.json",
+                                {
+                                    "pid": os.getpid(),
+                                    "start": process_start(os.getpid()),
+                                    "child_pid": child.pid,
+                                    "child_start": process_start(child.pid),
+                                },
+                            )
+                        except BaseException:
+                            os.killpg(child.pid, signal.SIGKILL)
+                            child.wait()
+                            raise
                     try:
                         code = child.wait(timeout=float(request["timeout_seconds"]))
                     except subprocess.TimeoutExpired:
@@ -362,7 +383,9 @@ def run(request):
                 child.wait()
             shutil.rmtree(root / "checkout", ignore_errors=True)
             shutil.rmtree(root / "codex-home", ignore_errors=True)
-            write_json(root / "result.json", result)
+            with state_lock(root):
+                if not (root / "result.json").exists():
+                    write_json(root / "result.json", result)
 
 
 def process_start(pid):
@@ -408,41 +431,60 @@ def terminate_group(pid, started):
 
 def cancel(scan_id):
     root = scan_directory(scan_id)
-    if (root / "process.json").exists():
-        process = read_json(root / "process.json")
+    with state_lock(root):
+        if (root / "result.json").exists():
+            if read_json(root / "result.json")["status"] != "cancelled":
+                return status(scan_id)
+        else:
+            write_json(
+                root / "result.json",
+                {
+                    "status": "cancelled",
+                    "artifacts": {"diagnostics": str(root.relative_to(SCAN_ROOT.parent))},
+                },
+            )
+        process_path = root / "process.json"
+        if not process_path.exists():
+            process_path = root / "launched.json"
+        process = read_json(process_path) if process_path.exists() else None
+    # Publish cancellation before terminating anything: a runner starting or
+    # finalizing concurrently will now leave this terminal receipt untouched.
+    if process:
         if process.get("child_pid"):
             terminate_group(process["child_pid"], process.get("child_start"))
         terminate_group(process["pid"], process.get("start"))
-    if not (root / "result.json").exists():
-        write_json(
-            root / "result.json",
-            {
-                "status": "cancelled",
-                "artifacts": {"diagnostics": str(root.relative_to(SCAN_ROOT.parent))},
-            },
-        )
     return status(scan_id)
+
+
+def launch(request):
+    root = scan_directory(request["scan_id"])
+    with state_lock(root):
+        if not (root / "result.json").exists() and not (root / "launched.json").exists():
+            with (root / "launcher.log").open("a") as log:
+                child = subprocess.Popen(
+                    [sys.executable, __file__, "run", json.dumps(request)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=log,
+                    start_new_session=True,
+                )
+            try:
+                write_json(
+                    root / "launched.json", {"pid": child.pid, "start": process_start(child.pid)}
+                )
+            except BaseException:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+                raise
+    return status(request["scan_id"], check_process=False)
 
 
 def main():
     action, value = sys.argv[1:3]
     if action in {"run", "launch"}:
         request = json.loads(value)
-        root = scan_directory(request["scan_id"])
         if action == "launch":
-            with (root / "launch.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                if not (root / "launched.json").exists():
-                    with (root / "launcher.log").open("a") as log:
-                        child = subprocess.Popen(
-                            [sys.executable, __file__, "run", value],
-                            stdin=subprocess.DEVNULL,
-                            stdout=log,
-                            stderr=log,
-                            start_new_session=True,
-                        )
-                    write_json(root / "launched.json", {"pid": child.pid})
-            print(json.dumps({"status": "running"}))
+            print(json.dumps(launch(request)))
         else:
             run(request)
     elif action in {"status", "status-live"}:
