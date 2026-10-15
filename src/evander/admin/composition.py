@@ -238,6 +238,7 @@ class AdminRuntimeComponents:
     config: Any
     runtime: RuntimeContext
     addon_catalog: LoadedAddonCatalog
+    security_scan_service: Any
     directory_store: DirectoryStore
     directory_config_store: DirectoryConfigStore
     tool_call_audit_index: ToolCallAuditIndex | None
@@ -841,12 +842,21 @@ def _build_admin_runtime_components(
         is_container_session=vm_agent_admin.is_container_session,
     )
 
+    from evander.admin.services.security_scan_service import SecurityScanService
+    from evander.security_scans import security_scan_providers
+
+    security_scan_service = SecurityScanService(
+        runtime_dir=runtime_dir_path,
+        providers=security_scan_providers(addon_catalog),
+        sessions=runtime.session_repository,
+    )
     components = AdminRuntimeComponents(
         runtime_dir=runtime_dir_path,
         project_dir=project_dir,
         config=config,
         runtime=runtime,
         addon_catalog=addon_catalog,
+        security_scan_service=security_scan_service,
         directory_store=directory_store,
         directory_config_store=directory_config_store,
         tool_call_audit_index=tool_call_audit_index,

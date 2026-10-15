@@ -1,5 +1,12 @@
 # Operations
 
+For repository security scans, use `effect:security:scan-repo` with a live session
+and its absolute repository path. The [Codex Security provider guide](../packages/codex-security-addon/README.md)
+describes separate installation, host-seeded VM/worker runtimes, subscription
+broker profiles, private reports, and bounded smoke checks. Connect the node's
+`completed` and `error` ports explicitly; completed findings are data for gates,
+while incomplete coverage is an error.
+
 For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
 Its setup verifies recovery before enabling writes, and its directory-scoped workflow
 resumes publication, live checks and conditional restore after a worker restart.

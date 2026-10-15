@@ -144,6 +144,7 @@ class ContainerWorkerVmExecutionBackend:
             directory_path=spec.directory_path,
             command=spec.command,
             codex_turn=spec.codex_turn,
+            codex_runtime=spec.codex_runtime,
             image=spec.image or config.container_worker_default_image,
             repo_source=spec.repo_source,
             clone_branch=spec.clone_branch,
@@ -187,6 +188,7 @@ class ContainerWorkerVmExecutionBackend:
             directory_path=prepared.directory_path,
             command=prepared.command,
             codex_turn=prepared.codex_turn,
+            codex_runtime=prepared.codex_runtime,
             image=request.image,
             repo_source=prepared.repo_source,
             clone_branch=prepared.clone_branch,
@@ -618,6 +620,8 @@ class ContainerWorkerVmExecutionBackend:
             "command": command,
             "metadata": sanitize_metadata(prepared.metadata),
         }
+        if prepared.codex_runtime is not None:
+            payload["codex_runtime"] = prepared.codex_runtime.model_dump(mode="json")
         if prepared.codex_turn is not None:
             payload["codex_turn"] = prepared.codex_turn.model_dump(mode="json", exclude_none=True)
         if prepared.repo_source:
@@ -688,6 +692,7 @@ class ContainerWorkerVmExecutionBackend:
                 directory_path=target.directory_path,
                 command=target.command,
                 codex_turn=target.codex_turn,
+                codex_runtime=target.codex_runtime,
                 image=target.image,
                 repo_source=target.repo_source,
                 clone_branch=target.clone_branch,

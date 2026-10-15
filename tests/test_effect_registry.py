@@ -61,6 +61,7 @@ from evander.effects.providers.pull_request_reply import PullRequestReplyEffectP
 from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
+from evander.effects.providers.security_scan import SecurityScanEffectProvider
 from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
@@ -577,6 +578,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:code-consultation",
         "effect:chat-assistant:ensure-session",
         "effect:agent:exec",
+        "effect:security:scan-repo",
         "effect:semantic:ensure-collection",
         "effect:semantic:upsert",
         "effect:semantic:delete",
@@ -615,6 +617,9 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pull-request:update",
     }
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:security:scan-repo"] is SecurityScanEffectProvider
+    )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:runtime:diagnostics-snapshot"]
         is RuntimeDiagnosticsSnapshotEffectProvider

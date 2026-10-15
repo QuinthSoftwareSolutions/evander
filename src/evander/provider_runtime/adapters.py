@@ -37,6 +37,7 @@ class AdminRuntimeProviderAdapter:
         self.managed_git_admin = getattr(admin_runtime, "managed_git_admin", None)
         self.repository_index_admin = getattr(admin_runtime, "repository_index_admin", None)
         self.connector_service = getattr(admin_runtime, "connector_service", None)
+        self.security_scan_service = getattr(admin_runtime, "security_scan_service", None)
         self.event_schemas = getattr(getattr(admin_runtime, "workflow_config_admin", None), "event_schemas", None)
 
     def __getattribute__(self, name: str) -> Any:
@@ -510,6 +511,7 @@ def build_provider_runtime_ports(
         session_context_reader=_pick(provider_runtime, "session_context_reader", admin_adapter),
         session_artifact_reader=_pick(provider_runtime, "session_artifact_reader", admin_adapter),
         admin_service=_pick(provider_runtime, "admin_service", admin_service, admin_adapter),
+        security_scan_service=_pick(provider_runtime, "security_scan_service", getattr(admin_adapter, "security_scan_service", None)),
         metadata=provider_metadata,
     )
 

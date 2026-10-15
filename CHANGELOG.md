@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-15 - Repository security scan workflows (0.92.0)
+
+- Add a provider-neutral repository security scan effect with required session
+  and repository path, optional commit bounds, durable waiting, and report outputs.
+- Add an independently installed Codex Security provider for standard and deep
+  scans against clean snapshots, including worker-brokered subscription runtimes.
+- Preserve scan findings and private report artifacts across workflow restarts,
+  and keep scan failures distinct from completed scans that find vulnerabilities.
+- Keep real subscription credentials on the worker, attach them through a
+  job-scoped relay with account-pinned routing, and restrict the scan runtime
+  protocol. Make cancellation terminal across startup and cleanup.
+
 ## 2026-10-15 - Explain workflow graphs with the assistant (0.91.0)
 
 - Add **Explain graph** to the workflow editor's graph details on desktop and mobile.

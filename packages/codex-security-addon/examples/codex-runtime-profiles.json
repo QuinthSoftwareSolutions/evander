@@ -1,0 +1,7 @@
+{
+  "codex-security": {
+    "command_prefix": ["/usr/bin/python3", "/opt/evander/codex-security/runner.py", "run"],
+    "codex_path": "/usr/local/bin/codex",
+    "max_processes": 12
+  }
+}

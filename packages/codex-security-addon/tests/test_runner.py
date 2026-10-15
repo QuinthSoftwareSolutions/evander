@@ -1,0 +1,359 @@
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from evander_codex_security_addon import runner
+
+
+def git(path, *args):
+    return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = home / "repo"
+    source.mkdir(parents=True)
+    git(source, "init", "-q")
+    git(source, "config", "user.name", "Synthetic")
+    git(source, "config", "user.email", "synthetic@example.invalid")
+    (source / "code.py").write_text("value = 1\n")
+    git(source, "add", "code.py")
+    git(source, "commit", "-qm", "Initial")
+    first = git(source, "rev-parse", "HEAD")
+    (source / "code.py").write_text("value = 2\n")
+    git(source, "commit", "-qam", "Second")
+    second = git(source, "rev-parse", "HEAD")
+    monkeypatch.setattr(runner, "HOME", home)
+    monkeypatch.setattr(runner, "SCAN_ROOT", tmp_path / "artifacts" / "security-scans")
+    return source, first, second
+
+
+def test_full_scan_pins_head_without_reading_or_modifying_dirty_work(repo):
+    source, first, second = repo
+    (source / "code.py").write_text("staged = True\n")
+    git(source, "add", "code.py")
+    (source / "code.py").write_text("unstaged = True\n")
+    (source / "untracked.py").write_text("private working file\n")
+    before = git(source, "status", "--porcelain=v1")
+    index_digest = hashlib.sha256((source / ".git/index").read_bytes()).hexdigest()
+    root = runner.scan_directory("1" * 32)
+    target, base, head = runner.snapshot({"repo_path": str(source)}, root)
+    assert head == second and base is None
+    assert (target / "code.py").read_text() == "value = 2\n"
+    assert not (target / "untracked.py").exists()
+    assert git(source, "status", "--porcelain=v1") == before
+    assert hashlib.sha256((source / ".git/index").read_bytes()).hexdigest() == index_digest
+    assert git(source, "rev-parse", "HEAD") == second
+    assert not git(target, "remote")
+
+
+@pytest.mark.parametrize("selection", ["from", "to", "both", "root"])
+def test_optional_commit_selection(repo, selection):
+    source, first, second = repo
+    args = {"repo_path": str(source)}
+    if selection in {"from", "both"}:
+        args["from_commit"] = first
+    if selection in {"to", "both"}:
+        args["to_commit"] = second
+    if selection == "root":
+        args["to_commit"] = first
+    _, base, head = runner.snapshot(args, runner.scan_directory("2" * 32))
+    assert base == (None if selection == "root" else first)
+    assert head == (first if selection == "root" else second)
+
+
+def test_repo_symlink_and_invalid_hash_rejected(repo, tmp_path):
+    source, _, _ = repo
+    link = source.parent / "linked"
+    link.symlink_to(source, target_is_directory=True)
+    with pytest.raises(ValueError, match="contained"):
+        runner.snapshot({"repo_path": str(link)}, runner.scan_directory("3" * 32))
+    with pytest.raises(ValueError, match="Invalid commit"):
+        runner.snapshot(
+            {"repo_path": str(source), "to_commit": "HEAD; invalid"},
+            runner.scan_directory("4" * 32),
+        )
+
+
+def test_empty_diff_needs_no_model_and_produces_completed_receipt(repo, monkeypatch):
+    source, _, second = repo
+    monkeypatch.setattr(runner.os, "getpgrp", lambda: runner.os.getpid())
+    runner.run(
+        {
+            "repo_path": str(source),
+            "scan_id": "5" * 32,
+            "mode": "standard",
+            "from_commit": second,
+            "to_commit": second,
+        }
+    )
+    result = runner.status("5" * 32)
+    assert result["status"] == "completed" and result["coverage"] == "complete"
+    assert result["findings"] == []
+    assert not (runner.scan_directory("5" * 32) / "checkout").exists()
+
+
+def test_unsealed_artifact_never_becomes_success(repo):
+    root = runner.scan_directory("6" * 32)
+    reports = root / "reports"
+    reports.mkdir()
+    (reports / "scan-manifest.json").write_text(
+        json.dumps({"scan": {"id": "candidate", "status": "completed"}})
+    )
+    with pytest.raises(ValueError, match="sealed result"):
+        runner.canonical_result(root, root / "unused-plugin", {"mode": "standard"})
+
+
+def test_snapshot_includes_locally_available_unreferenced_commit(repo):
+    source, first, _ = repo
+    git(source, "checkout", "--detach", first)
+    (source / "detached.py").write_text("detached = True\n")
+    git(source, "add", "detached.py")
+    git(source, "commit", "-qm", "Detached revision")
+    detached = git(source, "rev-parse", "HEAD")
+    git(source, "checkout", "-")
+    target, _, head = runner.snapshot(
+        {"repo_path": str(source), "to_commit": detached}, runner.scan_directory("7" * 32)
+    )
+    assert head == detached
+    assert (target / "detached.py").read_text() == "detached = True\n"
+
+
+def test_status_does_not_check_process_ids_in_another_container(repo):
+    root = runner.scan_directory("8" * 32)
+    runner.write_json(root / "process.json", {"pid": 99999999, "start": "1"})
+    assert runner.status("8" * 32, check_process=False) == {"status": "running"}
+    assert runner.status("8" * 32, check_process=True)["status"] == "failed"
+
+
+def test_direct_runner_uses_session_token_without_executing_profile(repo, monkeypatch):
+    source, _, _ = repo
+    env_file = source.parent / ".evander/session.env"
+    env_file.parent.mkdir()
+    env_file.write_text("EVANDER_MCP_SESSION_TOKEN='synthetic scoped token'\n")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("EVANDER_MCP_SESSION_TOKEN", raising=False)
+    runner.load_session_environment()
+    assert runner.os.environ["OPENAI_API_KEY"] == "synthetic scoped token"
+
+
+@pytest.fixture
+def sealed_report(repo):
+    plugin = (
+        Path(__file__).resolve().parents[1] / "node_modules/@openai/codex-security/_bundled_plugin"
+    )
+    if not plugin.is_dir():
+        pytest.skip("Run npm ci to test the pinned provider artifact contract")
+    root = runner.scan_directory("9" * 32)
+    reports = root / "reports/scan"
+    shutil.copytree(plugin / "examples/completed-scan", reports)
+    runner.write_json(root / "target.json", {"from_commit": None, "to_commit": "deadbeef"})
+    return root, plugin, reports
+
+
+def test_native_sealed_report_maps_stable_finding_ids_and_severity(sealed_report):
+    root, plugin, _ = sealed_report
+    result = runner.canonical_result(root, plugin, {"mode": "standard"})
+    assert result["status"] == "completed"
+    assert result["coverage"] == "complete"
+    assert result["findings"][0]["id"] == "csf_852f90d6e1177502ff113d4a"
+    assert result["findings"][0]["occurrence_id"] == "occ_e79cb19591e696572a1c22be"
+    assert result["severity_counts"]["high"] == 1
+    assert (
+        result["artifacts"]["report.md"] == "security-scans/" + "9" * 32 + "/reports/scan/report.md"
+    )
+
+
+def test_sealed_report_for_another_commit_is_rejected(sealed_report):
+    root, plugin, _ = sealed_report
+    runner.write_json(root / "target.json", {"from_commit": None, "to_commit": "a" * 40})
+    with pytest.raises(ValueError, match="does not match"):
+        runner.canonical_result(root, plugin, {"mode": "standard"})
+
+
+def test_tampered_sealed_findings_are_rejected(sealed_report):
+    root, plugin, reports = sealed_report
+    findings = reports / "findings.json"
+    findings.write_text(findings.read_text().replace("Unsafe archive", "Modified archive"))
+    with pytest.raises(ValueError):
+        runner.canonical_result(root, plugin, {"mode": "standard"})
+
+
+def test_cancel_stops_only_the_matching_scan_process_group(repo):
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    try:
+        root = runner.scan_directory("a" * 32)
+        runner.write_json(
+            root / "process.json",
+            {
+                "pid": unrelated.pid,
+                "start": "wrong-process-generation",
+                "child_pid": child.pid,
+                "child_start": runner.process_start(child.pid),
+            },
+        )
+        assert runner.cancel("a" * 32)["status"] == "cancelled"
+        assert child.wait(timeout=2) < 0
+        assert unrelated.poll() is None
+    finally:
+        for process in (child, unrelated):
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+
+def test_cancel_before_start_is_terminal_for_run_and_launch(repo, monkeypatch):
+    source, _, _ = repo
+    request = {"scan_id": "b" * 32, "repo_path": str(source), "mode": "standard"}
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "snapshot", lambda *args: pytest.fail("Cancelled scan started"))
+    monkeypatch.setattr(
+        runner.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Cancelled scan launched")
+    )
+    receipt = runner.cancel(request["scan_id"])
+    runner.run(request)
+    assert runner.launch(request) == receipt
+    assert runner.cancel(request["scan_id"]) == receipt
+
+
+def test_cancel_waits_for_startup_registration_and_cannot_be_overwritten(repo, monkeypatch):
+    source, _, _ = repo
+    scan_id = "c" * 32
+    publishing = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+    original_write = runner.write_json
+    results = []
+
+    def write(path, value):
+        if path.name == "process.json":
+            publishing.set()
+            assert release.wait(5)
+        original_write(path, value)
+
+    def snapshot(*args):
+        assert cancelled.wait(5)
+        raise RuntimeError("Stopped during preparation")
+
+    def cancel():
+        results.append(runner.cancel(scan_id))
+        cancelled.set()
+
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "write_json", write)
+    monkeypatch.setattr(runner, "snapshot", snapshot)
+    monkeypatch.setattr(runner, "terminate_group", lambda *args: None)
+    worker = threading.Thread(
+        target=runner.run,
+        args=({"scan_id": scan_id, "repo_path": str(source), "mode": "standard"},),
+    )
+    canceller = threading.Thread(target=cancel)
+    worker.start()
+    try:
+        assert publishing.wait(5)
+        canceller.start()
+        assert not cancelled.wait(0.1)
+    finally:
+        release.set()
+        worker.join(5)
+        canceller.join(5)
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert results[0]["status"] == "cancelled"
+    assert runner.status(scan_id) == results[0]
+
+
+def test_cancel_coordinates_detached_child_creation_and_terminal_commit(repo, monkeypatch):
+    source, _, head = repo
+    scan_id = "d" * 32
+    spawning = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+    cancelled = threading.Event()
+    terminated = []
+    results = []
+
+    class Child:
+        pid = 987654321
+
+        def wait(self, **kwargs):
+            assert stopped.wait(5)
+            return 0
+
+        def poll(self):
+            return 0 if stopped.is_set() else None
+
+    def popen(*args, **kwargs):
+        spawning.set()
+        assert release.wait(5)
+        return Child()
+
+    def terminate(pid, started):
+        terminated.append(pid)
+        stopped.set()
+
+    def cancel():
+        results.append(runner.cancel(scan_id))
+        cancelled.set()
+
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner, "snapshot", lambda *args: (source, None, head))
+    monkeypatch.setattr(runner, "git", lambda *args: "")
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=json.dumps({"plugin_root": "/unused", "environment": {}})
+        ),
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    monkeypatch.setattr(runner, "process_start", lambda pid: "generation")
+    monkeypatch.setattr(runner, "terminate_group", terminate)
+    monkeypatch.setattr(runner, "canonical_result", lambda *args: {"status": "completed"})
+    worker = threading.Thread(
+        target=runner.run,
+        args=(
+            {
+                "scan_id": scan_id,
+                "repo_path": str(source),
+                "mode": "standard",
+                "timeout_seconds": 10,
+            },
+        ),
+    )
+    canceller = threading.Thread(target=cancel)
+    worker.start()
+    try:
+        assert spawning.wait(5)
+        canceller.start()
+        assert not cancelled.wait(0.1)
+    finally:
+        release.set()
+        worker.join(5)
+        canceller.join(5)
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert terminated[0] == Child.pid
+    assert results[0]["status"] == "cancelled"
+    assert runner.status(scan_id) == results[0]
+
+
+def test_cancel_after_completion_preserves_the_result(repo, monkeypatch):
+    root = runner.scan_directory("e" * 32)
+    result = {"status": "completed", "findings": [{"id": "known-finding"}]}
+    runner.write_json(root / "result.json", result)
+    monkeypatch.setattr(
+        runner, "terminate_group", lambda *args: pytest.fail("Completed scan was terminated")
+    )
+    assert runner.cancel("e" * 32) == result

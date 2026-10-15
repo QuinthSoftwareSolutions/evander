@@ -14,8 +14,12 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
+
 from evander.codex_auth import CodexTurnSpec
 
+from .codex_runtime_policy import RUNTIME_CONFIG_OVERRIDES, prepare_runtime_policy
+from .codex_runtime_transport import transport_source
 from .codex_subscription import (
     CODEX_COMPLETION_MARKER_CONTAINER_DIR,
     CODEX_COMPLETION_MARKER_HOST_DIRNAME,
@@ -548,6 +552,31 @@ class DockerContainerRuntime:
             "-w",
             request.working_directory or self.sandbox_profile.workdir,
         ]
+        if request.codex_runtime is not None:
+            bridge_root = paths.root / "codex-runtimes" / record.job_id
+            bridge_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            bridge_root.chmod(0o711)
+            reject_unsafe_mount(bridge_root, "/run/evander/codex-runtime")
+            policy = bridge_root / "policy"
+            ensure_resolved_path_within(
+                base=bridge_root, candidate=policy, description="Codex policy"
+            )
+            policy.mkdir(mode=0o755, exist_ok=True)
+            requirements = policy / "requirements.toml"
+            ensure_resolved_path_within(
+                base=policy, candidate=requirements, description="Codex requirements"
+            )
+            prepare_runtime_policy(policy)
+            args.extend(
+                [
+                    "-v",
+                    f"{bridge_root}:/run/evander/codex-runtime:ro",
+                    "-v",
+                    f"{policy}:/etc/codex:ro",
+                    "-e",
+                    "EVANDER_CODEX_BROKER_SOCKET=/run/evander/codex-runtime/broker.sock",
+                ]
+            )
         for mount in identity_mounts:
             args.extend(["-v", mount])
         if subscription_completion_mount is not None:
@@ -590,6 +619,54 @@ class DockerContainerRuntime:
         args.append(request.image)
         args.extend(request.command)
         return args
+
+    def codex_runtime_app_server_command(self, record, codex_path, environment, overrides):
+        if not self.codex_egress_proxy_url:
+            raise ValueError("Brokered Codex runtimes require a restricted egress proxy")
+        command = [
+            self.docker_binary,
+            "exec",
+            "-i",
+            "-e",
+            "LD_PRELOAD=",
+            "-e",
+            "LD_LIBRARY_PATH=",
+            "-e",
+            "LD_AUDIT=",
+            record.container_id or record.container_name,
+            "/usr/bin/env",
+            "-i",
+            "HOME=/home/agent",
+            "PATH=/opt/evander/codex-security:/home/agent/bin:/usr/local/bin:/usr/bin:/bin",
+            "NO_PROXY=",
+            "EVANDER_CODEX_BROKER_SOCKET=/run/evander/codex-runtime/broker.sock",
+        ]
+        for key, value in environment.items():
+            command.append(f"{key}={value}")
+        args = [
+            *command,
+            "/usr/bin/python3",
+            "-c",
+            transport_source(),
+            codex_path,
+            "app-server",
+            "--stdio",
+        ]
+        for override in [*overrides, *RUNTIME_CONFIG_OVERRIDES]:
+            args.extend(["--config", override])
+        return args
+
+    def codex_runtime_http_client(self):
+        if not self.codex_egress_proxy_url:
+            raise ValueError("Brokered Codex runtimes require a restricted egress proxy")
+        # Keep installation privacy checks and destination restrictions on the
+        # existing proxy. Container certificates/environment never affect TLS here.
+        return httpx.Client(
+            proxy=self.codex_egress_proxy_url,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx.Timeout(120, connect=15),
+        )
 
     def _session_read_only_mounts(self, paths: WorkerSessionPaths) -> tuple[WorkerReadOnlyMount, ...]:
         """Pin host-selected toolchain paths across all jobs in a session."""

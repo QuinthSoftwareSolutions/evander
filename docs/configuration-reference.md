@@ -1,5 +1,36 @@
 # Configuration Reference
 
+## Repository security scan effect
+
+`effect:security:scan-repo` requires bindable `session_id` and `repo_path` fields.
+The path is the absolute Git worktree root inside the session's `/home/agent`.
+Optional fields are `provider` (default `codex-security`), `mode` (`standard` or
+`deep`, default `standard`), `from_commit`, `to_commit`, and `timeout_seconds`
+(default 3600; positive, at most 345600). Commit hashes must resolve locally.
+
+Neither hash scans the complete clean HEAD snapshot; a start hash alone reviews
+through captured HEAD; an end hash alone reviews that commit against its first
+parent; both select a direct diff. An initial commit reviews its complete tree.
+Deep scans require both hashes to be absent. Outputs include normalized findings,
+severity counts, coverage, immutable commit IDs, and private artifact references.
+See [provider installation and operation](../packages/codex-security-addon/README.md).
+
+Alternative providers register a name in an add-on's `security_scan_providers`
+mapping. They implement the core `SecurityScanProvider` start/poll/cancel contract
+and return normalized `SecurityScanResult` values. Launches must reuse the supplied
+scan identity, and cancellation must work by that identity if the launch reply was
+lost. Provider packages own their runtime dependencies and deployment assets.
+
+Worker environment variable `EVANDER_CODEX_RUNTIME_PROFILES` identifies the
+operator-owned JSON file of approved Codex runtime profiles. A profile specifies
+`command_prefix`, `codex_path`, and `max_processes` (default 12, range 1–64).
+Only explicitly selected brokered-runtime jobs use these profiles. They retain
+the session's selected subscription profile and existing restricted egress.
+Real subscription tokens stay on the worker. A per-job Unix HTTP relay validates
+upstream endpoints and selected-account routing before attaching credentials;
+native Codex uses a local TLS adapter with a nonfunctional placeholder token.
+The relay and adapter need no additional host TCP listener or firewall port.
+
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 
 Scope included:

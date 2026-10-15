@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from evander.effects.providers.schemas import (
+    SecurityScanEffectDefinition,
     AdoBuildWaitEffectDefinition,
     AgentInstallSkillsEffectDefinition,
     AdoAddWorkItemTagEffectDefinition,
@@ -130,6 +131,7 @@ from evander.triggers.providers.schemas import (
 )
 
 __all__ = [
+    "SecurityScanEffectDefinition",
     "AdoAddWorkItemTagEffectDefinition",
     "AdoBuildsQueryDefinition",
     "AdoBuildWaitEffectDefinition",

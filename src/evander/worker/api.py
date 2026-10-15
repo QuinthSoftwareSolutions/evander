@@ -72,6 +72,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                     "git_salvage": 1,
                     "codex_fast_mode": 1,
                     "codex_ultrafast_mode": 1,
+                    "codex_runtime_bridge": 1,
                 },
             }
         )
@@ -716,8 +717,10 @@ def create_app(
     codex_egress_proxy_bind_host: str | None = None,
     codex_egress_proxy_port: int = 11889,
     codex_egress_allowed_hosts: Sequence[str] | None = None,
+    codex_runtime_profiles: dict | None = None,
 ) -> Starlette:
     return WorkerDaemon(
+        codex_runtime_profiles=codex_runtime_profiles,
         runtime_dir=runtime_dir,
         worker_root=worker_root,
         container_runtime=container_runtime,

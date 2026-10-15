@@ -141,6 +141,7 @@ class EffectProviderFactory:
             pull_request_creator=self._provider_runtime_ports.pull_request_creator,
             code_consultation_service_factory=self.code_consultation_service_factory,
             admin_service=self._admin_adapter,
+            security_scan_service=self._provider_runtime_ports.security_scan_service,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata=metadata,

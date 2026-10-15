@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from evander.codex_auth import CodexTurnSpec
+from evander.codex_auth import CodexRuntimeSpec, CodexTurnSpec
 
 
 class ExecutionBackendKind(str, Enum):
@@ -32,6 +32,7 @@ class ExecutionSpec(BaseModel):
     vm_provider: str | None = None
     command: str | list[str] | None = None
     codex_turn: CodexTurnSpec | None = None
+    codex_runtime: CodexRuntimeSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
@@ -75,6 +76,7 @@ class PreparedExecution(BaseModel):
     directory_path: str = "root"
     command: str | list[str] | None = None
     codex_turn: CodexTurnSpec | None = None
+    codex_runtime: CodexRuntimeSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
@@ -93,6 +95,7 @@ class ExecutionHandle(BaseModel):
     directory_path: str = "root"
     command: str | list[str] | None = None
     codex_turn: CodexTurnSpec | None = None
+    codex_runtime: CodexRuntimeSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
