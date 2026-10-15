@@ -17,7 +17,8 @@ import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
 import { useDocumentVisible } from "./features/admin/visibility";
-import { ChatLauncher } from "./features/chat/ChatLauncher";
+import type { ChatPrompt } from "./features/chat/api";
+import { ChatLauncher, type AssistantRequest } from "./features/chat/ChatLauncher";
 import { AdminNavigation } from "./features/admin/AdminNavigation";
 import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
@@ -1516,6 +1517,8 @@ export default function AdminRoot() {
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab(window.location.hash));
   const [workflowHasUnsavedChanges, setWorkflowHasUnsavedChanges] = useState(false);
   const [adminState, setAdminState] = useState<AdminState | null>(null);
+  const [assistantRequest, setAssistantRequest] = useState<AssistantRequest | null>(null);
+  const assistantRequestIdRef = useRef(0);
   const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string>(() => {
     if (typeof window === "undefined") return "root";
@@ -2072,6 +2075,12 @@ export default function AdminRoot() {
     currentUserLabel,
     currentUserPermissions,
     currentUserEffectivePermissions,
+    assistantEnabled: Boolean(adminState?.assistant?.enabled),
+    assistantRequestPending: assistantRequest !== null,
+    openAssistantWithPrompt: (prompt: ChatPrompt) => {
+      if (!adminState?.assistant?.enabled || assistantRequest) return;
+      setAssistantRequest({ ...prompt, id: ++assistantRequestIdRef.current });
+    },
     canReadWorkflows,
     canReadWorkflowRuns,
     canWriteWorkflows,
@@ -2240,6 +2249,8 @@ export default function AdminRoot() {
           enabled={Boolean(session.authenticated || !session.auth_required)}
           assistantEnabled={Boolean(adminState?.assistant?.enabled)}
           showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
+          request={assistantRequest}
+          onRequestHandled={(id) => setAssistantRequest((current) => current?.id === id ? null : current)}
         />
 
         <div className="admin-shell-layout">

@@ -985,6 +985,13 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- To understand a graph, select it in the **Graphs** panel,
+  then click **Explain graph** in its graph details. The built-in assistant opens and
+  explains the graph's triggers, decisions, data flow, and actions using the current
+  editor document, including unsaved node changes. Existing chat history and any
+  message draft are retained, and sensitive configuration fields are redacted from
+  the assistant context. This requires workflow read access and an enabled
+  Admin assistant; it does not save or run the workflow.
 - To run an event workflow manually, select its `trigger:event` node and click
   **Trigger manually** in the inspector. Save or discard any workflow changes first,
   and enable and save the trigger if it is disabled. Fill the generated event fields;
