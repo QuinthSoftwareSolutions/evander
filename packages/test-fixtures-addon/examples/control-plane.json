@@ -1,0 +1,13 @@
+{
+  "allocations_enabled": false,
+  "allowed_team_ids": [],
+  "workers": {
+    "worker-a": {
+      "worker_base_url": "http://192.0.2.10:11888",
+      "fixture_base_url": "http://192.0.2.10:11991",
+      "token_env": "EVANDER_TEST_FIXTURES_WORKER_A_TOKEN"
+    }
+  },
+  "idle_seconds": 7200,
+  "max_per_worker": 2
+}

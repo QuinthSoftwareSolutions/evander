@@ -71,7 +71,10 @@ for the explicit map schema, authorization checks, and bridge credentials.
 
 Independent add-ons own their configuration guides. See the
 [WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
-and the [add-on project convention](addons.md#project-ownership).
+and [Test Fixtures configuration](../packages/test-fixtures-addon/docs/operations.md),
+plus the [add-on project convention](addons.md#project-ownership). Test fixtures
+use exact team and actual-worker bindings, default to allocation disabled, and
+keep fixture bearer/SQL credentials in host environment files.
 
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,

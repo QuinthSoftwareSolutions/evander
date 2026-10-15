@@ -1,0 +1,11 @@
+{
+  "worker_id": "worker-a",
+  "runtime_dir": "/var/lib/evander-test-fixtures",
+  "worker_jobs_db": "/var/lib/agent-worker/runtime/worker-jobs.db",
+  "allocations_enabled": false,
+  "rabbitmq_image": null,
+  "sql_enabled": false,
+  "sql_host": "127.0.0.1",
+  "sql_container_host": "172.17.0.1",
+  "sql_password_env": "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD"
+}
