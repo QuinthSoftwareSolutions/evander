@@ -41,6 +41,8 @@ Git, and HTTP surfaces.
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- A host-side Codex subscription quota query for scheduled capacity reports, with
+  remaining percentages, reset timestamps, and explicit unavailable results
 - Session cost categories with per-prompt overrides, a dashboard cost chart, and
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
@@ -1565,3 +1567,9 @@ the same virtualenv before using those providers. Existing configurations and wo
 data migration. The core installation remains usable without it.
 
 Azure DevOps is available as a [separately installed integration](packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](docs/git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

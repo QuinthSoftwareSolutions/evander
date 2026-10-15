@@ -905,7 +905,8 @@ def bind_deliverable_git_refs_to_work_context(
                 "commit_sha": supplied_commit_sha,
                 "expected_commit_sha": authoritative_commit_sha,
                 "agent_branch": context.agent_branch,
-                "required_action": "publish_candidate_with_git_push_agent_then_retry",
+                "required_action": "submit_git_changes_then_retry",
+                "publish_tool": "submit_git_changes",
                 "publish_command": "git push-agent",
             },
         )

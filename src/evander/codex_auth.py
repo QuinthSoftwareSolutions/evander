@@ -36,6 +36,18 @@ def normalize_subscription_profile_id(
     return text
 
 
+def normalize_subscription_quota_limit_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("limit_id must be a non-empty string")
+    return value.strip()
+
+
+def normalize_subscription_quota_window_minutes(value: object) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError("window_duration_minutes must be a positive integer")
+    return value
+
+
 class CodexAuthMode(str, Enum):
     METERED_API = "metered_api"
     CHATGPT_SUBSCRIPTION = "chatgpt_subscription"

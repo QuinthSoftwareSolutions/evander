@@ -1048,7 +1048,8 @@
             "communication_copy_artifact_to_workspace",
             "post_pr_feedback_reply",
             "set_issue_plan",
-            "stage_artifact"
+            "stage_artifact",
+            "submit_git_changes"
           ],
           "directory_path": "${{gate-merge-1.directory_path}}",
           "discord_channels": [],
@@ -1141,7 +1142,7 @@
       {
         "config": {
           "model": "gpt-6-luna",
-          "prompt": "You have been issued the task described in ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-1.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'.",
+          "prompt": "You have been issued the task described in ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-1.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When finished, commit and submit the completed work with a complete Markdown summary.",
           "target": "${{effect-vm-clone-repo-1.session_id}}",
           "vm_user": "agent"
         },
@@ -1152,7 +1153,7 @@
       {
         "config": {
           "model": "gpt-6-sol",
-          "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes the configured PR notes ref together with your latest work.",
+          "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a complete Markdown summary attached to the submitted commit. If anything is missing, complete it now. If you make changes during this checklist pass, commit and submit them with an updated complete summary before concluding.",
           "resume_thread_id": "${{effect-agent-prompt-4.thread_id}}",
           "target": "${{effect-vm-clone-repo-1.session_id}}",
           "vm_user": "agent"
@@ -1258,7 +1259,7 @@
       {
         "config": {
           "model": "gpt-6-sol",
-          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.destination_branch}}\ngit merge origin/${{effect-pr-create-1.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your complete Markdown summary, and submit the exact resulting commit and updated complete summary.\n\n",
           "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-git-push-1.session_id}}",
@@ -1271,7 +1272,7 @@
       {
         "config": {
           "model": "gpt-6-sol",
-          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-standalone.destination_branch}}\ngit merge origin/${{effect-pr-create-standalone.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-standalone.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your complete Markdown summary, and submit the exact resulting commit and updated complete summary.\n\n",
           "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-git-push-1.session_id}}",

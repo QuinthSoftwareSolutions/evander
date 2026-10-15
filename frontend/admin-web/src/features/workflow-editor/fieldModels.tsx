@@ -217,6 +217,7 @@ export function groupToolOption(option: WorkflowFieldOption): string {
     "prompt_agent",
     "list_pending_agent_prompts",
     "respond_to_agent",
+    "submit_git_changes",
     "schedule_resume",
     "run_script",
     "copilot_host_auth",

@@ -264,6 +264,7 @@ def _action_payload(result: VmActionResult) -> dict[str, Any]:
         "provider_operation_id": result.provider_operation_id,
         "thread_id": result.thread_id,
         "target_dir": result.target_dir,
+        "checkout_id": result.checkout_id,
         "guest_repo_name": result.guest_repo_name,
         "remote_url": result.remote_url,
     }

@@ -35,6 +35,7 @@ class AdminRuntimeProviderAdapter:
         self.vm_agent_admin = getattr(admin_runtime, "vm_agent_admin", None)
         self.issue_git_admin = getattr(admin_runtime, "issue_git_admin", None)
         self.managed_git_admin = getattr(admin_runtime, "managed_git_admin", None)
+        self.git_submission_admin = getattr(admin_runtime, "git_submission_admin", None)
         self.repository_index_admin = getattr(admin_runtime, "repository_index_admin", None)
         self.connector_service = getattr(admin_runtime, "connector_service", None)
         self.security_scan_service = getattr(admin_runtime, "security_scan_service", None)
@@ -376,6 +377,10 @@ class AdminRuntimeProviderAdapter:
     def push_branch(self, **kwargs: Any) -> Any:
         return self._call_required(self._managed_git_method("push_branch"), "push_branch", **kwargs)
 
+    def register_git_submission_checkout(self, **kwargs: Any) -> str | None:
+        method = getattr(self.git_submission_admin, "register_checkout", None)
+        return method(**kwargs) if callable(method) else None
+
     def pr_create(self, **kwargs: Any) -> Any:
         return self._call_required(self._managed_git_method("pr_create"), "pr_create", **kwargs)
 
@@ -429,6 +434,14 @@ class AdminRuntimeProviderAdapter:
         if resolver is None:
             raise AttributeError("resolve_container_codex_skill_files")
         return resolver(skill_names)
+
+    def read_codex_subscription_quota(self, **kwargs: Any) -> Any:
+        service = getattr(self._admin_runtime, "codex_auth_admin", None)
+        return self._call_required(
+            self._delegate_method("profile_quota", service),
+            "read_codex_subscription_quota",
+            **kwargs,
+        )
 
     def list_model_usage_events(self, **kwargs: Any) -> Any:
         lister = self._model_usage_events_lister()

@@ -200,3 +200,9 @@ Next steps should move behavior only when the contract is stable:
 - Recovery:
   - On repeated enqueue failures, check runtime store writeability and worker-session state files.
   - On misrouted tool calls, use `metric_mcp_tool_decision` deny/error reasons and compare to session allowlists.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

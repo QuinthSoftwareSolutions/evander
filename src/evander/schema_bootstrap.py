@@ -791,6 +791,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "message": {"type": "string"},
     },
     "effect:vm:clone-repo": {
+        "checkout_id": {"type": ["string", "null"]},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},
         "success": {"type": "boolean"},
@@ -851,6 +852,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "message": {"type": "string"},
     },
     "effect:agent:clone-repo": {
+        "checkout_id": {"type": ["string", "null"]},
         "success": {"type": "boolean"},
         "message": {"type": "string"},
         "session_id": {"type": "string"},
@@ -1632,6 +1634,18 @@ _QUERY_OUTPUT_SCHEMAS = {
         "costs_estimated_count": {"type": "integer"},
         "costs_reported_count": {"type": "integer"},
         "costs_unavailable_count": {"type": "integer"},
+    },
+    "query:codex:subscription-quota": {
+        "directory_path": {"type": "string"},
+        "profile_id": {"type": "string"},
+        "limit_id": {"type": "string"},
+        "window_duration_minutes": {"type": "integer", "minimum": 1},
+        "available": {"type": "boolean"},
+        "unavailable_reason": {"type": ["string", "null"]},
+        "used_percent": {"type": ["number", "null"], "minimum": 0},
+        "remaining_percent": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "resets_at": {"type": ["string", "null"], "format": "date-time"},
+        "observed_at": {"type": "string", "format": "date-time"},
     },
     "query:agent:artifact-text": {
         "session_id": {"type": "string"},

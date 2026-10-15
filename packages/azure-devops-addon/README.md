@@ -36,8 +36,10 @@ remains separately configured; its extraction is not part of this change.
    credential in the selected directory. Readiness checks inspect configuration
    only; they do not call Azure DevOps or decrypt personal credentials.
 2. Register an Azure DevOps repository under **Git Repositories** and clone it into
-   an existing agent with the desired model, toolchain, and permissions. The starter
-   never broadens that agent's permissions.
+   an existing agent with the desired model and toolchain. Grant writable managed-Git
+   access and the `submit_git_changes` MCP capability. The starter validates these
+   existing permissions without broadening them. Submission requires Evander 0.94.0
+   or later and includes the complete Markdown summary.
 3. Open **Workflow starters**, choose **Deliver an Azure DevOps issue**, select that
    repository and agent, and enter a work-item number, base branch, and existing CI
    pipeline number. Set the reviewer and repair limits.

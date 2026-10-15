@@ -46,7 +46,7 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             git_access_mode=normalize_git_access_mode(payload.get("git_access_mode")),
             git_access_lifetime=normalize_git_access_lifetime(payload.get("git_access_lifetime")),
         )
-        return {
+        response = {
             "success": bool(result.success),
             "message": self._normalize_optional_string(getattr(result, "message", None)) or "",
             "session_id": session_id,
@@ -65,6 +65,10 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
                 payload.get("git_access_lifetime")
             ),
         }
+        checkout_id = getattr(result, "checkout_id", None)
+        if checkout_id:
+            response["checkout_id"] = checkout_id
+        return response
 
     def _effect(self) -> VmCloneRepoEffectDefinition:
         if not isinstance(self.effect_definition, VmCloneRepoEffectDefinition):

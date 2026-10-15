@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-15 - Disposable task test fixtures (0.93.0)
+## 2026-10-15 - Disposable task test fixtures (0.95.0)
 
 - Add the separately installed Test Fixtures add-on for task-owned SQL Server
   source/target databases and isolated RabbitMQ brokers, private job configuration,
@@ -15,6 +15,34 @@
   resets through task continuations after their requesting jobs exit.
 - Serialize fixture admission with policy changes and bind operator updates to
   the directory whose settings and revision were loaded.
+
+## 2026-10-15 - Cache scanner images for deployment (0.94.1)
+
+- Add an optional Codex Security worker-image builder for deployment pipelines, keyed by the prepared base image archive, pinned runtime and operator build inputs.
+- Reuse checksum-verified scanner archives on unchanged deployments and preserve the previous cache when a rebuild fails.
+
+## 2026-10-15 - Submit committed work through MCP (0.94.0)
+
+- Add the session-scoped `submit_git_changes` capability for VM and container agents, including verbatim complete Markdown summaries, opaque checkout selection, exact-SHA verification, and safe retries.
+- Preserve managed Git write grants and publication policy; publish commit and notes atomically and coalesce their workflow notifications.
+- Make MCP submission the default in coding workflows and Team guidance while retaining the Git helper commands for compatibility.
+
+## 2026-10-15 - Accept sealed committed security diff coverage (0.93.1)
+
+- Accept the native scanner's `branch_diff` and `commit` coverage modes alongside
+  generic `diff` coverage for committed security scans. Continue validating the
+  sealed Git target and exact requested base and head revisions, and reject
+  repository or working-tree coverage for a committed range.
+
+## 2026-10-15 - Query Codex subscription quota in workflows (0.93.0)
+
+- Add `query:codex:subscription-quota` to read a named profile's remaining quota,
+  usage percentage, reset time, and observation time through its directory's worker.
+- Default to the seven-day Codex window, with explicit bucket and duration selectors
+  for other limits. Return unavailable data for missing, malformed, expired, or
+  unreachable telemetry instead of inventing remaining capacity.
+- Keep worker credentials and account metadata out of workflow outputs, enforce
+  workflow directory scope, and leave queued subscription work untouched by quota reads.
 
 ## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
 

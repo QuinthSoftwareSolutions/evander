@@ -948,6 +948,24 @@ class _TaskGitContextPreparation:
 
             self.batch.state = self.batch.repo.update(_resumed)
         context_model = self.batch.state.git_work_contexts[self.context_id]
+        register = getattr(self.batch.context.admin_service, "register_git_submission_checkout", None)
+        if callable(register):
+            checkout_id = register(
+                session_id=self.batch.session_id, managed_repo_id=self.managed_repo_id,
+                guest_path=self.worktree_path, owner_kind="team-addon", owner_id=self.context_id,
+                repository_name=self.batch.project_repo.get("guest_repo_name"),
+                generation=context_model.preparation_generation or "",
+                fixed_branch=context_model.agent_branch, prepared_base=self.base_commit,
+                provenance_base=context_model.base_commit,
+                base_branch=context_model.base_branch,
+                preparation_attempt_id=self.preparation_attempt_id,
+            )
+            if checkout_id and context_model.checkout_id != checkout_id:
+                def bind(current):
+                    current.git_work_contexts[self.context_id].checkout_id = checkout_id
+                    return current
+                self.batch.state = self.batch.repo.update(bind)
+                context_model = self.batch.state.git_work_contexts[self.context_id]
         self.batch.rows.append(_git_work_context_prompt_payload(context_model))
 
 

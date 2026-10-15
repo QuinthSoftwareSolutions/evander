@@ -1375,6 +1375,19 @@ def test_workflow_catalog_query_session_list(catalog_payload) -> None:
     assert "positive integer" in session_list_fields["limit"]["description"]
 
 
+def test_workflow_catalog_query_codex_subscription_quota(catalog_payload) -> None:
+    node = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:codex:subscription-quota"
+    )
+    fields = {field["key"]: field for field in node["fields"]}
+    assert set(fields) == {"profile_id", "directory_path", "limit_id", "window_duration_minutes"}
+    assert fields["profile_id"]["required"] is True
+    assert all(field["bindable"] for field in fields.values())
+    assert fields["limit_id"]["default_value"] == "codex"
+    assert fields["window_duration_minutes"]["kind"] == "number"
+    assert fields["window_duration_minutes"]["default_value"] == 10080
+
+
 def test_workflow_catalog_query_model_usage_list(catalog_payload) -> None:
     model_usage_list = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:model-usage:list"

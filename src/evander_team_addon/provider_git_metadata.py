@@ -362,6 +362,7 @@ def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
     }
     for key in (
         "agent_id",
+        "checkout_id",
         "task_id",
         "agent_branch",
         "base_branch",

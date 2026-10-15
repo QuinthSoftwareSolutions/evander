@@ -909,6 +909,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:model-usage:list": (
         "List persisted model usage events with optional query-time OpenAI cost estimates."
     ),
+    "query:codex:subscription-quota": (
+        "Read remaining quota and reset time for a named Codex subscription profile. "
+        "Missing telemetry returns an explicit unavailable result."
+    ),
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:issue:list": "List tracked local and proxy issues from the local issue store.",
@@ -2889,7 +2893,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Use write for git push-agent or read-only for clone, fetch, and pull."
+                    "Use write for committed change submission or read-only for clone, fetch, and pull."
                 ),
             ),
             _field(
@@ -4713,6 +4717,50 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "number",
                 bindable=True,
                 description="Value: positive integer maximum number of matched sessions to return.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:codex:subscription-quota",
+        label="Codex subscription quota",
+        fields=[
+            _field(
+                "profile_id",
+                "Subscription profile ID",
+                "string",
+                required=True,
+                bindable=True,
+                description="Named subscription profile slug configured on the directory's worker.",
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Defaults to the workflow directory. An override must stay within that "
+                    "directory or its descendants and selects their configured worker."
+                ),
+            ),
+            _field(
+                "limit_id",
+                "Limit ID",
+                "string",
+                bindable=True,
+                default_value="codex",
+                description="Quota bucket to read. Defaults to codex; other buckets are separate.",
+            ),
+            _field(
+                "window_duration_minutes",
+                "Window duration (minutes)",
+                "number",
+                bindable=True,
+                default_value=10080,
+                description=(
+                    "Positive integer duration of the exact quota window to read. "
+                    "10080 selects seven days; 300 selects five hours."
+                ),
             ),
         ],
     ),

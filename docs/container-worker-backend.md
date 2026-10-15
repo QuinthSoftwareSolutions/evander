@@ -592,6 +592,13 @@ different account. Broker status uses App Server `account/read`, `account/rateLi
 `account/usage/read` and returns only safe identity, plan, limit/reset, and summarized usage fields.
 Tokens are never returned, and reset credits are reported but never consumed automatically.
 
+Workflows can read this telemetry with `query:codex:subscription-quota`. The
+node defaults to the seven-day Codex window and returns a remaining percentage,
+reset time, and observation timestamp, or an explicit unavailable result.
+It uses the directory's worker credentials on the host and does not wake queued
+jobs. See the [query configuration reference](configuration-reference.md#query-definition-schema-keys)
+for selectors, output bindings, and unavailable-result behavior.
+
 Each subscription job starts its own Codex app-server inside the disposable runner container and
 logs in through Codex's external-token mode. Those credentials remain in that process's memory:
 the job receives no `auth.json` mount, environment token, command-line token, or persisted token
@@ -1215,3 +1222,9 @@ The catalog does not provision, schedule, load-balance, or autoscale workers, an
 AKS/Kubernetes backend. Each worker needs its own deployment and isolation policy. The daemon
 runs jobs; control-plane workflows retain issue intake, prompt orchestration, and PR publication.
 It does not replace libvirt or provide general secret transport or internet access.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

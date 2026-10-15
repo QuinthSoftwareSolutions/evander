@@ -29,9 +29,39 @@ bash packages/codex-security-addon/scripts/install-vm-runtime.sh \
   packages/codex-security-addon/dist/codex-security-runtime.tar.gz
 ```
 
-For workers, extract the archive into a `runtime` directory beside the example
-Dockerfile and build a derived runner image. Select that image when creating the
-session. The default base runner remains unchanged. Configure workers with
+For workers, first build the base runner archive, then build the optional scanner
+image archive on the trusted deployment controller:
+
+```sh
+scripts/build_evander_runner_image.sh
+python3 packages/codex-security-addon/scripts/build-worker-image.py
+```
+
+The builder writes `dist/evander-security-scan.tar` and its checksum manifest.
+It reuses a verified archive when the base archive, pinned Node binary and npm
+lockfile, runtime sources, Dockerfile and build scripts match. It performs no npm
+install or Docker build on a cache hit. `--cache-key` prints a portable fingerprint
+without installing or building; call it after preparing the base runner archive.
+`--force` or `RUNNER_FORCE_REBUILD=true` forces a rebuild. Missing or damaged
+archives are rebuilt; a failed build/save preserves the preceding cached archive.
+
+Operator deployment pipelines should invoke this builder after the base builder,
+cache its output separately, and append the archive to the worker inventory's
+`evander_runner_image_archives`. Core does not implicitly build or deploy it.
+`SECURITY_SCAN_BASE_ARCHIVE`, `SECURITY_SCAN_BASE_IMAGE`, `SECURITY_SCAN_IMAGE_NAME`
+and `SECURITY_SCAN_ARCHIVE_PATH` select inputs and destination. The base archive
+must contain the selected base image tag. `HOST_NODE_BINARY` selects the pinned
+host Node executable; it otherwise resolves `node` on PATH. `DOCKER` selects the
+Docker executable. Builds use the loaded base image with pulling and build
+networking disabled.
+
+Deployment-specific Dockerfiles and scan isolation policy can be supplied with
+`SECURITY_SCAN_DOCKERFILE` and `SECURITY_SCAN_CONFIGURE_PATH`. The latter replaces
+`configure.mjs` in the image and preserves the packaged implementation as
+`configure-stock.mjs`; both inputs participate in the fingerprint. Keep these
+operator assets outside this repository. Dockerfiles must accept `RUNNER_IMAGE`
+and copy the staged `runtime/` directory. Select the deployed image when creating
+the session. Configure workers with
 `EVANDER_CODEX_RUNTIME_PROFILES=/etc/evander/codex-runtime-profiles.json`, using the
 example profile file (owned by the worker operator; not group/world writable).
 Restart the worker after installing the profile. Existing subscription profiles,
@@ -72,6 +102,9 @@ its first parent; an initial commit reviews its complete tree. Supplying both
 reviews their direct diff. Hashes must resolve locally; the scanner does not fetch
 credentials or missing commits. Dirty and untracked work remains untouched and is
 excluded. Empty diffs complete without calling a model.
+Committed scans accept the native `diff`, `commit`, and `branch_diff` coverage
+modes only when the sealed Git diff target matches the exact requested base and
+head revisions. Repository and working-tree coverage cannot satisfy that range.
 
 `mode: deep` is available only when both commit fields are absent. It uses Codex
 Security's bounded independent scans; the node timeout and session expiry apply

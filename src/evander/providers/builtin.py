@@ -140,6 +140,7 @@ from evander.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from evander.queries.providers.issue_get import IssueGetQueryProvider
 from evander.queries.providers.issue_list import IssueListQueryProvider
 from evander.queries.providers.model_usage_list import ModelUsageListQueryProvider
+from evander.queries.providers.codex_subscription_quota import CodexSubscriptionQuotaQueryProvider
 from evander.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
@@ -344,6 +345,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:session-context": SessionContextQueryProvider,
             "query:session:list": SessionListQueryProvider,
             "query:model-usage:list": ModelUsageListQueryProvider,
+            "query:codex:subscription-quota": CodexSubscriptionQuotaQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:issue:list": IssueListQueryProvider,
