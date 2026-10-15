@@ -65,7 +65,7 @@ def create_app(settings, *, service=None, periodic=True):
                 return JSONResponse(
                     dict(
                         protocol=1,
-                        version="0.1.0",
+                        version="0.1.1",
                         worker_id=settings.worker_id,
                         deployment_revision=os.environ.get("EVANDER_WORKER_DEPLOYMENT_REVISION"),
                         allocations_enabled=settings.allocations_enabled,
