@@ -1,5 +1,9 @@
 import json
+import os
+from pathlib import Path
 import socket
+import threading
+from types import SimpleNamespace
 import time
 
 import httpx
@@ -14,6 +18,7 @@ from evander.worker.codex_runtime_bridge import (
     validate_request,
 )
 from evander.worker.codex_runtime_policy import RUNTIME_REQUIRED_VALUES
+from evander.worker.codex_runtime_transport import UnixConnection
 from evander.worker.models import WorkerJobRequest
 
 
@@ -444,3 +449,160 @@ def test_sdk_resume_preserves_permissions_and_discards_auth_store_default(broker
 def test_preflight_cannot_read_configuration_outside_session():
     with pytest.raises(ValueError):
         preflight_request("config/read", {"cwd": "/etc"})
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize("child_status", ["completed", "failed"])
+def test_exec_waits_for_parent_and_omits_child_messages_and_usage(broker, resumed, child_status):
+    """An independent child audit must not terminate or overwrite its parent scan."""
+    bridge, processes = broker
+    finish_parent = threading.Event()
+    child_finished = threading.Event()
+    emitters = []
+
+    class ChildFirstNative(NativeProcess):
+        def request(self, method, params):
+            if method != "turn/start":
+                return super().request(method, params)
+            self.calls.append((method, params))
+            parent_id = params["threadId"]
+            self.notify_handler(
+                "item/completed",
+                {
+                    "threadId": "child-audit",
+                    "item": {
+                        "id": "child-result",
+                        "type": "agentMessage",
+                        "text": "child findings",
+                    },
+                },
+            )
+            self.notify_handler(
+                "thread/tokenUsage/updated",
+                {
+                    "threadId": "child-audit",
+                    "tokenUsage": {"last": {"inputTokens": 9000, "outputTokens": 9000}},
+                },
+            )
+            self.notify_handler(
+                "turn/completed", {"threadId": "child-audit", "turn": {"status": child_status}}
+            )
+            child_finished.set()
+            self.notify_handler(
+                "item/completed",
+                {
+                    "threadId": parent_id,
+                    "item": {
+                        "id": "parent-progress",
+                        "type": "agentMessage",
+                        "text": "still scanning",
+                    },
+                },
+            )
+
+            def finish():
+                if not finish_parent.wait(5):
+                    return
+                self.notify_handler(
+                    "thread/tokenUsage/updated",
+                    {
+                        "threadId": parent_id,
+                        "tokenUsage": {
+                            "last": {"inputTokens": 30, "cachedInputTokens": 4, "outputTokens": 12}
+                        },
+                    },
+                )
+                self.notify_handler(
+                    "item/completed",
+                    {
+                        "threadId": parent_id,
+                        "item": {
+                            "id": "parent-report",
+                            "type": "agentMessage",
+                            "text": "report sealed",
+                        },
+                    },
+                )
+                self.notify_handler(
+                    "turn/completed", {"threadId": parent_id, "turn": {"status": "completed"}}
+                )
+
+            emitter = threading.Thread(target=finish, daemon=True)
+            emitter.start()
+            emitters.append(emitter)
+            return {}
+
+    def factory(*args, **kwargs):
+        process = ChildFirstNative(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    bridge.process_factory = factory
+    argv = ["exec", "--json", *(["resume", "thread-test"] if resumed else []), "scan"]
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3)
+            client.connect(str(bridge.path))
+            client.sendall((json.dumps({"argv": argv, "cwd": "/home/agent"}) + "\n").encode())
+            with client.makefile("rb", buffering=0) as stream:
+                started = json.loads(json.loads(stream.readline())["text"])
+                assert started == {"type": "thread.started", "thread_id": "thread-test"}
+                assert child_finished.wait(3)
+                progress = json.loads(json.loads(stream.readline())["text"])
+                assert progress["item"]["text"] == "still scanning"
+                # No completion or exit may be sent while the parent is blocked.
+                client.settimeout(0.1)
+                with pytest.raises(TimeoutError):
+                    client.recv(1, socket.MSG_PEEK)
+                client.settimeout(3)
+                finish_parent.set()
+                report = json.loads(json.loads(stream.readline())["text"])
+                assert report["item"]["text"] == "report sealed"
+                completed = json.loads(json.loads(stream.readline())["text"])
+                assert completed == {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 30, "cached_input_tokens": 4, "output_tokens": 12},
+                }
+                assert json.loads(stream.readline()) == {"exit_code": 0}
+        opened = next(method for method, _ in processes[0].calls if method.startswith("thread/"))
+        assert opened == ("thread/resume" if resumed else "thread/start")
+    finally:
+        finish_parent.set()
+        for emitter in emitters:
+            emitter.join(timeout=3)
+
+
+def test_runtime_sockets_work_in_long_private_session_paths(tmp_path):
+    """Both sockets must bind where the container's private mount expects them."""
+    root = tmp_path / ("session-" + "a" * 80) / "codex-runtimes" / ("scan-" + "b" * 32)
+    root.mkdir(parents=True)
+    bridge = CodexRuntimeBridge(
+        path=root / "broker.sock",
+        command_factory=lambda env, args: ["native"],
+        tokens=CodexExternalAuthTokens("worker-only-token", "account-1", None),
+        refresh_tokens=lambda **kwargs: pytest.fail("Unexpected refresh"),
+        http_client=unused_http_client(),
+        process_factory=NativeProcess,
+    )
+    assert len(os.fsencode(bridge.path)) > 107
+    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    alias = Path(f"/proc/self/fd/{parent}")
+    try:
+        bridge.start()
+        frames = exchange(
+            SimpleNamespace(path=alias / "broker.sock"),
+            {"argv": ["exec", "--json", "scan"], "cwd": "/home/agent"},
+        )
+        assert frames[-1] == {"exit_code": 0}
+        with UnixConnection(str(alias / "models.sock"), timeout=3) as connection:
+            connection.request("GET", "/forbidden-endpoint")
+            reply = connection.getresponse()
+            assert reply.status == 403
+            assert b"worker-only-token" not in reply.read()
+        assert bridge.path.is_socket() and bridge.http_relay.path.is_socket()
+        assert bridge.path.stat().st_mode & 0o777 == 0o666
+        assert bridge.http_relay.path.stat().st_mode & 0o777 == 0o666
+    finally:
+        bridge.close()
+        os.close(parent)
+    assert not bridge.path.exists() and not bridge.http_relay.path.exists()

@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .codex_app_server import CodexAppServerProcess
 from .codex_runtime_http import CodexRuntimeHttpRelay, placeholder_tokens
 from .codex_runtime_policy import RUNTIME_PROVIDER_ID, verify_runtime_requirements
+from .unix_socket import bind_unix_socket
 
 
 class CodexRuntimeProfile(BaseModel):
@@ -273,7 +274,7 @@ class CodexRuntimeBridge:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path.unlink(missing_ok=True)
         self.listener = socket.socket(socket.AF_UNIX)
-        self.listener.bind(str(self.path))
+        bind_unix_socket(self.listener, self.path)
         self.path.chmod(0o666)  # Reachable only through the job's private bind mount.
         self.listener.listen(16)
         self.listener.settimeout(0.5)
@@ -358,6 +359,7 @@ class CodexRuntimeBridge:
             done = threading.Event()
             terminal = {}
             usage = {}
+            thread_id = None
 
             def notification(method, params):
                 if mode == "app-server":
@@ -367,6 +369,10 @@ class CodexRuntimeBridge:
                             "text": json.dumps({"method": method, "params": params}) + "\n",
                         }
                     )
+                    return
+                # Native subagents share this app-server connection. Their messages,
+                # usage and completion belong to their own thread, not this exec.
+                if params.get("threadId") not in {None, thread_id}:
                     return
                 if method == "thread/tokenUsage/updated":
                     usage.update(params.get("tokenUsage", {}).get("last", {}))
