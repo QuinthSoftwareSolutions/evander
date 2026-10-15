@@ -61,7 +61,7 @@ The playbook follows the repo-native bootstrap order:
 6. Run `evander-cli init-state --runtime-dir runtime`
 7. Render managed config under `config/` and optional `secrets.env`
 8. Optionally install and configure Asterisk for the DIDWW SIP bridge
-9. Run `scripts/install_systemd_units.sh`
+9. Run `scripts/install_systemd_units.sh`, including its preflight before unit changes
 10. Build the Admin Web frontend bundle with `npm ci && npm run build`
 11. Install/configure Caddy for Admin Web public static-file serving when enabled
 12. Run `scripts/create_libvirt_network.sh` in the `full` profile
@@ -75,6 +75,40 @@ The playbook follows the repo-native bootstrap order:
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
+
+## Deployment caches and timings
+
+The Codex and Claude image builders accept `--cache-key` to print a portable input
+fingerprint without building an image. It includes the copied executable contents,
+package metadata where available, Dockerfiles, and build/cache helper scripts. Output
+and installation paths do not affect it. Cache the archives and their `.manifest`
+sidecars together, then run the builders normally: each checks both its input
+fingerprint and the archive SHA-256 before reuse. Missing, older, or damaged cache
+entries rebuild automatically. `--force` and `RUNNER_FORCE_REBUILD=true` retain the
+upstream OS refresh behavior and bypass archive reuse.
+
+Cache restored downloads rather than skipping installation commands. In particular,
+keep `npm ci`, Playwright installation, worker image loading, and all host/container
+validation in the deployment path. Cache reuse does not alter service restarts,
+configuration ownership, SQL provisioning, or runtime migration checks.
+
+Enable the optional controller-side timing callback for either playbook:
+
+```bash
+ANSIBLE_CALLBACK_PLUGINS="$PWD/ansible/callback_plugins" \
+ANSIBLE_CALLBACKS_ENABLED=deployment_timings \
+EVANDER_DEPLOYMENT_TIMINGS_FILE=/tmp/evander-deployment-timings.json \
+ansible-playbook -i /path/to/operator-inventory.yml ansible/site.yml
+```
+
+The callback prints playbook, role, and ten slowest task durations. The optional JSON
+report records all completed task durations and outcome counts, including failures
+and skips. Task durations span execution across hosts; role durations sum their
+tasks. Times use a monotonic clock. Reports omit arguments, result payloads, host
+facts, and names of `no_log` tasks. A report write failure produces a warning and
+does not change task results. External pipelines can publish the JSON even after
+deployment fails and use Bash `time` around dependency installs and image builds to
+measure preparation separately from the Ansible run.
 
 ## Variable Contract
 

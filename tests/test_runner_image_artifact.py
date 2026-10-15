@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -37,6 +38,11 @@ def _copy_runner_repo(tmp_path: Path) -> Path:
     shutil.copy2(RUNNER_SCRIPT, script_path)
     shutil.copy2(RUNNER_BASE_SCRIPT, base_script_path)
     shutil.copy2(CLAUDE_RUNNER_SCRIPT, claude_script_path)
+    (script_path.parent / "lib").mkdir()
+    shutil.copy2(
+        ROOT / "scripts/lib/runner_archive_cache.sh",
+        script_path.parent / "lib/runner_archive_cache.sh",
+    )
     shutil.copy2(RUNNER_DOCKERFILE, dockerfile_path)
     shutil.copy2(RUNNER_BASE_DOCKERFILE, base_dockerfile_path)
     shutil.copy2(CLAUDE_RUNNER_DOCKERFILE, claude_dockerfile_path)
@@ -238,6 +244,84 @@ def _docker_invocations(log_path: Path) -> list[str]:
     ]
 
 
+def _cached_runner_fixture(tmp_path: Path, flavor: str) -> tuple[Path, Path, dict[str, str], Path]:
+    tmp_path.mkdir(parents=True)
+    repo = _copy_runner_repo(tmp_path)
+    docker, log = _write_fake_docker(tmp_path)
+    env = {"DOCKER": str(docker), "FAKE_DOCKER_LOG": str(log)}
+    if flavor == "codex":
+        codex, _, _ = _create_codex_fixture(tmp_path)
+        env["HOST_CODEX_ROOT"] = str(codex)
+        script = repo / "scripts/build_evander_runner_image.sh"
+    else:
+        env["HOST_CLAUDE_BIN"] = str(_create_claude_fixture(tmp_path))
+        script = repo / "scripts/build_evander_claude_runner_image.sh"
+    return repo, script, env, log
+
+
+@pytest.mark.parametrize("flavor", ["codex", "claude"])
+def test_runner_cache_is_portable_and_key_lookup_does_not_build(
+    tmp_path: Path, flavor: str
+) -> None:
+    first_repo, first_script, first_env, first_log = _cached_runner_fixture(
+        tmp_path / "first-agent", flavor
+    )
+    second_repo, second_script, second_env, second_log = _cached_runner_fixture(
+        tmp_path / "second-agent", flavor
+    )
+    first_key = _run_runner_script(
+        first_script,
+        first_repo,
+        {**first_env, "DOCKER": "/missing/docker"},
+        args=["--cache-key"],
+    ).stdout.strip()
+    second_key = _run_runner_script(
+        second_script, second_repo, second_env, args=["--cache-key"]
+    ).stdout.strip()
+    assert len(first_key) == 64
+    assert first_key == second_key
+    assert _docker_invocations(first_log) == _docker_invocations(second_log) == []
+
+    _run_runner_script(first_script, first_repo, first_env)
+    shutil.copytree(first_repo / "dist", second_repo / "dist")
+    reused = _run_runner_script(second_script, second_repo, second_env)
+    assert "Reused cached" in reused.stdout
+    assert _docker_invocations(second_log) == []
+
+
+@pytest.mark.parametrize("flavor", ["codex", "claude"])
+@pytest.mark.parametrize("damage", ["archive", "missing_checksum", "duplicate_checksum"])
+def test_runner_rebuilds_damaged_restored_cache(tmp_path: Path, flavor: str, damage: str) -> None:
+    repo, script, env, log = _cached_runner_fixture(tmp_path / "agent", flavor)
+    _run_runner_script(script, repo, env)
+    archive = next((repo / "dist").glob("*.tar"))
+    manifest = Path(f"{archive}.manifest")
+    if damage == "archive":
+        archive.write_bytes(b"truncated archive")
+    elif damage == "missing_checksum":
+        manifest.write_text(
+            "\n".join(
+                line
+                for line in manifest.read_text().splitlines()
+                if not line.startswith("archive_sha256=")
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        checksum_line = next(
+            line for line in manifest.read_text().splitlines() if line.startswith("archive_sha256=")
+        )
+        manifest.write_text(manifest.read_text() + checksum_line + "\n", encoding="utf-8")
+    rebuilt = _run_runner_script(script, repo, env)
+    assert "Reused cached" not in rebuilt.stdout
+    assert _docker_invocations(log) == ["build", "save", "build", "save"]
+    assert archive.read_bytes() == b"fake image\n"
+    assert f"archive_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n" in (
+        manifest.read_text(encoding="utf-8")
+    )
+
+
 def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
@@ -320,8 +404,13 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "evander-runner:latest" in script
     assert "dist/evander-runner.tar" in script
     assert "codex_code_mode_host_sha256" in script
-    assert 'cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"' in script
-    assert 'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")' in script
+    assert (
+        'cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"' in script
+    )
+    assert (
+        'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")'
+        in script
+    )
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert "build_args+=(--pull)" not in script
     assert (
@@ -346,10 +435,12 @@ def test_claude_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "build_evander_runner_base_image.sh" in script
     assert "evander-runner-claude:latest" in script
     assert "dist/evander-runner-claude.tar" in script
-    assert "claude_bin_realpath" in script
     assert "claude_bin_sha256" in script
     assert 'cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"' in script
-    assert 'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")' in script
+    assert (
+        'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")'
+        in script
+    )
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert "build_args+=(--pull)" not in script
     assert (
