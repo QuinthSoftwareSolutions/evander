@@ -291,6 +291,7 @@ class Docker:
             "-t",
             "5",
             "set_vhost_limits",
+            "--vhost",
             name,
             '{"max-connections":32,"max-queues":32}',
             timeout=8,

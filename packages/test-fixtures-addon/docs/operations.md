@@ -1,6 +1,6 @@
 # Deployment and operations
 
-Deploy core 0.95.2 or later and this package 0.1.1 at one exact Git revision.
+Deploy core 0.95.3 or later and this package 0.1.2 at one exact Git revision.
 Install `packages/test-fixtures-addon` into the control-plane and worker virtual
 environments explicitly (`uv pip install --python <venv>/bin/python ./packages/test-fixtures-addon`).
 Retain existing worker deployment and SQL setup. This add-on does not install

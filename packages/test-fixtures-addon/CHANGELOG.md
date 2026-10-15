@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - 2026-10-15
+
+- Select the fixture vhost with `--vhost` when applying RabbitMQ limits so broker readiness succeeds.
+- Exercise native broker provisioning, queue limits, AMQP round trips, pause/stop recovery, reset and cleanup in an opt-in local Docker regression.
+
 ## 0.1.1 - 2026-10-15
 
 - Recognize Docker's absent-network inspection response during first allocation and cleanup retries. Daemon outages and unrelated errors still fail explicitly.
