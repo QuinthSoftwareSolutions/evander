@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
+
+- Wait for the requested Codex thread to finish instead of ending a brokered
+  scan when an independent child audit completes. Keep child messages and token
+  usage out of the parent execution stream.
+- Bind job-private runtime and model-relay sockets through their parent directory
+  descriptors so long session and job paths do not prevent subscription scans.
+
 ## 2026-10-15 - Reuse deployment artifacts and report timings (0.92.1)
 
 - Make Codex and Claude runner archive fingerprints portable between build agents,

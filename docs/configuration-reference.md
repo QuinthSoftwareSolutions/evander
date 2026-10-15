@@ -30,6 +30,10 @@ Real subscription tokens stay on the worker. A per-job Unix HTTP relay validates
 upstream endpoints and selected-account routing before attaching credentials;
 native Codex uses a local TLS adapter with a nonfunctional placeholder token.
 The relay and adapter need no additional host TCP listener or firewall port.
+On Linux, both sockets stay in the private job directory and bind through an
+open directory descriptor, so long host session paths do not exceed the Unix
+socket address limit. Brokered `exec` output and completion follow the requested
+thread; independent child audit notifications do not finish the parent scan.
 
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 

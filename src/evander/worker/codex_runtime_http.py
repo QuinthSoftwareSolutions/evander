@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 
 from .codex_auth_broker import CodexExternalAuthTokens
+from .unix_socket import bind_unix_socket
 
 MAX_BODY = 32 * 1024 * 1024
 MAX_METADATA = 4 * 1024 * 1024
@@ -179,6 +180,9 @@ class _UpstreamFailure(Exception):
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     block_on_close = False
+
+    def server_bind(self):
+        bind_unix_socket(self.socket, Path(self.server_address))
 
     def process_request(self, request, client_address):
         if not self.relay.slots.acquire(blocking=False):
