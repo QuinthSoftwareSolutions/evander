@@ -8,6 +8,7 @@ import {
   type AssistantSession,
   type CapabilityMode,
   type ChatMessage,
+  type ChatPrompt,
   type ChatTranscript,
 } from "./api";
 import {
@@ -17,6 +18,8 @@ import {
   launcherAssistantStatusLabel,
 } from "./status";
 import { AssistantIcon } from "../admin/PageActionIcons";
+
+export type AssistantRequest = ChatPrompt & { id: number };
 
 type LauncherState = "minimized" | "expanded" | "disabled" | "error";
 const UI_KEY = "admin-web:chat:ui";
@@ -64,10 +67,14 @@ export function ChatLauncher({
   enabled,
   assistantEnabled,
   showWhenDisabled,
+  request,
+  onRequestHandled,
 }: {
   enabled: boolean;
   assistantEnabled: boolean;
   showWhenDisabled: boolean;
+  request?: AssistantRequest | null;
+  onRequestHandled?: (id: number) => void;
 }) {
   const launcherAllowed = enabled && (assistantEnabled || showWhenDisabled);
   const [state, setState] = useState<LauncherState>(launcherAllowed ? "minimized" : "disabled");
@@ -82,6 +89,8 @@ export function ChatLauncher({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const handledRequestRef = useRef<number | null>(null);
   const [resetting, setResetting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [pageVisible, setPageVisible] = useState(currentPageVisible);
@@ -207,6 +216,7 @@ export function ChatLauncher({
 
     async function loadChatSession() {
       setState(preferredState);
+      setLoadingSession(true);
       setAssistantSession(DEFAULT_ASSISTANT_SESSION);
       setHasOlderMessages(false);
       setLoadingOlderMessages(false);
@@ -218,7 +228,6 @@ export function ChatLauncher({
       try {
         const session = await startOrGetChatSession();
         if (cancelled) return;
-        setThreadId(session.thread_id);
         setMode(session.assistant_capability_mode);
         setAssistantSession(session.assistant_session);
 
@@ -226,16 +235,18 @@ export function ChatLauncher({
           limit: CHAT_TRANSCRIPT_PAGE_SIZE,
         });
         if (cancelled) return;
-        if (preferredState === "expanded") requestChatScrollToBottom();
+        setThreadId(session.thread_id);
+        if (window.localStorage.getItem(UI_KEY) === "expanded") requestChatScrollToBottom();
         setVisibleMessages(transcript.messages);
         setHasOlderMessages(Boolean(transcript.has_older));
         setMode(transcript.assistant_capability_mode);
         setAssistantSession(transcript.assistant_session);
-        setState(preferredState);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : "Failed to load assistant");
         setState("error");
+      } finally {
+        if (!cancelled) setLoadingSession(false);
       }
     }
 
@@ -346,24 +357,52 @@ export function ChatLauncher({
     }
   }
 
+  useEffect(() => {
+    if (!request || !launcherAllowed || !assistantEnabled) return;
+    requestChatScrollToBottom();
+    setState("expanded");
+    window.localStorage.setItem(UI_KEY, "expanded");
+  }, [request, launcherAllowed, assistantEnabled]);
+
+  useEffect(() => {
+    if (!request || handledRequestRef.current === request.id) return;
+    if (!launcherAllowed || !assistantEnabled) {
+      handledRequestRef.current = request.id;
+      onRequestHandled?.(request.id);
+      return;
+    }
+    if (loadingSession || sending || resetting) return;
+    handledRequestRef.current = request.id;
+    if (!threadId) {
+      setState("expanded");
+      onRequestHandled?.(request.id);
+      return;
+    }
+    void sendContent(request.content, request.context).finally(() => onRequestHandled?.(request.id));
+  }, [request, loadingSession, sending, resetting, launcherAllowed, assistantEnabled, threadId, onRequestHandled]);
+
   async function send(event?: { preventDefault: () => void }) {
     event?.preventDefault();
-    const content = draft.trim();
-    if (!content || !threadId || sending || resetting) return;
+    if (await sendContent(draft.trim())) setDraft("");
+  }
+
+  async function sendContent(content: string, context?: Record<string, unknown>): Promise<boolean> {
+    if (!content || !threadId || sending || resetting || disabled) return false;
     const targetThreadId = threadId;
     requestChatScrollToBottom();
     setSending(true);
     setError("");
     try {
-      const response = await postChatMessage(targetThreadId, content);
-      if (activeThreadRef.current !== response.thread_id) return;
+      const response = await postChatMessage(targetThreadId, content, context);
+      if (activeThreadRef.current !== response.thread_id) return false;
       setVisibleMessages(mergeMessages(messagesRef.current, response.messages));
       setMode(response.assistant_capability_mode);
       setAssistantSession(response.assistant_session);
-      setDraft("");
+      return true;
     } catch (e) {
-      if (activeThreadRef.current !== targetThreadId) return;
+      if (activeThreadRef.current !== targetThreadId) return false;
       setError(e instanceof Error ? e.message : "Failed to send message");
+      return false;
     } finally {
       setSending(false);
     }
@@ -439,7 +478,7 @@ export function ChatLauncher({
                 type="button"
                 className="chat-new-button"
                 onClick={() => void startNewChat()}
-                disabled={resetting || !assistantEnabled}
+                disabled={resetting || !assistantEnabled || Boolean(request)}
               >
                 {resetting ? "Starting" : "New chat"}
               </button>

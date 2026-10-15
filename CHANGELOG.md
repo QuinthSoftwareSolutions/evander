@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-15 - Explain workflow graphs with the assistant (0.91.0)
+
+- Add **Explain graph** to the workflow editor's graph details on desktop and mobile.
+  Open the built-in assistant and request an explanation of the selected graph's
+  current nodes, routes, bindings, and effects, including unsaved node changes.
+- Redact sensitive configuration fields before handing graph context to the assistant.
+- Allow graph selection and explanation with workflow read access, retain existing
+  chat history and message drafts, and show when the assistant is disabled.
+
 ## 2026-10-14 - Repair modular-release test isolation (0.90.2)
 
 - Keep Azure DevOps query result-shape coverage with the extracted add-on and

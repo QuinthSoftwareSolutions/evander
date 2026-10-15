@@ -42,7 +42,9 @@ type DocumentPanelRenderersInputs = {
   graphViewContext: string;
   selectedGraphId: string | null;
   selectWorkflowGraph: (graph: WorkflowGraphMetadata) => void;
-  workflowEditLocked: boolean;
+  workflowGraphSelectionLocked: boolean;
+  explainSelectedGraph: () => void;
+  graphExplanationDisabledReason: string | null;
   selectedGraph: WorkflowGraphMetadata | undefined;
   graphNameDraft: string;
   setGraphNameDraft: Dispatch<SetStateAction<string>>;
@@ -84,7 +86,9 @@ export function createDocumentPanelRenderers({
   graphViewContext,
   selectedGraphId,
   selectWorkflowGraph,
-  workflowEditLocked,
+  workflowGraphSelectionLocked,
+  explainSelectedGraph,
+  graphExplanationDisabledReason,
   selectedGraph,
   graphNameDraft,
   setGraphNameDraft,
@@ -230,6 +234,22 @@ export function createDocumentPanelRenderers({
     );
   }
 
+  function renderExplainGraphButton() {
+    return (
+      <div>
+        <button
+          type="button"
+          onClick={explainSelectedGraph}
+          disabled={graphExplanationDisabledReason !== null}
+          title={graphExplanationDisabledReason ?? "Ask the assistant to explain this graph"}
+        >
+          Explain graph
+        </button>
+        {graphExplanationDisabledReason ? <p className="runtime-summary">{graphExplanationDisabledReason}</p> : null}
+      </div>
+    );
+  }
+
   function renderGraphsPanelContent() {
     return (
       <div className="sidebar-section compact-panel-section workflow-graphs-section">
@@ -250,7 +270,7 @@ export function createDocumentPanelRenderers({
                 key={graph.id}
                 className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
                 onClick={() => selectWorkflowGraph(graph)}
-                disabled={workflowEditLocked}
+                disabled={workflowGraphSelectionLocked}
               >
                 <span className="workflow-graph-name">{graph.name}</span>
                 <span className="workflow-graph-meta">
@@ -262,6 +282,7 @@ export function createDocumentPanelRenderers({
         </div>
         {selectedGraph ? (
           <div className="workflow-graph-editor">
+            {renderExplainGraphButton()}
             <label className="inspector-label">
               <span>Graph name</span>
               <input

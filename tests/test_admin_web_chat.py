@@ -537,3 +537,35 @@ def test_chat_session_reenabled_disabled_thread_schedules_prewarm(tmp_path: Path
             thread_id=session["thread_id"],
         )
     ]
+
+
+def test_chat_context_is_redacted_for_assistant_and_kept_out_of_visible_transcript(tmp_path: Path) -> None:
+    service = FakeAdminService(tmp_path)
+    client = _client_for_user(service, {"username": "viewer"}, privileged=False)
+    session = client.post("/api/chat/session").json()
+    thread_id = session["thread_id"]
+    response = client.post(
+        "/api/chat/message",
+        json={
+            "thread_id": thread_id,
+            "content": "Explain this graph",
+            "context": {"event_type": "demo.requested", "nested": [{"apiKey": "synthetic-secret"}]},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["messages"][0]["content"] == "Explain this graph"
+    published = service.published_chat_events[-1]
+    assert published["content"].startswith("Explain this graph\n\n")
+    assert "demo.requested" in published["content"]
+    assert "synthetic-secret" not in published["content"]
+    assert "[REDACTED]" in published["content"]
+    assert published["assistant_capability_mode"] == "read-only"
+    transcript = client.get(f"/api/chat/transcript/{thread_id}").json()
+    assert [message["content"] for message in transcript["messages"]] == ["Explain this graph"]
+
+    invalid = client.post(
+        "/api/chat/message",
+        json={"thread_id": thread_id, "content": "Explain again", "context": "unexpected text"},
+    )
+    assert invalid.status_code == 400
+    assert len(service.published_chat_events) == 1

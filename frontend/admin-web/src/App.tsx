@@ -26,6 +26,7 @@ import {
 } from "react";
 import { hashQueryParam, updateHashQueryParam } from "./adminRouting";
 import { useAdminUi } from "./features/admin/AdminContext";
+import { workflowGraphExplanationRequest } from "./features/workflow-editor/graphExplanation";
 import { ApiError } from "./features/admin/api";
 import {
   cachedVisibleValidationDiagnostics,
@@ -228,6 +229,9 @@ export default function App() {
     selectedDirectoryPath,
     directoryTree,
     setWorkflowHasUnsavedChanges,
+    assistantEnabled,
+    assistantRequestPending,
+    openAssistantWithPrompt,
     canReadWorkflows,
     canReadWorkflowRuns,
     canWriteWorkflows,
@@ -395,6 +399,7 @@ export default function App() {
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
   const workflowMutationLocked = workflowEditLocked || workflowGeneratorOpen;
+  const workflowGraphSelectionLocked = !canReadWorkflows || isInspectMode || Boolean(activeWorkflowTutorial) || workflowGeneratorOpen;
   const workflowPackManageLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || workflowGeneratorOpen || !canManageWorkflowPacks;
   const workflowRunReadLocked = !canReadWorkflowRuns;
   const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
@@ -899,6 +904,7 @@ export default function App() {
     patchWorkflowDocument,
     completeTutorialAction,
     workflowEditLocked,
+    workflowGraphSelectionLocked,
     setSelectedGraphId,
     selectedGraph,
     graphNameDraft,
@@ -3022,6 +3028,20 @@ export default function App() {
     error,
   });
 
+  function explainSelectedGraph() {
+    if (!document || !selectedGraph || workflowGraphSelectionLocked || !assistantEnabled || assistantRequestPending) return;
+    openAssistantWithPrompt(workflowGraphExplanationRequest(document, selectedGraph, catalog, hasUnsavedWorkflowChanges));
+    setCompactActivePanel(null);
+  }
+
+  const graphExplanationDisabledReason = workflowGraphSelectionLocked
+    ? "Select a graph in the workflow editor to explain it."
+    : !assistantEnabled
+      ? "The built-in assistant is disabled."
+      : assistantRequestPending
+        ? "An assistant request is being sent."
+        : null;
+
   const documentPanelRenderers = createDocumentPanelRenderers({
     isTutorialMode,
     createEntryCount,
@@ -3049,7 +3069,9 @@ export default function App() {
     graphViewContext,
     selectedGraphId,
     selectWorkflowGraph,
-    workflowEditLocked,
+    workflowGraphSelectionLocked,
+    explainSelectedGraph,
+    graphExplanationDisabledReason,
     selectedGraph,
     graphNameDraft,
     setGraphNameDraft,
