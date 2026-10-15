@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-15 - Reduce scanner image build disk usage (0.95.1)
+
+- Support streamed gzip scanner image archives and release build staging before export, while preserving verified cache reuse and the previous archive on failure.
+- Install runtime dependencies directly in temporary staging and set permissions before image creation to avoid duplicate runtime files and layers.
+
 ## 2026-10-15 - Disposable task test fixtures (0.95.0)
 
 - Add the separately installed Test Fixtures add-on for task-owned SQL Server

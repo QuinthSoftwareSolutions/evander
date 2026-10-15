@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -43,6 +44,37 @@ def cache_matches(archive: Path, manifest: Path, fingerprint: str) -> bool:
         return False
 
 
+def save_image(docker: str, image: str, destination: Path, *, compressed: bool) -> None:
+    if not compressed:
+        subprocess.run([docker, "save", "-o", str(destination), image], check=True, timeout=900)
+        return
+
+    # Stream directly into gzip: docker save -o first materializes the full tar.
+    command = [docker, "save", image]
+    exporter = subprocess.Popen(command, stdout=subprocess.PIPE)
+    try:
+        with destination.open("wb") as output:
+            subprocess.run(
+                ["gzip", "-1", "-n"],
+                stdin=exporter.stdout,
+                stdout=output,
+                check=True,
+                timeout=900,
+            )
+        if exporter.wait(timeout=30):
+            raise subprocess.CalledProcessError(exporter.returncode, command)
+    finally:
+        assert exporter.stdout is not None
+        exporter.stdout.close()
+        if exporter.poll() is None:
+            exporter.kill()
+        exporter.wait(timeout=30)
+
+    with gzip.open(destination, "rb") as source:
+        if not source.read(1):
+            raise ValueError("Docker returned an empty scanner image archive")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -58,6 +90,7 @@ def main() -> None:
     archive = configured_path(
         "SECURITY_SCAN_ARCHIVE_PATH", REPOSITORY / "dist/evander-security-scan.tar"
     )
+    compressed = archive.suffix in {".gz", ".tgz"}
     manifest = Path(str(archive) + ".manifest")
     image = os.environ.get("SECURITY_SCAN_IMAGE_NAME", "evander-security-scan:latest")
     runner_image = os.environ.get("SECURITY_SCAN_BASE_IMAGE", "evander-runner:latest")
@@ -82,6 +115,7 @@ def main() -> None:
             "files": {name: sha256(path) for name, path in inputs.items()},
             "image": image,
             "runner_image": runner_image,
+            "archive_format": "tar.gz" if compressed else "tar",
         }
     except OSError as error:
         parser.error(f"Missing or unreadable scanner image input: {error}")
@@ -122,6 +156,7 @@ def main() -> None:
         if configure_override:
             (runtime / "configure.mjs").rename(runtime / "configure-stock.mjs")
             shutil.copyfile(inputs["configure_override"], runtime / "configure.mjs")
+            (runtime / "configure.mjs").chmod(0o644)
         shutil.copyfile(dockerfile, context / "Dockerfile")
         subprocess.run([docker, "load", "--input", str(base)], check=True, timeout=600)
         subprocess.run(
@@ -140,30 +175,29 @@ def main() -> None:
             check=True,
             timeout=900,
         )
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".scanner-archive-", dir=archive.parent) as output:
-            pending_archive = Path(output) / "image.tar"
-            pending_manifest = Path(output) / "image.manifest"
-            subprocess.run(
-                [docker, "save", "-o", str(pending_archive), image], check=True, timeout=900
+    # Release the extracted runtime and Docker build context before exporting.
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".scanner-archive-", dir=archive.parent) as output:
+        pending_archive = Path(output) / ("image.tar.gz" if compressed else "image.tar")
+        pending_manifest = Path(output) / "image.manifest"
+        save_image(docker, image, pending_archive, compressed=compressed)
+        if not pending_archive.stat().st_size:
+            raise ValueError("Docker returned an empty scanner image archive")
+        pending_manifest.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "input_sha256": fingerprint,
+                    "archive_sha256": sha256(pending_archive),
+                    "inputs": identity,
+                },
+                indent=2,
+                sort_keys=True,
             )
-            if not pending_archive.stat().st_size:
-                raise ValueError("Docker returned an empty scanner image archive")
-            pending_manifest.write_text(
-                json.dumps(
-                    {
-                        "schema": 1,
-                        "input_sha256": fingerprint,
-                        "archive_sha256": sha256(pending_archive),
-                        "inputs": identity,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-            pending_archive.replace(archive)
-            pending_manifest.replace(manifest)
+            + "\n"
+        )
+        pending_archive.replace(archive)
+        pending_manifest.replace(manifest)
     print(f"Built {image}; saved {archive}")
 
 
