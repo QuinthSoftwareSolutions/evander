@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-15 - Cache scanner images for deployment (0.94.1)
+
+- Add an optional Codex Security worker-image builder for deployment pipelines, keyed by the prepared base image archive, pinned runtime and operator build inputs.
+- Reuse checksum-verified scanner archives on unchanged deployments and preserve the previous cache when a rebuild fails.
+
 ## 2026-10-15 - Submit committed work through MCP (0.94.0)
 
 - Add the session-scoped `submit_git_changes` capability for VM and container agents, including verbatim complete Markdown summaries, opaque checkout selection, exact-SHA verification, and safe retries.
