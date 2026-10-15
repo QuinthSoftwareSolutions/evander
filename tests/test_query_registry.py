@@ -111,6 +111,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:session-context",
         "query:session:list",
         "query:model-usage:list",
+        "query:codex:subscription-quota",
         "query:agent:artifact-text",
         "query:issue:get",
         "query:issue:list",

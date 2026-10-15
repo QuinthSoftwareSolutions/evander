@@ -41,6 +41,8 @@ Git, and HTTP surfaces.
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- A host-side Codex subscription quota query for scheduled capacity reports, with
+  remaining percentages, reset timestamps, and explicit unavailable results
 - Session cost categories with per-prompt overrides, a dashboard cost chart, and
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,

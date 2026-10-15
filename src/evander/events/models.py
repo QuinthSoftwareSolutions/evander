@@ -724,6 +724,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:session-context": provider_models.SessionContextQueryDefinition,
         "query:session:list": provider_models.SessionListQueryDefinition,
         "query:model-usage:list": provider_models.ModelUsageListQueryDefinition,
+        "query:codex:subscription-quota": provider_models.CodexSubscriptionQuotaQueryDefinition,
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
         "query:issue:list": provider_models.IssueListQueryDefinition,

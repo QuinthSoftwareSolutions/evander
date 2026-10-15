@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-15 - Query Codex subscription quota in workflows (0.93.0)
+
+- Add `query:codex:subscription-quota` to read a named profile's remaining quota,
+  usage percentage, reset time, and observation time through its directory's worker.
+- Default to the seven-day Codex window, with explicit bucket and duration selectors
+  for other limits. Return unavailable data for missing, malformed, expired, or
+  unreachable telemetry instead of inventing remaining capacity.
+- Keep worker credentials and account metadata out of workflow outputs, enforce
+  workflow directory scope, and leave queued subscription work untouched by quota reads.
+
 ## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
 
 - Wait for the requested Codex thread to finish instead of ending a brokered

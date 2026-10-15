@@ -430,6 +430,14 @@ class AdminRuntimeProviderAdapter:
             raise AttributeError("resolve_container_codex_skill_files")
         return resolver(skill_names)
 
+    def read_codex_subscription_quota(self, **kwargs: Any) -> Any:
+        service = getattr(self._admin_runtime, "codex_auth_admin", None)
+        return self._call_required(
+            self._delegate_method("profile_quota", service),
+            "read_codex_subscription_quota",
+            **kwargs,
+        )
+
     def list_model_usage_events(self, **kwargs: Any) -> Any:
         lister = self._model_usage_events_lister()
         if lister is None:

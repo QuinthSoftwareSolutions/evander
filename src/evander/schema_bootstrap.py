@@ -1633,6 +1633,18 @@ _QUERY_OUTPUT_SCHEMAS = {
         "costs_reported_count": {"type": "integer"},
         "costs_unavailable_count": {"type": "integer"},
     },
+    "query:codex:subscription-quota": {
+        "directory_path": {"type": "string"},
+        "profile_id": {"type": "string"},
+        "limit_id": {"type": "string"},
+        "window_duration_minutes": {"type": "integer", "minimum": 1},
+        "available": {"type": "boolean"},
+        "unavailable_reason": {"type": ["string", "null"]},
+        "used_percent": {"type": ["number", "null"], "minimum": 0},
+        "remaining_percent": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "resets_at": {"type": ["string", "null"], "format": "date-time"},
+        "observed_at": {"type": "string", "format": "date-time"},
+    },
     "query:agent:artifact-text": {
         "session_id": {"type": "string"},
         "path": {"type": "string"},

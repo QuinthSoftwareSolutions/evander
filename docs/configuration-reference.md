@@ -1552,6 +1552,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
+| `query:codex:subscription-quota` | `profile_id` | `directory_path`, `limit_id`, `window_duration_minutes`, `outputs` |
 | `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `filters` | `project`, `repository_type`, `limit`, `outputs` |
 | `query:text:regex` | `text`, `pattern` | `operation`, `replacement`, `require_match`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
@@ -1571,6 +1572,54 @@ or object of key -> boolean. `directory_path` scopes to that directory and its
 descendants; when omitted, it defaults to the workflow graph directory context,
 falling back to `root`. `active_only=true` or `state=active` excludes expired
 sessions.
+
+`query:codex:subscription-quota` reads one named subscription profile from the
+directory's configured container worker. `directory_path` defaults to the workflow
+graph directory; overrides must stay in that directory or its descendants. It
+uses the host-owned worker client and does not pass credentials into workflow
+configuration, outputs, or report runners. Reads do not wake queued jobs or
+consume reset credits.
+
+`limit_id` defaults to `codex`; `window_duration_minutes` defaults to `10080`
+(seven days) and must be a positive integer. The query prefers
+`rate_limits.by_limit_id[limit_id]`, with a matching legacy `default` bucket as a
+fallback. A legacy default bucket without an ID is accepted only for `codex`.
+It matches the exact duration in either the primary or secondary window and
+never substitutes another bucket or a five-hour window for a weekly limit.
+
+Outputs are `profile_id`, `directory_path`, `limit_id`, `window_duration_minutes`,
+`available`, `unavailable_reason`, `used_percent`, `remaining_percent`,
+`resets_at`, and `observed_at`. Remaining percentage is `100 - used_percent`,
+clamped to 0–100. Timestamps use UTC. A usable window requires finite,
+non-negative numeric usage and a valid future reset timestamp with a timezone.
+Missing, malformed, or expired windows return `available=false`, with null
+usage, remaining percentage, and reset time. Disabled profiles may still report
+quota; `available` describes telemetry rather than whether jobs may run.
+
+`unavailable_reason` is null for a usable window. Otherwise it is
+`worker_not_configured`, `worker_unavailable`, `profile_not_found`,
+`profile_mismatch`, `signed_out`, `telemetry_unavailable`, or `window_unavailable`.
+Unavailable telemetry is a completed query result so reports can display
+"Unavailable"; invalid selectors and attempts to leave directory scope fail
+validation or execution. Account identifiers, email, tokens, raw worker errors,
+and unrelated usage data are excluded.
+
+```json
+{
+  "id": "query-weekly-quota",
+  "display_name": "Weekly subscription capacity",
+  "type": "query:codex:subscription-quota",
+  "config": {
+    "profile_id": "reporting-profile",
+    "limit_id": "codex",
+    "window_duration_minutes": 10080
+  }
+}
+```
+
+Downstream nodes can bind `${{query-weekly-quota.available}}`,
+`${{query-weekly-quota.remaining_percent}}`, and
+`${{query-weekly-quota.resets_at}}` to render a scheduled capacity report.
 
 `query:issue:list` reads tracked local and proxy issues from the local issue
 store. It defaults to the workflow runtime directory and `direct_only=true`,

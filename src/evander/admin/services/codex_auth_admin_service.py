@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import math
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -10,7 +12,12 @@ from evander.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from evander.config import GatewayConfig
-from evander.codex_auth import CodexSubscriptionResetRequest
+from evander.codex_auth import (
+    CodexSubscriptionResetRequest,
+    normalize_subscription_profile_id,
+    normalize_subscription_quota_limit_id,
+    normalize_subscription_quota_window_minutes,
+)
 from evander.models import AuditEvent
 
 
@@ -91,6 +98,73 @@ class CodexAuthAdminService:
             self._make_subscription_profile_ready(profile_id, worker_url=worker_url)
         self._wake()
         return payload
+
+    def profile_quota(
+        self,
+        directory_path: str,
+        profile_id: str,
+        *,
+        limit_id: str = "codex",
+        window_duration_minutes: int = 10080,
+    ) -> dict[str, Any]:
+        """Read quota telemetry without waking queued work or returning account metadata."""
+        profile_id = str(normalize_subscription_profile_id(profile_id, allow_none=False))
+        limit_id = normalize_subscription_quota_limit_id(limit_id)
+        window_duration_minutes = normalize_subscription_quota_window_minutes(
+            window_duration_minutes
+        )
+        result = {
+            "directory_path": directory_path,
+            "profile_id": profile_id,
+            "limit_id": limit_id,
+            "window_duration_minutes": window_duration_minutes,
+            "available": False,
+            "unavailable_reason": None,
+            "used_percent": None,
+            "remaining_percent": None,
+            "resets_at": None,
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        if not config.container_worker_base_url:
+            return {**result, "unavailable_reason": "worker_not_configured"}
+        try:
+            profile = self._client_for_config(config).codex_auth_profile_status(profile_id)
+        except ContainerWorkerClientError as exc:
+            # Worker errors may contain provider response bodies or credential details.
+            reason = "profile_not_found" if exc.status_code == 404 else "worker_unavailable"
+            return {**result, "unavailable_reason": reason}
+
+        observed_at = datetime.now(UTC)
+        result["observed_at"] = observed_at.isoformat().replace("+00:00", "Z")
+        if not isinstance(profile, Mapping) or profile.get("profile_id") != profile_id:
+            return {**result, "unavailable_reason": "profile_mismatch"}
+        if profile.get("signed_in") is not True:
+            return {**result, "unavailable_reason": "signed_out"}
+        if profile.get("available") is not True or profile.get("error"):
+            return {**result, "unavailable_reason": "telemetry_unavailable"}
+        rate_limits = profile.get("rate_limits")
+        if not isinstance(rate_limits, Mapping):
+            return {**result, "unavailable_reason": "window_unavailable"}
+
+        by_limit_id = rate_limits.get("by_limit_id")
+        named_bucket = by_limit_id.get(limit_id) if isinstance(by_limit_id, Mapping) else None
+        buckets = [named_bucket]
+        default_bucket = rate_limits.get("default")
+        if isinstance(default_bucket, Mapping) and (
+            default_bucket.get("limit_id") == limit_id
+            or (not default_bucket.get("limit_id") and limit_id == "codex")
+        ):
+            buckets.append(default_bucket)
+        for bucket in buckets:
+            if not isinstance(bucket, Mapping):
+                continue
+            for window_name in ("primary", "secondary"):
+                window = bucket.get(window_name)
+                normalized = _quota_window(window, window_duration_minutes, observed_at)
+                if normalized is not None:
+                    return {**result, "available": True, **normalized}
+        return {**result, "unavailable_reason": "window_unavailable"}
 
     def create_profile(
         self,
@@ -421,3 +495,36 @@ class CodexAuthAdminService:
             wake()
         except Exception:
             pass
+
+
+def _quota_window(
+    value: object, duration_minutes: int, observed_at: datetime
+) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    duration = value.get("window_duration_minutes")
+    if type(duration) is not int or duration != duration_minutes:
+        return None
+    used = value.get("used_percent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
+        return None
+    try:
+        used = float(used)
+    except OverflowError:
+        return None
+    if not math.isfinite(used) or used < 0:
+        return None
+    reset = value.get("resets_at")
+    if not isinstance(reset, str):
+        return None
+    try:
+        resets_at = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if resets_at.tzinfo is None or resets_at <= observed_at:
+        return None
+    return {
+        "used_percent": used,
+        "remaining_percent": max(0.0, min(100.0, 100.0 - used)),
+        "resets_at": resets_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+    }
