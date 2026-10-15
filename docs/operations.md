@@ -11,6 +11,11 @@ For website design changes, use the optional [WordPress Add-on](../packages/word
 Its setup verifies recovery before enabling writes, and its directory-scoped workflow
 resumes publication, live checks and conditional restore after a worker restart.
 
+For disposable SQL Server and RabbitMQ test resources, install the optional
+[Test Fixtures add-on](../packages/test-fixtures-addon/docs/operations.md) on the
+control plane and selected container workers. Allocation starts disabled; its
+independent worker timer retains cleanup during a control-plane outage.
+
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 [systemd services](#systemd-services). For an existing deployment, start with

@@ -72,9 +72,11 @@ class WorkerMssqlProvisioner:
                 logical_name=request.logical_name,
                 database_name=_database_name(normalized_session_id, request.logical_name),
             )
-        self._apply_database(state, database)
         state.databases[request.logical_name] = database
+        # Record the principal and database intent before SQL side effects. A
+        # retry or cleanup must retain their identities after a partial failure.
         self.store.put(state)
+        self._apply_database(state, database)
         return self._database_record(state, database)
 
     def list_databases(self, session_id: str) -> WorkerMssqlDatabaseListRecord:
@@ -249,14 +251,20 @@ END;
                     self.admin_user,
                     "-C",
                     "-b",
-                    "-Q",
-                    script,
+                    "-l",
+                    "10",
+                    "-t",
+                    "30",
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
+                input=script + "\nGO\n",
+                timeout=45,
                 env=env,
             )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("SQL Server operation timed out") from None
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(safe_subprocess_error(exc)) from exc
 

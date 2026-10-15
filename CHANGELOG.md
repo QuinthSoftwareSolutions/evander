@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-15 - Disposable task test fixtures (0.93.0)
+
+- Add the separately installed Test Fixtures add-on for task-owned SQL Server
+  source/target databases and isolated RabbitMQ brokers, private job configuration,
+  guarded MCP operations, durable quotas, bounded faults and outage cleanup.
+- Expose a narrow Team task resource authority that checks current ownership,
+  exact live dispatch scope and project membership, including blocked recovery.
+- Persist SQL resource intent before provisioning so partial failures remain
+  retryable and cleanable. Existing session database interfaces remain supported.
+- Include opt-in worker deployment assets, an operator lease view and a disabled
+  allocation configuration. Remote deployment and pilot activation are separate.
+
 ## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
 
 - Wait for the requested Codex thread to finish instead of ending a brokered
