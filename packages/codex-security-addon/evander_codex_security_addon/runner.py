@@ -196,7 +196,7 @@ def canonical_result(root, plugin_root, request):
     if coordinates["from_commit"]:
         if target.get("kind") != "git_diff":
             raise ValueError("Expected a committed diff scan")
-        if result["coverage"]["mode"] != "diff":
+        if result["coverage"]["mode"] not in {"diff", "commit", "branch_diff"}:
             raise ValueError("Expected committed diff coverage")
         for key, field in (("baseRevision", "from_commit"), ("headRevision", "to_commit")):
             if target.get(key) != coordinates[field]:

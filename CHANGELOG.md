@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-15 - Accept sealed committed security diff coverage (0.93.1)
+
+- Accept the native scanner's `branch_diff` and `commit` coverage modes alongside
+  generic `diff` coverage for committed security scans. Continue validating the
+  sealed Git target and exact requested base and head revisions, and reject
+  repository or working-tree coverage for a committed range.
+
 ## 2026-10-15 - Query Codex subscription quota in workflows (0.93.0)
 
 - Add `query:codex:subscription-quota` to read a named profile's remaining quota,
