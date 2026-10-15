@@ -719,6 +719,24 @@ _GATE_OUTPUT_SCHEMAS = {
 }
 
 _EFFECT_OUTPUT_SCHEMAS = {
+    "effect:security:scan-repo": {
+        "scan_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "session_id": {"type": "string"},
+        "provider": {"type": "string"},
+        "provider_scan_id": {"type": ["string", "null"]},
+        "repo_path": {"type": "string"},
+        "mode": {"type": "string"},
+        "status": {"type": "string"},
+        "success": {"type": "boolean"},
+        "from_commit": {"type": ["string", "null"]},
+        "to_commit": {"type": ["string", "null"]},
+        "coverage": {"type": "string"},
+        "findings": {"type": "array", "items": {"type": "object"}},
+        "severity_counts": {"type": "object"},
+        "artifacts": {"type": "object"},
+        "error": {"type": ["string", "null"]},
+    },
     "effect:code-index:ensure": {
         "status": {"type": "string"},
         "id": {"type": "string"},

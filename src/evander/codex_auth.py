@@ -145,6 +145,19 @@ class CodexTurnSpec(BaseModel):
         return self
 
 
+class CodexRuntimeSpec(BaseModel):
+    """Select an operator-installed runtime; grants no credentials to the command."""
+
+    model_config = ConfigDict(extra="forbid")
+    profile_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    subscription_profile_id: str = DEFAULT_SUBSCRIPTION_PROFILE_ID
+
+    @field_validator("subscription_profile_id", mode="before")
+    @classmethod
+    def validate_profile(cls, value):
+        return normalize_subscription_profile_id(value) or DEFAULT_SUBSCRIPTION_PROFILE_ID
+
+
 class CodexSubscriptionDeferral(BaseModel):
     """Safe structured capacity result returned by a subscription worker."""
 

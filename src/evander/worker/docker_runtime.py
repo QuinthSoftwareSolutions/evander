@@ -548,6 +548,19 @@ class DockerContainerRuntime:
             "-w",
             request.working_directory or self.sandbox_profile.workdir,
         ]
+        if request.codex_runtime is not None:
+            bridge_root = paths.root / "codex-runtimes" / record.job_id
+            bridge_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            bridge_root.chmod(0o711)
+            reject_unsafe_mount(bridge_root, "/run/evander/codex-runtime")
+            args.extend(
+                [
+                    "-v",
+                    f"{bridge_root}:/run/evander/codex-runtime:ro",
+                    "-e",
+                    "EVANDER_CODEX_BROKER_SOCKET=/run/evander/codex-runtime/broker.sock",
+                ]
+            )
         for mount in identity_mounts:
             args.extend(["-v", mount])
         if subscription_completion_mount is not None:
@@ -589,6 +602,35 @@ class DockerContainerRuntime:
                 )
         args.append(request.image)
         args.extend(request.command)
+        return args
+
+    def codex_runtime_app_server_command(self, record, codex_path, environment, overrides):
+        if not self.codex_egress_proxy_url:
+            raise ValueError("Brokered Codex runtimes require a restricted egress proxy")
+        command = [
+            self.docker_binary,
+            "exec",
+            "-i",
+            "-e",
+            f"HTTPS_PROXY={self.codex_egress_proxy_url}",
+            "-e",
+            f"HTTP_PROXY={self.codex_egress_proxy_url}",
+            "-e",
+            "NO_PROXY=127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+            "-e",
+            "EVANDER_CODEX_BROKER_SOCKET=/run/evander/codex-runtime/broker.sock",
+        ]
+        for key, value in environment.items():
+            command.extend(["-e", f"{key}={value}"])
+        args = [
+            *command,
+            record.container_id or record.container_name,
+            codex_path,
+            "app-server",
+            "--stdio",
+        ]
+        for override in overrides:
+            args.extend(["--config", override])
         return args
 
     def _session_read_only_mounts(self, paths: WorkerSessionPaths) -> tuple[WorkerReadOnlyMount, ...]:

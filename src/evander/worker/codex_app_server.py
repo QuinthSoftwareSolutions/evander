@@ -45,6 +45,7 @@ class CodexAppServerProcess:
         self.notification_handler = notification_handler
         self.stderr_handler = stderr_handler
         self._process: subprocess.Popen[str] | None = None
+        self.initialization_result: dict[str, Any] = {}
         self._write_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._pending: dict[int, Queue[dict[str, Any]]] = {}
@@ -88,7 +89,7 @@ class CodexAppServerProcess:
         self._reader.start()
         self._stderr_reader.start()
         try:
-            self.request(
+            self.initialization_result = self.request(
                 "initialize",
                 {
                     "clientInfo": {"name": "evander", "version": "1"},

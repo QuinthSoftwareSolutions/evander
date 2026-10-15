@@ -48,6 +48,26 @@ def _normalize_managed_git_access_lifetime(
     raise ValueError(f"{effect_type} git_access_lifetime must be session or operation")
 
 
+class SecurityScanEffectDefinition(EffectDefinition):
+    type: Literal["effect:security:scan-repo"]
+    session_id: ConfigValue
+    repo_path: ConfigValue
+    provider: ConfigValue = "codex-security"
+    mode: ConfigValue = "standard"
+    from_commit: ConfigValue | None = None
+    to_commit: ConfigValue | None = None
+    timeout_seconds: ConfigValue = 3600
+
+    @model_validator(mode="after")
+    def validate_static_inputs(self):
+        from evander.security_scans import SecurityScanRequest
+
+        payload = {key: getattr(self, key) for key in SecurityScanRequest.model_fields}
+        if not any(isinstance(value, str) and "${{" in value for value in payload.values()):
+            SecurityScanRequest.model_validate(payload)
+        return self
+
+
 class EventEmitEffectDefinition(EffectDefinition):
     type: Literal["effect:event:emit"]
     event_type: ConfigValue

@@ -24,7 +24,7 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
-from evander.codex_auth import CodexTurnSpec
+from evander.codex_auth import CodexRuntimeSpec, CodexTurnSpec
 from evander.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
@@ -103,11 +103,18 @@ class WorkerJobRequest(BaseModel):
     image: str
     command: list[str]
     codex_turn: CodexTurnSpec | None = None
+    codex_runtime: CodexRuntimeSpec | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
     working_directory: str | None = None
     resource_limits: WorkerResourceLimits = Field(default_factory=WorkerResourceLimits)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def mutually_exclusive_codex_modes(self):
+        if self.codex_turn is not None and self.codex_runtime is not None:
+            raise ValueError("codex_turn and codex_runtime are mutually exclusive")
+        return self
 
     @field_validator("session_id", mode="before")
     @classmethod

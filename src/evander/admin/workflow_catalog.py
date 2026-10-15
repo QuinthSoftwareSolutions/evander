@@ -807,6 +807,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:agent:prompt": "Dispatch a prompt to an agent session and wait for completion.",
     "effect:agent:enqueue-prompt": "Queue a prompt for asynchronous agent-session execution.",
     "effect:agent:exec": "Run a shell command inside an agent session workspace.",
+    "effect:security:scan-repo": "Scan a pinned repository snapshot inside a session and wait for validated security findings.",
     "effect:semantic:ensure-collection": (
         "Ensure a host-side semantic collection exists with the configured vector schema."
     ),
@@ -3481,6 +3482,39 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ),
             ),
         ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:security:scan-repo",
+        label="Repository security scan",
+        fields=[
+            _field("session_id", "Session ID", "string", required=True, bindable=True),
+            _field(
+                "repo_path", "Repository path", "string", required=True, bindable=True,
+                description="Absolute Git worktree path inside /home/agent in the session.",
+            ),
+            _field(
+                "provider", "Security provider", "string", bindable=True,
+                default_value="codex-security",
+            ),
+            _field(
+                "mode", "Scan depth", "enum", bindable=True, default_value="standard",
+                options=[
+                    _field_option("standard", "Standard"),
+                    _field_option("deep", "Deep (whole repository)"),
+                ],
+            ),
+            _field(
+                "from_commit", "From commit", "string", bindable=True,
+                description="Optional base hash. Without an end hash, scan through the captured HEAD.",
+            ),
+            _field(
+                "to_commit", "To commit", "string", bindable=True,
+                description="Optional end hash. Alone, review this commit against its first parent.",
+            ),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True, default_value=3600),
+        ],
+        output_ports=[_port("completed", "Completed"), _port("error", "Error")],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",

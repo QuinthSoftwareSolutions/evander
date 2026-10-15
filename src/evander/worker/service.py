@@ -63,6 +63,7 @@ from .git_workspace import (
     _resolved_git_dir_within_checkout,
 )
 from .codex_auth_broker import CodexAuthBroker
+from .codex_runtime_bridge import CodexRuntimeBridge, CodexRuntimeProfile, load_runtime_profiles
 from .codex_auth_profiles import CodexAuthBrokerRegistry
 from .codex_subscription import (
     CODEX_COMPLETION_MARKER_CONTAINER_DIR,
@@ -274,6 +275,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         codex_egress_proxy_bind_host: str | None = None,
         codex_egress_proxy_port: int = 11889,
         codex_egress_allowed_hosts: Sequence[str] | None = None,
+        codex_runtime_profiles: dict[str, Any] | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
@@ -316,6 +318,15 @@ class WorkerDaemon(GitWorkspaceOperations):
         self._codex_auth_init_lock = threading.Lock()
         self._codex_subscription_runners: dict[str, CodexSubscriptionTurnRunner] = {}
         self._codex_subscription_runners_lock = threading.Lock()
+        self._codex_runtime_profiles = (
+            {
+                key: CodexRuntimeProfile.model_validate(value)
+                for key, value in codex_runtime_profiles.items()
+            }
+            if codex_runtime_profiles is not None
+            else load_runtime_profiles(os.environ.get("EVANDER_CODEX_RUNTIME_PROFILES"))
+        )
+        self._codex_runtime_bridges: dict[str, CodexRuntimeBridge] = {}
         self._job_record_update_lock = threading.RLock()
         self.mssql = mssql_provisioner or WorkerMssqlProvisioner(
             enabled=mssql_enabled,
@@ -348,8 +359,20 @@ class WorkerDaemon(GitWorkspaceOperations):
 
     def _reconcile_orphaned_codex_subscription_jobs(self) -> None:
         for record in self.store.list_inflight():
-            if not _worker_job_uses_codex_subscription(record):
+            if not (
+                _worker_job_uses_codex_subscription(record)
+                or record.metadata.get("codex_runtime_profile")
+            ):
                 continue
+            if record.metadata.get("codex_runtime_profile"):
+                try:
+                    self.container_runtime.stop_job(record)
+                except Exception as exc:  # noqa: BLE001 - reconcile other jobs at startup.
+                    logger.warning(
+                        "codex_runtime_orphan_stop_failed job_id=%s exception_class=%s",
+                        record.job_id,
+                        exc.__class__.__name__,
+                    )
             marker_error: OSError | ValueError | None = None
             try:
                 marker = self._codex_subscription_completion_marker(record)
@@ -387,6 +410,9 @@ class WorkerDaemon(GitWorkspaceOperations):
             self.store.put(record)
 
     def close(self) -> None:
+        for bridge in list(self._codex_runtime_bridges.values()):
+            bridge.close()
+        self._codex_runtime_bridges.clear()
         with self._codex_subscription_runners_lock:
             runners = list(self._codex_subscription_runners.values())
             self._codex_subscription_runners.clear()
@@ -496,13 +522,44 @@ class WorkerDaemon(GitWorkspaceOperations):
     def _active_subscription_job_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for record in self.store.list_inflight():
-            if _worker_job_uses_codex_subscription(record):
+            if _worker_job_uses_codex_subscription(record) or record.metadata.get(
+                "codex_runtime_profile"
+            ):
                 profile_id = str(record.metadata.get("subscription_profile_id") or "default")
                 counts[profile_id] = counts.get(profile_id, 0) + 1
         return counts
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
+        if request.job_id and request.metadata.get("idempotent_start") is True:
+            fingerprint = hashlib.sha256(
+                json.dumps(request.model_dump(mode="json"), sort_keys=True).encode()
+            ).hexdigest()
+            with self._job_record_update_lock:
+                existing = self.store.get(request.job_id)
+                if existing is not None:
+                    if existing.metadata.get("request_fingerprint") != fingerprint:
+                        raise ValueError("Job identity was reused with different inputs")
+                    return existing
+                request = request.model_copy(
+                    update={"metadata": {**request.metadata, "request_fingerprint": fingerprint}}
+                )
+                return self._start_job(request)
+        return self._start_job(request)
+
+    def _start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
+        runtime_profile = None
+        runtime_broker = None
+        if request.codex_runtime is not None:
+            runtime_profile = self._codex_runtime_profiles.get(request.codex_runtime.profile_id)
+            if runtime_profile is None:
+                raise ValueError("Requested Codex runtime profile is not installed on this worker")
+            if request.command[: len(runtime_profile.command_prefix)] != runtime_profile.command_prefix:
+                raise ValueError("Command does not match the configured Codex runtime profile")
+            self.codex_auth_profiles.preflight(request.codex_runtime.subscription_profile_id)
+            runtime_broker = self.codex_auth_profiles.broker(
+                request.codex_runtime.subscription_profile_id
+            )
         subscription_tokens = None
         subscription_marker: Path | None = None
         runtime_request = request
@@ -546,6 +603,14 @@ class WorkerDaemon(GitWorkspaceOperations):
             logs_path=str(paths.logs),
             metadata=sanitize_metadata(
                 request.metadata
+                | (
+                    {
+                        "codex_runtime_profile": request.codex_runtime.profile_id,
+                        "subscription_profile_id": request.codex_runtime.subscription_profile_id,
+                    }
+                    if request.codex_runtime
+                    else {}
+                )
                 | (
                     {"codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION.value}
                     if subscription_tokens is not None
@@ -594,6 +659,38 @@ class WorkerDaemon(GitWorkspaceOperations):
         record.container_id = container_id
         record.status = "running"
         self.store.put(record)
+        if runtime_profile is not None and runtime_broker is not None:
+            assert request.codex_runtime is not None
+            profile_id = request.codex_runtime.subscription_profile_id
+            command_builder = getattr(
+                self.container_runtime, "codex_runtime_app_server_command", None
+            )
+            try:
+                if not callable(command_builder):
+                    raise RuntimeError("Container runtime does not support brokered Codex runtimes")
+                bridge = CodexRuntimeBridge(
+                    path=paths.root / "codex-runtimes" / job_id / "broker.sock",
+                    command_factory=lambda env, overrides: command_builder(
+                        record, runtime_profile.codex_path, env, overrides
+                    ),
+                    tokens=runtime_broker.external_tokens(),
+                    refresh_tokens=lambda **kwargs: self.codex_auth_profiles.refresh_tokens(
+                        profile_id, **kwargs
+                    ),
+                    max_processes=runtime_profile.max_processes,
+                )
+                self._codex_runtime_bridges[job_id] = bridge
+                bridge.start()
+            except Exception:
+                self._shutdown_codex_subscription_runner(job_id)
+                try:
+                    self.container_runtime.stop_job(record)
+                finally:
+                    record.status = "failed"
+                    record.finished_at = now_utc()
+                    record.error = "Codex runtime broker could not start"
+                    self.store.put(record)
+                raise
         if subscription_tokens is not None and subscription_marker is not None:
             command_builder = getattr(self.container_runtime, "codex_app_server_command", None)
             if not callable(command_builder):
@@ -792,6 +889,9 @@ class WorkerDaemon(GitWorkspaceOperations):
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
     def _shutdown_codex_subscription_runner(self, job_id: str) -> None:
+        bridge = self._codex_runtime_bridges.pop(job_id, None)
+        if bridge is not None:
+            bridge.close()
         with self._codex_subscription_runners_lock:
             runner = self._codex_subscription_runners.get(job_id)
         if runner is None:

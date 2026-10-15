@@ -76,6 +76,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     pull_request_creator: PullRequestCreator | None = None
     code_consultation_service_factory: CodeConsultationServiceFactoryPort | None = None
     admin_service: Any | None = None
+    security_scan_service: Any | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()

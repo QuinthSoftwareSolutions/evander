@@ -637,6 +637,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:artifact-space:publish-version": (
             provider_models.ArtifactSpacePublishVersionEffectDefinition
         ),
+        "effect:security:scan-repo": provider_models.SecurityScanEffectDefinition,
         "effect:vm:create": provider_models.VmCreateEffectDefinition,
         "effect:vm:clone-repo": provider_models.VmCloneRepoEffectDefinition,
         "effect:vm:bootstrap-python": provider_models.VmBootstrapPythonEffectDefinition,

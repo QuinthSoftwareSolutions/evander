@@ -180,6 +180,7 @@ class ProviderRuntimePorts:
     session_context_reader: SessionContextReader | None = None
     session_artifact_reader: SessionArtifactReader | None = None
     admin_service: Any | None = None
+    security_scan_service: Any | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 

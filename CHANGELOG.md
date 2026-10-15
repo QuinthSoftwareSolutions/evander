@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-15 - Repository security scan workflows (0.89.0)
+
+- Add a provider-neutral repository security scan effect with required session
+  and repository path, optional commit bounds, durable waiting, and report outputs.
+- Add an independently installed Codex Security provider for standard and deep
+  scans against clean snapshots, including worker-brokered subscription runtimes.
+- Preserve scan findings and private report artifacts across workflow restarts,
+  and keep scan failures distinct from completed scans that find vulnerabilities.
+
 ## 2026-10-14 - Show active agent run settings (0.88.0)
 
 - Show the model, speed, and reasoning settings of active container and VM

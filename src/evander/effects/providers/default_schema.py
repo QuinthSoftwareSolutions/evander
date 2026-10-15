@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from evander.effects.providers.schemas import (
+    SecurityScanEffectDefinition,
     AdoBuildWaitEffectDefinition,
     AgentInstallSkillsEffectDefinition,
     AdoAddWorkItemTagEffectDefinition,
@@ -76,6 +77,7 @@ from evander.workflow.contracts import (
 )
 
 _EFFECT_MODEL_BY_TYPE = {
+    "effect:security:scan-repo": SecurityScanEffectDefinition,
     "effect:code-index:ensure": CodeIndexEnsureDefinition,
     "effect:code-index:reconcile": CodeIndexReconcileDefinition,
     "effect:event:emit": EventEmitEffectDefinition,

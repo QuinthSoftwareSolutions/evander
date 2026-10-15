@@ -77,6 +77,10 @@ Git, and HTTP surfaces.
 
 ## Core Security Model
 
+Repository scans are available through `effect:security:scan-repo`. Install and
+enable the optional [Codex Security provider](packages/codex-security-addon/README.md)
+to scan a session-local checkout or committed diff and retain private reports.
+
 - Guests have no direct access to host secrets.
 - Libvirt guests use a private network and reach only host ports allowed by the firewall.
   Worker containers use a separately configured default-deny egress policy on their worker VM.
