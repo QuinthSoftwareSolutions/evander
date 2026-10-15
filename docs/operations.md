@@ -3729,6 +3729,12 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
 Use [managed website sessions](managed-website-sessions.md) for an assistant that
 needs repeatable website login. In Admin Web's Website logins configuration, create
 a directory profile, enter encrypted host credentials, and run **Test saved login**.
+For environment-driven workflows, configure and test a separate exact-origin JSON
+profile for each environment. Use `query:website-session:resolve-profile` with the
+environment's website and API origins, then a `gate:validate` readiness check before
+updating targets and enqueueing work. Only the `valid` branch should dispatch an agent;
+retain the safe query error code and validation failures for operator diagnosis.
+Bind the resolved profile ID to the website target and grant the API origin separately.
 Select the profile in the assistant's HTTP targets using **Managed website login**. Reconcile
 Playwright bootstrap files for existing guests so they receive
 `createManagedWebsiteContext`. Newly provisioned Playwright sessions get it automatically.

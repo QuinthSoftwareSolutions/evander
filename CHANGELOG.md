@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-15 - Resolve environment website logins in workflows (0.96.0)
+
+- Add `query:website-session:resolve-profile` to select one configured JSON login by exact browser and login API origins within the workflow directory scope. Return only readiness, profile ID and safe errors, without authenticating or decrypting credentials.
+- Expose the query and its output contract in the workflow editor so workflows can validate access before binding the selected profile and dispatching an agent. Existing exact-origin profiles and encrypted credential bindings remain unchanged.
+- Allow writes to any concrete ordinary Elasticsearch index by default. Explicit index patterns and empty read-only policies remain supported, with existing request and document limits.
+
 ## 2026-10-15 - Reduce scanner image build disk usage (0.95.1)
 
 - Support streamed gzip scanner image archives and release build staging before export, while preserving verified cache reuse and the previous archive on failure.

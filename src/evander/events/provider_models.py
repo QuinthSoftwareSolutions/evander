@@ -94,6 +94,7 @@ from evander.queries.providers.schemas import (
     SemanticSearchQueryDefinition,
     SemanticStoreStatusQueryDefinition,
     SessionContextQueryDefinition,
+    WebsiteSessionResolveProfileQueryDefinition,
     SessionListQueryDefinition,
     VmRunStateQueryDefinition,
 )
@@ -228,6 +229,7 @@ __all__ = [
     "SessionRenewIfExpiredEffectDefinition",
     "SessionRevokeMcpToolApprovalLeaseEffectDefinition",
     "SessionContextQueryDefinition",
+    "WebsiteSessionResolveProfileQueryDefinition",
     "SessionListQueryDefinition",
     "SessionSetImageGenerationEnabledEffectDefinition",
     "SessionUpdateMetadataEffectDefinition",

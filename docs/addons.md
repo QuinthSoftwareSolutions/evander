@@ -373,11 +373,14 @@ names to the session. Saved-object imports remain subject to the configured
 byte/object limits and to the target Kibana version's saved-object compatibility
 rules.
 
-Elasticsearch writes are disabled by default. The
+Elasticsearch targets default to `write_index_patterns: ["*"]`. Omit this field to
+allow any concrete ordinary index, supply patterns to restrict writes, or use `[]`
+for a read-only target. Existing explicit patterns remain in force. The
 `elasticsearch_bulk_index_documents` tool and
 `effect:elasticsearch:bulk-index-documents` provider accept only a concrete
 lowercase index name matched by the target's `write_index_patterns`. They reject
-empty batches and cap each call by `max_bulk_documents` and `max_bulk_bytes`.
+system indices, wildcard or multi-index names and empty batches, and cap each call
+by `max_bulk_documents` and `max_bulk_bytes`.
 Use `id_field` with a deterministic per-event value when a seed operation may be
 retried; Elasticsearch will then replace the same synthetic document instead of
 creating a duplicate. The tool returns bounded success and failure counts rather

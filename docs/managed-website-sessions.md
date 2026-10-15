@@ -172,6 +172,30 @@ exactly match the bound target's scheme, host, and effective port. Login is rest
 to configured public HTTPS destinations, with DNS resolution pinned to approved
 addresses. Redirects, private addresses, and metadata endpoints are rejected.
 
+For workflows that serve several environments, configure a separate exact-origin
+profile for each environment in **Website logins** and test each saved login. Add
+`query:website-session:resolve-profile` with `browser_origin` and `login_origin` bound
+to the environment's approved website and API origins. It uses the workflow directory's
+visible, enabled JSON profiles and requires exactly one browser-origin match, the
+matching login origin and complete credential configuration. Names do not determine
+selection, and credentials are not copied between profiles or environments.
+
+The query returns only `ready`, `profile_id` and `error_code`. Route through a
+`gate:validate` check with `when: {"left": "${{login.ready}}", "equals": true}` and
+connect only its `valid` port to the target update and agent dispatch. Bind
+`${{login.profile_id}}` to the target's `managed_website_session`. Preserve the rendered
+website and API origins as explicit session HTTP targets; the broker still enforces
+both grants and current profile/credential state when a browser context is requested.
+
+Unavailable codes are `website_profile_not_found` (including disabled or non-JSON
+profiles), `website_profile_ambiguous`, `website_login_origin_mismatch`,
+`website_credentials_missing` and `website_credentials_unavailable`. Every unavailable
+result has `ready: false` and `profile_id: null`. Ambiguity is determined before credential
+checks, so a second enabled account cannot silently change which account is selected.
+Profile resolution does not decrypt credentials, attempt a login, or prove that the
+saved account still works. Changes or revocation after resolution remain enforced by
+the existing login broker. No profile or credential migration is required.
+
 Provision with `playwright=true` and use the shared helper in either execution backend:
 
 ```js

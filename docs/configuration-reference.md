@@ -495,9 +495,10 @@ require `repo`, while work-item syncs can run by project/work-item filters.
 For the bundled Elastic Stack Add-on, enabling `elastic-stack-addon` exposes
 bounded `elastic_stack_*`, `elasticsearch_*`, and `kibana_*` MCP tools and makes
 `query:elasticsearch:*`, `query:kibana:*`, `effect:elasticsearch:*`, and
-`effect:kibana:*` workflow providers available. Elasticsearch writes are off by
-default and require a target-level `write_index_patterns` allowlist; the bounded
-bulk tool is additionally constrained by `max_bulk_bytes` and
+`effect:kibana:*` workflow providers available. Elasticsearch targets default to
+`write_index_patterns: ["*"]`, permitting any concrete ordinary index. Supply patterns
+to limit writes, or an empty list to make a target read-only. Bulk requests cannot name
+system indices, wildcards or multiple indices, and remain constrained by `max_bulk_bytes` and
 `max_bulk_documents`. Configure static targets, origin-restricted host-side auth
 profiles, request timeouts, and response/import/bulk limits under
 `provider_state.elastic_stack`. A demo provisioner may also add target endpoints
@@ -1554,6 +1555,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:artifact-space:list` | _none beyond envelope_ | `path`, `recursive`, `subject`, `include_versions`, `outputs` |
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
+| `query:website-session:resolve-profile` | `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:codex:subscription-quota` | `profile_id` | `directory_path`, `limit_id`, `window_duration_minutes`, `outputs` |
 | `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `filters` | `project`, `repository_type`, `limit`, `outputs` |
@@ -1562,6 +1564,18 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
 artifacts folder. The `path` value must be relative and stay inside that folder.
+
+`query:website-session:resolve-profile` selects one enabled JSON website login whose
+browser origin exactly matches `browser_origin` and whose saved login endpoint uses
+`login_origin`. Inputs are canonicalized to HTTPS scheme, host and effective port.
+`directory_path` defaults to the workflow directory and can select only that directory
+or a descendant. Normal profile inheritance applies. Outputs are `ready` (boolean),
+`profile_id` (string or null) and `error_code` (string or null). Check `ready` before
+binding `profile_id` to a session HTTP target's `managed_website_session` and enqueueing
+work. Missing, disabled, ambiguous, mismatched or incomplete profiles return `ready: false`
+with no profile ID. This query checks configuration, not authentication; use Website
+logins' **Test saved login** to verify the account. It never returns credentials or
+browser state. See [managed website sessions](managed-website-sessions.md).
 
 `query:git:merge-base` refreshes the selected managed target branch, pins its exact
 commit, and resolves the unique merge base with the exact candidate commit. It returns

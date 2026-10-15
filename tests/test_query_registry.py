@@ -109,6 +109,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:git:merge-base",
         "query:git:pr-note",
         "query:session-context",
+        "query:website-session:resolve-profile",
         "query:session:list",
         "query:model-usage:list",
         "query:codex:subscription-quota",
