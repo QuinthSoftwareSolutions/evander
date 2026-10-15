@@ -38,6 +38,8 @@ uses an isolated interpreter and never imports code from the agent repository.
    actual persisted session assignment. Settings updates require the current
    `expected_revision`, directory owner permission and unlocked privileged
    operations. Start with no allowed teams and allocation disabled.
+   Refresh after changing the Directory field; mutations use the loaded
+   directory and revision, and an unfinished or failed refresh blocks changes.
 6. Import the reconciliation workflow through Admin Web/API using the live pack
    revision and lock. Keep new allocation disabled. Enable the reconciliation
    graph in each participating directory so pending operations and cleanup run

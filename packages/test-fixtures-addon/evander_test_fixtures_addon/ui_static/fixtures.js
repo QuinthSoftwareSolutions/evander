@@ -1,8 +1,9 @@
 const $ = id => document.getElementById(id);
 const base = '/api/addons/test-fixtures-addon';
-let revision;
-async function api(path, method='GET', body) {
-  const response = await fetch(base+path+'?directory='+encodeURIComponent($('directory').value), {
+let loadedSettings;
+let refreshGeneration = 0;
+async function api(path, directory, method='GET', body) {
+  const response = await fetch(base+path+'?directory='+encodeURIComponent(directory), {
     method, headers: {'Content-Type':'application/json'}, body:body ? JSON.stringify(body) : undefined
   });
   const value = await response.json();
@@ -10,10 +11,20 @@ async function api(path, method='GET', body) {
   return value;
 }
 function message(error) { $('status').textContent = error.message; }
+function currentScope() {
+  if (!loadedSettings || loadedSettings.directory !== $('directory').value.trim()) {
+    throw new Error('Refresh this directory before changing settings or leases.');
+  }
+  return loadedSettings;
+}
 async function refresh() {
+  const directory = $('directory').value.trim();
+  const generation = ++refreshGeneration;
+  loadedSettings = undefined;
   try {
-    const [leases, settings] = await Promise.all([api('/leases'), api('/settings')]);
-    revision = settings.revision;
+    const [leases, settings] = await Promise.all([api('/leases', directory), api('/settings', directory)]);
+    if (generation !== refreshGeneration || directory !== $('directory').value.trim()) return;
+    loadedSettings = {directory, revision: settings.revision};
     $('settings').value = JSON.stringify(settings.settings, null, 2);
     $('leases').replaceChildren();
     for (const lease of leases.leases) {
@@ -30,7 +41,8 @@ async function refresh() {
         const button = document.createElement('button');
         button.textContent = lease.state === 'cleanup_failed' ? 'Retry cleanup' : 'Release';
         button.onclick = async () => { try {
-          await api('/leases/'+encodeURIComponent(lease.lease_id)+'/release', 'POST', {expected_revision:lease.revision});
+          if (currentScope().directory !== directory) throw new Error('Refresh this directory before changing leases.');
+          await api('/leases/'+encodeURIComponent(lease.lease_id)+'/release', directory, 'POST', {expected_revision:lease.revision});
           await refresh();
         } catch(error) { message(error); } };
         cell.append(button);
@@ -38,11 +50,17 @@ async function refresh() {
       row.append(cell); $('leases').append(row);
     }
     $('status').textContent = settings.settings.allocations_enabled ? 'New allocations enabled for configured teams.' : 'New allocations disabled. Cleanup remains active.';
-  } catch(error) { message(error); }
+  } catch(error) { if (generation === refreshGeneration) message(error); }
 }
-$('scope').onsubmit = event => { event.preventDefault(); refresh(); };
+$('directory').oninput = () => {
+  loadedSettings = undefined;
+  ++refreshGeneration;
+  $('status').textContent = 'Refresh to load this directory before making changes.';
+};
+$('scope').onsubmit = event => { event.preventDefault(); return refresh(); };
 $('settings-form').onsubmit = async event => { event.preventDefault(); try {
-  await api('/settings', 'PUT', {expected_revision:revision, settings:JSON.parse($('settings').value)});
+  const scope = currentScope();
+  await api('/settings', scope.directory, 'PUT', {expected_revision:scope.revision, settings:JSON.parse($('settings').value)});
   await refresh();
 } catch(error) { message(error); } };
 refresh();

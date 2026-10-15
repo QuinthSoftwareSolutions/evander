@@ -9,3 +9,6 @@
 - Wake the owning task for a queued reset after its job exits and send fresh
   continuations for subsequent resets and provisioning handoffs without waking
   tasks again for ordinary rebinds.
+- Recheck current allocation policy and quota under the settings/admission lock.
+- Keep operator settings and lease actions bound to the loaded directory; reject
+  stale scopes and discard responses from superseded refreshes.

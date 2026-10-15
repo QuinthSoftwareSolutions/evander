@@ -13,6 +13,8 @@
   allocation configuration. Remote deployment and pilot activation are separate.
 - Deliver private configuration without container capabilities and resume queued
   resets through task continuations after their requesting jobs exit.
+- Serialize fixture admission with policy changes and bind operator updates to
+  the directory whose settings and revision were loaded.
 
 ## 2026-10-15 - Keep subscription scans running through child audits (0.92.2)
 

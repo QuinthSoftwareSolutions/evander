@@ -1,5 +1,6 @@
 import json
 import multiprocessing
+from contextlib import contextmanager
 
 import pytest
 
@@ -125,6 +126,41 @@ def test_disabled_allocations_keep_existing_leases_reconciling_and_cleaning(serv
     worker.clock[0] += 7201
     worker.tick()
     assert service.reconcile(lease["lease_id"])["state"] in {"expired", "released"}
+
+
+@pytest.mark.parametrize("change", ["disable", "lower_quota"])
+def test_admission_obeys_settings_committed_before_its_lock(service, worker, monkeypatch, change):
+    if change == "lower_quota":
+        service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "existing")
+        service.authority.scope = service.authority.scope.model_copy(update={"task_id": "task-b"})
+    before = {lease["lease_id"] for lease in service.store.list()}
+    databases, brokers = dict(worker.sql.databases), set(worker.docker.brokers)
+    original_locked = service.store.locked
+
+    @contextmanager
+    def operator_commits_first():
+        # Deterministically interleave a real settings save immediately before
+        # this request obtains admission, after any prematurely read snapshot.
+        monkeypatch.setattr(service.store, "locked", original_locked)
+        revision, settings = service.store.settings("root")
+        if change == "disable":
+            settings.allocations_enabled = False
+        else:
+            settings.max_per_worker = 1
+        service.store.save_settings("root", revision, settings, "operator:test")
+        with original_locked():
+            yield
+
+    monkeypatch.setattr(service.store, "locked", operator_commits_first)
+    with pytest.raises(FixtureError, match="disabled" if change == "disable" else "quota"):
+        service.acquire_ready(
+            "session-a",
+            service.authority.scope.task_id,
+            "sqlserver-rabbitmq",
+            "after-policy-change",
+        )
+    assert {lease["lease_id"] for lease in service.store.list()} == before
+    assert worker.sql.databases == databases and worker.docker.brokers == brokers
 
 
 def test_request_id_and_task_bundle_are_guarded(service):

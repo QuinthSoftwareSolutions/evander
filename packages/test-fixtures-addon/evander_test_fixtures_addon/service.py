@@ -23,17 +23,19 @@ class Service:
         return self.authority.resolve(session_id, task_id, tool, settings), settings
 
     def acquire(self, session_id, task_id, profile, request_id):
-        scope, settings = self.scope(session_id, task_id, "test_fixtures_acquire")
-        if not settings.allocations_enabled:
-            raise FixtureError("New fixture allocations are disabled")
-        # Validate profiles before creating a durable request or reserving quota.
-        Ensure(
-            lease_id="fx-" + "0" * 32,
-            scope=scope,
-            profile=profile,
-            idle_seconds=settings.idle_seconds,
-        )
         with self.store.locked():
+            # Settings saves use this same lock. Revalidate the current policy
+            # and scope before admitting a lease, never a pre-lock snapshot.
+            scope, settings = self.scope(session_id, task_id, "test_fixtures_acquire")
+            if not settings.allocations_enabled:
+                raise FixtureError("New fixture allocations are disabled")
+            # Validate profiles before creating a durable request or reserving quota.
+            Ensure(
+                lease_id="fx-" + "0" * 32,
+                scope=scope,
+                profile=profile,
+                idle_seconds=settings.idle_seconds,
+            )
             lease = self.store.acquire(scope, profile, request_id, settings, now=self.now())
             if "worker" not in lease:
                 lease["worker"] = settings.workers[scope.worker_id].model_dump()

@@ -66,6 +66,8 @@ Broker data survives a stop/start fault and is discarded at reset or release.
 Operator actions and lifecycle intents are durable. The Admin Web Test fixtures
 view shows ownership, readiness, resources, expiry and failures, with revision
 guarded release/retry cleanup. Allocation can be disabled while cleanup continues.
+After changing Directory in the operator view, refresh before saving settings or
+changing leases. Responses from previous directory loads are discarded.
 
 Run focused tests from the repository root:
 
@@ -76,3 +78,5 @@ PYTHONPATH=src:packages/test-fixtures-addon timeout 180 .venv/bin/pytest -q pack
 The optional [real-service smoke](tests/test_live_services.py) runs inside an
 explicitly provisioned disposable worker job. Unit tests use synthetic adapters
 and do not provision remote resources.
+Operator UI behavior regressions use Node.js 18 or later when available, with
+its built-in test runner and no npm dependencies.
