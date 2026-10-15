@@ -39,6 +39,7 @@ GUEST_PATH = "/home/agent/repos/Example"
 SUMMARY = (
     "## Changes\n\nSubmit a committed change.\n\n## Validation\n\nSynthetic Git checks passed."
 )
+UTF8_SUMMARY = "## Changes\n\n" + "é" * 16370
 
 
 @pytest.fixture
@@ -79,10 +80,18 @@ def setup_submission(tmp_path):
 
     def execute(session, command, working_directory):
         calls.append(working_directory)
-        request = json.loads(base64.b64decode(command[-1]))
+        original_request = base64.b64decode(command[-1])
+        request = json.loads(original_request)
         request["remote_url"] = str(bare)
         request["guest_path"] = str(agent)
-        command = [*command[:-1], base64.b64encode(json.dumps(request).encode()).decode()]
+        # Keep the original encoding while mapping the transport into local Git.
+        # Re-encoding escaped Unicode as UTF-8 would mask argv-size failures.
+        command = [
+            *command[:-1],
+            base64.b64encode(
+                json.dumps(request, ensure_ascii=original_request.isascii()).encode()
+            ).decode(),
+        ]
         result = subprocess.run(command, cwd=source, capture_output=True, text=True, timeout=20)
         return dict(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
 
@@ -105,27 +114,45 @@ def setup_submission(tmp_path):
     )
 
 
-def submit(s, **kwargs):
+def submit(s, *, summary_markdown=SUMMARY, **kwargs):
     return s.service.submit(
-        s.session, expected_commit_sha=s.sha, summary_markdown=SUMMARY, **kwargs
+        s.session, expected_commit_sha=s.sha, summary_markdown=summary_markdown, **kwargs
     )
 
 
-def test_submits_exact_commit_summary_and_replays_without_changing_refs(setup_submission):
+@pytest.mark.parametrize(
+    "summary_markdown",
+    [
+        SUMMARY,
+        "## Changes\n\nHard line break  \nNext line\n\n\nParagraph after two blank lines.\n\n## Validation\n\nPassed.",
+        "\n\n    indented code\n    next line\n\n",
+        "## Changes\r\n\r\nFirst line  \r\nNext line\r\n",
+        UTF8_SUMMARY,
+    ],
+    ids=["standard", "markdown-whitespace", "outer-whitespace", "crlf", "utf8-near-limit"],
+)
+def test_submits_exact_commit_summary_and_replays_without_changing_refs(
+    setup_submission, summary_markdown
+):
     s = setup_submission
     (s.agent / "file.txt").write_text("uncommitted tracked work\n")
     (s.agent / "untracked.txt").write_text("private pending work\n")
     before = _git(s.agent, "status", "--porcelain").stdout
-    receipt = submit(s)
+    receipt = submit(s, summary_markdown=summary_markdown)
     assert receipt["success"], receipt
     assert receipt["commit_sha"] == s.sha
     assert receipt["agent_ref"] == f"refs/evander/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
     assert receipt["checkout_id"] == s.checkout_id
     assert receipt["changed"] is True
     note_ref = agent_pr_notes_ref_for_session(SESSION_ID)
-    assert _git_dir(s.bare, "notes", f"--ref={note_ref}", "show", s.sha).stdout.strip() == SUMMARY
+    note_blob = _git_dir(s.bare, "notes", f"--ref={note_ref}", "list", s.sha).stdout.strip()
+    assert subprocess.run(
+        ["git", f"--git-dir={s.bare}", "cat-file", "blob", note_blob],
+        capture_output=True,
+        check=True,
+    ).stdout == summary_markdown.encode("utf-8")
     refs = _git_dir(s.bare, "show-ref").stdout
-    replay = submit(s)
+    replay = submit(s, summary_markdown=summary_markdown)
     assert replay["success"], replay
     assert replay["changed"] is False
     assert _git_dir(s.bare, "show-ref").stdout == refs
@@ -223,7 +250,7 @@ def test_atomic_rejection_and_retry_after_lost_receipt(setup_submission):
     s = setup_submission
     hook = s.bare / "hooks/update"
     # Without --atomic, the branch would be accepted while only notes fail.
-    hook.write_text("#!/bin/sh\ncase \"$1\" in refs/notes/*) exit 1;; esac\nexit 0\n")
+    hook.write_text('#!/bin/sh\ncase "$1" in refs/notes/*) exit 1;; esac\nexit 0\n')
     hook.chmod(0o755)
     before = _git_dir(s.bare, "show-ref").stdout
     result = submit(s)
@@ -278,8 +305,11 @@ def test_retired_owner_and_prepared_branch_are_checked(setup_submission):
         ("container_worker_vm", True),
     ],
 )
+@pytest.mark.parametrize(
+    "summary_markdown", [SUMMARY, UTF8_SUMMARY], ids=["standard", "utf8-near-limit"]
+)
 def test_real_git_submission_through_execution_adapters(
-    setup_submission, monkeypatch, backend, lose_response
+    setup_submission, monkeypatch, backend, lose_response, summary_markdown
 ):
     s = setup_submission
     session = s.session.model_copy(deep=True)
@@ -345,10 +375,16 @@ def test_real_git_submission_through_execution_adapters(
     )
 
     def execute(caller, command, working_directory):
-        request = json.loads(base64.b64decode(command[-1]))
+        original_request = base64.b64decode(command[-1])
+        request = json.loads(original_request)
         request["remote_url"] = str(s.bare)
         request["guest_path"] = str(s.agent)
-        command = [*command[:-1], base64.b64encode(json.dumps(request).encode()).decode()]
+        command = [
+            *command[:-1],
+            base64.b64encode(
+                json.dumps(request, ensure_ascii=original_request.isascii()).encode()
+            ).decode(),
+        ]
         provider = AgentExecEffectProvider()
         provider.initialize(
             AgentExecEffectDefinition(
@@ -374,9 +410,9 @@ def test_real_git_submission_through_execution_adapters(
 
     s.service.execute = execute
     if lose_response:
-        assert submit(s)["code"] == "transport_failure"
+        assert submit(s, summary_markdown=summary_markdown)["code"] == "transport_failure"
         assert destroyed == ["synthetic-exec"]
-    result = submit(s)
+    result = submit(s, summary_markdown=summary_markdown)
     assert result["success"], result
     assert _git_dir(s.bare, "rev-parse", result["agent_ref"]).stdout.strip() == s.sha
     assert destroyed == (

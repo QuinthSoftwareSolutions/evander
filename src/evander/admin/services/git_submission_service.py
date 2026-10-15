@@ -105,7 +105,6 @@ class GitSubmissionService:
             return blocked("invalid_commit", "expected_commit_sha must be a full Git commit SHA.")
         if not isinstance(summary_markdown, str) or not summary_markdown.strip():
             return blocked("summary_required", "Provide a complete nonempty Markdown summary.")
-        summary_markdown = summary_markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
         if len(summary_markdown.encode("utf-8")) > 32768:
             return blocked(
                 "summary_too_large", "The complete summary must fit within 32 KiB of UTF-8 text."
@@ -179,7 +178,7 @@ class GitSubmissionService:
                 remote_url=remote,
                 notes_ref=agent_pr_notes_ref_for_session(fresh.session_id),
             )
-            encoded = base64.b64encode(json.dumps(request).encode()).decode()
+            encoded = base64.b64encode(json.dumps(request, ensure_ascii=False).encode()).decode()
             helper = (self.project_dir / "scripts/guest/push_agent.sh").read_text()
             command = ["bash", "-c", helper, "evander-submit", "--submit-json", encoded]
             try:
@@ -215,21 +214,23 @@ class GitSubmissionService:
                     repo_id, fresh.directory_path
                 )
 
-                def read(*args):
-                    return subprocess.run(
+                def read(*args, raw=False):
+                    output = subprocess.run(
                         ["git", f"--git-dir={bare}", "-c", "core.hooksPath=/dev/null", *args],
                         check=True,
                         capture_output=True,
-                        text=True,
+                        text=not raw,
                         timeout=30,
-                    ).stdout.strip()
+                    ).stdout
+                    return output if raw else output.strip()
 
                 if read("rev-parse", ref) != sha:
                     return blocked(
                         "concurrent_update", "The managed branch moved during verification."
                     )
-                note = read("notes", f"--ref={request['notes_ref']}", "show", sha)
-                if note != summary_markdown.strip():
+                note_blob = read("notes", f"--ref={request['notes_ref']}", "list", sha)
+                note = read("cat-file", "blob", note_blob, raw=True)
+                if note != summary_markdown.encode("utf-8"):
                     return blocked(
                         "summary_conflict", "The managed note differs from the submitted summary."
                     )

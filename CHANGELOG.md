@@ -2,7 +2,7 @@
 
 ## 2026-10-15 - Submit committed work through MCP (0.94.0)
 
-- Add the session-scoped `submit_git_changes` capability for VM and container agents, including complete Markdown summaries, opaque checkout selection, exact-SHA verification, and safe retries.
+- Add the session-scoped `submit_git_changes` capability for VM and container agents, including verbatim complete Markdown summaries, opaque checkout selection, exact-SHA verification, and safe retries.
 - Preserve managed Git write grants and publication policy; publish commit and notes atomically and coalesce their workflow notifications.
 - Make MCP submission the default in coding workflows and Team guidance while retaining the Git helper commands for compatibility.
 

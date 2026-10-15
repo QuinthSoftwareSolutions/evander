@@ -441,6 +441,8 @@ Grant `submit_git_changes` to coding sessions that already have writable managed
 
 The platform executes submission inside the session VM or container, retains ancestry and namespace checks, publishes the pinned commit and summary atomically, and verifies the managed ref and note before returning a receipt. Repeat the same request after a lost reply; unchanged verified submissions do not create another push. Staging, committing, conflict resolution, and upstream destination selection remain separate operations.
 
+Summary text is stored verbatim, preserving Markdown indentation, hard line breaks, blank lines, and line endings. The 32 KiB limit measures the supplied UTF-8 text.
+
 The receipt includes `managed_repo_id`, `checkout_id`, `commit_sha`, logical `agent_branch`, full `agent_ref`, `notes_ref`, and `changed`. Failures include a stable `code` and recovery message. `checkout_ambiguous` also returns eligible checkout IDs and repository names, without guest paths.
 
 | Failure code | Recovery |

@@ -319,13 +319,16 @@ verify_prepared_base_contained() {
 
 atomic_publish() {
   local remote="$1" sha="$2" publish_ref="$3" notes_ref="$4" summary_file="$5"
-  local branch_old notes_old note_object remote_note initial_note="" attempt=1 output
+  local branch_old notes_old note_object remote_note summary_blob initial_note="" attempt=1 output
   local changed=0
   local common_dir
   common_dir="$(git rev-parse --git-common-dir)"
   mkdir -p "${common_dir}/evander"
   exec 8>"${common_dir}/evander/submission.lock"
   flock --exclusive 8
+  # Reuse the blob directly: -F applies stripspace and changes Markdown
+  # hard breaks, blank lines, and other meaningful summary whitespace.
+  summary_blob="$(git hash-object -w -- "${summary_file}")" || die "Could not store summary."
   BRANCH_SYNC_REF="${NOTES_SYNC_REF}-branch"
   while (( attempt <= 4 )); do
     ERROR_CODE="head_moved"
@@ -346,9 +349,9 @@ atomic_publish() {
     if [[ -n "${notes_old}" ]]; then
       git fetch --no-tags "${remote}" "+${notes_ref}:${NOTES_SYNC_REF}" >/dev/null 2>&1 || die "Could not fetch notes."
       notes_old="$(git rev-parse "${NOTES_SYNC_REF}")"
-      remote_note="$(git notes --ref="${NOTES_SYNC_REF}" show "${sha}" 2>/dev/null || true)"
+      remote_note="$(git notes --ref="${NOTES_SYNC_REF}" list "${sha}" 2>/dev/null || true)"
     fi
-    if (( attempt > 1 )) && [[ "${remote_note}" != "${initial_note}" && "${remote_note}" != "$(cat "${summary_file}")" ]]; then
+    if (( attempt > 1 )) && [[ "${remote_note}" != "${initial_note}" && "${remote_note}" != "${summary_blob}" ]]; then
       ERROR_CODE="summary_conflict"; die "Concurrent summary update."
     fi
     if [[ -n "${notes_old}" ]]; then
@@ -359,8 +362,8 @@ atomic_publish() {
       fi
     fi
     if (( attempt == 1 )); then initial_note="${remote_note}"; fi
-    if [[ "$(git notes --ref="${notes_ref}" show "${sha}" 2>/dev/null || true)" != "$(cat "${summary_file}")" ]]; then
-      git notes --ref="${notes_ref}" add -f -F "${summary_file}" "${sha}" >/dev/null || die "Could not attach summary."
+    if [[ "$(git notes --ref="${notes_ref}" list "${sha}" 2>/dev/null || true)" != "${summary_blob}" ]]; then
+      git notes --ref="${notes_ref}" add -f -C "${summary_blob}" "${sha}" >/dev/null || die "Could not attach summary."
     fi
     note_object="$(git rev-parse "${notes_ref}")"
     if [[ "${branch_old}" == "${sha}" && "${notes_old}" == "${note_object}" ]]; then
@@ -390,7 +393,7 @@ structured_main() {
 import base64, json, pathlib, sys
 request = json.loads(base64.b64decode(sys.argv[1], validate=True))
 pathlib.Path(sys.argv[2]).write_text(json.dumps(request))
-pathlib.Path(sys.argv[3]).write_text(request["summary_markdown"].strip())
+pathlib.Path(sys.argv[3]).write_text(request["summary_markdown"])
 PY
   local -a fields
   mapfile -d '' -t fields < <(python3 - "${request_file}" <<'PY'
