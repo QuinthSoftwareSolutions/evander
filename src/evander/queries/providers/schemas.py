@@ -4,6 +4,11 @@ from typing import Literal
 
 from pydantic import field_validator, model_validator
 from evander.classification.models import EvaluationRequest, Question
+from evander.codex_auth import (
+    normalize_subscription_profile_id,
+    normalize_subscription_quota_limit_id,
+    normalize_subscription_quota_window_minutes,
+)
 
 from evander.events.models import ConfigValue, QueryDefinition
 
@@ -97,6 +102,36 @@ class SessionListQueryDefinition(QueryDefinition):
         if value is None or isinstance(value, (str, list, dict)):
             return value
         raise ValueError("query:session:list metadata_exists must be a string, array, or object")
+
+
+class CodexSubscriptionQuotaQueryDefinition(QueryDefinition):
+    type: Literal["query:codex:subscription-quota"]
+    profile_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    limit_id: ConfigValue = "codex"
+    window_duration_minutes: ConfigValue = 10080
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_quota_directory(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("directory_path must be a string")
+        return value.strip() or None
+
+    @field_validator("profile_id", "limit_id", "window_duration_minutes")
+    @classmethod
+    def validate_quota_selector(cls, value: ConfigValue, info) -> ConfigValue:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        if info.field_name == "window_duration_minutes":
+            return normalize_subscription_quota_window_minutes(value)
+        if info.field_name == "limit_id":
+            return normalize_subscription_quota_limit_id(value)
+        if not isinstance(value, str):
+            raise ValueError("profile_id must be a subscription profile slug")
+        return normalize_subscription_profile_id(value, allow_none=False)
 
 
 class ModelUsageListQueryDefinition(QueryDefinition):
