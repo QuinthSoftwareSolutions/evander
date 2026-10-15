@@ -78,12 +78,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             context, payload, directory_path=directory_path
         )
         if execution_backend == "libvirt_vm":
-            return self._execute_libvirt(
+            result = self._execute_libvirt(
                 payload,
                 execution_backend=execution_backend,
                 git_author_identity=git_author_identity,
                 git_committer_identity=git_committer_identity,
             )
+            return self._with_submission_checkout(result, payload)
         if execution_backend != "container_worker_vm":
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
 
@@ -254,7 +255,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                         + ", ".join(cleanup_failures)
                     )
             raise
-        return {
+        result = {
             "success": True,
             "message": (
                 f"Cloned repo into container worker session {session_id}"
@@ -283,6 +284,27 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
+        return self._with_submission_checkout(result, payload)
+
+    def _with_submission_checkout(self, result, payload):
+        register = getattr(self._context().admin_service, "register_git_submission_checkout", None)
+        if (
+            callable(register)
+            and result.get("success")
+            and result.get("target_dir", "").startswith("/home/agent/")
+            and normalize_git_access_mode(payload.get("git_access_mode")) == "write"
+            and normalize_git_access_lifetime(payload.get("git_access_lifetime")) == "session"
+        ):
+            checkout_id = register(
+                session_id=result["session_id"],
+                managed_repo_id=result["managed_repo_id"],
+                guest_path=result["target_dir"],
+                repository_name=result.get("guest_repo_name"),
+                base_branch=payload.get("clone_branch"),
+            )
+            if checkout_id:
+                result["checkout_id"] = checkout_id
+        return result
 
     def _rollback_container_git_access(
         self,

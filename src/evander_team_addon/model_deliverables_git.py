@@ -756,6 +756,7 @@ class DependencyCompositionRecovery(TeamModel):
 
 class GitWorkContext(TeamModel):
     id: str
+    checkout_id: str | None = None
     agent_id: str
     task_id: str
     agent_branch: str

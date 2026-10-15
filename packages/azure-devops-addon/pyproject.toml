@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Optional Azure DevOps integration and issue-to-merge workflows for Evander."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["evander>=0.90.0", "httpx>=0.28.1", "cryptography>=43.0.0"]
+dependencies = ["evander>=0.94.0", "httpx>=0.28.1", "cryptography>=43.0.0"]
 
 [project.entry-points."evander.addons"]
 azure_devops = "evander_azure_devops_addon:register_addon"

@@ -150,6 +150,8 @@ class AddonRegistration:
     requires_gateway_restart: bool = False
     required_restart_services: Sequence[str] = field(default_factory=tuple)
     security_scan_providers: Mapping[str, Any] = field(default_factory=dict)
+    # Optional owners validate their checkout's current lifecycle without core imports.
+    git_submission_validator: Callable[[AddonContext, Mapping[str, Any]], bool] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
@@ -157,6 +159,8 @@ class AddonRegistration:
         if not display_name:
             raise ValueError("display_name must be a non-empty string")
         object.__setattr__(self, "display_name", display_name)
+        if self.git_submission_validator is not None and not callable(self.git_submission_validator):
+            raise ValueError("git_submission_validator must be callable")
         if type(self.requires_gateway_restart) is not bool:
             raise ValueError("requires_gateway_restart must be a boolean")
         if (

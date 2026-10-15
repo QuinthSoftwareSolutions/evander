@@ -229,7 +229,17 @@ def _build_trigger_events(
                         payload=payload,
                     )
                 )
-    return events
+    # Atomic branch+notes transactions already have the summary available when
+    # the branch event is consumed. Keep notes-only publications distinct.
+    branch_updates = {
+        (event.trigger_id, event.payload.get("branch_name"), event.payload.get("commit_hash"))
+        for event in events if not event.payload.get("note_target_commit_hash")
+    }
+    return [event for event in events if not (
+        event.payload.get("note_target_commit_hash") and
+        (event.trigger_id, event.payload.get("branch_name"), event.payload.get("commit_hash"))
+        in branch_updates
+    )]
 
 
 def _publish_sqlite_events(database_path: Path, events: list[TriggerEvent]) -> int:

@@ -434,3 +434,28 @@ Team queries can reuse a proven indexed ancestor without granting arbitrary comm
 access: responses identify the source and requested commits and exclude changed paths.
 Guest commits/pushes and Team preparation do not trigger compiler indexing.
 See [Repository indexing](repository-indexing.md) for access controls and portable exports.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions that already have writable managed-Git access. The tool accepts an exact `expected_commit_sha` and a complete `summary_markdown` (up to 32 KiB of UTF-8 text); `managed_repo_id` and `checkout_id` select a prepared checkout when needed. Clone and Team preparation results expose opaque checkout IDs. Ambiguous selection returns the eligible IDs without executing Git. A tool grant never upgrades read-only repository access.
+
+The platform executes submission inside the session VM or container, retains ancestry and namespace checks, publishes the pinned commit and summary atomically, and verifies the managed ref and note before returning a receipt. Repeat the same request after a lost reply; unchanged verified submissions do not create another push. Staging, committing, conflict resolution, and upstream destination selection remain separate operations.
+
+Summary text is stored verbatim, preserving Markdown indentation, hard line breaks, blank lines, and line endings. The 32 KiB limit measures the supplied UTF-8 text.
+
+The receipt includes `managed_repo_id`, `checkout_id`, `commit_sha`, logical `agent_branch`, full `agent_ref`, `notes_ref`, and `changed`. Failures include a stable `code` and recovery message. `checkout_ambiguous` also returns eligible checkout IDs and repository names, without guest paths.
+
+| Failure code | Recovery |
+| --- | --- |
+| `head_moved`, `branch_mismatch` | Inspect the prepared checkout and submit its intended branch and exact current commit. |
+| `checkout_unavailable`, `git_access_unavailable` | Reconcile clone or task preparation through the control plane. |
+| `insufficient_access` | Restore the required tool and writable repository grants through normal session policy. |
+| `ancestry_blocked`, `non_fast_forward` | Integrate the required history, resolve conflicts, and commit before resubmitting. |
+| `summary_conflict` | Review the concurrent summary before submitting a replacement. |
+| `submission_busy`, `concurrent_update`, `transport_failure` | Retry the same SHA and complete summary; a lost response may follow an accepted push. |
+
+Submissions never commit, merge, reset files, or resolve conflicts automatically. Policy and approval denials use the gateway's existing handling and audit records.
+
+Standard coding workflows grant this capability and express delivery intent without shell helper recipes. Custom workflows should grant the tool and use normal managed clone or Team worktree preparation; existing sessions retain CLI support until reconciled. `git push-agent`, `git agent-pr-note`, and `git sync-base` remain supported compatibility commands. Git carries source code; MCP carries submission metadata.
+
+Checkout bindings and verified retry receipts live in `runtime/git-submissions.db`. Bindings are scoped to the caller and current Git grant; Team bindings also validate live task ownership and preparation generation. The database belongs with runtime backups. Deploying this feature does not rewrite live operator workflows; migrate those through the revision-checked editor.

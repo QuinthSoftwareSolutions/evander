@@ -3167,3 +3167,9 @@ Their remote operations require the separately installed `evander-azure-devops-a
 package, with `azure-devops` present in an explicit enabled-add-on list. Personal ADO
 connection files and OAuth environment variables retain their existing locations and
 names. [Package setup and starter reference](../packages/azure-devops-addon/README.md).
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

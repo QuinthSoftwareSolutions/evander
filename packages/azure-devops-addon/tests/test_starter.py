@@ -8,7 +8,7 @@ from evander.addons import AddonLoaderConfig
 from evander.admin.composition import build_admin_runtime
 from evander.config import OrchestrationCoreConfig
 from evander.daemons.effect_orchestrator import _build_execution_graph
-from evander.models import SessionManifest
+from evander.models import SessionManifest, ToolName
 from evander.workflow.graph import compute_downstream_depth
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
@@ -46,7 +46,7 @@ def admin(tmp_path, monkeypatch):
         SessionManifest(
             session_id="coder",
             vm_id="vm-coder",
-            allowed_tools=[],
+            allowed_tools=[ToolName.SUBMIT_GIT_CHANGES],
             metadata={
                 "managed_git_access_grants": {
                     "mr_demo": {
@@ -95,7 +95,7 @@ def test_starter_previews_and_installs_editable_workflow_without_expanding_permi
     assert document.graphs[0].directory_path == "root"
     serialized = json.dumps(preview["pack"])
     assert "fixture-work-items" not in serialized and "fixture-pull-requests" not in serialized
-    assert service.runtime.session_repository.get_session("coder").allowed_tools == []
+    assert service.runtime.session_repository.get_session("coder").allowed_tools == [ToolName.SUBMIT_GIT_CHANGES]
     nodes = {node["node"]["id"]: node["node"] for node in preview["pack"]["ir"]["nodes"]}
     assert (
         nodes["starter-selected-issue-ours"]["config"]["when"]["all"][1]["equals"]
@@ -127,6 +127,11 @@ def test_starter_refuses_a_repository_not_cloned_into_the_selected_agent(admin):
 def test_starter_rejects_read_only_repository_access_without_granting_write(admin):
     service, _ = admin
     session = service.runtime.session_repository.get_session("coder")
+    service.runtime.session_repository.upsert_session(session.model_copy(update={"allowed_tools": []}))
+    with pytest.raises(ValueError, match="Grant submit_git_changes"):
+        service.workflow_starter_admin.preview("azure-devops/issue-to-merge", "root", values())
+    assert service.runtime.session_repository.get_session("coder").allowed_tools == []
+    assert service.runtime.session_repository.get_session("coder").metadata == session.metadata
     metadata = {
         "managed_git_access_grants": {
             "mr_demo": {"managed_repo_id": "mr_demo", "access_mode": "read-only"}

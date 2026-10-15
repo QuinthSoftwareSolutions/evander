@@ -188,6 +188,8 @@ class VmAgentGitAccessMixin:
         )
         managed_git = self._deps.managed_git_admin
         if managed_git is not None:
+            from evander.git_submissions import GitSubmissionStore
+            GitSubmissionStore(managed_git.runtime_dir).retire_repository(session.session_id, repo_id)
             managed_git.unbind(
                 repo_id,
                 kind="authorized_sessions",
