@@ -26,6 +26,10 @@ operator-owned JSON file of approved Codex runtime profiles. A profile specifies
 `command_prefix`, `codex_path`, and `max_processes` (default 12, range 1–64).
 Only explicitly selected brokered-runtime jobs use these profiles. They retain
 the session's selected subscription profile and existing restricted egress.
+Real subscription tokens stay on the worker. A per-job Unix HTTP relay validates
+upstream endpoints and selected-account routing before attaching credentials;
+native Codex uses a local TLS adapter with a nonfunctional placeholder token.
+The relay and adapter need no additional host TCP listener or firewall port.
 
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 

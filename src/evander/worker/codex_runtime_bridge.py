@@ -1,4 +1,4 @@
-"""Job-scoped Codex transport. Authentication exists only in the native process.
+"""Job-scoped Codex transport. Subscription credentials remain on the worker.
 
 The socket is mounted exclusively into its owning container. It neither exposes
 tokens nor accepts host commands, profiles, image names or container selectors.
@@ -20,7 +20,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_app_server import CodexAppServerProcess
-from .codex_runtime_policy import verify_runtime_requirements
+from .codex_runtime_http import CodexRuntimeHttpRelay, placeholder_tokens
+from .codex_runtime_policy import RUNTIME_PROVIDER_ID, verify_runtime_requirements
 
 
 class CodexRuntimeProfile(BaseModel):
@@ -247,13 +248,20 @@ class CodexRuntimeBridge:
         command_factory,
         tokens,
         refresh_tokens,
+        http_client,
         max_processes=12,
         process_factory=CodexAppServerProcess,
     ):
         self.path = path
         self.command_factory = command_factory
-        self.tokens = tokens
-        self.refresh_tokens = refresh_tokens
+        self.native_tokens = placeholder_tokens(tokens)
+        self.http_relay = CodexRuntimeHttpRelay(
+            path=path.with_name("models.sock"),
+            tokens=tokens,
+            refresh_tokens=refresh_tokens,
+            client=http_client,
+            max_connections=max_processes,
+        )
         self.process_factory = process_factory
         self.closed = threading.Event()
         self.capacity = threading.BoundedSemaphore(max_processes)
@@ -269,10 +277,16 @@ class CodexRuntimeBridge:
         self.path.chmod(0o666)  # Reachable only through the job's private bind mount.
         self.listener.listen(16)
         self.listener.settimeout(0.5)
+        try:
+            self.http_relay.start()
+        except BaseException:
+            self.close()
+            raise
         threading.Thread(target=self._accept, name="codex-runtime-broker", daemon=True).start()
 
     def close(self):
         self.closed.set()
+        self.http_relay.close()
         if self.listener:
             self.listener.close()
         with self.lock:
@@ -379,18 +393,10 @@ class CodexRuntimeBridge:
                     terminal.update(params.get("turn", {}))
                     done.set()
 
-            bound = self.tokens.account_id
-            credentials = [self.tokens]
-
             def refresh(params):
-                value = self.refresh_tokens(
-                    previous_access_token=credentials[0].access_token,
-                    previous_account_id=params.get("previousAccountId"),
-                )
-                if value.account_id != bound:
+                if params.get("previousAccountId") not in {None, self.native_tokens.account_id}:
                     raise ValueError("Subscription account changed during runtime execution")
-                credentials[0] = value
-                return value.refresh_response()
+                return self.native_tokens.refresh_response()
 
             process = self.process_factory(
                 self.command_factory(env, overrides),
@@ -400,7 +406,7 @@ class CodexRuntimeBridge:
             )
             process.start()
             verify_runtime_requirements(process.request("configRequirements/read", {}))
-            process.request("account/login/start", self.tokens.app_server_login_params())
+            process.request("account/login/start", self.native_tokens.app_server_login_params())
             if mode == "app-server":
                 while line := reader.readline(16 * 1024 * 1024 + 1):
                     if len(line) > 16 * 1024 * 1024:
@@ -433,7 +439,7 @@ class CodexRuntimeBridge:
                         "cwd": cwd,
                         "approvalPolicy": "never",
                         "config": config,
-                        "modelProvider": "openai",
+                        "modelProvider": RUNTIME_PROVIDER_ID,
                         **(
                             {"permissions": config["default_permissions"]}
                             if config.get("default_permissions")

@@ -665,9 +665,12 @@ class WorkerDaemon(GitWorkspaceOperations):
             command_builder = getattr(
                 self.container_runtime, "codex_runtime_app_server_command", None
             )
+            http_client_factory = getattr(self.container_runtime, "codex_runtime_http_client", None)
+            http_client = None
             try:
-                if not callable(command_builder):
+                if not callable(command_builder) or not callable(http_client_factory):
                     raise RuntimeError("Container runtime does not support brokered Codex runtimes")
+                http_client = http_client_factory()
                 bridge = CodexRuntimeBridge(
                     path=paths.root / "codex-runtimes" / job_id / "broker.sock",
                     command_factory=lambda env, overrides: command_builder(
@@ -677,12 +680,15 @@ class WorkerDaemon(GitWorkspaceOperations):
                     refresh_tokens=lambda **kwargs: self.codex_auth_profiles.refresh_tokens(
                         profile_id, **kwargs
                     ),
+                    http_client=http_client,
                     max_processes=runtime_profile.max_processes,
                 )
                 self._codex_runtime_bridges[job_id] = bridge
                 bridge.start()
             except Exception:
                 self._shutdown_codex_subscription_runner(job_id)
+                if http_client is not None:
+                    http_client.close()
                 try:
                     self.container_runtime.stop_job(record)
                 finally:

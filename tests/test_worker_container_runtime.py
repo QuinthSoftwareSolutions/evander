@@ -76,7 +76,7 @@ def test_brokered_native_environment_does_not_inherit_authentication_routes(tmp_
     assert "LD_LIBRARY_PATH=" in command[:start]
     assert "LD_AUDIT=" in command[:start]
     assert "CODEX_HOME=/home/agent/scan-home" in command[start:]
-    assert 'chatgpt_base_url="https://chatgpt.com/backend-api/"' in command
+    assert "/usr/bin/python3" in command
     assert 'cli_auth_credentials_store="ephemeral"' in command
 
 

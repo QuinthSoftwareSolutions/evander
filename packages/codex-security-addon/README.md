@@ -39,11 +39,15 @@ the worker's restricted Codex egress proxy, and account access must already work
 
 API scans use the session's existing model relay. Subscription scans use a
 job-scoped Unix socket and the selected worker profile; neither access nor refresh
-tokens are written into the session. The same broker authenticates deep-scan
+tokens enter the container or native Codex process. A worker-owned HTTP relay
+attaches credentials only to approved upstream requests, preserves the selected
+account's routing constraints, and refreshes that same profile on the worker.
+Native Codex receives a nonfunctional placeholder through a local TLS adapter.
+The same broker authenticates deep-scan
 children. A missing runtime or profile is an error, without an API-billing fallback.
 The scanner requires compatible Codex native permission-profile and managed
 authentication-policy support. Worker jobs mount a read-only policy at
-`/etc/codex` and verify it before supplying a subscription token. The broker
+`/etc/codex` and verify it before supplying the placeholder. The broker
 accepts scan CLI options and read-only SDK preflight calls; arbitrary app-server
 commands and client-selected authentication routes are rejected. Scan permission
 profiles, resume state and the private `CODEX_HOME` remain available.
@@ -97,8 +101,9 @@ including standard, deep, and two-commit diff targets. Confirm sealed output,
 archive retrieval, original HEAD/index preservation, and timeout cleanup. A
 synthetic provider or protocol test does not establish live model access.
 
-The core opt-in native policy test uses fake credentials and a rejecting local
-proxy, with no model turns. Run it on Linux with `bwrap` installed:
+The core opt-in native tests use synthetic account discovery, model metadata and
+streaming responses in an isolated network namespace. They cover preflight,
+execution and resume without live model requests. Run them on Linux with `bwrap` installed:
 
 ```sh
 EVANDER_TEST_NATIVE_CODEX=/absolute/path/to/codex \

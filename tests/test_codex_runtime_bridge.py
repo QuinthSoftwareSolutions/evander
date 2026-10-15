@@ -2,6 +2,7 @@ import json
 import socket
 import time
 
+import httpx
 import pytest
 
 from evander.codex_auth import CodexRuntimeSpec
@@ -14,6 +15,12 @@ from evander.worker.codex_runtime_bridge import (
 )
 from evander.worker.codex_runtime_policy import RUNTIME_REQUIRED_VALUES
 from evander.worker.models import WorkerJobRequest
+
+
+def unused_http_client():
+    return httpx.Client(
+        transport=httpx.MockTransport(lambda request: pytest.fail("Unexpected upstream request"))
+    )
 
 
 def test_runtime_request_does_not_allow_alternate_host_paths_or_environment():
@@ -120,6 +127,7 @@ def test_broker_emits_sdk_events_but_keeps_tokens_on_native_side(tmp_path):
         command_factory=lambda env, args: ["native"],
         tokens=tokens,
         refresh_tokens=lambda **kwargs: tokens,
+        http_client=unused_http_client(),
         process_factory=factory,
     )
     bridge.start()
@@ -149,7 +157,9 @@ def test_broker_emits_sdk_events_but_keeps_tokens_on_native_side(tmp_path):
         login = next(
             params for method, params in native[0].calls if method == "account/login/start"
         )
-        assert login["accessToken"] == "private-test-token"
+        assert login["chatgptAccountId"] == "account-1"
+        assert login["accessToken"] != "private-test-token"
+        assert "private-test-token" not in json.dumps(native[0].calls)
     finally:
         bridge.close()
 
@@ -168,6 +178,7 @@ def test_runtime_preflight_cannot_read_or_replace_credentials(tmp_path):
         command_factory=lambda env, args: [],
         tokens=tokens,
         refresh_tokens=lambda **kwargs: tokens,
+        http_client=unused_http_client(),
         process_factory=factory,
     )
     bridge.start()
@@ -207,15 +218,18 @@ def test_job_wire_contract_forbids_two_authentication_modes():
 
 
 @pytest.mark.parametrize("same_account", [True, False])
-def test_runtime_refresh_is_pinned_to_selected_account(tmp_path, same_account):
+def test_native_refresh_returns_only_placeholder_and_keeps_account_pin(tmp_path, same_account):
     refreshes = []
     initial = CodexExternalAuthTokens("initial-private-token", "account-1", None)
+    replies = []
 
     class RefreshingNative(NativeProcess):
         def request(self, method, params):
             if method == "thread/start":
-                self.handlers["account/chatgptAuthTokens/refresh"](
-                    {"previousAccountId": "account-1"}
+                replies.append(
+                    self.handlers["account/chatgptAuthTokens/refresh"](
+                        {"previousAccountId": "account-1" if same_account else "other-account"}
+                    )
                 )
             return super().request(method, params)
 
@@ -230,6 +244,7 @@ def test_runtime_refresh_is_pinned_to_selected_account(tmp_path, same_account):
         command_factory=lambda env, args: ["native"],
         tokens=initial,
         refresh_tokens=refresh,
+        http_client=unused_http_client(),
         process_factory=RefreshingNative,
     )
     bridge.start()
@@ -247,9 +262,11 @@ def test_runtime_refresh_is_pinned_to_selected_account(tmp_path, same_account):
                     if "exit_code" in frames[-1]:
                         break
         assert frames[-1]["exit_code"] == (0 if same_account else 1)
-        assert refreshes == [
-            {"previous_access_token": "initial-private-token", "previous_account_id": "account-1"}
-        ]
+        assert refreshes == []
+        if same_account:
+            assert replies[0]["chatgptAccountId"] == "account-1"
+            assert replies[0]["accessToken"] == bridge.native_tokens.access_token
+        assert "private-token" not in json.dumps(replies)
         assert "private-token" not in json.dumps(frames)
     finally:
         bridge.close()
@@ -261,6 +278,7 @@ def test_runtime_bounds_clients_before_they_supply_a_command(tmp_path):
         command_factory=lambda env, args: ["native"],
         tokens=CodexExternalAuthTokens("test-token", "account-1", None),
         refresh_tokens=lambda **kwargs: None,
+        http_client=unused_http_client(),
         max_processes=1,
         process_factory=NativeProcess,
     )
@@ -310,6 +328,7 @@ def broker(tmp_path):
         command_factory=lambda env, args: ["native", *args],
         tokens=tokens,
         refresh_tokens=lambda **kwargs: tokens,
+        http_client=unused_http_client(),
         process_factory=factory,
     )
     bridge.start()

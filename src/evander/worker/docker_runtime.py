@@ -14,9 +14,12 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
+
 from evander.codex_auth import CodexTurnSpec
 
-from .codex_runtime_policy import RUNTIME_CONFIG_OVERRIDES, RUNTIME_REQUIREMENTS_TOML
+from .codex_runtime_policy import RUNTIME_CONFIG_OVERRIDES, prepare_runtime_policy
+from .codex_runtime_transport import transport_source
 from .codex_subscription import (
     CODEX_COMPLETION_MARKER_CONTAINER_DIR,
     CODEX_COMPLETION_MARKER_HOST_DIRNAME,
@@ -563,8 +566,7 @@ class DockerContainerRuntime:
             ensure_resolved_path_within(
                 base=policy, candidate=requirements, description="Codex requirements"
             )
-            requirements.write_text(RUNTIME_REQUIREMENTS_TOML)
-            requirements.chmod(0o644)
+            prepare_runtime_policy(policy)
             args.extend(
                 [
                     "-v",
@@ -636,8 +638,6 @@ class DockerContainerRuntime:
             "-i",
             "HOME=/home/agent",
             "PATH=/opt/evander/codex-security:/home/agent/bin:/usr/local/bin:/usr/bin:/bin",
-            f"HTTPS_PROXY={self.codex_egress_proxy_url}",
-            f"HTTP_PROXY={self.codex_egress_proxy_url}",
             "NO_PROXY=",
             "EVANDER_CODEX_BROKER_SOCKET=/run/evander/codex-runtime/broker.sock",
         ]
@@ -645,6 +645,9 @@ class DockerContainerRuntime:
             command.append(f"{key}={value}")
         args = [
             *command,
+            "/usr/bin/python3",
+            "-c",
+            transport_source(),
             codex_path,
             "app-server",
             "--stdio",
@@ -652,6 +655,18 @@ class DockerContainerRuntime:
         for override in [*overrides, *RUNTIME_CONFIG_OVERRIDES]:
             args.extend(["--config", override])
         return args
+
+    def codex_runtime_http_client(self):
+        if not self.codex_egress_proxy_url:
+            raise ValueError("Brokered Codex runtimes require a restricted egress proxy")
+        # Keep installation privacy checks and destination restrictions on the
+        # existing proxy. Container certificates/environment never affect TLS here.
+        return httpx.Client(
+            proxy=self.codex_egress_proxy_url,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx.Timeout(120, connect=15),
+        )
 
     def _session_read_only_mounts(self, paths: WorkerSessionPaths) -> tuple[WorkerReadOnlyMount, ...]:
         """Pin host-selected toolchain paths across all jobs in a session."""

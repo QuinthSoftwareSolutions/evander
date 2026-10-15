@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from evander.codex_auth import CodexRuntimeSpec
@@ -23,6 +24,11 @@ class Runtime:
     def codex_runtime_app_server_command(self, *args):
         return ["native-codex", "app-server", "--stdio"]
 
+    def codex_runtime_http_client(self):
+        return httpx.Client(
+            transport=httpx.MockTransport(lambda request: pytest.fail("Unexpected upstream"))
+        )
+
 
 class Bridge:
     def __init__(self, **kwargs):
@@ -39,7 +45,7 @@ class Bridge:
 @pytest.fixture
 def worker(tmp_path, monkeypatch):
     monkeypatch.setattr("evander.worker.service.CodexRuntimeBridge", Bridge)
-    tokens = CodexExternalAuthTokens("only-native-process-receives-this", "account", "plan")
+    tokens = CodexExternalAuthTokens("worker-only-subscription-token", "account", "plan")
     selected = []
     broker = SimpleNamespace(external_tokens=lambda: tokens)
     registry = SimpleNamespace(
@@ -80,10 +86,10 @@ def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_to
     assert len(runtime.started) == 1
     assert selected == ["review"]
     assert runtime.started[0].command == ["scanner", "run"]
-    assert "only-native-process" not in record.model_dump_json()
-    assert "only-native-process" not in runtime.started[0].model_dump_json()
+    assert "worker-only-subscription-token" not in record.model_dump_json()
+    assert "worker-only-subscription-token" not in runtime.started[0].model_dump_json()
     bridge = instance._codex_runtime_bridges[record.job_id]
-    assert bridge.kwargs["tokens"].access_token == "only-native-process-receives-this"
+    assert bridge.kwargs["tokens"].access_token == "worker-only-subscription-token"
 
 
 def test_runtime_rejects_unregistered_profiles_and_wrong_executables(worker):
