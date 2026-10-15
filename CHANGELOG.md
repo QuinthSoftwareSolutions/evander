@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-15 - Reuse deployment artifacts and report timings (0.92.1)
+
+- Make Codex and Claude runner archive fingerprints portable between build agents,
+  verify archive checksums before reuse, and expose fingerprints for pipeline caches.
+- Add optional Ansible task and role timing reports without recording task results
+  or changing validation, service restarts, or runtime migration behavior.
+- Remove the duplicate Ansible systemd preflight; the installer retains its own
+  preflight before changing units.
+
 ## 2026-10-15 - Repository security scan workflows (0.92.0)
 
 - Add a provider-neutral repository security scan effect with required session

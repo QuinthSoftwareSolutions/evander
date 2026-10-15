@@ -1093,6 +1093,11 @@ def test_ansible_systemd_install_passes_service_profile() -> None:
 
     assert "EVANDER_SERVICE_PROFILE" in text
     assert "{{ evander_service_profile }}" in text
+    # The executable owns preflight. An extra Ansible invocation repeats every check.
+    tasks = yaml.safe_load(text)
+    assert [task["ansible.builtin.command"]["cmd"] for task in tasks] == [
+        "./scripts/install_systemd_units.sh"
+    ]
 
 
 def test_ansible_verification_checks_nexus_package_cache() -> None:

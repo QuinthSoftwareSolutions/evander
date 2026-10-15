@@ -3,7 +3,7 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: build_evander_claude_runner_image.sh [--force]
+Usage: build_evander_claude_runner_image.sh [--force] [--cache-key]
 
 Build the repo-local Claude evander runner image and save it as a Docker tarball.
 The script writes a sidecar manifest next to the tarball and reuses the cached
@@ -14,6 +14,7 @@ part of the rebuild.
 
 Flags:
   --force                  Force a rebuild even when the manifest matches.
+  --cache-key              Print the portable input fingerprint without building.
 
 Environment:
   HOST_CLAUDE_BIN          Host Claude Code executable. Default: command -v claude
@@ -37,6 +38,7 @@ EOF
 }
 
 FORCE_REBUILD=0
+PRINT_CACHE_KEY=0
 for arg in "$@"; do
   case "${arg}" in
     -h|--help)
@@ -45,6 +47,9 @@ for arg in "$@"; do
       ;;
     --force)
       FORCE_REBUILD=1
+      ;;
+    --cache-key)
+      PRINT_CACHE_KEY=1
       ;;
     *)
       echo "Unknown argument: ${arg}" >&2
@@ -56,6 +61,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/lib/runner_archive_cache.sh
+source "${SCRIPT_DIR}/lib/runner_archive_cache.sh"
 
 HOST_CLAUDE_BIN="${HOST_CLAUDE_BIN:-}"
 if [[ -z "${HOST_CLAUDE_BIN}" ]]; then
@@ -105,28 +112,30 @@ append_manifest_line() {
 }
 
 manifest_lines=()
+append_manifest_line "manifest_version" "2"
 append_manifest_line "runner_image_name" "${RUNNER_IMAGE_NAME}"
-append_manifest_line "runner_archive_path" "${RUNNER_ARCHIVE_PATH}"
-append_manifest_line "runner_manifest_path" "${RUNNER_MANIFEST_PATH}"
 append_manifest_line "dockerfile_sha256" "$(hash_file "${DOCKERFILE_PATH}")"
 append_manifest_line "build_script_sha256" "$(hash_file "${BUILD_SCRIPT_PATH}")"
+append_manifest_line "cache_helper_sha256" "$(hash_file "${SCRIPT_DIR}/lib/runner_archive_cache.sh")"
 append_manifest_line "base_dockerfile_sha256" "$(hash_file "${BASE_DOCKERFILE_PATH}")"
 append_manifest_line "base_build_script_sha256" "$(hash_file "${BASE_BUILD_SCRIPT_PATH}")"
 append_manifest_line "runner_base_image" "${RUNNER_BASE_IMAGE}"
 append_manifest_line "runner_os_base_image" "${RUNNER_OS_BASE_IMAGE}"
-append_manifest_line "claude_bin_realpath" "${RESOLVED_CLAUDE_BIN}"
 append_manifest_line "claude_bin_sha256" "$(hash_file "${RESOLVED_CLAUDE_BIN}")"
 append_manifest_line "dockerfile_from_line" "$(grep -m1 '^FROM[[:space:]]' "${DOCKERFILE_PATH}")"
 
 manifest_payload="$(printf '%s\n' "${manifest_lines[@]}")"
 manifest_digest="$(printf '%s' "${manifest_payload}" | sha256sum | awk '{print $1}')"
 
-if [[ "${FORCE_REBUILD}" -eq 0 && -s "${RUNNER_ARCHIVE_PATH}" && -s "${RUNNER_MANIFEST_PATH}" ]]; then
-  existing_manifest_digest="$(sed -n 's/^manifest_sha256=//p' "${RUNNER_MANIFEST_PATH}" | head -n1)"
-  if [[ "${existing_manifest_digest}" == "${manifest_digest}" ]]; then
-    echo "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}"
-    exit 0
-  fi
+if [[ "${PRINT_CACHE_KEY}" -eq 1 ]]; then
+  printf '%s\n' "${manifest_digest}"
+  exit 0
+fi
+
+if [[ "${FORCE_REBUILD}" -eq 0 ]] && runner_archive_cache_matches \
+    "${RUNNER_ARCHIVE_PATH}" "${RUNNER_MANIFEST_PATH}" "${manifest_digest}"; then
+  echo "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}"
+  exit 0
 fi
 
 if ! command -v "${DOCKER}" >/dev/null 2>&1; then
@@ -179,6 +188,7 @@ mkdir -p "$(dirname "${RUNNER_MANIFEST_PATH}")"
 MANIFEST_TMP_PATH="$(mktemp "$(dirname "${RUNNER_MANIFEST_PATH}")/.runner-manifest.XXXXXX")"
 {
   printf 'manifest_sha256=%s\n' "${manifest_digest}"
+  printf 'archive_sha256=%s\n' "$(hash_file "${RUNNER_ARCHIVE_PATH}")"
   printf '%s\n' "${manifest_lines[@]}"
 } > "${MANIFEST_TMP_PATH}"
 mv -f "${MANIFEST_TMP_PATH}" "${RUNNER_MANIFEST_PATH}"
