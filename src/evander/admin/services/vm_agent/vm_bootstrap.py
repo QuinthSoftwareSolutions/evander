@@ -165,10 +165,19 @@ class VmAgentBootstrapMixin:
                 message=f"Failed to clone repo into VM {resolved_vm_name}: {exc}",
             )
 
+        checkout_id = None
+        if vm_user == "agent" and normalized_access_mode == "write" and normalized_access_lifetime == "session":
+            from evander.git_submissions import GitSubmissionStore
+            checkout_id = GitSubmissionStore(self.config.runtime_dir).register(
+                session_id=resolved_session_id, managed_repo_id=normalized_managed_repo_id,
+                guest_path=guest_repo_root, repository_name=resolved_repo_name,
+                base_branch=clone_branch,
+            )
         return VmActionResult(
             success=True,
             vm_name=resolved_vm_name,
             action="clone_repo_into_vm",
+            checkout_id=checkout_id,
             message=f"Cloned repo into {resolved_vm_name}",
             target_dir=guest_repo_root,
             guest_repo_name=resolved_repo_name,

@@ -4823,8 +4823,9 @@ def test_submit_deliverable_for_review_rejects_agent_sha_that_is_not_branch_tip(
     assert result["correction_context"]["commit_sha"] == supplied_commit
     assert result["correction_context"]["expected_commit_sha"] == authoritative_commit
     assert result["correction_context"]["required_action"] == (
-        "publish_candidate_with_git_push_agent_then_retry"
+        "submit_git_changes_then_retry"
     )
+    assert result["correction_context"]["publish_tool"] == "submit_git_changes"
     assert result["correction_context"]["publish_command"] == "git push-agent"
     assert resolver_calls == [
         {

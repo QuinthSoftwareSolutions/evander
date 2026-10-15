@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.admin.services.git_submission_service import GitSubmissionService
+
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
 from evander.admin.services.classification_admin_service import ClassificationAdminService
 from evander.admin.services.privacy_service import PrivacyAdminService
@@ -289,6 +291,7 @@ class AdminRuntimeComponents:
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
     managed_git_admin: ManagedGitAdminService
+    git_submission_admin: GitSubmissionService
     repository_index_admin: RepositoryIndexService
     ado_user_connections: AdoUserConnectionService
     managed_git_maintenance: ManagedGitMaintenanceService
@@ -494,6 +497,54 @@ def _build_admin_runtime_components(
         resolve_directory=normalize_directory_reference,
     )
     ado_user_connections = managed_git_admin.ado_user_connections
+
+    def execute_git_submission(session, command, working_directory):
+        from evander.effects.providers.agent_exec import AgentExecEffectProvider
+        from evander.effects.providers.base import EffectRuntimeContext
+        from evander.events.provider_models import AgentExecEffectDefinition
+        from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+
+        provider = AgentExecEffectProvider()
+        provider.initialize(
+            AgentExecEffectDefinition(
+                id="submit-git-changes",
+                type="effect:agent:exec",
+                display_name="Submit committed Git work",
+                session_id=session.session_id,
+                command=command,
+                working_directory=working_directory,
+                timeout_seconds=120,
+                check=False,
+            ),
+            EffectRuntimeContext(
+                provider_config=runtime.provider_config.resolve_for_directory(
+                    session.directory_path
+                ).model_dump(mode="json"),
+                provider_config_resolver=runtime.provider_config,
+                admin_service=AdminRuntimeProviderAdapter(components),
+                metadata={"directory_path": session.directory_path},
+            ),
+        )
+        return provider.execute()
+
+    git_submission_admin = GitSubmissionService(
+        runtime,
+        managed_git_admin,
+        project_dir,
+        execute=execute_git_submission,
+        validators={
+            addon.addon_id: lambda binding, addon=addon: addon.git_submission_validator(
+                AddonContext(
+                    addon_id=addon.addon_id,
+                    runtime_dir=config.runtime_dir,
+                    addon_runtime_dir=addon_runtime_dir(config.runtime_dir, addon.addon_id),
+                ),
+                binding,
+            )
+            for addon in addon_catalog.registrations
+            if addon.git_submission_validator is not None
+        },
+    )
     from evander.code_index.semantic import IndexSemantic
     from evander.queries.providers.base import QueryRuntimeContext
 
@@ -926,6 +977,7 @@ def _build_admin_runtime_components(
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
         managed_git_admin=managed_git_admin,
+        git_submission_admin=git_submission_admin,
         repository_index_admin=repository_index_admin,
         ado_user_connections=ado_user_connections,
         managed_git_maintenance=managed_git_maintenance,

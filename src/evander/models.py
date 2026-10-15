@@ -165,6 +165,7 @@ class ToolName(str, Enum):
     CANCEL_CODEBASE_CONSULTATION = "cancel_codebase_consultation"
     SUBMIT_CODEBASE_CONSULTATION_RESULT = "submit_codebase_consultation_result"
     PREPARE_REFERENCE_REPOSITORY = "prepare_reference_repository"
+    SUBMIT_GIT_CHANGES = "submit_git_changes"
     RUN_SCRIPT = "run_script"
     GET_WORKFLOW_SNAPSHOT = "get_workflow_snapshot"
     SEMANTIC_UPSERT_TEXT = "semantic_upsert_text"
@@ -1097,6 +1098,7 @@ class VmActionResult(BaseModel):
     target_dir: str | None = None
     guest_repo_name: str | None = None
     remote_url: str | None = None
+    checkout_id: str | None = None
 
 
 class AgentPromptQueueRecord(BaseModel):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-15 - Submit committed work through MCP (0.94.0)
+
+- Add the session-scoped `submit_git_changes` capability for VM and container agents, including complete Markdown summaries, opaque checkout selection, exact-SHA verification, and safe retries.
+- Preserve managed Git write grants and publication policy; publish commit and notes atomically and coalesce their workflow notifications.
+- Make MCP submission the default in coding workflows and Team guidance while retaining the Git helper commands for compatibility.
+
 ## 2026-10-15 - Query Codex subscription quota in workflows (0.93.0)
 
 - Add `query:codex:subscription-quota` to read a named profile's remaining quota,

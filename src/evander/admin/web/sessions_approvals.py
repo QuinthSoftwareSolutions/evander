@@ -319,6 +319,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.PREPARE_REFERENCE_REPOSITORY: (
         "Refresh and prepare one policy-allowed managed repository as a read-only checkout."
     ),
+    ToolName.SUBMIT_GIT_CHANGES: (
+        "Submit an exact committed SHA and Markdown summary to the session's managed Git ref."
+    ),
     ToolName.RUN_SCRIPT: ("Run an approved host-side script on behalf of the session."),
     ToolName.GET_WORKFLOW_SNAPSHOT: (
         "Read the current workflow editor document and optional run snapshot."

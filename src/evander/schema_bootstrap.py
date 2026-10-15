@@ -791,6 +791,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "message": {"type": "string"},
     },
     "effect:vm:clone-repo": {
+        "checkout_id": {"type": ["string", "null"]},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},
         "success": {"type": "boolean"},
@@ -851,6 +852,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "message": {"type": "string"},
     },
     "effect:agent:clone-repo": {
+        "checkout_id": {"type": ["string", "null"]},
         "success": {"type": "boolean"},
         "message": {"type": "string"},
         "session_id": {"type": "string"},

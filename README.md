@@ -1565,3 +1565,9 @@ the same virtualenv before using those providers. Existing configurations and wo
 data migration. The core installation remains usable without it.
 
 Azure DevOps is available as a [separately installed integration](packages/azure-devops-addon/README.md), including the guided issue-to-merge starter.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](docs/git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

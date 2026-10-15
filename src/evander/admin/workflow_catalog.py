@@ -2893,7 +2893,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Use write for git push-agent or read-only for clone, fetch, and pull."
+                    "Use write for committed change submission or read-only for clone, fetch, and pull."
                 ),
             ),
             _field(

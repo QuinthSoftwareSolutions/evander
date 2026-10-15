@@ -337,7 +337,7 @@ def _set_session_team_mcp_tools(
         result["error"] = f"session {normalized_session_id} was not found"
         return result
     allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
-    managed_tools = set(MCP_TOOL_NAMES) | set(_TEAM_CODE_INDEX_TOOL_NAMES)
+    managed_tools = set(MCP_TOOL_NAMES) | set(_TEAM_CODE_INDEX_TOOL_NAMES) | {"submit_git_changes"}
     existing_team_tools = [tool for tool in allowed_values if tool in managed_tools]
     active_scope_tools = _active_team_mcp_tools_for_other_dispatches(
         context,
@@ -345,6 +345,13 @@ def _set_session_team_mcp_tools(
         dispatch_id=normalized_dispatch_id,
     )
     effective_team_tools = _unique_requested_tools([*requested_tools, *active_scope_tools])
+    submissions = getattr(getattr(context, "admin_service", None), "git_submission_admin", None)
+    if submissions is not None and any(tool in ORDINARY_TEAM_MCP_TOOL_NAMES for tool in effective_team_tools):
+        for binding in submissions.store.list(normalized_session_id):
+            if (binding["owner_kind"] == "team-addon" and submissions.resolve(
+                    session, checkout_id=binding["checkout_id"]).get("success")):
+                effective_team_tools.append("submit_git_changes")
+                break
     effective_team_tool_set = set(effective_team_tools)
     preserved_tools: list[str] = []
     seen_preserved: set[str] = set()

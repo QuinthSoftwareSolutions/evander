@@ -1222,3 +1222,9 @@ The catalog does not provision, schedule, load-balance, or autoscale workers, an
 AKS/Kubernetes backend. Each worker needs its own deployment and isolation policy. The daemon
 runs jobs; control-plane workflows retain issue intake, prompt orchestration, and PR publication.
 It does not replace libvirt or provide general secret transport or internet access.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.
