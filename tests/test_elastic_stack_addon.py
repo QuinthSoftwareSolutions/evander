@@ -118,13 +118,39 @@ def test_settings_merge_static_and_session_targets_without_exposing_auth_refs() 
     assert "password_env" not in json.dumps(targets)
 
 
-@pytest.mark.parametrize("pattern", ["*", ".internal-*", "Demo-*", "../events-*"])
-def test_settings_reject_unrestricted_or_invalid_write_index_patterns(pattern: str) -> None:
+@pytest.mark.parametrize("pattern", [".internal-*", "Demo-*", "../events-*"])
+def test_settings_reject_invalid_write_index_patterns(pattern: str) -> None:
     state = _provider_state()
     state["elastic_stack"]["targets"]["static"]["write_index_patterns"] = [pattern]
 
     with pytest.raises(ValueError, match="write_index_patterns"):
         settings_from_provider_state(state)
+
+
+@pytest.mark.parametrize("policy", ["omitted", ["*"], []])
+def test_elasticsearch_default_writes_any_concrete_index_and_explicit_empty_policy_is_read_only(policy):
+    metadata = _session_metadata()
+    target = metadata["elastic_stack"]["targets"]["app-demo"]
+    target.pop("write_index_patterns")
+    if policy != "omitted":
+        target["write_index_patterns"] = policy
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"errors": False, "items": [{"index": {"status": 201}}]})
+    client = ElasticStackClient(settings_from_provider_state(_provider_state(), session_metadata=metadata),
+        secret_resolver=lambda _ref: "synthetic-secret", transport=httpx.MockTransport(handler))
+    for index in ("processfinished", "orderquantitychanged"):
+        if policy == []:
+            with pytest.raises(ElasticStackConfigError, match="does not allow writes"):
+                client.elasticsearch_bulk_index_documents("app-demo", index_name=index, documents=[{"Uuid": "one"}])
+        else:
+            result = client.elasticsearch_bulk_index_documents("app-demo", index_name=index, documents=[{"Uuid": "one"}])
+            assert result["indexed_document_count"] == 1
+    assert len(requests) == (0 if policy == [] else 2)
+    for invalid in ("*", "orders,processes", ".security", "../orders"):
+        with pytest.raises(ValueError, match="concrete lowercase"):
+            client.elasticsearch_bulk_index_documents("app-demo", index_name=invalid, documents=[{"Uuid": "one"}])
 
 
 def test_settings_reject_unknown_profiles_and_unrestricted_origin_patterns() -> None:

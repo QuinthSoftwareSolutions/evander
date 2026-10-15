@@ -154,6 +154,9 @@ from evander.queries.providers.classification_evaluate import ClassificationEval
 from evander.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
 from evander.queries.providers.state_get import StateGetQueryProvider
 from evander.queries.providers.session_context import SessionContextQueryProvider
+from evander.queries.providers.website_session_resolve_profile import (
+    WebsiteSessionResolveProfileQueryProvider,
+)
 from evander.queries.providers.session_list import SessionListQueryProvider
 from evander.queries.providers.vm_run_state import VmRunStateQueryProvider
 from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
@@ -343,6 +346,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:git:merge-base": GitMergeBaseQueryProvider,
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
+            "query:website-session:resolve-profile": WebsiteSessionResolveProfileQueryProvider,
             "query:session:list": SessionListQueryProvider,
             "query:model-usage:list": ModelUsageListQueryProvider,
             "query:codex:subscription-quota": CodexSubscriptionQuotaQueryProvider,

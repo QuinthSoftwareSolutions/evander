@@ -1596,6 +1596,11 @@ _QUERY_OUTPUT_SCHEMAS = {
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
     },
+    "query:website-session:resolve-profile": {
+        "ready": {"type": "boolean"},
+        "profile_id": {"type": ["string", "null"]},
+        "error_code": {"type": ["string", "null"]},
+    },
     "query:artifact-space:list": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},

@@ -8,11 +8,11 @@ import re
 
 from pydantic import ValidationError
 
-from evander.models import AuditEvent
+from evander.models import AuditEvent, DirectoryPath
 from evander.website_credentials import WebsiteCredentialStore, credential_binding
 from evander.website_sessions import (
     ManagedWebsiteSessionProfile, ManagedWebsiteSessionService, WebsiteSessionError,
-    validate_environment_credentials,
+    validate_environment_credentials, website_origin,
 )
 
 
@@ -41,25 +41,58 @@ class WebsiteSessionAdminService:
     def _effective(self, scope):
         return self.resolver.resolve_for_directory(scope).managed_website_sessions
 
+    def _credential_status(self, scope, profile_id, profile):
+        if profile.adapter != "json":
+            return {"configured_fields": [], "managed_by": profile.adapter,
+                    "updated_at": None, "owner_directory": None}
+        if profile.credential_source == "stored":
+            return self.credentials.status(scope, profile_id, profile)
+        try:
+            validate_environment_credentials(scope, profile_id, profile)
+            approved = True
+        except ValueError:
+            approved = False
+        return {"configured_fields": [k for k, env in profile.credential_fields.items()
+                                      if approved and os.environ.get(env)],
+                "updated_at": None, "owner_directory": None}
+
+    def resolve_profile(self, *, directory_path: str, browser_origin: str,
+                        login_origin: str) -> dict:
+        """Resolve configured JSON login metadata without decrypting or using credentials."""
+        scope = DirectoryPath(segments=directory_path).as_posix()
+        if not all(isinstance(value, str) and value.strip() for value in (browser_origin, login_origin)):
+            raise ValueError("Website profile resolution requires HTTPS browser and login origins")
+        browser_origin = website_origin(browser_origin)
+        login_origin = website_origin(login_origin)
+        matches = [(profile_id, profile) for profile_id, profile in self._effective(scope).items()
+                   if profile.enabled and profile.adapter == "json"
+                   and profile.browser_origin == browser_origin]
+
+        def unavailable(code):
+            return {"ready": False, "profile_id": None, "error_code": code}
+
+        if not matches:
+            return unavailable("website_profile_not_found")
+        if len(matches) != 1:
+            return unavailable("website_profile_ambiguous")
+        profile_id, profile = matches[0]
+        if website_origin(profile.login_url) != login_origin:
+            return unavailable("website_login_origin_mismatch")
+        try:
+            configured = set(self._credential_status(scope, profile_id, profile)["configured_fields"])
+        except Exception:
+            # Vault/storage failures must not publish exception details into workflow history.
+            return unavailable("website_credentials_unavailable")
+        if configured != set(profile.credential_fields):
+            return unavailable("website_credentials_missing")
+        return {"ready": True, "profile_id": profile_id, "error_code": None}
+
     def snapshot(self, scope: str) -> dict:
         overlay = self._overlay(scope)
         profiles = []
         for profile_id, profile in sorted(self._effective(scope).items()):
             payload = profile.model_dump(mode="json")
-            if profile.adapter != "json":
-                status = {"configured_fields": [], "managed_by": profile.adapter,
-                          "updated_at": None, "owner_directory": None}
-            elif profile.credential_source == "stored":
-                status = self.credentials.status(scope, profile_id, profile)
-            else:
-                try:
-                    validate_environment_credentials(scope, profile_id, profile)
-                    approved = True
-                except ValueError:
-                    approved = False
-                status = {"configured_fields": [k for k, env in profile.credential_fields.items()
-                                                if approved and os.environ.get(env)],
-                          "updated_at": None, "owner_directory": None}
+            status = self._credential_status(scope, profile_id, profile)
             profiles.append({"id": profile_id, "profile": payload,
                              "local": profile_id in (overlay.get("managed_website_sessions") or {}),
                              "credentials": status,

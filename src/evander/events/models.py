@@ -722,6 +722,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:git:merge-base": provider_models.GitMergeBaseQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
+        "query:website-session:resolve-profile": provider_models.WebsiteSessionResolveProfileQueryDefinition,
         "query:session:list": provider_models.SessionListQueryDefinition,
         "query:model-usage:list": provider_models.ModelUsageListQueryDefinition,
         "query:codex:subscription-quota": provider_models.CodexSubscriptionQuotaQueryDefinition,

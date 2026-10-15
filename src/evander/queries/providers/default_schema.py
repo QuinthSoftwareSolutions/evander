@@ -35,6 +35,7 @@ from evander.queries.providers.schemas import (
     SemanticSearchQueryDefinition,
     SemanticStoreStatusQueryDefinition,
     SessionContextQueryDefinition,
+    WebsiteSessionResolveProfileQueryDefinition,
     SessionListQueryDefinition,
     VmRunStateQueryDefinition,
 )
@@ -58,6 +59,7 @@ _QUERY_MODEL_BY_TYPE = {
     "query:git:merge-base": GitMergeBaseQueryDefinition,
     "query:git:pr-note": GitPrNoteQueryDefinition,
     "query:session-context": SessionContextQueryDefinition,
+    "query:website-session:resolve-profile": WebsiteSessionResolveProfileQueryDefinition,
     "query:session:list": SessionListQueryDefinition,
     "query:model-usage:list": ModelUsageListQueryDefinition,
     "query:codex:subscription-quota": CodexSubscriptionQuotaQueryDefinition,

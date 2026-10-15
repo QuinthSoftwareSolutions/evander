@@ -58,6 +58,24 @@ class SessionContextQueryDefinition(QueryDefinition):
         return self
 
 
+class WebsiteSessionResolveProfileQueryDefinition(QueryDefinition):
+    type: Literal["query:website-session:resolve-profile"]
+    browser_origin: str
+    login_origin: str
+    directory_path: str | None = None
+
+    @field_validator("browser_origin", "login_origin")
+    @classmethod
+    def validate_origin(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 4096:
+            raise ValueError("website origin must be a nonempty HTTPS URL or binding")
+        if "${{" in value:
+            return value
+        from evander.website_sessions import website_origin
+        return website_origin(value)
+
+
 class StateGetQueryDefinition(QueryDefinition):
     type: Literal["query:state:get"]
     namespace: ConfigValue

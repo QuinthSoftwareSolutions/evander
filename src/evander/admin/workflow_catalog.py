@@ -904,6 +904,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "List Azure DevOps work items linked to a pull request, including normalized assignees."
     ),
     "query:session-context": "Read session context and metadata.",
+    "query:website-session:resolve-profile": (
+        "Resolve one configured JSON website login by exact browser and login origins. "
+        "Reports configuration readiness without authenticating or exposing credentials."
+    ),
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
     "query:model-usage:list": (
@@ -4612,6 +4616,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:website-session:resolve-profile",
+        label="Resolve website login profile",
+        fields=[
+            _field("browser_origin", "Website origin", "string", required=True, bindable=True),
+            _field("login_origin", "Login API origin", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

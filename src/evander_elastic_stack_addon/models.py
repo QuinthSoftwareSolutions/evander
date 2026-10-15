@@ -148,7 +148,7 @@ class ElasticStackEndpoint(BaseModel):
 class ElasticStackTarget(BaseModel):
     kibana: ElasticStackEndpoint | None = None
     elasticsearch: ElasticStackEndpoint | None = None
-    write_index_patterns: list[str] = Field(default_factory=list)
+    write_index_patterns: list[str] = Field(default_factory=lambda: ["*"])
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("write_index_patterns", mode="before")
@@ -163,9 +163,9 @@ class ElasticStackTarget(BaseModel):
         result: list[str] = []
         for item in value:
             pattern = str(item or "").strip()
-            if pattern == "*" or not _WRITE_INDEX_PATTERN.fullmatch(pattern):
+            if pattern != "*" and not _WRITE_INDEX_PATTERN.fullmatch(pattern):
                 raise ValueError(
-                    "write_index_patterns entries must be restricted lowercase index patterns"
+                    "write_index_patterns entries must be lowercase index patterns or *"
                 )
             result.append(pattern)
         return list(dict.fromkeys(result))

@@ -1388,6 +1388,17 @@ def test_workflow_catalog_query_codex_subscription_quota(catalog_payload) -> Non
     assert fields["window_duration_minutes"]["default_value"] == 10080
 
 
+def test_workflow_catalog_resolve_website_login_fields(catalog_payload) -> None:
+    node = next(node for node in catalog_payload["nodes"]
+                if node["type"] == "query:website-session:resolve-profile")
+    fields = {field["key"]: field for field in node["fields"]}
+    assert set(fields) == {"browser_origin", "login_origin", "directory_path"}
+    assert fields["browser_origin"]["required"] is True
+    assert fields["login_origin"]["required"] is True
+    assert fields["directory_path"]["required"] is False
+    assert all(field["bindable"] and field["kind"] == "string" for field in fields.values())
+
+
 def test_workflow_catalog_query_model_usage_list(catalog_payload) -> None:
     model_usage_list = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:model-usage:list"

@@ -443,6 +443,14 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def resolve_website_session_profile(self, **kwargs: Any) -> Any:
+        service = getattr(self._admin_runtime, "website_session_admin", None)
+        return self._call_required(
+            self._delegate_method("resolve_profile", service),
+            "resolve_website_session_profile",
+            **kwargs,
+        )
+
     def list_model_usage_events(self, **kwargs: Any) -> Any:
         lister = self._model_usage_events_lister()
         if lister is None:
