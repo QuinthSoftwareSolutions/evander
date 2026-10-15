@@ -228,6 +228,7 @@ export function ChatLauncher({
       try {
         const session = await startOrGetChatSession();
         if (cancelled) return;
+        setThreadId(session.thread_id);
         setMode(session.assistant_capability_mode);
         setAssistantSession(session.assistant_session);
 
@@ -235,16 +236,15 @@ export function ChatLauncher({
           limit: CHAT_TRANSCRIPT_PAGE_SIZE,
         });
         if (cancelled) return;
-        setThreadId(session.thread_id);
         if (window.localStorage.getItem(UI_KEY) === "expanded") requestChatScrollToBottom();
-        setVisibleMessages(transcript.messages);
+        setVisibleMessages(mergeMessages(transcript.messages, messagesRef.current));
         setHasOlderMessages(Boolean(transcript.has_older));
         setMode(transcript.assistant_capability_mode);
         setAssistantSession(transcript.assistant_session);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : "Failed to load assistant");
-        setState("error");
+        setState((current) => current === "expanded" ? current : "error");
       } finally {
         if (!cancelled) setLoadingSession(false);
       }

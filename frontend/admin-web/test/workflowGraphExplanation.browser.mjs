@@ -9,7 +9,7 @@ import { browserHookTimeout, browserTestTimeout, listeningAddress, suiteBrowser,
 const browser = suiteBrowser();
 const json = (payload, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(payload) });
 
-async function editor(t, { writable = false, mobile = false, assistantEnabled = true, delaySession = false } = {}) {
+async function editor(t, { writable = false, mobile = false, assistantEnabled = true, delaySession = false, failInitialTranscript = false } = {}) {
   const server = await createServer({
     root: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
     server: { host: "127.0.0.1", port: 0 }, logLevel: "error",
@@ -34,6 +34,7 @@ async function editor(t, { writable = false, mobile = false, assistantEnabled = 
   t.after(releaseSession);
   if (!delaySession) releaseSession();
   let failMessage = false;
+  const chatActivity = { sessions: 0, transcripts: 0, streams: 0 };
   const config = {
     triggers: [
       { id: "entry", display_name: "Incoming request", type: "trigger:event", config: { event_type: "demo.requested", enabled: false } },
@@ -82,11 +83,21 @@ async function editor(t, { writable = false, mobile = false, assistantEnabled = 
       return route.fulfill(json({ valid: true, config: body.config, layout: body.layout, graphs: body.graphs, diagnostics: [], output_schemas: {} }));
     }
     if (name === "/api/chat/session") {
+      chatActivity.sessions += 1;
       await sessionReady;
       return route.fulfill(json({ user_id: "viewer", ...transcript() }));
     }
-    if (name === "/api/chat/transcript/thread-1") return route.fulfill(json(transcript()));
-    if (name === "/api/chat/stream/thread-1") return route.fulfill({ contentType: "text/event-stream", body: ": keepalive\n\n" });
+    if (name === "/api/chat/transcript/thread-1") {
+      chatActivity.transcripts += 1;
+      if (failInitialTranscript && chatActivity.transcripts === 1) {
+        return route.fulfill(json({ error: "Transient transcript failure" }, 503));
+      }
+      return route.fulfill(json(transcript()));
+    }
+    if (name === "/api/chat/stream/thread-1") {
+      chatActivity.streams += 1;
+      return route.fulfill({ contentType: "text/event-stream", body: `event: snapshot\ndata: ${JSON.stringify(transcript())}\n\n` });
+    }
     if (name === "/api/chat/message") {
       const body = request.postDataJSON();
       requests.push(body);
@@ -106,7 +117,7 @@ async function editor(t, { writable = false, mobile = false, assistantEnabled = 
     await page.getByRole("button", { name: "Graphs", exact: true }).filter({ visible: true }).click();
     await page.getByRole("button", { name: `${name} ${name === "Request workflow" ? "2 nodes" : "1 node"}`, exact: true }).click();
   }
-  return { page, requests, mutations, selectGraph, releaseSession, setFailure: (value) => { failMessage = value; } };
+  return { page, requests, mutations, selectGraph, releaseSession, chatActivity, setFailure: (value) => { failMessage = value; } };
 }
 
 async function screenshot(page, name) {
@@ -178,4 +189,28 @@ test("viewers can select a graph and see why explanation is unavailable when the
   assert.equal(await page.getByRole("button", { name: "Explain graph", exact: true }).isDisabled(), true);
   await page.getByText("The built-in assistant is disabled.", { exact: true }).waitFor();
   assert.equal(requests.length, 0);
+});
+
+test("a failed initial transcript preserves the conversation and pending graph explanation", { timeout: browserTestTimeout }, async (t) => {
+  const { page, requests, mutations, selectGraph, releaseSession, chatActivity } = await editor(t, {
+    delaySession: true, failInitialTranscript: true,
+  });
+  await selectGraph();
+  await page.getByRole("button", { name: "Explain graph", exact: true }).click();
+  const assistant = page.getByRole("region", { name: "Admin assistant" });
+  await assistant.waitFor();
+  releaseSession();
+  await assistant.getByText("This graph handles incoming requests and records their result.", { exact: true }).waitFor();
+  assert.equal(requests.length, 1, "the pending explanation must be submitted once after transcript failure");
+  assert.equal(requests[0].thread_id, "thread-1");
+  await assistant.getByText("Earlier conversation", { exact: true }).waitFor();
+  await assistant.getByLabel("Chat message").fill("Continue this conversation");
+  assert.equal(await assistant.getByRole("button", { name: "Send", exact: true }).isDisabled(), false);
+  await assistant.getByRole("button", { name: "Send", exact: true }).click();
+  await assistant.getByText("Continue this conversation", { exact: true }).waitFor();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].thread_id, "thread-1");
+  assert.equal(chatActivity.sessions, 1, "recovery must retain the existing chat session");
+  assert.ok(chatActivity.streams >= 1, "the existing thread must resume streaming");
+  assert.deepEqual(mutations, []);
 });

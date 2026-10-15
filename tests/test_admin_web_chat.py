@@ -549,7 +549,28 @@ def test_chat_context_is_redacted_for_assistant_and_kept_out_of_visible_transcri
         json={
             "thread_id": thread_id,
             "content": "Explain this graph",
-            "context": {"event_type": "demo.requested", "nested": [{"apiKey": "synthetic-secret"}]},
+            "context": {
+                "event_type": "demo.requested",
+                "config": {
+                    "prompt": "Prepare a draft response for the request.",
+                    "body_text": "A request was received.",
+                    "body": {"message": "Request received", "apiKey": "synthetic-body-key"},
+                    "parameters": {
+                        "cycle_id": "${{ request.cycle_id }}",
+                        "attempts": 2,
+                        "clientSecret": "synthetic-parameter-secret",
+                    },
+                    "connectionString": "Password=synthetic-connection",
+                    "headers": {"X-Custom": "synthetic-header"},
+                    "environment": {"PRIVATE_VALUE": "synthetic-env"},
+                    "endpoint": (
+                        "https://synthetic-user:synthetic-pass@example.test/tasks"
+                        "?value=synthetic-query#synthetic-fragment"
+                    ),
+                    "auth_instructions": "Use Bearer synthetic-bearer",
+                    "nested": [{"apiKey": "synthetic-secret", "pat": "synthetic-pat"}],
+                },
+            },
         },
     )
     assert response.status_code == 200
@@ -557,8 +578,22 @@ def test_chat_context_is_redacted_for_assistant_and_kept_out_of_visible_transcri
     published = service.published_chat_events[-1]
     assert published["content"].startswith("Explain this graph\n\n")
     assert "demo.requested" in published["content"]
-    assert "synthetic-secret" not in published["content"]
-    assert "[REDACTED]" in published["content"]
+    published_context = json.loads(published["content"].split("\n")[-1])
+    config = published_context["config"]
+    assert config["prompt"] == "Prepare a draft response for the request."
+    assert config["body_text"] == "A request was received."
+    assert config["body"]["message"] == "Request received"
+    assert config["parameters"]["cycle_id"] == "${{ request.cycle_id }}"
+    assert config["parameters"]["attempts"] == 2
+    assert config["auth_instructions"] == "Use Bearer [REDACTED]"
+    assert config["body"]["apiKey"] == "[REDACTED]"
+    assert config["parameters"]["clientSecret"] == "[REDACTED]"
+    assert config["connectionString"] == "[REDACTED]"
+    assert config["headers"] == "[REDACTED]"
+    assert config["environment"] == "[REDACTED]"
+    assert config["nested"] == [{"apiKey": "[REDACTED]", "pat": "[REDACTED]"}]
+    assert "example.test/tasks" in config["endpoint"]
+    assert "synthetic-" not in published["content"]
     assert published["assistant_capability_mode"] == "read-only"
     transcript = client.get(f"/api/chat/transcript/{thread_id}").json()
     assert [message["content"] for message in transcript["messages"]] == ["Explain this graph"]

@@ -5,7 +5,10 @@
 - Add **Explain graph** to the workflow editor's graph details on desktop and mobile.
   Open the built-in assistant and request an explanation of the selected graph's
   current nodes, routes, bindings, and effects, including unsaved node changes.
-- Redact sensitive configuration fields before handing graph context to the assistant.
+- Redact credentials before handing graph context to the assistant while retaining
+  workflow prompts, message bodies, and parameter mappings needed for explanations.
+- Retain the assistant conversation and pending graph explanation when the initial
+  transcript request fails, and recover through the existing chat stream.
 - Allow graph selection and explanation with workflow read access, retain existing
   chat history and message drafts, and show when the assistant is disabled.
 
