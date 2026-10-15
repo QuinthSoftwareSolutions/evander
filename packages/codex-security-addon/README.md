@@ -72,6 +72,9 @@ its first parent; an initial commit reviews its complete tree. Supplying both
 reviews their direct diff. Hashes must resolve locally; the scanner does not fetch
 credentials or missing commits. Dirty and untracked work remains untouched and is
 excluded. Empty diffs complete without calling a model.
+Committed scans accept the native `diff`, `commit`, and `branch_diff` coverage
+modes only when the sealed Git diff target matches the exact requested base and
+head revisions. Repository and working-tree coverage cannot satisfy that range.
 
 `mode: deep` is available only when both commit fields are absent. It uses Codex
 Security's bounded independent scans; the node timeout and session expiry apply
