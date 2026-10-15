@@ -6,6 +6,16 @@
 - Expose the query and its output contract in the workflow editor so workflows can validate access before binding the selected profile and dispatching an agent. Existing exact-origin profiles and encrypted credential bindings remain unchanged.
 - Allow writes to any concrete ordinary Elasticsearch index by default. Explicit index patterns and empty read-only policies remain supported, with existing request and document limits.
 
+## 2026-10-15 - Apply RabbitMQ fixture vhost limits (0.95.3)
+
+- Publish Test Fixtures add-on 0.1.2 with the supported `--vhost` argument for RabbitMQ limits, allowing healthy fixture brokers to finish provisioning.
+- Add an opt-in native broker regression covering queue limits, AMQP traffic, pause/stop recovery, reset and repeated cleanup with a pre-seeded image.
+
+## 2026-10-15 - Recognize absent Docker fixture networks (0.95.2)
+
+- Publish Test Fixtures add-on 0.1.1 with support for Docker's `network <name> not found` inspection response, allowing first allocation and cleanup of partially provisioned bundles.
+- Preserve daemon health checks and reject unrelated inspection errors.
+
 ## 2026-10-15 - Reduce scanner image build disk usage (0.95.1)
 
 - Support streamed gzip scanner image archives and release build staging before export, while preserving verified cache reuse and the previous archive on failure.

@@ -78,5 +78,18 @@ PYTHONPATH=src:packages/test-fixtures-addon timeout 180 .venv/bin/pytest -q pack
 The optional [real-service smoke](tests/test_live_services.py) runs inside an
 explicitly provisioned disposable worker job. Unit tests use synthetic adapters
 and do not provision remote resources.
+The [native broker regression](tests/test_live_broker.py) additionally creates
+randomly named local Docker resources using an explicitly selected, pre-seeded
+RabbitMQ digest. Install this project's `dev` extras, ensure Docker, IPv4
+iptables and host access to internal bridge addresses are available, then run:
+
+```bash
+EVANDER_TEST_FIXTURES_RABBITMQ_IMAGE='rabbitmq@sha256:<approved-digest>' \
+  PYTHONPATH=src:packages/test-fixtures-addon timeout -k 20s 240s \
+  .venv/bin/pytest -q packages/test-fixtures-addon/tests/test_live_broker.py
+```
+
+The test covers native provisioning, queue limits, AMQP round trips, pause/stop
+recovery, reset and repeated cleanup. It never pulls an image or publishes ports.
 Operator UI behavior regressions use Node.js 18 or later when available, with
 its built-in test runner and no npm dependencies.
