@@ -187,6 +187,57 @@ def test_tampered_sealed_findings_are_rejected(sealed_report):
         runner.canonical_result(root, plugin, {"mode": "standard"})
 
 
+@pytest.fixture
+def sealed_diff_report(sealed_report, repo):
+    """Build committed coverage using the pinned producer's sealed contract."""
+    root, plugin, reports = sealed_report
+    _, base, head = repo
+    runner.write_json(root / "target.json", {"from_commit": base, "to_commit": head})
+
+    def configure(mode="branch_diff", *, reported_base=None, reported_head=None):
+        coverage = runner.read_json(reports / "coverage.json")
+        coverage.update(mode=mode, inventoryStrategy="diff")
+        runner.write_json(reports / "coverage.json", coverage)
+        manifest = runner.read_json(reports / "scan-manifest.json")
+        target = manifest["scan"]["target"]
+        target.pop("revision", None)
+        target.update(
+            kind="git_diff", baseRevision=reported_base or base, headRevision=reported_head or head
+        )
+        for artifact in manifest["scan"]["artifacts"]:
+            if artifact["path"] == "coverage.json":
+                artifact["sha256"] = hashlib.sha256(
+                    (reports / "coverage.json").read_bytes()
+                ).hexdigest()
+        runner.write_json(reports / "scan-manifest.json", manifest)
+        return root, plugin, base, head
+
+    return configure
+
+
+@pytest.mark.parametrize("mode", ["diff", "commit", "branch_diff"])
+def test_sealed_committed_diff_accepts_native_coverage_modes(sealed_diff_report, mode):
+    root, plugin, base, head = sealed_diff_report(mode)
+    result = runner.canonical_result(root, plugin, {"mode": "standard"})
+    assert result["status"] == "completed" and result["coverage"] == "complete"
+    assert result["from_commit"] == base and result["to_commit"] == head
+    assert result["severity_counts"]["high"] == 1
+
+
+@pytest.mark.parametrize("mode", ["repository", "working_tree"])
+def test_committed_diff_rejects_other_coverage_modes(sealed_diff_report, mode):
+    root, plugin, _, _ = sealed_diff_report(mode)
+    with pytest.raises(ValueError, match="Expected committed diff coverage"):
+        runner.canonical_result(root, plugin, {"mode": "standard"})
+
+
+@pytest.mark.parametrize("field", ["reported_base", "reported_head"])
+def test_committed_diff_rejects_incorrect_sealed_bounds(sealed_diff_report, field):
+    root, plugin, _, _ = sealed_diff_report(**{field: "a" * 40})
+    with pytest.raises(ValueError, match="does not match the requested commits"):
+        runner.canonical_result(root, plugin, {"mode": "standard"})
+
+
 def test_cancel_stops_only_the_matching_scan_process_group(repo):
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
