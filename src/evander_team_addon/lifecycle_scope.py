@@ -24,6 +24,7 @@ from evander.repositories.sqlite_runtime import storage_lock
 from .models import TeamDispatchActivity, TeamOutboxRecord, TeamState
 from .lifecycle_sql import (
     ACTION_CREATED_ORDER,
+    DISPATCH_ATTEMPT_KEY,
     DISPATCH_ATTEMPT_ORDER,
     DISPATCH_COMPLETED_KEY,
     timestamp_microseconds,
@@ -318,23 +319,61 @@ class TeamLifecycleScope:
             order=DISPATCH_ATTEMPT_ORDER,
             limit=1,
         )
-        # Legacy scoped attempts have no scalar fingerprint. An empty scope
-        # relation proves their absence without walking historical executions.
+        # Start from recorded scope IDs. Header-first EXISTS probes walk every
+        # fingerprint-free historical attempt when another agent has a scope.
         with self._read_connection() as connection:
-            has_legacy_scopes = connection.execute(
-                "SELECT EXISTS(SELECT 1 FROM team_dispatch_inbox) OR EXISTS(SELECT 1 FROM team_dispatch_reviews)"
-            ).fetchone()[0]
-        if has_legacy_scopes:
-            self.query_records(
-                "dispatches",
-                terminal
-                + " AND cause_kind NOT IN ('blocker','context_handoff') AND wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint IS NULL AND ("
-                + "EXISTS(SELECT 1 FROM team_dispatch_inbox i WHERE i.dispatch_id=team_dispatches.id) OR EXISTS(SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id))",
-                (agent_id,),
-                order=DISPATCH_ATTEMPT_ORDER,
-                limit=1,
-            )
+            ids = [
+                row[0]
+                for row in connection.execute(
+                    "WITH scoped(id) AS MATERIALIZED (SELECT dispatch_id FROM team_dispatch_inbox "
+                    "UNION SELECT dispatch_id FROM team_dispatch_reviews) "
+                    "SELECT d.id FROM scoped s CROSS JOIN team_dispatches d ON d.id=s.id WHERE "
+                    + terminal
+                    + " AND cause_kind NOT IN ('blocker','context_handoff') AND wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint IS NULL ORDER BY "
+                    + DISPATCH_ATTEMPT_KEY
+                    + " DESC,d.id DESC LIMIT 1",
+                    (agent_id,),
+                )
+            ]
+        self.dispatches._load(ids)
         return list(dict.values(self.dispatches))
+
+    def cleanup_work_context_records(self):
+        """Discover outstanding physical cleanup, excluding completed history."""
+        records = self.query_records(
+            "git_work_contexts",
+            "worktree_path IS NOT NULL AND NOT EXISTS(SELECT 1 FROM team_worktree_cleanup_candidates c "
+            "WHERE c.git_work_context_id=team_git_work_contexts.id AND c.state IN ('succeeded','superseded'))",
+        )
+        # A cleaned newer generation still suppresses its older siblings. Read
+        # those exact lineages before choosing a generation for physical work.
+        lineages = {
+            (row.agent_id, row.agent_branch, row.worktree_path)
+            for row in records
+            if row.worktree_path is not None
+        }
+        for agent_id, branch, path in lineages:
+            self.query_records(
+                "git_work_contexts",
+                "agent_id=? AND agent_branch=? AND worktree_path=?",
+                (agent_id, branch, path),
+            )
+        return list(dict.values(self.git_work_contexts))
+
+    def prunable_work_context_records(self, before):
+        # Filter headers before decoding models. Resolved recovery incidents
+        # still hold retained work, so the retention predicate has no state filter.
+        return self.query_records(
+            "git_work_contexts",
+            "state='abandoned' AND " + timestamp_microseconds_sql("updated_at") + "<=? "
+            "AND NOT EXISTS(SELECT 1 FROM team_deliverables d WHERE d.branch_context_id=team_git_work_contexts.id) "
+            "AND (worktree_path IS NULL OR EXISTS(SELECT 1 FROM team_worktree_cleanup_candidates c "
+            "WHERE c.state='succeeded' AND c.task_id=team_git_work_contexts.task_id "
+            "AND c.agent_id=team_git_work_contexts.agent_id AND c.worktree_path=team_git_work_contexts.worktree_path)) "
+            "AND NOT EXISTS(SELECT 1 FROM team_git_recovery_incidents i, json_each(i.payload_json,'$.preserved_context_ids') j "
+            "WHERE json_array_length(i.payload_json,'$.preserved_context_ids')>0 AND j.value=team_git_work_contexts.id)",
+            (timestamp_microseconds(before),),
+        )
 
     def prepare_task_assessment(self):
         # Include historical ancestors, dependencies and children only when
@@ -344,7 +383,36 @@ class TeamLifecycleScope:
             ids = self.repository.task_scope_ids(connection, self)
         self.tasks._load(ids)
 
-    def has_recent_task_or_inbox_activity(self, agent_id, rotated_at):
+    def work_context_pruning_facts(self, contexts):
+        """Read physical cleanup and retention evidence without history models."""
+        cleaned, retained = set(), set()
+        with self._read_connection() as connection:
+            for context in contexts:
+                identity = (context.task_id, context.agent_id, context.worktree_path)
+                if connection.execute(
+                    "SELECT 1 FROM team_worktree_cleanup_candidates WHERE state='succeeded' AND task_id=? AND agent_id=? AND worktree_path=? LIMIT 1",
+                    identity,
+                ).fetchone():
+                    cleaned.add(identity)
+            ids = [context.id for context in contexts]
+            retained.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT j.value FROM team_git_recovery_incidents i, json_each(i.payload_json,'$.preserved_context_ids') j "
+                    "WHERE json_array_length(i.payload_json,'$.preserved_context_ids')>0 AND j.value IN ("
+                    + ",".join("?" for _ in ids)
+                    + ")",
+                    ids,
+                )
+            )
+        for candidate in dict.values(self.worktree_cleanup_candidates):
+            if candidate.state == "succeeded":
+                cleaned.add((candidate.task_id, candidate.agent_id, candidate.worktree_path))
+        for incident in dict.values(self.git_recovery_incidents):
+            retained.update(incident.preserved_context_ids)
+        return cleaned, retained
+
+    def has_recent_lifecycle_activity(self, agent_id, rotated_at):
         cutoff = timestamp_microseconds(rotated_at)
         with self._read_connection() as connection:
             actual = self.repository.base.store._read_revision_from_connection(connection)
@@ -352,26 +420,36 @@ class TeamLifecycleScope:
                 raise TeamStateConflictError(
                     expected_revision=self.original_revision, current_revision=actual
                 )
-            for field, owner in (("tasks", "owner_agent_id"), ("inbox", "recipient_agent_id")):
+            for field, owner, updated in (
+                ("tasks", "owner_agent_id", "updated_at"),
+                ("inbox", "recipient_agent_id", "updated_at"),
+                ("review_requests", "reviewer_agent_id", "decision_at"),
+                ("ephemeral_assignments", "parent_agent_id", "updated_at"),
+            ):
                 records = getattr(self, field)
                 for record in dict.values(records):
                     if (
                         getattr(record, owner) == agent_id
                         and max(
-                            timestamp_microseconds(record.created_at),
-                            timestamp_microseconds(record.updated_at),
+                            (
+                                timestamp_microseconds(value)
+                                for value in (record.created_at, getattr(record, updated))
+                                if value is not None
+                            ),
+                            default=0,
                         )
                         > cutoff
                     ):
                         return True
                 excluded = sorted(set(self.baseline[field]) | set(dict.keys(records)))
-                key = (
-                    "max("
-                    + timestamp_microseconds_sql("created_at")
-                    + ","
-                    + timestamp_microseconds_sql("updated_at")
-                    + ")"
-                )
+                created_key = timestamp_microseconds_sql("created_at")
+                updated_key = timestamp_microseconds_sql(updated)
+                if field == "review_requests":
+                    created_key, updated_key = (
+                        f"COALESCE({created_key},0)",
+                        f"COALESCE({updated_key},0)",
+                    )
+                key = f"max({created_key},{updated_key})"
                 sql = f"SELECT 1 FROM team_{field} INDEXED BY idx_team_{field}_activity WHERE {owner}=? AND {key}>?"
                 if excluded:
                     sql += " AND id NOT IN (" + ",".join("?" for _ in excluded) + ")"
@@ -634,6 +712,124 @@ class TeamLifecycleRepository:
             return sorted(ids)
         if field == "tasks":
             return self.task_scope_ids(connection, scope)
+        if field in {
+            "human_review_requests",
+            "human_review_findings",
+            "human_review_decisions",
+            "release_verification_runs",
+        }:
+            releases = sorted(
+                set(
+                    self.release_scope_ids(
+                        connection, scope, self.task_scope_ids(connection, scope)
+                    )
+                )
+                | set(dict.keys(scope.release_packages))
+            )
+            marks = ",".join("?" for _ in releases)
+            requests = (
+                "SELECT id FROM team_human_review_requests WHERE release_package_id IN ("
+                + marks
+                + ")"
+            )
+            if field == "human_review_requests":
+                sql = (
+                    "SELECT id FROM team_human_review_requests WHERE state IN ('preparing','pending','blocked') UNION "
+                    + requests
+                )
+            elif field == "human_review_findings":
+                sql = (
+                    "SELECT id FROM team_human_review_findings WHERE state='open' UNION SELECT id FROM team_human_review_findings WHERE source_human_review_request_id IN ("
+                    + requests
+                    + ")"
+                )
+            elif field == "human_review_decisions":
+                sql = (
+                    "SELECT id FROM team_human_review_decisions WHERE human_review_request_id IN ("
+                    + requests
+                    + ")"
+                )
+            else:
+                sql = (
+                    "SELECT id FROM team_release_verification_runs WHERE json_extract(payload_json,'$.release_package_id') IN ("
+                    + marks
+                    + ")"
+                )
+            return [row[0] for row in connection.execute(sql, releases)]
+        if field in {
+            "deliverables",
+            "review_requests",
+            "cases",
+            "release_packages",
+            "git_work_contexts",
+            "git_preparation_attempts",
+            "git_recovery_incidents",
+            "ephemeral_assignments",
+        } and not (field == "cases" and self.purpose == "human_correction"):
+            tasks = self.task_scope_ids(connection, scope)
+            marks = ",".join("?" for _ in tasks)
+            if field == "deliverables":
+                sql = f"SELECT id FROM team_deliverables WHERE task_id IN ({marks})"
+            elif field == "review_requests":
+                sql = (
+                    "SELECT id FROM team_review_requests INDEXED BY idx_team_reviews_operational "
+                    "WHERE state IN ('pending','in_progress','blocked') AND retired_at IS NULL AND superseded_by_review_request_id IS NULL "
+                    f"UNION SELECT r.id FROM team_review_requests r JOIN team_deliverables d ON d.id=r.deliverable_id WHERE d.task_id IN ({marks})"
+                )
+                related = sorted(set(dict.keys(scope.deliverables)))
+                if related:
+                    sql += (
+                        " UNION SELECT id FROM team_review_requests WHERE deliverable_id IN ("
+                        + ",".join("?" for _ in related)
+                        + ")"
+                    )
+                    tasks.extend(related)
+                if self.dispatch_ids:
+                    sql += (
+                        " UNION SELECT review_request_id FROM team_dispatch_reviews WHERE dispatch_id IN ("
+                        + ",".join("?" for _ in self.dispatch_ids)
+                        + ")"
+                    )
+                    tasks.extend(self.dispatch_ids)
+                releases = sorted(dict.keys(scope.release_packages))
+                if releases:
+                    sql += (
+                        " UNION SELECT id FROM team_review_requests WHERE release_package_id IN ("
+                        + ",".join("?" for _ in releases)
+                        + ")"
+                    )
+                    tasks.extend(releases)
+            elif field == "cases":
+                sql = (
+                    "SELECT id FROM team_cases INDEXED BY idx_team_cases_operational WHERE status IN ('open','triage','in_progress','waiting') "
+                    f"UNION SELECT case_id FROM team_tasks WHERE id IN ({marks}) AND case_id IS NOT NULL"
+                )
+            elif field == "release_packages":
+                return self.release_scope_ids(connection, scope, tasks)
+            elif field == "git_work_contexts":
+                sql = (
+                    "SELECT id FROM team_git_work_contexts INDEXED BY idx_team_contexts_active WHERE state='active' "
+                    f"UNION SELECT id FROM team_git_work_contexts WHERE task_id IN ({marks})"
+                )
+            elif field == "git_preparation_attempts":
+                sql = (
+                    "SELECT id FROM team_git_preparation_attempts INDEXED BY idx_team_preparations_operational "
+                    "WHERE state IN ('pending','prepared','cleanup_pending') "
+                    f"UNION SELECT id FROM team_git_preparation_attempts WHERE task_id IN ({marks})"
+                )
+            elif field == "git_recovery_incidents":
+                sql = (
+                    "SELECT id FROM team_git_recovery_incidents INDEXED BY idx_team_recovery_operational "
+                    "WHERE state IN ('diagnosed','preparing','awaiting_review','waiting') "
+                    f"UNION SELECT id FROM team_git_recovery_incidents WHERE task_id IN ({marks})"
+                )
+            else:
+                sql = (
+                    "SELECT id FROM team_ephemeral_assignments INDEXED BY idx_team_ephemeral_operational "
+                    "WHERE state IN ('requested','spawn_pending','running','completed','cleanup_pending') "
+                    f"UNION SELECT id FROM team_ephemeral_assignments WHERE task_id IN ({marks})"
+                )
+            return [row[0] for row in connection.execute(sql, tasks)]
         if field == "cases" and self.purpose == "human_correction":
             where = "source='human_release_review' AND source_ref IN (SELECT h.id FROM team_human_review_requests h "
             where += "JOIN team_release_packages r ON r.id=h.release_package_id WHERE h.state='changes_requested' AND r.state='rejected')"
@@ -641,6 +837,10 @@ class TeamLifecycleRepository:
             where = "state='pending'"
         elif field == "blockers":
             where = "state='open'"
+        elif field == "worktree_cleanup_candidates":
+            where = (
+                "state IN ('pending','processing','operator_action_required','recovery_required')"
+            )
         elif field == "conversation_messages":
             where = "status IN ('queued','dispatching','running','delivered_in_dispatch')"
         elif field == "action_records":
@@ -722,6 +922,11 @@ class TeamLifecycleRepository:
             roots += " AND project_id IN (" + ",".join("?" for _ in scope.project_ids) + ")"
             parameters.extend(scope.project_ids)
         roots += " UNION SELECT task_id FROM team_deliverables INDEXED BY idx_team_deliverables_operational WHERE state IN ('pending','in_progress','blocked') AND superseded_by_deliverable_id IS NULL"
+        roots += " UNION SELECT d.task_id FROM team_review_requests r INDEXED BY idx_team_reviews_operational JOIN team_deliverables d ON d.id=r.deliverable_id WHERE r.state IN ('pending','in_progress','blocked') AND r.retired_at IS NULL AND r.superseded_by_review_request_id IS NULL"
+        roots += " UNION SELECT task_id FROM team_deliverables INDEXED BY idx_team_deliverables_initial_release WHERE state='accepted' AND superseded_by_deliverable_id IS NULL AND json_extract(initial_release_disposition_json,'$.state')='pending' AND NOT EXISTS(SELECT 1 FROM team_release_deliverables r WHERE r.deliverable_id=team_deliverables.id)"
+        roots += " UNION SELECT task_id FROM team_inbox INDEXED BY idx_team_inbox_pending WHERE state='pending' AND task_id IS NOT NULL"
+        roots += " UNION SELECT task_id FROM team_blockers INDEXED BY idx_team_blockers_open WHERE state='open' AND task_id IS NOT NULL"
+        roots += " UNION SELECT t.task_id FROM team_blockers b INDEXED BY idx_team_blockers_open JOIN team_blocker_affected_tasks t ON t.blocker_id=b.id WHERE b.state='open'"
         if self.dispatch_ids:
             roots += (
                 " UNION SELECT task_id FROM team_dispatch_tasks WHERE dispatch_id IN ("
@@ -756,6 +961,21 @@ class TeamLifecycleRepository:
                 parameters,
             )
         ]
+
+    def release_scope_ids(self, connection, scope, task_ids):
+        marks = ",".join("?" for _ in task_ids)
+        sql = (
+            "SELECT id FROM team_release_packages INDEXED BY idx_team_releases_operational WHERE state IN ('pending','in_progress','blocked') "
+            f"UNION SELECT release_base_package_id FROM team_tasks WHERE id IN ({marks}) AND release_base_package_id IS NOT NULL "
+            f"UNION SELECT r.package_id FROM team_deliverables d JOIN team_release_deliverables r ON r.deliverable_id=d.id WHERE d.task_id IN ({marks}) "
+            "UNION SELECT source_id FROM team_blockers INDEXED BY idx_team_blockers_open WHERE state='open' AND source_kind='release_package' "
+            "UNION SELECT r.release_package_id FROM team_blockers b INDEXED BY idx_team_blockers_open JOIN team_review_requests r ON r.id=b.source_id WHERE b.state='open' AND b.source_kind='review_request' AND r.release_package_id IS NOT NULL "
+            "UNION SELECT h.release_package_id FROM team_blockers b INDEXED BY idx_team_blockers_open JOIN team_human_review_requests h ON h.id=b.source_id WHERE b.state='open' AND b.source_kind='human_review_request' "
+            "UNION SELECT h.release_package_id FROM team_human_review_findings f JOIN team_human_review_requests h ON h.id=f.source_human_review_request_id WHERE f.state='open' "
+            "UNION SELECT release_package_id FROM team_human_review_requests WHERE state IN ('preparing','pending','blocked') "
+            "UNION SELECT release_package_id FROM team_review_requests INDEXED BY idx_team_reviews_operational WHERE state IN ('pending','in_progress','blocked') AND retired_at IS NULL AND superseded_by_review_request_id IS NULL AND release_package_id IS NOT NULL"
+        )
+        return [row[0] for row in connection.execute(sql, [*task_ids, *task_ids])]
 
     def update(self, mutator, *, expected_revision=None):
         with self.command_snapshot() as state:

@@ -170,6 +170,9 @@ def record_incident(
 
 
 def preserve_work(state, incident):
+    if hasattr(state, "query_records"):
+        state.query_records("git_preparation_attempts", "task_id=?", (incident.task_id,))
+        state.query_records("git_work_contexts", "task_id=?", (incident.task_id,))
     incident.preserved_attempt_ids = sorted(
         set(incident.preserved_attempt_ids)
         | {
@@ -195,7 +198,40 @@ def preparation_epoch(state, task_id):
 
 
 def preservation_hold(state, *, attempt_id=None, context_id=None, session_id=None):
-    for incident in state.git_recovery_incidents.values():
+    if hasattr(state, "query_records"):
+        attempts, contexts = [attempt_id] if attempt_id else [], [context_id] if context_id else []
+        if session_id:
+            attempts.extend(
+                row.id
+                for row in state.query_records(
+                    "git_preparation_attempts",
+                    "json_extract(payload_json,'$.session_id')=?",
+                    (session_id,),
+                )
+                if row.session_id == session_id
+            )
+            prefix = f"agents/{session_id}/"
+            contexts.extend(
+                row.id
+                for row in state.query_records(
+                    "git_work_contexts",
+                    "agent_branch>=? AND agent_branch<?",
+                    (prefix, prefix[:-1] + "0"),
+                )
+                if row.agent_branch.startswith(prefix)
+            )
+        records = state.query_records(
+            "git_recovery_incidents",
+            "id IN (SELECT i.id FROM team_git_recovery_incidents i INDEXED BY idx_team_recovery_attempt_retention, json_each(i.payload_json,'$.preserved_attempt_ids') j WHERE json_array_length(i.payload_json,'$.preserved_attempt_ids')>0 AND j.value IN ("
+            + ",".join("?" for _ in attempts)
+            + ") UNION SELECT i.id FROM team_git_recovery_incidents i INDEXED BY idx_team_recovery_retention, json_each(i.payload_json,'$.preserved_context_ids') j WHERE json_array_length(i.payload_json,'$.preserved_context_ids')>0 AND j.value IN ("
+            + ",".join("?" for _ in contexts)
+            + "))",
+            [*attempts, *contexts],
+        )
+    else:
+        records = state.git_recovery_incidents.values()
+    for incident in records:
         if attempt_id and attempt_id in incident.preserved_attempt_ids:
             return incident.id
         if context_id and context_id in incident.preserved_context_ids:

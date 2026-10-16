@@ -63,7 +63,11 @@ from .work_lineage import ensure_release_work_lineage
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY = "release_repository_scope"
-_TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
+_TERMINAL_RELEASE_STATES = {
+    TeamRecordState.ACCEPTED,
+    TeamRecordState.REJECTED,
+    TeamRecordState.CANCELLED,
+}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
 _SYSTEM_CORRECTION_TASK_ACTORS = {
     "system:human-review",
@@ -125,10 +129,17 @@ def release_lineage_sequence(state: TeamState, release: ReleasePackage) -> int:
 
 
 def _release_lineage_leaves(state: TeamState, root_id: str) -> list[ReleasePackage]:
+    records = (
+        state.query_records(
+            "release_packages",
+            "id IN (WITH RECURSIVE lineage(id) AS (SELECT id FROM team_release_packages WHERE id=? UNION SELECT r.id FROM team_release_packages r JOIN lineage l ON r.supersedes_release_package_id=l.id) SELECT id FROM lineage)",
+            (root_id,),
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
+    )
     releases = [
-        release
-        for release in state.release_packages.values()
-        if release_lineage_root_id(state, release) == root_id
+        release for release in records if release_lineage_root_id(state, release) == root_id
     ]
     predecessor_ids = {
         release.supersedes_release_package_id
@@ -171,9 +182,18 @@ def _releases_for_exact_task_base(
         return []
     if task.git_base_branch is None or task.git_base_commit_sha is None:
         return []
+    records = (
+        state.query_records(
+            "release_packages",
+            "project_id=? AND lower(candidate_commit_sha)=?",
+            (task.project_id, task.git_base_commit_sha.casefold()),
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
+    )
     return [
         release
-        for release in state.release_packages.values()
+        for release in records
         if release.project_id == task.project_id
         and _release_candidate_branch(release) == task.git_base_branch
         and release.candidate_commit_sha is not None
@@ -271,9 +291,8 @@ def _deliverable_is_bound_to_lineage(
 ) -> bool:
     task = state.tasks.get(deliverable.task_id)
     base = _release_for_exact_task_base(state, task=task) if task is not None else None
-    return (
-        base is not None
-        and release_lineage_root_id(state, base) == release_lineage_root_id(state, predecessor)
+    return base is not None and release_lineage_root_id(state, base) == release_lineage_root_id(
+        state, predecessor
     )
 
 
@@ -1767,8 +1786,15 @@ def _successor_release_request_error(
         )
     requested_correction_set = set(correction_deliverable_ids)
     matching_direct_successor = False
+    successors = (
+        state.query_records(
+            "release_packages", "supersedes_release_package_id=?", (predecessor.id,)
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
+    )
     for successor in sorted(
-        state.release_packages.values(),
+        successors,
         key=lambda item: (item.created_at, item.id),
     ):
         if (
@@ -1976,10 +2002,17 @@ def _matching_direct_successors(
 ) -> list[ReleasePackage]:
     requested_correction_set = set(correction_deliverable_ids)
     predecessor_deliverable_set = set(predecessor.deliverable_ids)
+    successors = (
+        state.query_records(
+            "release_packages", "supersedes_release_package_id=?", (predecessor.id,)
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
+    )
     return sorted(
         (
             successor
-            for successor in state.release_packages.values()
+            for successor in successors
             if successor.supersedes_release_package_id == predecessor.id
             and set(successor.deliverable_ids) - predecessor_deliverable_set
             == requested_correction_set
@@ -2173,18 +2206,14 @@ def _verification_correction_successor_request_error(
             continue
         if deliverable.task_id == correction_task.id:
             continue
-        if (
-            _candidate_correction_downstream_recovery_base(
-                state,
-                predecessor=predecessor,
-                deliverable=deliverable,
-            )
-            is None
-            and not _deliverable_is_bound_to_lineage(
-                state,
-                deliverable=deliverable,
-                predecessor=predecessor,
-            )
+        if _candidate_correction_downstream_recovery_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
+        ) is None and not _deliverable_is_bound_to_lineage(
+            state,
+            deliverable=deliverable,
+            predecessor=predecessor,
         ):
             invalid_ids.append(deliverable_id)
     if invalid_ids:
@@ -2366,13 +2395,24 @@ def _release_packages_for_deliverables(
     deliverable_ids: list[str],
 ) -> list[ReleasePackage]:
     normalized = _normalized_release_deliverable_set(deliverable_ids)
-    records = state.release_packages.values() if not hasattr(state, "query_records") else state.query_records(
-        "release_packages", "project_id=? AND "
-        + ("id IN (SELECT package_id FROM team_release_deliverables WHERE deliverable_id=?) AND " if normalized else "")
-        + "(SELECT COUNT(DISTINCT d.deliverable_id) FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id)=? "
-        + "AND NOT EXISTS(SELECT 1 FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id "
-        + "AND d.deliverable_id NOT IN (" + ",".join("?" for _ in normalized) + "))",
-        (project_id, *((normalized[0],) if normalized else ()), len(normalized), *normalized),
+    records = (
+        state.release_packages.values()
+        if not hasattr(state, "query_records")
+        else state.query_records(
+            "release_packages",
+            "project_id=? AND "
+            + (
+                "id IN (SELECT package_id FROM team_release_deliverables WHERE deliverable_id=?) AND "
+                if normalized
+                else ""
+            )
+            + "(SELECT COUNT(DISTINCT d.deliverable_id) FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id)=? "
+            + "AND NOT EXISTS(SELECT 1 FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id "
+            + "AND d.deliverable_id NOT IN ("
+            + ",".join("?" for _ in normalized)
+            + "))",
+            (project_id, *((normalized[0],) if normalized else ()), len(normalized), *normalized),
+        )
     )
     return [
         release
@@ -2930,9 +2970,7 @@ def reconcile_dependency_composed_release_bases(
             continue
         predecessor_id = release.supersedes_release_package_id
         predecessor = (
-            state.release_packages.get(predecessor_id)
-            if predecessor_id is not None
-            else None
+            state.release_packages.get(predecessor_id) if predecessor_id is not None else None
         )
         if predecessor_id is not None and (
             predecessor is None or not _release_package_requires_recreation(predecessor)
@@ -2977,14 +3015,11 @@ def reconcile_dependency_composed_release_bases(
             if manifest is None:
                 continue
             has_composition_manifest = True
-            immutable_repo_scopes.add(
-                (manifest.managed_repo_id, manifest.directory_path)
-            )
+            immutable_repo_scopes.add((manifest.managed_repo_id, manifest.directory_path))
             context = state.git_work_contexts.get(refs.branch_context_id or "")
             task = state.tasks.get(deliverable.task_id)
-            legacy_branch = (
-                (context.base_branch if context is not None else None)
-                or (task.git_base_branch if task is not None else None)
+            legacy_branch = (context.base_branch if context is not None else None) or (
+                task.git_base_branch if task is not None else None
             )
             legacy_commit = context.base_commit if context is not None else None
             if legacy_branch is None or legacy_commit is None:
@@ -3021,9 +3056,8 @@ def reconcile_dependency_composed_release_bases(
             and release.base_commit_sha == authoritative_commit
             and release.canonical_base_commit_sha == authoritative_commit
         )
-        if (
-            (authoritative_branch, authoritative_commit) == (legacy_branch, legacy_commit)
-            or (not legacy_release_base and not reconciled_release_base)
+        if (authoritative_branch, authoritative_commit) == (legacy_branch, legacy_commit) or (
+            not legacy_release_base and not reconciled_release_base
         ):
             continue
 
@@ -3048,21 +3082,16 @@ def reconcile_dependency_composed_release_bases(
         canonical_retry_candidates: list[GitPromotionRecord] = []
         for promotion_id in list(release.git_promotion_record_ids):
             promotion = state.git_promotions.get(promotion_id)
-            if (
-                promotion is None or promotion.state not in {"pending", "failed"}
-            ):
+            if promotion is None or promotion.state not in {"pending", "failed"}:
                 continue
             if promotion.promotion_kind == "canonical_push":
                 if (
-                    (
-                        promotion.git_base_branch == legacy_branch
-                        and promotion.base_commit_sha == legacy_commit
-                    )
-                    or (
-                        has_schema_71_reconciliation_history
-                        and promotion.git_base_branch == authoritative_branch
-                        and promotion.base_commit_sha == authoritative_commit
-                    )
+                    promotion.git_base_branch == legacy_branch
+                    and promotion.base_commit_sha == legacy_commit
+                ) or (
+                    has_schema_71_reconciliation_history
+                    and promotion.git_base_branch == authoritative_branch
+                    and promotion.base_commit_sha == authoritative_commit
                 ):
                     canonical_retry_candidates.append(promotion)
                 continue
@@ -3137,9 +3166,7 @@ def reconcile_dependency_composed_release_bases(
                 payload=payload,
             )
             result.setdefault("git_promotion_event_ids", []).append(replacement.id)
-            result.setdefault("replacement_canonical_promotion_ids", []).append(
-                replacement.id
-            )
+            result.setdefault("replacement_canonical_promotion_ids", []).append(replacement.id)
             release_changed = True
         changed = changed or release_changed
     return changed

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -34,7 +35,12 @@ def _history(repo, count):
 def _finished_task_history(repo, count, task_id="task"):
     with sqlite3.connect(repo.store.path) as connection:
         connection.row_factory = sqlite3.Row
-        template = dict(connection.execute("SELECT * FROM team_tasks WHERE id=?", (task_id,)).fetchone())
+        template = dict(
+            connection.execute("SELECT * FROM team_tasks WHERE id=?", (task_id,)).fetchone()
+        )
+        team_id = connection.execute(
+            "SELECT team_id FROM team_projects WHERE id=?", (template["project_id"],)
+        ).fetchone()[0]
         columns = tuple(template)
         records = []
         for index in range(count):
@@ -42,7 +48,7 @@ def _finished_task_history(repo, count, task_id="task"):
                 **template,
                 "id": f"old-{task_id}-{index:06d}",
                 "state": "finished",
-                "case_id": None,
+                "case_id": f"old-case-{task_id}-{index:06d}",
                 "parent_task_id": None,
                 "work_lineage_id": None,
             }
@@ -55,7 +61,63 @@ def _finished_task_history(repo, count, task_id="task"):
             + ")",
             records,
         )
+        keys = [f"old-{task_id}-{index:06d}" for index in range(count)]
+        instant = "2026-01-01T00:00:00+00:00"
+        connection.executemany(
+            "INSERT INTO team_deliverables(id,task_id,producer_agent_id,summary,state,created_at) VALUES (?,?,?,'Finished result','accepted',?)",
+            ((f"d-{key}", key, template["owner_agent_id"], instant) for key in keys),
+        )
+        connection.executemany(
+            "INSERT INTO team_task_deliverables(task_id,position,deliverable_id) VALUES (?,0,?)",
+            ((key, f"d-{key}") for key in keys),
+        )
+        connection.executemany(
+            "INSERT INTO team_review_requests(id,deliverable_id,reviewer_agent_id,state,created_at,decision_at) VALUES (?,?,'lead','accepted',?,?)",
+            ((f"r-{key}", f"d-{key}", instant, instant) for key in keys),
+        )
+        connection.executemany(
+            "INSERT INTO team_deliverable_reviews(deliverable_id,position,review_request_id) VALUES (?,0,?)",
+            ((f"d-{key}", f"r-{key}") for key in keys),
+        )
+        connection.executemany(
+            "INSERT INTO team_cases(id,team_id,project_id,title,description,status,priority,tags_json,metadata_json,task_ids_json,created_at,updated_at) VALUES (?,?,?,'Finished case','','closed','normal','[]','{}',?,?,?)",
+            (
+                (
+                    f"old-case-{task_id}-{index:06d}",
+                    team_id,
+                    template["project_id"],
+                    json.dumps([key]),
+                    instant,
+                    instant,
+                )
+                for index, key in enumerate(keys)
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO team_release_packages(id,project_id,state,created_at,updated_at) VALUES (?,?,'accepted',?,?)",
+            ((f"release-{key}", template["project_id"], instant, instant) for key in keys),
+        )
+        connection.executemany(
+            "INSERT INTO team_release_deliverables(package_id,position,deliverable_id) VALUES (?,0,?)",
+            ((f"release-{key}", f"d-{key}") for key in keys),
+        )
         connection.execute("ANALYZE")
+
+
+def _watch_lifecycle_hydration(monkeypatch):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleScope
+    from collections import Counter
+
+    counts = Counter()
+    load = TeamLifecycleScope._load
+
+    def measured(self, field, ids):
+        rows = load(self, field, ids)
+        counts[field] += len(rows)
+        return rows
+
+    monkeypatch.setattr(TeamLifecycleScope, "_load", measured)
+    return counts
 
 
 @pytest.mark.parametrize("history_count", [5000, 50000])
@@ -139,6 +201,7 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
         decoded.append(len(payload["dispatches"]))
 
     with monkeypatch.context() as patch:
+        hydration = _watch_lifecycle_hydration(patch)
         patch.setattr(TeamStateSqliteStore, "_read_dispatches", staticmethod(count_dispatches))
         patch.setattr(TeamStateSqliteStore, "_read_tasks", staticmethod(count_tasks))
         patch.setattr(
@@ -153,6 +216,8 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
         assert hook.on_post_completion_dispatch(worker=worker) == 2
         assert sum(decoded) < 20
         assert sum(task_counts) < 20
+        for field in ("deliverables", "review_requests", "cases", "release_packages"):
+            assert hydration[field] < 20, (field, hydration)
         revision = repo.read_revision()
         assert hook.on_post_completion_dispatch(worker=worker) == 0
         assert repo.read_revision() == revision
@@ -201,10 +266,18 @@ def test_manager_fallback_keeps_undismissed_failure_from_an_older_batch(tmp_path
         assert summary["latest_failed_actions"][0]["id"] == "unresolved"
 
 
-def test_handled_inbox_activity_still_arms_idle_context_rotation(tmp_path):
+@pytest.mark.parametrize("activity_kind", ["inbox", "review", "ephemeral"])
+def test_terminal_activity_still_arms_idle_context_rotation(tmp_path, activity_kind):
     from datetime import timedelta
     from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
-    from evander_team_addon.models import AgentInboxItem, AgentContextClearingPolicy, TeamTaskState
+    from evander_team_addon.models import (
+        AgentInboxItem,
+        AgentContextClearingPolicy,
+        TeamTaskState,
+        Deliverable,
+        ReviewRequest,
+        EphemeralAssignment,
+    )
     from evander_team_addon.services.domain.context_rotation import (
         _maybe_mark_idle_context_rotation_due,
     )
@@ -222,6 +295,39 @@ def test_handled_inbox_activity_still_arms_idle_context_rotation(tmp_path):
         runtime.context_clearing_policy = AgentContextClearingPolicy.IDLE
         runtime.context_clearing_idle_grace_seconds = 3600
         runtime.last_progress_at = None
+        if activity_kind == "review":
+            task.deliverable_ids = ["accepted"]
+            state.deliverables["accepted"] = Deliverable(
+                id="accepted",
+                task_id=task.id,
+                producer_agent_id="lead",
+                summary="Result",
+                state="accepted",
+                review_request_ids=["decision"],
+            )
+            state.review_requests["decision"] = ReviewRequest(
+                id="decision",
+                deliverable_id="accepted",
+                reviewer_agent_id="backend",
+                state="accepted",
+                created_at=rotated - timedelta(days=1),
+                decision_at=rotated + timedelta(minutes=1),
+            )
+            return
+        if activity_kind == "ephemeral":
+            state.ephemeral_assignments["cleaned"] = EphemeralAssignment(
+                id="cleaned",
+                parent_agent_id="backend",
+                project_id="project",
+                task_id=task.id,
+                session_id="ephemeral-session",
+                title="Finished work",
+                prompt="Work",
+                state="cleaned_up",
+                created_at=rotated - timedelta(days=1),
+                updated_at=rotated + timedelta(minutes=1),
+            )
+            return
         state.inbox["handled"] = AgentInboxItem(
             id="handled",
             recipient_agent_id="backend",
@@ -249,6 +355,7 @@ def test_real_wake_planning_does_not_scan_unrelated_lineage_history(
     from evander_team_addon.models import (
         AgentInboxItem,
         AgentContextClearingPolicy,
+        TeamDispatch,
         TeamWorkLineage,
     )
 
@@ -269,8 +376,31 @@ def test_real_wake_planning_does_not_scan_unrelated_lineage_history(
             item_type="operator_directive",
             payload={"body": "Continue task"},
         )
+        # A real scope belonging to another agent must not make the backend's
+        # empty legacy lookup walk all its fingerprint-free headers.
+        state.inbox["old-lead-work"] = AgentInboxItem(
+            id="old-lead-work",
+            recipient_agent_id="lead",
+            item_type="operator_directive",
+            state="handled",
+        )
+        instant = datetime(2026, 1, 1, tzinfo=UTC)
+        state.dispatches["unrelated-agent"] = TeamDispatch(
+            id="unrelated-agent",
+            agent_id="lead",
+            session_id="session-lead",
+            cause_kind="scheduled_wake",
+            status="completed",
+            inbox_item_ids=["old-lead-work"],
+            created_at=instant,
+            leased_at=instant,
+            completed_at=instant,
+            activation_completed_at=instant,
+        )
 
     repo.update(seed)
+    _finished_task_history(repo, history_count)
+    hydration = _watch_lifecycle_hydration(monkeypatch)
     connect = repo.store._read_connection
     counts, statements = [], []
 
@@ -292,6 +422,8 @@ def test_real_wake_planning_does_not_scan_unrelated_lineage_history(
         agent_id="backend"
     )
     assert len(leases) == 1
+    for field in ("tasks", "deliverables", "review_requests", "cases", "release_packages"):
+        assert hydration[field] < 30, (field, hydration)
     assert max(count[0] for count in counts) < 50000
     lineage_queries = [
         sql

@@ -34,9 +34,7 @@ class GitWorkContextValidationError(ValueError):
 
 GitCandidateCommitResolver = Callable[..., str | None]
 
-_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD = (
-    "_server_verified_composition_candidate_sha"
-)
+_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD = "_server_verified_composition_candidate_sha"
 
 
 _TERMINAL_TASK_STATES = frozenset(
@@ -290,8 +288,15 @@ def require_authoritative_git_review_retry_candidate(
 
 
 def _referenced_git_work_context_ids(state: TeamState, context_ids=None) -> set[str]:
-    records = (state.query_records("deliverables", "branch_context_id IN (" + ",".join("?" for _ in context_ids) + ")", tuple(context_ids))
-               if context_ids is not None and hasattr(state, "query_records") else state.deliverables.values())
+    records = (
+        state.query_records(
+            "deliverables",
+            "branch_context_id IN (" + ",".join("?" for _ in context_ids) + ")",
+            tuple(context_ids),
+        )
+        if context_ids is not None and hasattr(state, "query_records")
+        else state.deliverables.values()
+    )
     return {
         context_id
         for deliverable in records
@@ -356,8 +361,7 @@ def authoritative_deliverable_git_base(
                     "match its authoritative Git work context"
                 )
             submitted_commit_sha = (
-                deliverable.git_refs.submitted_commit_sha
-                or deliverable.git_refs.commit_sha
+                deliverable.git_refs.submitted_commit_sha or deliverable.git_refs.commit_sha
             )
             if (
                 submitted_commit_sha is None
@@ -450,9 +454,10 @@ def dependency_source_base_requirements(
             return
         visiting.add(source_id)
         _branch, base_commit = authoritative_deliverable_git_base(state, deliverable=deliverable)
-        if base_commit is None or re.fullmatch(
-            r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base_commit
-        ) is None:
+        if (
+            base_commit is None
+            or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base_commit) is None
+        ):
             raise ValueError(
                 f"contribution {source_id} has no authoritative full Git base commit; "
                 "recover its source provenance before integration"
@@ -522,8 +527,15 @@ def finalize_active_git_work_contexts_for_dispatch(
 ) -> dict[str, int]:
     """Close contexts that cannot be used after their owning dispatch ends."""
 
-    contexts = (state.query_records("git_work_contexts", "agent_id=? AND dispatch_id=? AND state='active'", (agent_id, dispatch_id))
-                if hasattr(state, "query_records") else state.git_work_contexts.values())
+    contexts = (
+        state.query_records(
+            "git_work_contexts",
+            "agent_id=? AND dispatch_id=? AND state='active'",
+            (agent_id, dispatch_id),
+        )
+        if hasattr(state, "query_records")
+        else state.git_work_contexts.values()
+    )
     referenced_context_ids = _referenced_git_work_context_ids(state, [row.id for row in contexts])
     submitted = 0
     abandoned = 0
@@ -552,10 +564,13 @@ def finalize_active_git_work_contexts_for_task(
 ) -> dict[str, int]:
     """Close active contexts when their task becomes terminal or changes owner."""
 
-    referenced_context_ids = _referenced_git_work_context_ids(state)
+    contexts = list(state.git_work_contexts.values())
+    referenced_context_ids = _referenced_git_work_context_ids(
+        state, [context.id for context in contexts]
+    )
     submitted = 0
     abandoned = 0
-    for context in state.git_work_contexts.values():
+    for context in contexts:
         if context.task_id != task_id or context.state != GitWorkContextState.ACTIVE:
             continue
         if context.id in referenced_context_ids:
@@ -577,10 +592,13 @@ def reconcile_git_work_context_lifecycle(
     """Repair stale lifecycle state and prune old unreferenced terminal metadata."""
 
     effective_now = _ensure_utc(now)
-    referenced_context_ids = _referenced_git_work_context_ids(state)
+    contexts = list(state.git_work_contexts.values())
+    referenced_context_ids = _referenced_git_work_context_ids(
+        state, [context.id for context in contexts]
+    )
     submitted = 0
     abandoned = 0
-    for context in state.git_work_contexts.values():
+    for context in contexts:
         if context.state != GitWorkContextState.ACTIVE:
             continue
         task = state.tasks.get(context.task_id)
@@ -619,21 +637,30 @@ def reconcile_git_work_context_lifecycle(
 
     pruned = 0
     if prune_before is not None:
-        physically_cleaned_paths = {
-            (
-                candidate.task_id,
-                candidate.agent_id,
-                candidate.worktree_path,
+        if hasattr(state, "prunable_work_context_records"):
+            contexts = state.prunable_work_context_records(prune_before)
+            referenced_context_ids |= _referenced_git_work_context_ids(
+                state, [context.id for context in contexts]
             )
-            for candidate in state.worktree_cleanup_candidates.values()
-            if candidate.state == WorktreeCleanupState.SUCCEEDED
-        }
+            physically_cleaned_paths, retained_ids = state.work_context_pruning_facts(contexts)
+        else:
+            contexts = state.git_work_contexts.values()
+            retained_ids = {
+                key
+                for incident in state.git_recovery_incidents.values()
+                for key in incident.preserved_context_ids
+            }
+            physically_cleaned_paths = {
+                (candidate.task_id, candidate.agent_id, candidate.worktree_path)
+                for candidate in state.worktree_cleanup_candidates.values()
+                if candidate.state == WorktreeCleanupState.SUCCEEDED
+            }
         prunable_ids = [
             context.id
-            for context in state.git_work_contexts.values()
+            for context in contexts
             if context.state == GitWorkContextState.ABANDONED
             and context.id not in referenced_context_ids
-            and not any(context.id in incident.preserved_context_ids for incident in state.git_recovery_incidents.values())
+            and context.id not in retained_ids
             and context.updated_at <= prune_before
             and (
                 context.worktree_path is None
@@ -752,9 +779,7 @@ def bind_deliverable_git_refs_to_work_context(
             "submitted_commit_sha": authoritative_commit_sha,
         }
         if inferred_context.dependency_composition_manifest is not None:
-            deliverable[_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD] = (
-                authoritative_commit_sha
-            )
+            deliverable[_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD] = authoritative_commit_sha
         return
     if branch_context_id is None:
         raise GitWorkContextValidationError(
@@ -963,10 +988,7 @@ def _resolve_git_context_branch_commit(
     composition_ancestor_shas = (
         [
             composition_manifest.composed_commit_sha,
-            *[
-                source.commit_sha
-                for source in composition_manifest.dependency_git_sources
-            ],
+            *[source.commit_sha for source in composition_manifest.dependency_git_sources],
         ]
         if composition_manifest is not None
         else []
@@ -1028,9 +1050,8 @@ def _resolve_git_context_branch_commit(
         }
         if required_ancestor_shas:
             resolver_kwargs["required_ancestor_shas"] = required_ancestor_shas
-        contribution_base = (
-            task.git_base_commit_sha
-            or (composition_manifest.base_commit_sha if composition_manifest is not None else None)
+        contribution_base = task.git_base_commit_sha or (
+            composition_manifest.base_commit_sha if composition_manifest is not None else None
         )
         if contribution_base is not None and context.dependency_git_sources:
             resolver_kwargs["contribution_base_commit_sha"] = contribution_base
@@ -1041,10 +1062,16 @@ def _resolve_git_context_branch_commit(
                     for source in context.dependency_git_sources
                 ],
             )
-        if task.git_constraints.required_base_commit_sha and task.git_constraints.required_base_commit_sha != (contribution_base or context.base_commit):
+        if (
+            task.git_constraints.required_base_commit_sha
+            and task.git_constraints.required_base_commit_sha
+            != (contribution_base or context.base_commit)
+        ):
             raise ValueError("prepared context violates the task's required baseline")
         if task.git_constraints.excluded_ancestor_shas:
-            resolver_kwargs["excluded_ancestor_shas"] = list(task.git_constraints.excluded_ancestor_shas)
+            resolver_kwargs["excluded_ancestor_shas"] = list(
+                task.git_constraints.excluded_ancestor_shas
+            )
         authoritative_commit_sha = candidate_commit_resolver(
             **resolver_kwargs,
         )
