@@ -181,9 +181,12 @@ class WorkerService:
                         self.jobs.bind(
                             lease, current, self.adapter.private_connections(lease), save
                         )
+                    else:
+                        self.jobs.refresh(lease, current, save)
                     lease.state = "ready"
                     lease.expires_at = self.now() + lease.profile.idle_seconds
             elif lease.bound_job_id == job[0].job_id:
+                self.jobs.refresh(lease, job, save)
                 lease.state = "ready"
                 lease.expires_at = self.now() + lease.profile.idle_seconds
             else:

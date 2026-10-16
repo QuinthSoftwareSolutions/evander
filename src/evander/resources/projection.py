@@ -1,5 +1,9 @@
 """Private job file operations shared by optional providers."""
 
+PRIVATE_TMPFS = "/run/evander-resources"
+PRIVATE_TMPFS_SPEC = PRIVATE_TMPFS + ":rw,nosuid,nodev,noexec,size=16m,mode=1777"
+RESOURCE_CHAIN = "EVANDER-RESOURCE-EGRESS"
+
 PREPARE = r"""
 import os, stat, sys
 base, lease=sys.argv[1:3]
@@ -16,7 +20,7 @@ PROJECT = r"""
 import json, os, re, socket, stat, sys
 data=json.load(sys.stdin)
 base, owner, temporary=sys.argv[1], int(sys.argv[2]), sys.argv[3]
-if os.path.dirname(temporary) != '/tmp' or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
+if os.path.dirname(temporary) != os.path.dirname(base) or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
     raise RuntimeError('Unsafe resource staging path')
 for path in [base, base+'/'+data['lease_id']]:
     st=os.lstat(path)
@@ -40,7 +44,7 @@ SEAL = r"""
 import os, re, stat, sys
 base, lease, uid, gid=sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 temporary=sys.argv[5]
-if os.path.dirname(temporary) != '/tmp' or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
+if os.path.dirname(temporary) != os.path.dirname(base) or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
     raise RuntimeError('Unsafe resource staging path')
 for path in [base, base+'/'+lease]:
     st=os.lstat(path)
@@ -91,7 +95,7 @@ def discard_junk(path):
 
 if len(sys.argv) > 3 and sys.argv[3]:
     temporary=sys.argv[3]
-    if os.path.dirname(temporary) != '/tmp' or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
+    if os.path.dirname(temporary) != os.path.dirname(base) or not re.fullmatch(r'evander-resource-[a-f0-9]{32}', os.path.basename(temporary)):
         raise RuntimeError('Unsafe resource staging path')
     discard_junk(temporary)
 path=base+'/'+lease

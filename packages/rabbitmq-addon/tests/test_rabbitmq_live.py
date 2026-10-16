@@ -156,12 +156,14 @@ def test_native_brokers_shared_vhosts_faults_and_cleanup(tmp_path):
     not os.environ.get("EVANDER_RESOURCE_SMOKE_RUNNER_IMAGE"),
     reason="Select a preseeded runner for native private-job binding",
 )
-def test_native_private_job_binding_rebind_and_reaping(tmp_path):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
     import json
     import subprocess
     from evander.resources.jobs import Jobs
     from evander.resources.worker import WorkerService
     from evander.resources.models import WorkerSettings, ResourceError
+    from evander.resources.projection import PRIVATE_TMPFS_SPEC
     from evander.worker.models import WorkerJobRecord
     from evander.worker.store import WorkerJobStore
 
@@ -245,9 +247,13 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path):
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
-                "--read-only",
+                *(
+                    ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777"]
+                    if read_only
+                    else []
+                ),
                 "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                PRIVATE_TMPFS_SPEC,
                 "--entrypoint",
                 "python3",
                 image,
@@ -373,6 +379,30 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path):
         jobs_store.put(records[0])
         service.tick()
         assert not rules and service.store.get(lease.lease_id).config_path is None
+        # Docker retains the default writable root layer after stop. Neither
+        # copying it nor restarting that container may recover private files.
+        assert (
+            subprocess.run(
+                ["docker", "cp", names[0] + ":" + value["config_path"], "-"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            ).returncode
+            != 0
+        )
+        docker("start", names[0])
+        assert (
+            docker(
+                "exec",
+                names[0],
+                "python3",
+                "-c",
+                "import os,sys; print(os.path.exists(sys.argv[1]))",
+                value["config_path"],
+            )
+            == "False"
+        )
+        docker("stop", names[0])
         clock[0] += 7201
         service.tick()
         assert service.store.get(lease.lease_id).state == "released"

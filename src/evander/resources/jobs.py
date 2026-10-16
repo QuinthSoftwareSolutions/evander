@@ -2,7 +2,7 @@
 
 import ipaddress
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import socket
 import subprocess
 import time
@@ -11,7 +11,7 @@ import uuid
 from evander.worker.store import WorkerJobStore
 
 from .models import ResourceError
-from .projection import PREPARE, PROJECT, SEAL, UNPROJECT
+from .projection import PREPARE, PROJECT, SEAL, UNPROJECT, PRIVATE_TMPFS, RESOURCE_CHAIN
 
 
 class Jobs:
@@ -57,13 +57,16 @@ class Jobs:
 
     def bind(self, lease, job, connections, save):
         record, inspected = job
+        base = PRIVATE_TMPFS + "/" + self.addon_id
+        if not self.ephemeral(inspected, base):
+            raise ResourceError("Resource credentials require the worker's private tmpfs")
         if lease.bound_job_id != record.job_id:
             self.unbind(lease, save)
-        base = "/tmp/evander-" + self.addon_id
         lease.job_binding = {
             "container_id": record.container_id,
             "base": base,
-            "staging_path": "/tmp/evander-resource-" + uuid.uuid4().hex,
+            "staging_path": PRIVATE_TMPFS + "/evander-resource-" + uuid.uuid4().hex,
+            "rule_chain": RESOURCE_CHAIN,
             "rules": [],
             "network": lease.resources.get("network"),
         }
@@ -115,11 +118,7 @@ class Jobs:
                     ]
                     lease.job_binding["rules"].append(rule)
                     save()
-                    exists = self.command(
-                        "iptables", "-w", "5", "-C", "DOCKER-USER", *rule, check=False
-                    )
-                    if exists.returncode:
-                        self.command("iptables", "-w", "5", "-I", "DOCKER-USER", "1", *rule)
+                    self.allow_rule(RESOURCE_CHAIN, rule)
         config_path = base + "/" + lease.lease_id + "/connection.json"
         self.command(
             "docker",
@@ -174,26 +173,75 @@ class Jobs:
         lease.bound_job_id, lease.config_path = record.job_id, config_path
         save()
 
+    @staticmethod
+    def ephemeral(container, path):
+        path = PurePosixPath(path)
+        mounts = container.get("HostConfig", {}).get("Tmpfs") or {}
+        ephemeral = [PurePosixPath(root) for root in mounts if path.is_relative_to(root)]
+        if not ephemeral:
+            return False
+        root = max(ephemeral, key=lambda item: len(item.parts))
+        # A nested persistent mount must not hide the ephemeral storage. Treat
+        # unknown mounts conservatively; these records come from Docker, not a job.
+        return not any(
+            mount.get("Type") != "tmpfs"
+            and (destination := PurePosixPath(mount["Destination"])).is_relative_to(root)
+            and (destination.is_relative_to(path) or path.is_relative_to(destination))
+            for mount in container.get("Mounts", [])
+        )
+
+    def allow_rule(self, chain, rule):
+        status = self.command("iptables", "-w", "5", "-C", chain, *rule, check=False).returncode
+        if status not in {0, 1}:
+            raise ResourceError("Cannot verify worker network grant")
+        if status == 1:
+            if chain == RESOURCE_CHAIN:
+                self.command("iptables", "-w", "5", "-N", chain, check=False)
+            self.command("iptables", "-w", "5", "-I", chain, "1", *rule)
+
+    def refresh(self, lease, job, save):
+        record, inspected = job
+        binding = lease.job_binding
+        addresses = {
+            value["IPAddress"]
+            for value in inspected["NetworkSettings"]["Networks"].values()
+            if value.get("IPAddress")
+        }
+        if (
+            binding.get("container_id") != record.container_id
+            or binding.get("rule_chain") != RESOURCE_CHAIN
+            or not self.ephemeral(inspected, binding["base"])
+            or any(
+                rule[rule.index("-s") + 1].removesuffix("/32") not in addresses
+                for rule in binding["rules"]
+            )
+        ):
+            self.unbind(lease, save)
+            raise ResourceError("Worker binding requires revalidation")
+        for rule in binding["rules"]:
+            self.allow_rule(RESOURCE_CHAIN, rule)
+
     def unbind(self, lease, save):
         binding = lease.job_binding
         if not binding:
             lease.bound_job_id = lease.config_path = None
             return
         failed, remaining = False, []
+        chain = binding.get("rule_chain", "DOCKER-USER")
         # Firewall withdrawal must not depend on Docker, the private file, or the
         # provider being healthy. Keep only unverified rules for the next retry.
         for rule in binding.get("rules", []):
             try:
                 status = self.command(
-                    "iptables", "-w", "5", "-C", "DOCKER-USER", *rule, check=False
+                    "iptables", "-w", "5", "-C", chain, *rule, check=False
                 ).returncode
                 if status not in {0, 1}:
                     raise ResourceError("Cannot verify worker network grant removal")
                 if status == 0:
-                    self.command("iptables", "-w", "5", "-D", "DOCKER-USER", *rule)
+                    self.command("iptables", "-w", "5", "-D", chain, *rule)
                     if (
                         self.command(
-                            "iptables", "-w", "5", "-C", "DOCKER-USER", *rule, check=False
+                            "iptables", "-w", "5", "-C", chain, *rule, check=False
                         ).returncode
                         != 1
                     ):
@@ -242,6 +290,16 @@ class Jobs:
                     )
                 except Exception:
                     failed = True
+            elif not (
+                self.ephemeral(container, binding["base"])
+                and (
+                    not binding.get("staging_path")
+                    or self.ephemeral(container, binding["staging_path"])
+                )
+            ):
+                # A stopped container's writable layer survives. Do not claim
+                # withdrawal until it can be cleaned while running or is removed.
+                failed = True
         if failed:
             save()
             raise ResourceError("Worker binding cleanup is incomplete; durable intent retained")

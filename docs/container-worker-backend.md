@@ -1228,6 +1228,8 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 - `--tmpfs /tmp:rw,noexec,nosuid,size=4g`
 - `--pids-limit 512` when the job did not provide its own pids limit
 
+Every new worker job also receives a dedicated `/run/evander-resources` tmpfs for optional resource add-ons. Its contents disappear when the container stops, including with the default writable root filesystem. This shared execution mount does not require any add-on to be installed. Resource delivery rejects older jobs without ephemeral storage. The worker egress policy preserves exact resource grants in `EVANDER-RESOURCE-EGRESS` across reloads, applies blocked ranges first, and retains its default deny for other destinations.
+
 Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and
 `--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected
 profile network. `host` requires the explicit unsafe local-experiment override described above.

@@ -2,7 +2,6 @@
 
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -26,7 +25,7 @@ def helper(script, *arguments, payload=None):
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_private_projection_cleanup_and_reuse(tmp_path, interrupted):
     base, lease = tmp_path / "provider", "rs-" + "d" * 32
-    temporary = Path("/tmp/evander-resource-" + uuid.uuid4().hex)
+    temporary = tmp_path / ("evander-resource-" + uuid.uuid4().hex)
     configuration = base / lease / "connection.json"
     try:
         helper(PREPARE, base, lease)
@@ -91,7 +90,7 @@ def test_staging_symlink_is_rejected_and_cleanup_never_follows_it(tmp_path):
     helper(PREPARE, base, lease)
     target = tmp_path / "unrelated"
     target.write_text("not-managed")
-    temporary = Path("/tmp/evander-resource-" + uuid.uuid4().hex)
+    temporary = tmp_path / ("evander-resource-" + uuid.uuid4().hex)
     try:
         temporary.symlink_to(target)
         result = subprocess.run(

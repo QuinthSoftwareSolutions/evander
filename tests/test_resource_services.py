@@ -266,6 +266,9 @@ class Jobs:
         self.bound = connections
         save()
 
+    def refresh(self, lease, job, save):
+        pass
+
     def unbind(self, lease, save):
         lease.bound_job_id = lease.config_path = self.bound = None
         save()
@@ -781,7 +784,7 @@ def test_worker_withdraws_obsolete_job_access_before_unavailable_provider(
     from evander.resources.jobs import Jobs as JobBindings
 
     clock = [1000]
-    monkeypatch.setattr("evander.resources.jobs.time.time", lambda: clock[0])
+    monkeypatch.setattr("evander.resources.jobs.time", SimpleNamespace(time=lambda: clock[0]))
     records = [
         SimpleNamespace(job_id="job-a", status="running", metadata={}, container_id="container-a")
     ]
@@ -953,6 +956,82 @@ def test_worker_withdrawal_steps_are_independent_and_retryable(tmp_path, monkeyp
     bindings.unbind(retained, lambda: store.put(retained))
     final = Store(store.root).get(lease.lease_id)
     assert not attached[0] and final.job_binding == {} and final.bound_job_id is None
+
+
+def test_stopped_persistent_container_keeps_cleanup_intent_until_removed(tmp_path, monkeypatch):
+    import subprocess
+    from evander.resources.jobs import Jobs as JobBindings
+
+    commands = []
+
+    def run(args, **kwargs):
+        commands.append(args)
+        assert args[0] == "iptables"  # A stopped container cannot execute file cleanup.
+        return subprocess.CompletedProcess(args, 1, stdout=b"", stderr=b"")
+
+    bindings = JobBindings("sample-addon", tmp_path / "jobs.db", run=run)
+    container = {
+        "State": {"Running": False},
+        "HostConfig": {"Tmpfs": None},
+        "NetworkSettings": {"Networks": {}},
+    }
+    monkeypatch.setattr(bindings, "inspect", lambda _: container)
+    store = Store(tmp_path / "journal")
+    lease = Lease(
+        lease_id="rs-" + "f" * 32,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(),
+        created_at=1000,
+        expires_at=8200,
+        bound_job_id="job-a",
+        config_path="/tmp/evander-sample-addon/private/connection.json",
+        job_binding={
+            "container_id": "retained-container",
+            "base": "/tmp/evander-sample-addon",
+            "rules": [["-s", "192.0.2.10/32", "-j", "ACCEPT"]],
+        },
+    )
+    with pytest.raises(ResourceError, match="cleanup is incomplete"):
+        bindings.unbind(lease, lambda: store.put(lease))
+    retained = Store(store.root).get(lease.lease_id)
+    assert commands and retained.job_binding["rules"] == []
+    assert retained.config_path and retained.bound_job_id == "job-a"
+    monkeypatch.setattr(bindings, "inspect", lambda _: None)
+    bindings.unbind(retained, lambda: store.put(retained))
+    assert Store(store.root).get(lease.lease_id).job_binding == {}
+
+
+@pytest.mark.parametrize("nested_mount", [False, True])
+def test_private_delivery_rejects_persistent_storage_before_writing(tmp_path, nested_mount):
+    from evander.resources.jobs import Jobs as JobBindings
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Credentials must not be written to persistent container storage")
+
+    inspected = {
+        "HostConfig": {"Tmpfs": {"/run/evander-resources": "rw"} if nested_mount else None},
+        "Mounts": [{"Type": "bind", "Destination": "/run/evander-resources/sample-addon"}]
+        if nested_mount
+        else [],
+    }
+    lease = Lease(
+        lease_id="rs-" + "f" * 32,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(),
+        created_at=1000,
+        expires_at=8200,
+    )
+    bindings = JobBindings("sample-addon", tmp_path / "jobs.db", run=unexpected)
+    with pytest.raises(ResourceError, match="private tmpfs"):
+        bindings.bind(
+            lease,
+            (SimpleNamespace(job_id="job-a", container_id="container-a"), inspected),
+            {"app": {"password": "private"}},
+            lambda: None,
+        )
+    assert not lease.job_binding and lease.config_path is None
 
 
 def test_resource_query_uses_factory_trace_through_real_workflow_executor(domain):
