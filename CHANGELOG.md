@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16 - Keep completion recovery indexed after history conversion (0.96.3)
+
+- Read pending gate and effect completions through existing status indexes with ordered continuation pages, keeping recovery work independent of execution-history size even after optimizer analysis.
+- Analyze only rebuilt history tables during offline conversion, preserving unrelated optimizer statistics and leaving statistics unchanged for copies that retain their storage format.
+
 ## 2026-10-16 - Preserve Team Git checkout identifiers and fixture reconciliation (0.96.2)
 
 - Persist canonical Team checkout IDs across database reloads and expose them in compact wake prompts, task reads and dispatch reads so agents can select the intended Git submission checkout.

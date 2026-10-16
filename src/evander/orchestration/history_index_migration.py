@@ -10,7 +10,16 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from evander.repositories.history_index_storage import convert_history_index_storage
+from evander.repositories.history_index_storage import (
+    CURRENT,
+    EXECUTIONS,
+    GENERATIONS,
+    LEGACY,
+    OLD_CURRENT,
+    OLD_LEGACY,
+    PATHS,
+    convert_history_index_storage,
+)
 from evander.repositories.orchestration_db import ensure_orchestration_schema
 from evander.repositories.sqlite_runtime import close_sqlite_runtimes
 
@@ -80,9 +89,17 @@ def copy_history_index_storage(
             report("commit_conversion")
             connection.commit()
             connection.execute("PRAGMA foreign_keys=ON")
-            report("analyze")
-            connection.execute("ANALYZE")
-            connection.commit()
+            if result["changed"]:
+                report("analyze")
+                # This database also serves the dispatcher. Preserve unrelated
+                # planner statistics; only rebuilt history tables need analysis.
+                tables = (
+                    (EXECUTIONS, GENERATIONS, PATHS, CURRENT, LEGACY)
+                    if interned else (OLD_CURRENT, OLD_LEGACY)
+                )
+                for table in tables:
+                    connection.execute(f'ANALYZE "{table}"')
+                connection.commit()
             connection.execute("PRAGMA synchronous=FULL")
             if interned:
                 report("vacuum_output")
