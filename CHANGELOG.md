@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16 - Resolve Team resource ownership from persisted sessions (0.98.3)
+
+- Preserve the canonical directory string from the session manifest when resolving Team ownership for SQL Server and RabbitMQ resources, avoiding an attribute error before acquisition.
+- Verify both add-ons against reloaded session manifests while preserving task, dispatch and cancellation authority checks.
+
 ## 2026-10-16 - Keep Team session activity checks out of execution history (0.98.2)
 
 - Check active prompt ownership through the existing status/type index and a lightweight target projection, avoiding retained failure history and the shared execution repository lock during Team wake planning.

@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.models import utc_now
+from evander.models import SessionManifest, utc_now
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon.models import (
     AgentRuntime,
     AgentTask,
@@ -79,22 +80,32 @@ def test_blocked_task_can_acquire_without_broadening_project_authority(resource_
     assert resource_state.tasks["task-a"].state.value == "blocked"
 
 
-def test_generic_resource_adapter_preserves_task_and_dispatch_authority(resource_state):
+@pytest.mark.parametrize("tool", ["sqlserver_acquire", "rabbitmq_acquire"])
+def test_generic_resource_adapter_preserves_task_and_dispatch_authority(
+    resource_state, tmp_path, tool
+):
     from evander_team_addon.resource_authority import TeamResourceAuthority
 
+    session_path = tmp_path / "sessions.json"
+    JsonSessionManifestRepository(session_path).upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            directory_path="root/synthetic",
+            allowed_tools=[tool],
+            expires_at=utc_now() + timedelta(hours=1),
+        )
+    )
+    sessions = JsonSessionManifestRepository(session_path)
     adapter = TeamResourceAuthority.__new__(TeamResourceAuthority)
     adapter.repository = SimpleNamespace(read=lambda: resource_state)
     adapter.authority = TaskResourceAuthority(adapter.repository)
     adapter.context = SimpleNamespace(
-        service=SimpleNamespace(
-            policy=SimpleNamespace(
-                get_session=lambda _: SimpleNamespace(
-                    directory_path=SimpleNamespace(as_posix=lambda: "root")
-                )
-            )
-        )
+        service=SimpleNamespace(policy=SimpleNamespace(get_session=sessions.get_session))
     )
-    owner = adapter.resolve("session-a", {"task_id": "task-a"}, "sqlserver_acquire")
+    owner = adapter.resolve("session-a", {"task_id": "task-a"}, tool)
+    assert owner.directory == "root/synthetic"
+    assert owner.provider == "team-addon" and owner.session_id == "session-a"
+    assert owner.reference == {"task_id": "task-a"}
     assert owner.key == "team-a:task-a" and owner.job_tags == {"dispatch_id": "dispatch-a"}
     assert adapter.handles_session("session-a") and adapter.owns(owner)
     resource_state.tasks["task-a"].state = TeamTaskState.CANCELLED
