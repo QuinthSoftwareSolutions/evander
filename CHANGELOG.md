@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-16 - Make Team escalations easier to read (0.96.4)
+
+- Guide Team managers and governance agents to write short, plain-language escalations with Need, Why and Next lines, an explicit operator action and a clear owner for follow-up.
+- Aim for fewer than 120 words, retain technical evidence in Team records, and give concise recommendations and reply choices when a decision is needed.
+- Send a short summary and Team record reference for automatic blocker escalations, retaining the full technical details and history in Team.
+- Refresh managed instructions for existing sessions on their next eligible wake; preserve routing and delivery receipts.
+
 ## 2026-10-16 - Keep completion recovery indexed after history conversion (0.96.3)
 
 - Read pending gate and effect completions through existing status indexes with ordered continuation pages, keeping recovery work independent of execution-history size even after optimizer analysis.

@@ -77,6 +77,9 @@ from evander_team_addon.chat_attachments import (
     TeamChatAttachmentPolicyService,
     TeamChatAttachmentStorage,
 )
+from evander_team_addon.operator_escalation_guidance import (
+    OPERATOR_ESCALATION_WRITING_GUIDANCE,
+)
 from evander_team_addon.models import (
     AgentRuntime,
     DeliverableInitialReleaseDisposition,
@@ -701,6 +704,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )
+    assert OPERATOR_ESCALATION_WRITING_GUIDANCE in escalation_description
     assert "receipt, not delivery confirmation" in escalation_description
     assert "report the escalation as queued or pending, never delivered" in (escalation_description)
     assert "infrastructure-failed or timed-out verification" in retry_release_description

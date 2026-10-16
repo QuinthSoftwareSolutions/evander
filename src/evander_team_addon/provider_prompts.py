@@ -66,6 +66,7 @@ from .mcp import (
 from .models import (
     RolePermission,
 )
+from .operator_escalation_guidance import OPERATOR_ESCALATION_WRITING_GUIDANCE
 from .provider_constants import (
     TEAM_AGENT_GUIDANCE_PATH,
     TEAM_AGENT_GUIDANCE_SECTION_ID,
@@ -233,6 +234,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
             f"- Use {TEAM_ESCALATE_OPERATOR_TOOL} when you have no direct superior "
             "and need upward escalation, or when the current issue genuinely needs "
             "operator attention.\n"
+            f"- {OPERATOR_ESCALATION_WRITING_GUIDANCE}\n"
             f"- Use {TEAM_UPDATE_GOAL_TOOL} for project goal updates.\n"
             f"- Use {TEAM_RECORD_NOTE_TOOL} only to record a useful note; it is not a "
             "completion ritual. Record significant decisions, changed assumptions and limitations "
@@ -440,7 +442,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
             "wake whose new dispatch includes the item.\n"
             f"- Use {TEAM_REPORT_BLOCKER_TOOL} when you cannot proceed. A blocker is "
             "durably assigned to the nearest available superior; do not rely on a "
-            "prose-only progress report for escalation.\n"
+            "prose-only progress report for escalation. Keep its summary short and "
+            "plain-language, with technical evidence in details; automatic operator "
+            "notifications use the summary and a Team blocker reference.\n"
             f"- If you own a blocker, use {TEAM_UPDATE_BLOCKER_TOOL} to record progress, "
             "delegate to a direct subordinate, or escalate it. Any active agent on the "
             "blocker's reporter-to-manager escalation line may resolve it. Delegation "
@@ -527,6 +531,7 @@ def _team_governance_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Team action tools for member-team project work from a governance wake.\n"
         "- Keep decisions concise. If no governance action is needed, say so "
         "briefly and do not invent member-team project work.\n"
+        f"- {OPERATOR_ESCALATION_WRITING_GUIDANCE}\n"
     )
 
 

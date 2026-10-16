@@ -321,6 +321,7 @@ def _report_explicit_blocker(
     reporter_agent_id: str,
     reporter_session_id: str,
     source_id: str,
+    details: str = "A local decision or dependency is required.",
 ) -> str:
     dispatch_id = f"dispatch-report-{source_id}"
     _lease_agent_dispatch(
@@ -333,7 +334,7 @@ def _report_explicit_blocker(
         source_kind="explicit",
         source_id=source_id,
         summary=f"Blocked on {source_id}",
-        details="A local decision or dependency is required.",
+        details=details,
         project_id="project",
         request_id=f"request-report-{source_id}",
     )
@@ -6331,11 +6332,13 @@ def test_top_owner_no_progress_routes_to_operator_and_persists_event(
         set_operator_communication_target_id=True,
         expected_revision=repo.read().revision,
     )
+    technical_details = " ".join(["Diagnostic trace and revision history."] * 200)
     blocker_id = _report_explicit_blocker(
         repo,
         reporter_agent_id="lead",
         reporter_session_id="session-lead",
         source_id="dependency-operator",
+        details=technical_details,
     )
     _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="manager")
     dispatch_id = leases[0]["dispatch_id"]
@@ -6354,12 +6357,25 @@ def test_top_owner_no_progress_routes_to_operator_and_persists_event(
         and item.payload.get("blocker_id") == blocker_id
         for item in state.inbox.values()
     )
-    assert any(
-        record.intent_type == "team.operator.escalation_requested"
-        and record.payload["payload"]["blocker_id"] == blocker_id
-        and record.payload["payload"]["communication_target_id"] == "operator-target"
+    escalation = next(
+        record.payload["payload"]
         for record in repo.list_outbox_records()
+        if record.intent_type == "team.operator.escalation_requested"
+        and record.payload["payload"]["blocker_id"] == blocker_id
     )
+    assert escalation["communication_target_id"] == "operator-target"
+    assert escalation["title"] == "Blocked on dependency-operator"
+    message = escalation["message"]
+    assert [line.split(":", 1)[0] for line in message.split("\n\n")] == [
+        "Need",
+        "Why",
+        "Next",
+    ]
+    assert "Blocked on dependency-operator" in message
+    assert f"`{blocker_id}`" in message
+    assert len(message.split()) <= 120
+    assert "Diagnostic trace" not in message
+    assert repo.read().blockers[blocker_id].details == technical_details
 
     _lease_agent_dispatch(
         repo,
