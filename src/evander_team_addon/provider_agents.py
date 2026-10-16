@@ -17,12 +17,13 @@ from evander.events.models import (
     WorkflowNodeEnvelope,
 )
 from evander.repositories.orchestration import (
-    read_latest_agent_prompt_execution,
+    read_latest_agent_prompt_lifecycle_receipt,
 )
 
 from .provider_completion import (
     TeamAgentPromptCompletionFinalizeHook,
 )
+from .lifecycle_scope import TeamLifecycleRepository
 from .provider_events import (
     _materialize,
     _publish_team_events,
@@ -103,10 +104,11 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        repo = TeamLifecycleRepository(repo, dispatch_ids=[_required_text(payload.get("dispatch_id"), "dispatch_id")])
         dispatch = repo.read().dispatches.get(
             _required_text(payload.get("dispatch_id"), "dispatch_id")
         )
-        receipt_record = read_latest_agent_prompt_execution(
+        receipt_record = read_latest_agent_prompt_lifecycle_receipt(
             repo.runtime_dir / "orchestration.db",
             session_id=_required_text(payload.get("session_id"), "session_id"),
             dispatch_id=_required_text(payload.get("dispatch_id"), "dispatch_id"),

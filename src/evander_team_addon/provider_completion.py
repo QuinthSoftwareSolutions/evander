@@ -63,6 +63,7 @@ from .repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
+from .lifecycle_scope import TeamLifecycleRepository
 from .services.candidate_correction_reconciliation_service import (
     CandidateCorrectionReconciliationService,
 )
@@ -336,12 +337,13 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                     ("team-dispatch-", "team-chat:", "team-governance")
                 )
                 if known_team and (not current or candidate.queued_at is None):
-                    # Only actionable candidates load authoritative TeamState;
-                    # reuse the snapshot but preserve compare-delete and races.
+                    # Queue repair shares scoped ownership checks and bounded
+                    # commands with delivered-prompt recovery.
+                    scoped = TeamLifecycleRepository(repo, dispatch_ids=[dispatch_id])
                     _state, count = _reconcile_team_queued_prompt_reservations(
                         worker,
-                        repo=repo,
-                        state=repo.read(),
+                        repo=scoped,
+                        state=scoped.read(),
                         now=datetime.now(UTC),
                         queued_records={key: record},
                     )
@@ -442,6 +444,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
             return 0
+        repo = TeamLifecycleRepository(repo, dispatch_ids=dispatch_ids)
         state = repo.read_projection(
             collections=("governance_runtimes", "dispatches", "agent_runtimes", "agents")
         )
@@ -565,9 +568,8 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 break
         if finalized_count:
             try:
-                candidate_correction_result = CandidateCorrectionReconciliationService(
-                    repo
-                ).reconcile()
+                with self._timed("candidate_correction"):
+                    candidate_correction_result = CandidateCorrectionReconciliationService(repo).reconcile()
                 _publish_team_events(
                     context,
                     candidate_correction_result.get("events"),
@@ -577,7 +579,8 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 # candidate-correction release creation.
                 pass
             try:
-                correction_result = HumanCorrectionReconciliationService(repo).reconcile()
+                with self._timed("human_correction"):
+                    correction_result = HumanCorrectionReconciliationService(repo).reconcile()
                 _publish_team_events(
                     context,
                     correction_result.get("events"),

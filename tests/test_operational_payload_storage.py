@@ -79,6 +79,48 @@ def search(path, *, filters=None):
     )
 
 
+def test_lifecycle_receipts_skip_prompt_payloads_and_preserve_complete_failure_evidence(tmp_path, monkeypatch):
+    from evander.repositories import orchestration
+    from evander_team_addon.provider_prompt_queue import _team_native_thread_receipt
+
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    observed = datetime.now(UTC)
+    native = "01900000-0000-7000-8000-000000000001"
+    for index in range(3):
+        outputs = {"dispatch_id": "dispatch", "scope": {"session_id": "session"}, "success": index < 2}
+        if index == 0:
+            outputs.update(queued=True, thread_id=native)
+        elif index == 1:
+            outputs.update(thread_id=native)
+        else:
+            outputs.update(logs="diagnostic\n" * 10000 + f"No rollout found for session ID {native}\n")
+        store.put(record(
+            execution_id=f"receipt-{index}", idempotency_key=f"receipt-{index}",
+            effect_type="effect:agent:enqueue-prompt", status="failed" if index == 2 else "succeeded",
+            finished_at=observed + timedelta(seconds=index), outputs=outputs,
+            resolved_config={"resume_thread_id": native, "large_prompt": "unused" * 100000},
+            input_payload={"unrelated_input": "unused-input" * 100000},
+        ))
+    with connect_orchestration_db(store.path) as connection:
+        # Exercise the legacy inline receipt lookup alongside modern projections.
+        connection.execute("DELETE FROM workflow_execution_projections WHERE record_id='receipt-1'")
+        connection.execute(
+            "UPDATE effect_executions SET payload_json=? WHERE execution_id='receipt-1'",
+            (record(execution_id="receipt-1", idempotency_key="receipt-1", effect_type="effect:agent:enqueue-prompt",
+                    finished_at=observed + timedelta(seconds=1),
+                    outputs={"dispatch_id": "dispatch", "scope": {"session_id": "session"}, "thread_id": native}).model_dump_json(),),
+        )
+    monkeypatch.setattr(orchestration, "load_record", lambda *_a, **_k: pytest.fail("full prompt hydration"))
+    receipts = store.list_prompt_lifecycle_receipts({"dispatch"})
+    assert [receipt.execution_id for receipt in receipts] == ["receipt-0", "receipt-1", "receipt-2"]
+    assert _team_native_thread_receipt(receipts[0]) is None
+    assert _team_native_thread_receipt(receipts[1]).thread_id == native
+    missing = _team_native_thread_receipt(receipts[2])
+    assert missing.missing_thread and missing.thread_id == native and missing.session_id == "session"
+    assert "large_prompt" not in receipts[2].resolved_config
+    assert "unrelated_input" not in receipts[2].input_payload
+
+
 def test_payload_deduplicates_ancestors_and_delivery_does_not_hydrate(tmp_path, monkeypatch):
     path = tmp_path / "orchestration.db"
     store = SqliteExecutionStore(path)

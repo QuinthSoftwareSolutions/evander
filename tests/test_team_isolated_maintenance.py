@@ -4,7 +4,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Event, current_thread
+from threading import Barrier, Event, current_thread
 from types import SimpleNamespace
 
 import pytest
@@ -122,10 +122,12 @@ def test_blocked_maintenance_does_not_hold_foreground_fifo(tmp_path):
         assert hook.entered.wait(2)
         _publish(worker)
         started = time.monotonic()
-        for _ in range(20):
+        while time.monotonic() - started < 5:
             worker.run_once()
-            if len(worker.execution_store.list_executions()) == 6:
+            records = worker.execution_store.list_executions()
+            if len(records) == 6 and all(r.status == "succeeded" for r in records):
                 break
+            time.sleep(0.005)
         records = worker.execution_store.list_executions()
         assert len(records) == 6
         assert all(r.status == "succeeded" for r in records)
@@ -459,8 +461,13 @@ def test_worker_rechecks_old_bus_after_draining_maintenance(tmp_path, monkeypatc
         assert worker.execution_store is old_store
         # Let the existing queue drain without requesting the store switch yet.
         worker._config_reloader = _StaticReloader(previous_config, changed=False)
-        for _ in range(10):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            records = old_store.list_executions()
+            if len(records) == 6 and all(r.status == "succeeded" for r in records) and not worker.event_queue.list_pending():
+                break
             worker.run_once()
+            time.sleep(0.005)  # allow a bounded storage-busy retry to become due
         assert len(old_store.list_executions()) == 6
         assert all(r.status == "succeeded" for r in old_store.list_executions())
         assert not worker.event_queue.list_pending()
@@ -654,10 +661,10 @@ def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under
                 },
             )
         )
-    actual_query = worker.execution_store.list_prompt_records_for_dispatches
+    actual_query = worker.execution_store.list_prompt_lifecycle_receipts
     monkeypatch.setattr(
         worker.execution_store,
-        "list_prompt_records_for_dispatches",
+        "list_prompt_lifecycle_receipts",
         lambda ids: [r for r in records if r.outputs["dispatch_id"] in ids] + actual_query(ids),
     )
     monkeypatch.setattr(
@@ -740,5 +747,119 @@ def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under
             assert repo.read_revision() == revision
         finally:
             restarted.close()
+    finally:
+        worker.close()
+
+
+@pytest.mark.performance
+def test_actionable_finalizations_overlap_foreground_chains_with_two_extra_teams(tmp_path, monkeypatch):
+    """Exercise real activation/finalization CPU work during every timed chain."""
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import TeamDispatchActivity
+    from evander_team_addon.services.runtime_service import TeamRuntimeService
+    from test_operational_payload_storage import record as prompt_record
+    from test_team_scoped_lifecycle import _finished_task_history
+    import json
+
+    worker = _worker(tmp_path, chain_length=6)
+    worker._executor = _ImmediateExecutor()
+    _seed_latency_history(worker, tmp_path)
+    repo = TeamStateRepository(tmp_path)
+    with sqlite3.connect(repo.store.path) as connection:
+        connection.execute(
+            "UPDATE team_dispatches SET wake_work_record_fingerprints_json=? WHERE id LIKE 'history-%'",
+            (json.dumps({f"task:retained-{i}": "fingerprint" * 8 for i in range(32)}),),
+        )
+        connection.execute(
+            "INSERT INTO team_dispatch_tasks SELECT id,0,'task' FROM team_dispatches WHERE id LIKE 'history-%'"
+        )
+    admin = _team_admin_service(repo)
+    for i in range(2):
+        admin.create_team(team_id=f"extra-{i}", name=f"Extra {i}",
+                          manager_agent_id=f"manager-{i}", manager_session_id=f"session-manager-{i}")
+        admin.create_project(project_id=f"project-{i}", team_id=f"extra-{i}", name=f"Project {i}",
+                             lead_agent_id=f"lead-{i}", lead_session_id=f"session-lead-{i}",
+                             goals=[{"id": "ship", "description": "Ship work"}])
+        admin.create_or_reprioritize_task(task_id=f"task-{i}", owner_agent_id=f"lead-{i}",
+                                         project_id=f"project-{i}", priority=1, title="Work",
+                                         description="Work", created_by_agent_id=f"manager-{i}")
+    for i in range(2):
+        _finished_task_history(repo, 5000, task_id=f"task-{i}")
+    lane = IsolatedMaintenanceHook(TeamAgentPromptCompletionFinalizeHook())
+    worker._lifecycle_reconciliation_hooks = (_ProviderLifecycleReconciliationHook(lane),)
+    worker._completion_dispatch_hooks = (_ProviderCompletionDispatchHook(lane),)
+    worker._initialize_lifecycle_hooks()
+    finalization_samples, foreground_samples = [], []
+    rendezvous = [None]
+    finalize = TeamRuntimeService.finalize_agent_dispatch_from_activity
+
+    def measured(self, **kwargs):
+        barrier, rendezvous[0] = rendezvous[0], None
+        if barrier is not None:
+            barrier.wait(timeout=5)
+        started = time.monotonic()
+        result = finalize(self, **kwargs)
+        finalization_samples.append(time.monotonic() - started)
+        return result
+
+    monkeypatch.setattr(TeamRuntimeService, "finalize_agent_dispatch_from_activity", measured)
+    try:
+        for sample in range(30):
+            new_receipts = []
+            for i in range(2):
+                scoped = TeamLifecycleRepository(repo)
+                _, leases = TeamRuntimeService(scoped).lease_due_agents(
+                    agent_id=f"lead-{i}", respect_wake_interval=False,
+                    max_no_progress_count=-1, defer_activation=True,
+                )
+                assert len(leases) == 1
+                dispatch_id = leases[0]["dispatch_id"]
+                repo.append_dispatch_activity(TeamDispatchActivity(
+                    id=f"progress-{sample}-{i}", tool_name="team_report_progress",
+                    caller_session_id=f"session-lead-{i}", caller_identity=f"agent:lead-{i}",
+                    agent_id=f"lead-{i}", dispatch_id=dispatch_id, status="success",
+                    progress_classification="progress",
+                ))
+                receipt = prompt_record(
+                    execution_id=f"execution-{sample}-{i}", effect_type="effect:agent:enqueue-prompt",
+                    idempotency_key=f"execution-{sample}-{i}", published_event_id=f"delivered-{sample}-{i}",
+                    status="succeeded", finished_at=datetime.now(UTC),
+                    resolved_config={"session_id": f"session-lead-{i}", "large_prompt": "retained prompt context\n" * 3000},
+                    input_payload={"upstream_context": "retained input context\n" * 3000},
+                    outputs={"dispatch_id": dispatch_id, "session_id": f"session-lead-{i}", "queued": False},
+                )
+                worker.execution_store.put(receipt)
+                new_receipts.append(receipt)
+            barrier = Barrier(2)
+            rendezvous[0] = barrier
+            for receipt in new_receipts:
+                lane.on_prompt_execution_changed(worker=worker, record=receipt)
+            # Only synchronize the start; all measured work is the real command.
+            barrier.wait(timeout=5)
+            started = time.monotonic()
+            trace = f"overlap-{sample}"
+            _publish(worker, trace)
+            deadline = started + 5
+            completed = 0
+            while time.monotonic() < deadline:
+                worker.run_once()
+                with sqlite3.connect(worker.execution_store.path) as connection:
+                    completed = connection.execute(
+                        "SELECT count(*) FROM effect_executions WHERE trace_id=? AND status='succeeded'", (trace,)
+                    ).fetchone()[0]
+                if completed == 6:
+                    break
+            assert completed == 6
+            foreground_samples.append(time.monotonic() - started)
+            _drain(lane, worker)
+        assert len(finalization_samples) == 60
+        finalization_p95 = sorted(finalization_samples)[56]
+        foreground_p95 = sorted(foreground_samples)[28]
+        print(f"actionable Team finalization p95={finalization_p95:.4f}s; foreground chain p95={foreground_p95:.4f}s")
+        assert finalization_p95 < 1
+        assert foreground_p95 < 2
+        with sqlite3.connect(repo.store.path) as connection:
+            assert connection.execute("SELECT count(*) FROM team_dispatch_activity WHERE tool_name='team_dispatch_finished'").fetchone()[0] == 60
+            assert connection.execute("SELECT count(*) FROM team_dispatches WHERE id NOT LIKE 'history-%' AND status!='completed'").fetchone()[0] == 0
     finally:
         worker.close()

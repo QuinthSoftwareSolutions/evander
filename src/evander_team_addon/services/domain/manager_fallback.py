@@ -190,10 +190,14 @@ def _manager_fallback_summary_payload(
         ),
         key=lambda item: (item.created_at, item.id),
     )
+    action_records = (state.query_records(
+        "action_records", "success=0 AND dismissed_at IS NULL AND agent_id IN ("
+        + ",".join("?" for _ in team_agent_ids) + ")", tuple(sorted(team_agent_ids)),
+    ) if hasattr(state, "query_records") else state.action_records.values())
     visible_action_records = sorted(
         (
             record
-            for record in state.action_records.values()
+            for record in action_records
             if record.agent_id in team_agent_ids
             and not record.success
             and record.dismissed_at is None

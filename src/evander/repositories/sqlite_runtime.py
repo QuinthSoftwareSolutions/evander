@@ -544,7 +544,10 @@ def ensure_sqlite_initialized(
                 with open_sqlite_connection(
                     resolved, read_only=True, timeout_ms=timeout_ms, operation="schema_readiness"
                 ) as connection:
-                    ready = is_current(connection)
+                    ready = (
+                        is_current(connection)
+                        and connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+                    )
                 if ready:
                     with _guard:
                         _initialized.add((*identity, schema_key))
@@ -559,7 +562,9 @@ def ensure_sqlite_initialized(
             connection.row_factory = sqlite3.Row
             try:
                 connection.execute(f"PRAGMA busy_timeout={int(remaining * 1000)}")
-                connection.execute("PRAGMA journal_mode=WAL")
+                mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if mode.lower() != "wal":
+                    raise sqlite3.OperationalError(f"WAL initialization returned {mode!r}")
                 connection.execute("PRAGMA wal_autocheckpoint=0")
                 connection.execute("PRAGMA foreign_keys=ON")
                 try:

@@ -186,7 +186,12 @@ def _resolve_ephemeral_assignment(
             "ephemeral assignment",
         )
     if session_id:
-        for assignment in state.ephemeral_assignments.values():
+        records = (
+            state.query_records("ephemeral_assignments", "session_id=?", (session_id,))
+            if hasattr(state, "query_records")
+            else state.ephemeral_assignments.values()
+        )
+        for assignment in records:
             if assignment.session_id == session_id:
                 return assignment
     raise ValueError("ephemeral action requires assignment_id or a known session_id")

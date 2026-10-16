@@ -357,6 +357,7 @@ def test_copy_preserves_unrelated_statistics_and_bounded_recovery(
     result = copy_history_index_storage(source, target, interned=target_interned)
     assert result["changed"] == (source_interned != target_interned)
     with sqlite3.connect(target) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert statistics(connection) == original_stats
         if result["changed"]:
             history_tables = (
@@ -367,6 +368,9 @@ def test_copy_preserves_unrelated_statistics_and_bounded_recovery(
             assert history_tables <= {row[0] for row in connection.execute("SELECT * FROM sqlite_stat1")}
     for kind, model in (("effect", SqliteExecutionStore), ("gate", SqliteGateExecutionStore)):
         store = model(target)
+        with sqlite3.connect(target) as connection:
+            assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert statistics(connection) == original_stats
         with bounded_completion_queries(monkeypatch) as statements:
             assert store.list_completion_pending_records() == []
             assert store.list_completion_pending_records(after=("2026-01-01T00:00:00Z", "z")) == []

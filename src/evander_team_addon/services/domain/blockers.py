@@ -295,7 +295,7 @@ def open_or_update_agent_execution_stall(
         and event.dispatch_id == normalized_dispatch_id
         and event.metadata.get("kind") == "execution_stall_exhausted"
         and event.metadata.get("no_progress_count") == no_progress_count
-        for event in state.blocker_events.values()
+        for event in _events_for_blocker(state, blocker_id=blocker.id)
     )
     if not evidence_exists:
         evidence_event = append_blocker_event(
@@ -635,7 +635,7 @@ def _blocker_resolution_anchor_agent_id(
     reported_events = sorted(
         (
             event
-            for event in state.blocker_events.values()
+            for event in _events_for_blocker(state, blocker_id=blocker.id)
             if event.blocker_id == blocker.id
             and event.event_type == TeamBlockerEventType.REPORTED
             and _optional_text(event.to_agent_id) is not None
@@ -854,6 +854,16 @@ def assign_blocker_owner(
         result.setdefault("created_inbox_item_ids", []).append(item.id)
 
 
+def _events_for_blocker(state, *, blocker_id, dispatch_id=None):
+    if not hasattr(state, "query_records"):
+        return state.blocker_events.values()
+    where, parameters = "blocker_id=?", [blocker_id]
+    if dispatch_id is not None:
+        where += " AND dispatch_id=?"
+        parameters.append(dispatch_id)
+    return state.query_records("blocker_events", where, parameters)
+
+
 def blocker_events_for_dispatch(
     state: TeamState,
     *,
@@ -863,7 +873,7 @@ def blocker_events_for_dispatch(
     return sorted(
         [
             event
-            for event in state.blocker_events.values()
+            for event in _events_for_blocker(state, blocker_id=blocker_id, dispatch_id=dispatch_id)
             if event.blocker_id == blocker_id and event.dispatch_id == dispatch_id
         ],
         key=lambda event: (event.created_at, event.id),

@@ -2,7 +2,113 @@
 
 from __future__ import annotations
 
-SQLITE_SCHEMA_VERSION = 82
+from .lifecycle_sql import (
+    ACTION_CREATED_KEY,
+    DISPATCH_ATTEMPT_KEY,
+    DISPATCH_COMPLETED_KEY,
+    timestamp_microseconds_sql,
+)
+
+SQLITE_SCHEMA_VERSION = 85
+
+_SCOPED_LIFECYCLE_INDEX_SQL = f"""
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_live
+    ON team_dispatches(id) WHERE status IN ('preparing','leased');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_terminal_time
+    ON team_dispatches(agent_id,{DISPATCH_COMPLETED_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_attempt_time
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_lineage_attempt
+    ON team_dispatches(agent_id,work_lineage_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_delivered_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND wake_work_fingerprint IS NOT NULL AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_fingerprinted_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND cause_kind!='manager_fallback' AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)
+      AND (wake_work_record_fingerprints_json!='{{}}' OR wake_work_fingerprint IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_legacy_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND cause_kind!='manager_fallback' AND cause_kind NOT IN ('blocker','context_handoff')
+      AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)
+      AND wake_work_record_fingerprints_json='{{}}' AND wake_work_fingerprint IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_tasks_operational ON team_tasks(project_id,id)
+    WHERE state IN ('pending','in_progress','blocked','waiting_for_input','waiting_for_review');
+CREATE INDEX IF NOT EXISTS idx_team_tasks_origin ON team_tasks(originating_task_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_deliverables_operational ON team_deliverables(task_id,id)
+    WHERE state IN ('pending','in_progress','blocked') AND superseded_by_deliverable_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_deliverables_context ON team_deliverables(branch_context_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_deliverables_initial_release ON team_deliverables(task_id,id)
+    WHERE state='accepted' AND superseded_by_deliverable_id IS NULL AND json_extract(initial_release_disposition_json,'$.state')='pending';
+CREATE INDEX IF NOT EXISTS idx_team_reviews_operational ON team_review_requests(id)
+    WHERE state IN ('pending','in_progress','blocked') AND retired_at IS NULL AND superseded_by_review_request_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_reviews_release ON team_review_requests(release_package_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_human_findings_open ON team_human_review_findings(id) WHERE state='open';
+CREATE INDEX IF NOT EXISTS idx_team_verification_release ON team_release_verification_runs(json_extract(payload_json,'$.release_package_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_cases_operational ON team_cases(id)
+    WHERE status IN ('open','triage','in_progress','waiting');
+CREATE INDEX IF NOT EXISTS idx_team_releases_operational ON team_release_packages(id)
+    WHERE state IN ('pending','in_progress','blocked');
+CREATE INDEX IF NOT EXISTS idx_team_releases_exact_base ON team_release_packages(project_id,lower(candidate_commit_sha),id);
+CREATE INDEX IF NOT EXISTS idx_team_contexts_active ON team_git_work_contexts(id) WHERE state='active';
+CREATE INDEX IF NOT EXISTS idx_team_contexts_task ON team_git_work_contexts(task_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_contexts_pruning ON team_git_work_contexts({timestamp_microseconds_sql("updated_at")},id) WHERE state='abandoned';
+CREATE INDEX IF NOT EXISTS idx_team_cleanup_context ON team_worktree_cleanup_candidates(git_work_context_id,state,id);
+CREATE INDEX IF NOT EXISTS idx_team_cleanup_physical ON team_worktree_cleanup_candidates(task_id,agent_id,worktree_path,id) WHERE state='succeeded';
+CREATE INDEX IF NOT EXISTS idx_team_preparations_operational ON team_git_preparation_attempts(id) WHERE state IN ('pending','prepared','cleanup_pending');
+CREATE INDEX IF NOT EXISTS idx_team_preparations_session ON team_git_preparation_attempts(json_extract(payload_json,'$.session_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_recovery_operational ON team_git_recovery_incidents(id) WHERE state IN ('diagnosed','preparing','awaiting_review','waiting');
+CREATE INDEX IF NOT EXISTS idx_team_recovery_retention ON team_git_recovery_incidents(id) WHERE json_array_length(payload_json,'$.preserved_context_ids')>0;
+CREATE INDEX IF NOT EXISTS idx_team_recovery_attempt_retention ON team_git_recovery_incidents(id) WHERE json_array_length(payload_json,'$.preserved_attempt_ids')>0;
+CREATE INDEX IF NOT EXISTS idx_team_contexts_worktree ON team_git_work_contexts(id) WHERE worktree_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_team_ephemeral_operational ON team_ephemeral_assignments(id) WHERE state IN ('requested','spawn_pending','running','completed','cleanup_pending');
+CREATE INDEX IF NOT EXISTS idx_team_ephemeral_task ON team_ephemeral_assignments(task_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_ephemeral_assignments_activity ON team_ephemeral_assignments(parent_agent_id,max({timestamp_microseconds_sql("created_at")},{timestamp_microseconds_sql("updated_at")}),id);
+CREATE INDEX IF NOT EXISTS idx_team_review_requests_activity ON team_review_requests(reviewer_agent_id,max(COALESCE({timestamp_microseconds_sql("created_at")},0),COALESCE({timestamp_microseconds_sql("decision_at")},0)),id);
+CREATE INDEX IF NOT EXISTS idx_team_blockers_open ON team_blockers(id) WHERE state='open';
+CREATE INDEX IF NOT EXISTS idx_team_tasks_activity
+    ON team_tasks(owner_agent_id,max({timestamp_microseconds_sql("created_at")},{timestamp_microseconds_sql("updated_at")}),id);
+CREATE INDEX IF NOT EXISTS idx_team_inbox_activity
+    ON team_inbox(recipient_agent_id,max({timestamp_microseconds_sql("created_at")},{timestamp_microseconds_sql("updated_at")}),id);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_context_previous
+    ON team_dispatches(agent_id,session_id,native_thread_id,{DISPATCH_COMPLETED_KEY} DESC,id)
+    WHERE completed_at IS NOT NULL AND status='completed';
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_missing_mcp
+    ON team_dispatches(agent_id,id)
+    WHERE json_extract(mcp_capability_receipt_json,'$.verification_status')='missing';
+CREATE INDEX IF NOT EXISTS idx_team_action_records_latest
+    ON team_action_records(agent_id,{ACTION_CREATED_KEY} DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_reviews_review
+    ON team_dispatch_reviews(review_request_id,dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_team_action_records_legacy_notes
+    ON team_action_records(id) WHERE success=1 AND json_extract(action_json,'$.tool_name')='team_record_note';
+CREATE INDEX IF NOT EXISTS idx_team_action_records_unresolved
+    ON team_action_records(agent_id,id) WHERE success=0 AND dismissed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_inbox_pending
+    ON team_inbox(id) WHERE state='pending';
+CREATE INDEX IF NOT EXISTS idx_team_inbox_dependency_repair_evidence
+    ON team_inbox(json_extract(payload_json,'$.kind'),json_extract(payload_json,'$.predecessor_task_id'),json_extract(payload_json,'$.successor_task_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_inbox_integration_recovery_evidence
+    ON team_inbox(json_extract(payload_json,'$.kind'),json_extract(payload_json,'$.old_integration_task_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_conversations_agent
+    ON team_conversations(agent_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_pending
+    ON team_conversation_messages(status,conversation_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_seen_dispatch
+    ON team_conversation_messages(seen_dispatch_id,status,id);
+CREATE INDEX IF NOT EXISTS idx_team_release_packages_predecessor
+    ON team_release_packages(supersedes_release_package_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_team_release_deliverables_deliverable
+    ON team_release_deliverables(deliverable_id,package_id);
+CREATE INDEX IF NOT EXISTS idx_team_release_packages_correction
+    ON team_release_packages(state,json_extract(gate_failure_json,'$.stage'),json_extract(gate_failure_json,'$.kind'),project_id,id);
+"""
 
 _LIFECYCLE_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;

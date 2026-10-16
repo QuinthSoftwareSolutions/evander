@@ -936,6 +936,7 @@ def test_legacy_schema_and_poisoned_binding_recover_through_execution_receipt(
     env.repo.update(legacy_binding)
     with sqlite3.connect(env.repo.store.path) as connection:
         connection.execute("UPDATE team_state_metadata SET value='0' WHERE key IN ('sqlite_schema_version', 'state_schema_version')")
+        connection.execute("DROP INDEX idx_team_dispatches_context_previous")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN native_thread_id")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN native_thread_observed_at")
         connection.execute(

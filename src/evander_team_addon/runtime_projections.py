@@ -410,9 +410,11 @@ def wake_work_changed_since_latest_attempt(
         TeamDispatchStatus.EXPIRED,
         TeamDispatchStatus.FAILED,
     }
+    records = (state.latest_wake_work_records(agent_id) if hasattr(state, "latest_wake_work_records")
+               else state.dispatches.values())
     terminal_dispatches = [
         dispatch
-        for dispatch in state.dispatches.values()
+        for dispatch in records
         if dispatch.agent_id == agent_id
         and dispatch.cause_kind != "manager_fallback"
         and dispatch.status in terminal_statuses

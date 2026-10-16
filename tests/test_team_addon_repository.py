@@ -6962,6 +6962,9 @@ def test_create_task_command_reports_stored_debounced_wake_outbox_id(
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-create-task")
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(team_domain_common, "utc_now", lambda: now)
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.task_creation_commands.utc_now", lambda: now
+    )
 
     _state, first = _command_service(repo).create_task_command(
         session_id="session-lead",

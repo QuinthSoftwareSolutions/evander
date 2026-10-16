@@ -40,7 +40,15 @@ class _FinalizationCommands:
 def commit_prepared_dispatch_finalization(
     repository: TeamStateRepository, *, dispatch_id: str, mutator
 ):
+    snapshot = getattr(repository, "dispatch_finalization_snapshot", None)
+    if callable(snapshot):
+        with snapshot(dispatch_id=dispatch_id) as (state, activities):
+            return _commit_finalization_snapshot(repository, dispatch_id, mutator, state, activities)
     state, activities = repository.store.read_state_with_dispatch_activity(dispatch_id=dispatch_id)
+    return _commit_finalization_snapshot(repository, dispatch_id, mutator, state, activities)
+
+
+def _commit_finalization_snapshot(repository, dispatch_id, mutator, state, activities):
     baseline = state.model_dump(mode="json")
     commands = _FinalizationCommands(dispatch_id, activities)
     candidate, result = mutator(state, commands)

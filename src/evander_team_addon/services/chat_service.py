@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from datetime import datetime, timedelta
 from typing import Any, Callable, Sequence
 from uuid import uuid4
@@ -1364,15 +1366,17 @@ class TeamChatService:
         with team_dispatch_planning_lock(self._repository.store.path):
             for attempt in range(TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS):
                 claims.clear()
-                state = self._repository.read()
-                previous_payload = state.model_dump(mode="json")
-                candidate = _mutate(state)
                 try:
-                    state = self._repository.commit_prepared_state_with_command_transaction(
-                        previous_payload=previous_payload,
-                        candidate=candidate,
-                        command_writer=lambda _transaction: None,
-                    )
+                    snapshot = getattr(self._repository, "command_snapshot", None)
+                    context = snapshot() if callable(snapshot) else nullcontext(self._repository.read())
+                    with context as state:
+                        previous_payload = state.model_dump(mode="json")
+                        candidate = _mutate(state)
+                        state = self._repository.commit_prepared_state_with_command_transaction(
+                            previous_payload=previous_payload,
+                            candidate=candidate,
+                            command_writer=lambda _transaction: None,
+                        )
                 except TeamStateConflictError:
                     if attempt + 1 == TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS:
                         raise

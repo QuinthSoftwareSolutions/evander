@@ -59,9 +59,16 @@ def initialize_pending_initial_release_disposition(
 
 
 def deliverable_has_release_package(state: TeamState, deliverable_id: str) -> bool:
-    return any(
-        deliverable_id in release.deliverable_ids for release in state.release_packages.values()
+    records = (
+        state.query_records(
+            "release_packages",
+            "id IN (SELECT package_id FROM team_release_deliverables WHERE deliverable_id=?)",
+            (deliverable_id,),
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
     )
+    return any(deliverable_id in release.deliverable_ids for release in records)
 
 
 def initial_release_decision_project_id(

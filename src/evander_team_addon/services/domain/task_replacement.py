@@ -307,9 +307,14 @@ def _existing_task_dependency_graph_repair_evidence(
     predecessor_task_id: str,
     successor_task_id: str,
 ) -> AgentInboxItem | None:
+    records = (state.query_records(
+        "inbox", "json_extract(payload_json,'$.kind')=? AND json_extract(payload_json,'$.predecessor_task_id')=? "
+        "AND json_extract(payload_json,'$.successor_task_id')=?",
+        (TASK_DEPENDENCY_GRAPH_REPAIR_AUDIT_KIND, predecessor_task_id, successor_task_id),
+    ) if hasattr(state, "query_records") else state.inbox.values())
     matches = [
         item
-        for item in state.inbox.values()
+        for item in records
         if item.payload.get("kind") == TASK_DEPENDENCY_GRAPH_REPAIR_AUDIT_KIND
         and item.payload.get("predecessor_task_id") == predecessor_task_id
         and item.payload.get("successor_task_id") == successor_task_id
