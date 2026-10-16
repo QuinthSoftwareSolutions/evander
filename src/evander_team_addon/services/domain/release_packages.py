@@ -195,10 +195,69 @@ def _releases_for_exact_task_base(
         release
         for release in records
         if release.project_id == task.project_id
-        and _release_candidate_branch(release) == task.git_base_branch
+        and task.git_base_branch in _release_candidate_base_branches(state, release)
         and release.candidate_commit_sha is not None
         and release.candidate_commit_sha.casefold() == task.git_base_commit_sha.casefold()
     ]
+
+
+def _has_command_blocked_verification(state: TeamState, release: ReleasePackage) -> bool:
+    failure = release.gate_failure
+    manifest = release.manifest
+    if (
+        release.state != TeamRecordState.BLOCKED
+        or failure is None
+        or failure.stage != "verification"
+        or failure.kind != "blocked"
+        or manifest is None
+        or manifest.evidence_status != "complete"
+        or release.candidate_commit_sha is None
+        or release.candidate_tree_hash is None
+        or not release.verification_run_ids
+        or release.verification_run_ids[-1] != failure.source_id
+    ):
+        return False
+    run = state.release_verification_runs.get(failure.source_id or "")
+    if (
+        run is None
+        or run.release_package_id != release.id
+        or run.candidate_commit_sha != release.candidate_commit_sha
+        or run.state != "failed"
+        or run.failure_kind != "command"
+        or run.superseded_by_verification_run_id is not None
+        or len(run.command_results) != len(manifest.verification_commands)
+    ):
+        return False
+    return any(
+        command.name == result.name
+        and command.command_failure_action == "block"
+        and result.state == "failed"
+        and result.failure_kind == "command"
+        for command, result in zip(manifest.verification_commands, run.command_results, strict=True)
+    )
+
+
+def _release_candidate_base_branches(state: TeamState, release: ReleasePackage) -> set[str]:
+    branch = _release_candidate_branch(release)
+    branches = {branch} if branch is not None else set()
+    if not _has_command_blocked_verification(state, release):
+        return branches
+    assert release.manifest is not None
+    for evidence in release.manifest.deliverables:
+        deliverable = state.deliverables.get(evidence.deliverable_id)
+        if (
+            deliverable is not None
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.superseded_by_deliverable_id is None
+            and evidence.review_manifest is not None
+            and evidence.review_manifest == deliverable.review_manifest
+            and evidence.review_manifest.reviewed_commit_sha == release.candidate_commit_sha
+            and (deliverable.git_refs.submitted_commit_sha or deliverable.git_refs.commit_sha)
+            == release.candidate_commit_sha
+            and deliverable.git_refs.agent_branch is not None
+        ):
+            branches.add(deliverable.git_refs.agent_branch)
+    return branches
 
 
 def _ambiguous_exact_base_task_ids(
@@ -1341,6 +1400,10 @@ class _ReleasePackageBuilder:
                 )
             )
         )
+        self.is_candidate_correction_successor = self.is_candidate_correction_successor or (
+            self.predecessor is not None
+            and _has_command_blocked_verification(self.state, self.predecessor)
+        )
         if self.feature_sources_by_task and not self.is_candidate_correction_successor:
             assert self.git is not None
             for task_id, source_branches in self.feature_sources_by_task.items():
@@ -1531,6 +1594,11 @@ class _ReleasePackageBuilder:
             task is not None
             and task.git_base_branch is not None
             and task.git_base_branch != expected_branch
+            and not (
+                _has_command_blocked_verification(self.state, self.predecessor)
+                and task.git_base_branch
+                in _release_candidate_base_branches(self.state, self.predecessor)
+            )
         ):
             raise ValueError(
                 f"correction task {task.id} base {task.git_base_branch!r} does not "
@@ -2029,7 +2097,10 @@ def _lineage_bound_correction_request_error(
 ) -> str | None:
     """Authorize independently created remediation only through exact lineage binding."""
 
-    if predecessor.state != TeamRecordState.REJECTED or not correction_deliverable_ids:
+    command_blocked = _has_command_blocked_verification(state, predecessor)
+    if not correction_deliverable_ids or (
+        predecessor.state != TeamRecordState.REJECTED and not command_blocked
+    ):
         return None
     tasks = []
     for deliverable_id in correction_deliverable_ids:
@@ -2042,6 +2113,24 @@ def _lineage_bound_correction_request_error(
             state, predecessor
         ):
             return None
+        if command_blocked:
+            manifest = deliverable.review_manifest
+            reviewed_commit, review_error = _reviewed_commit_for_release(state, deliverable)
+            if review_error is not None:
+                return review_error
+            if (
+                base.id != predecessor.id
+                or reviewed_commit == predecessor.candidate_commit_sha
+                or (
+                    manifest is not None
+                    and (
+                        manifest.base_commit_sha != predecessor.candidate_commit_sha
+                        or manifest.tree_hash == predecessor.candidate_tree_hash
+                        or not manifest.changed_paths
+                    )
+                )
+            ):
+                return "command-blocked verification requires a changed correction of its exact candidate"
         tasks.append(task)
     for task in tasks:
         try:

@@ -956,6 +956,7 @@ class TeamLifecycleRepository:
                 + roots
                 + " UNION SELECT t.parent_task_id FROM team_tasks t JOIN related r ON r.id=t.id WHERE t.parent_task_id IS NOT NULL"
                 + " UNION SELECT t.id FROM team_tasks t JOIN related r ON t.parent_task_id=r.id"
+                + " UNION SELECT t.id FROM team_tasks t JOIN related r ON t.originating_task_id=r.id"
                 + " UNION SELECT d.dependency_task_id FROM team_task_dependencies d JOIN related r ON d.task_id=r.id"
                 + " UNION SELECT j.value FROM team_tasks t JOIN related r ON r.id=t.id JOIN json_each(t.deliverable_contract_json,'$.required_contribution_task_ids') j) SELECT id FROM related",
                 parameters,

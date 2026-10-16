@@ -40,6 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_team_dispatches_legacy_attempt
       AND wake_work_record_fingerprints_json='{{}}' AND wake_work_fingerprint IS NULL;
 CREATE INDEX IF NOT EXISTS idx_team_tasks_operational ON team_tasks(project_id,id)
     WHERE state IN ('pending','in_progress','blocked','waiting_for_input','waiting_for_review');
+CREATE INDEX IF NOT EXISTS idx_team_tasks_origin ON team_tasks(originating_task_id,id);
 CREATE INDEX IF NOT EXISTS idx_team_deliverables_operational ON team_deliverables(task_id,id)
     WHERE state IN ('pending','in_progress','blocked') AND superseded_by_deliverable_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_team_deliverables_context ON team_deliverables(branch_context_id,id);
