@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander-test-fixtures-addon"
-version = "0.1.3"
+version = "0.1.4"
 description = "Task-owned disposable SQL Server and RabbitMQ fixtures for Evander."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,7 @@ dependencies = ["evander>=0.95.0", "httpx>=0.28.1", "pydantic>=2.8.0", "starlett
 dev = ["pytest>=8.3.2", "pika>=1.3.2", "pyodbc>=5.2.0"]
 
 [project.scripts]
+evander-test-fixtures-migrate = "evander_test_fixtures_addon.migration:main"
 evander-test-fixtures-worker = "evander_test_fixtures_addon.worker_api:main"
 
 [project.entry-points."evander.addons"]

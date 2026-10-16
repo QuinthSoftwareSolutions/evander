@@ -63,8 +63,10 @@ Git, and HTTP surfaces.
 - Durable JSON and SQLite stores for sessions, approvals, audit, workflow execution, and add-ons
 - A separately installed [WordPress Add-on](packages/wordpress-addon/README.md) for recoverable content,
   builder and source design changes, scoped browser editing and external release recovery
-- A separately installed [Test Fixtures add-on](packages/test-fixtures-addon/README.md) for
-  task-owned SQL Server databases and isolated RabbitMQ brokers with automatic idle cleanup
+- Independent [SQL Server](packages/sqlserver-addon/README.md) and
+  [RabbitMQ](packages/rabbitmq-addon/README.md) add-ons for registered-service management,
+  bounded data tools and disposable resources; the legacy
+  [Test Fixtures add-on](packages/test-fixtures-addon/README.md) supports draining existing bundles
 - Admin Web and CLI surfaces for setup, sessions, policy, approvals, workflows, and recovery
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network

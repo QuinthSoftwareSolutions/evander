@@ -79,6 +79,28 @@ def test_blocked_task_can_acquire_without_broadening_project_authority(resource_
     assert resource_state.tasks["task-a"].state.value == "blocked"
 
 
+def test_generic_resource_adapter_preserves_task_and_dispatch_authority(resource_state):
+    from evander_team_addon.resource_authority import TeamResourceAuthority
+
+    adapter = TeamResourceAuthority.__new__(TeamResourceAuthority)
+    adapter.repository = SimpleNamespace(read=lambda: resource_state)
+    adapter.authority = TaskResourceAuthority(adapter.repository)
+    adapter.context = SimpleNamespace(
+        service=SimpleNamespace(
+            policy=SimpleNamespace(
+                get_session=lambda _: SimpleNamespace(
+                    directory_path=SimpleNamespace(as_posix=lambda: "root")
+                )
+            )
+        )
+    )
+    owner = adapter.resolve("session-a", {"task_id": "task-a"}, "sqlserver_acquire")
+    assert owner.key == "team-a:task-a" and owner.job_tags == {"dispatch_id": "dispatch-a"}
+    assert adapter.handles_session("session-a") and adapter.owns(owner)
+    resource_state.tasks["task-a"].state = TeamTaskState.CANCELLED
+    assert not adapter.owns(owner)
+
+
 @pytest.mark.parametrize(
     "change",
     [

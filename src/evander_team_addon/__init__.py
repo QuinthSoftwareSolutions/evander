@@ -7,6 +7,7 @@ from .mcp import MCP_TOOL_CATALOG, register_mcp_tools
 from .outbound_identity import build_outbound_identity_resolver
 from .providers import register_providers
 from .git_submission import validate_submission_checkout
+from .resource_authority import build_resource_authority
 from .repository import ADDON_ID, STATE_FILE
 from .ui import admin_ui_routes
 
@@ -28,6 +29,7 @@ def register_addon() -> AddonRegistration:
         workflow_providers=register_providers,
         outbound_identity_resolver=build_outbound_identity_resolver,
         git_submission_validator=validate_submission_checkout,
+        resource_authority=build_resource_authority,
         metadata={
             "description": "Hierarchical team state model for optional agent-team orchestration.",
             "state_file": STATE_FILE,

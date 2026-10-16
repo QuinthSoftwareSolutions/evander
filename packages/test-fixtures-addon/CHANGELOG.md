@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - 2026-10-16
+
+- Add explicit drain mode that rejects new bundles while retaining existing rebind, renewal, reset, release and cleanup.
+- Add read-only migration previews for independent SQL Server and RabbitMQ profiles and grants, plus retirement journal checks that require separate verification of actual resource absence.
+
 ## 0.1.3 - 2026-10-16
 
 - Give the fixture worker and independent reaper private writable temporary directories while retaining strict filesystem protection. SQLite can then sort larger worker-job histories without `SQLITE_IOERR_GETTEMPPATH` preventing fixture reconciliation.

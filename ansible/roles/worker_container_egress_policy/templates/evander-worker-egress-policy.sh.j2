@@ -4,6 +4,7 @@ set -euo pipefail
 ACTION="${1:-apply}"
 NETWORK="{{ evander_worker_docker_network | default('none') | string | trim }}"
 CHAIN="{{ evander_worker_egress_policy_chain }}"
+RESOURCE_CHAIN="EVANDER-RESOURCE-EGRESS"
 
 remove_policy() {
   iptables -N DOCKER-USER 2>/dev/null || true
@@ -84,6 +85,10 @@ done
 {% for cidr in evander_worker_egress_policy_block_cidrs %}
 iptables -A "${CHAIN}" -d "{{ cidr }}" -j DROP
 {% endfor %}
+# The resource services own exact job-source/destination grants in this stable
+# chain. Policy reloads must neither shadow nor flush those accepted intents.
+iptables -N "${RESOURCE_CHAIN}" 2>/dev/null || true
+iptables -A "${CHAIN}" -j "${RESOURCE_CHAIN}"
 {% for endpoint in evander_worker_effective_egress_policy_allow_tcp_endpoints %}
 iptables -A "${CHAIN}" -p tcp -d "{{ endpoint.host }}" --dport "{{ endpoint.port }}" -j ACCEPT
 {% endfor %}

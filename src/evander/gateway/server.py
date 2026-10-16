@@ -945,6 +945,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             config=context.config,
             service=context,
         )
+        if addon.resource_authority is not None:
+            context.resource_authorities[addon.addon_id] = addon.resource_authority(addon_context)
         if addon.outbound_identity_resolver is not None:
             context.register_outbound_identity_resolver(
                 addon.addon_id,

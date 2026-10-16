@@ -273,6 +273,9 @@ def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(
     assert f"{paths.agent_home}:/home/agent" in args
     assert f"{paths.artifacts}:/artifacts" in args
     assert args[args.index("-w") + 1] == "/home/agent"
+    # Credentials must not survive stop in the retained writable container layer.
+    private = [args[i + 1] for i, flag in enumerate(args) if flag == "--tmpfs"]
+    assert "/run/evander-resources:rw,nosuid,nodev,noexec,size=16m,mode=1777" in private
     assert args[args.index("--memory") + 1] == "512m"
     assert args[args.index("--cpus") + 1] == "1.5"
     assert args[args.index("--pids-limit") + 1] == "256"

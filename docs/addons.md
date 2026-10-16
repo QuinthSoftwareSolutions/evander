@@ -12,6 +12,8 @@ the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
 - [Loading and enablement](#loading), [extension contract](#boundary-contract),
   and [private storage](#storage)
 - [Miro](miro-addon.md), [Figma](figma.md),
+  [SQL Server](../packages/sqlserver-addon/README.md),
+  [RabbitMQ](../packages/rabbitmq-addon/README.md),
   [WordPress](../packages/wordpress-addon/docs/operations.md),
   [Freshservice](#freshservice-add-on-guidance),
   [Azure DevOps activity](#azure-devops-activity-add-on-guidance),
@@ -81,6 +83,12 @@ Add-ons may register generic integration points:
 - Connector drivers registered by type name and invoked only through the core connector service,
   preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
+- Optional `resource_authority` factories implementing the provider-neutral
+  ownership contract in `evander.resources.authority`; consumers validate and
+  revalidate their own lifecycle and receive durable readiness notices. Core
+  session/workflow consumers emit `resource:lease-state` internal events. Team's
+  adapter preserves its active task/dispatch checks; resource providers never
+  import Team. Filter lifecycle subscriptions by directory and owner.
 - Managed website login adapters that return only origin-scoped temporary browser state
 
 Add-ons must not add domain-specific fields to core models such as

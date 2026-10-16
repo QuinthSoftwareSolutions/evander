@@ -447,3 +447,20 @@ def test_independent_processes_admit_only_one_durable_bundle(tmp_path, scope):
             if process.is_alive():
                 process.terminate()
                 process.join(5)
+
+
+def test_drain_mode_allows_existing_rebind_but_rejects_new_bundle(service, worker):
+    first = service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "old")
+    revision, settings = service.store.settings("root")
+    settings.drain_only = True
+    settings.allocations_enabled = False
+    service.store.save_settings("root", revision, settings, "operator")
+    worker.settings.drain_only = True
+    assert (
+        service.acquire_ready("session-a", "task-a", "sqlserver-rabbitmq", "rebind")["lease_id"]
+        == first["lease_id"]
+    )
+    service.queue("session-a", first["lease_id"], "release")
+    assert service.reconcile(first["lease_id"])["state"] == "released"
+    with pytest.raises(FixtureError, match="draining"):
+        service.acquire("session-a", "task-a", "sqlserver-rabbitmq", "new")

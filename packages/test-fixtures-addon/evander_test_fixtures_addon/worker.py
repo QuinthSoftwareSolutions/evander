@@ -51,7 +51,7 @@ class WorkerService:
             try:
                 lease = self.store.get(request.lease_id)
             except FixtureError:
-                if not self.settings.allocations_enabled:
+                if not self.settings.allocations_enabled or self.settings.drain_only:
                     raise FixtureError("Worker fixture allocations are disabled")
                 active = [item for item in self.store.list() if item["state"] not in TERMINAL]
                 if any(item["scope"]["task_id"] == request.scope.task_id for item in active):

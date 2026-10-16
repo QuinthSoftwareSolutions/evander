@@ -325,12 +325,47 @@ class CommunicationMessageSender(NotificationSender):
         thread_id: str | None = None,
         subject: str | None = None,
         sender_session_id: str = "workflow",
+        published_artifacts: list[Any] | None = None,
     ) -> dict[str, Any]:
         target = self._resolve_target(communication_target_id)
         required_capability = "reply" if thread_id else "write"
         _require_target_capability(target, required_capability)
 
-        if target.provider == "teams":
+        if published_artifacts is not None and not isinstance(published_artifacts, list):
+            raise ValueError("published_artifacts must resolve to an array")
+
+        if published_artifacts:
+            if target.provider != "teams":
+                raise ValueError("Published message artifacts currently require a Teams target")
+            if parse_teams_target(target.address).kind in {"chat", "user"} and thread_id:
+                raise ValueError("Teams chat targets do not support thread replies.")
+            from evander.messaging.published_message_artifacts import prepare_published_teams_files
+
+            files = prepare_published_teams_files(
+                runtime=self.runtime,
+                directory_path=self.directory_path,
+                config=self._resolved_config(),
+                specifications=published_artifacts,
+                sender_session_id=sender_session_id,
+            )
+            if files:
+                service = self._teams_service(target.address)
+                send_target = resolve_teams_send_target(service, target.address)
+                result = dict(
+                    service.post_file(
+                        message, send_target, sender_session_id, files, thread_id=thread_id,
+                    )
+                )
+            else:
+                result = self._send_teams(
+                    target=target,
+                    message=message,
+                    thread_id=thread_id,
+                    sender_session_id=sender_session_id,
+                )
+            result["artifact_ids"] = [item["artifact_id"] for item in files]
+            result["artifact_count"] = len(files)
+        elif target.provider == "teams":
             result = self._send_teams(
                 target=target,
                 message=message,
