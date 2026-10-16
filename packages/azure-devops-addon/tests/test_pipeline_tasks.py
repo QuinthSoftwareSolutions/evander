@@ -224,7 +224,7 @@ def test_timeout_ends_wait_without_success(environment, monkeypatch):
         "datetime",
         SimpleNamespace(now=lambda _: later, fromisoformat=datetime.fromisoformat),
     )
-    assert run()["status"] == "failed"
+    assert run(complete=True, result="succeeded")["status"] == "failed"
     assert state["events"][0]["result"] == "failed"
 
 

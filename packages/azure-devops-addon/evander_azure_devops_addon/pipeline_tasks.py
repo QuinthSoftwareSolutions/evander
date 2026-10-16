@@ -323,14 +323,14 @@ class TaskEffect(EffectProviderBase):
                 if state["attempts"] >= 3
                 else "inactive",
             }
+        if now >= datetime.fromisoformat(run["deadline"]) and not run.get("result"):
+            run.update(result="failed", summary="Test workflow exceeded its 120-minute deadline.")
         if completing and not run.get("result"):
             result = payload.get("result")
             if result not in {"succeeded", "failed"}:
                 raise ValueError("Azure task result must be succeeded or failed")
             run["result"] = result
             run["summary"] = redact(str(payload.get("summary") or "")[:2000], context, client.token)
-        if now >= datetime.fromisoformat(run["deadline"]) and not run.get("result"):
-            run.update(result="failed", summary="Test workflow exceeded its 120-minute deadline.")
         try:
             record, active = client.inspect()
         except TaskRequestError:
