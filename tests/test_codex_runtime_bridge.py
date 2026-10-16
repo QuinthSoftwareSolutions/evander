@@ -188,6 +188,131 @@ class NativeProcess:
         return {"ok": True}
 
 
+@pytest.fixture
+def draining_broker(tmp_path):
+    from evander.worker.private_diagnostics import PrivateJobDiagnostics
+
+    store = PrivateJobDiagnostics(tmp_path / "private")
+    capture = store.begin("scan-1")
+    started, closing, release, drained, fail_close = (threading.Event() for _ in range(5))
+
+    class SlowCloseProcess(NativeProcess):
+        def __init__(self, *args, stderr_handler, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.stderr = stderr_handler
+            self.returncode = None
+
+        def request(self, method, params):
+            if method == "turn/start":
+                started.set()
+                return {}
+            return super().request(method, params)
+
+        def close(self):
+            closing.set()
+            assert release.wait(5), "Test did not release native shutdown"
+            self.stderr("terminal private stderr")
+            self.returncode = -15
+            self.running = False
+            if fail_close.is_set():
+                raise RuntimeError("Synthetic native shutdown failure")
+
+    tokens = CodexExternalAuthTokens("synthetic-token", "account-1", "test")
+    bridge = CodexRuntimeBridge(
+        path=tmp_path / "broker.sock",
+        command_factory=lambda *args: ["native"],
+        tokens=tokens,
+        refresh_tokens=lambda **kwargs: tokens,
+        http_client=unused_http_client(),
+        process_factory=SlowCloseProcess,
+        diagnostics=capture,
+        on_drained=drained.set,
+    )
+    bridge.start()
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(3)
+    client.connect(str(bridge.path))
+    client.sendall(json.dumps({"argv": ["exec", "scan"], "cwd": "/home/agent"}).encode() + b"\n")
+    assert started.wait(3)
+    try:
+        yield SimpleNamespace(
+            bridge=bridge,
+            capture=capture,
+            closing=closing,
+            release=release,
+            drained=drained,
+            fail_close=fail_close,
+        )
+    finally:
+        release.set()
+        bridge.close()
+        client.close()
+        store.close()
+
+
+def test_shutdown_drains_terminal_diagnostics_before_returning(draining_broker, monkeypatch):
+    state = draining_broker
+    relay_closed, returned = threading.Event(), threading.Event()
+    original_close = state.bridge.http_relay.close
+
+    def close_relay():
+        original_close()
+        relay_closed.set()
+
+    monkeypatch.setattr(state.bridge.http_relay, "close", close_relay)
+    results = []
+
+    def close_bridge():
+        results.append(state.bridge.close())
+        returned.set()
+
+    closer = threading.Thread(target=close_bridge)
+    closer.start()
+    try:
+        assert state.closing.wait(3) and relay_closed.wait(3)
+        assert not returned.wait(0.1), "Broker returned before the native writer drained"
+    finally:
+        state.release.set()
+        closer.join(3)
+    assert not closer.is_alive() and results == [True]
+    state.capture.finish(status="stopped")
+    events = [
+        json.loads(line)
+        for line in (state.capture.directory / "events.jsonl").read_text().splitlines()
+    ]
+    assert any(
+        event["event"] == "native.stderr" and event["data"]["line"] == "terminal private stderr"
+        for event in events
+    )
+    closed = next(event for event in events if event["event"] == "runtime.closed")
+    assert closed["data"]["native_exit_code"] == -15
+    assert events[-1]["event"] == "worker.completed"
+
+
+def test_shutdown_timeout_keeps_late_native_records_available(draining_broker):
+    state = draining_broker
+    assert state.bridge.close(timeout_seconds=0.01) is False
+    assert state.closing.wait(3)
+    assert not state.bridge.wait_closed() and not state.drained.is_set()
+    state.release.set()
+    assert state.drained.wait(3) and state.bridge.wait_closed()
+    state.capture.finish(status="stopped")
+    text = (state.capture.directory / "events.jsonl").read_text()
+    assert "runtime.shutdown_timeout" in text
+    assert "terminal private stderr" in text and '"native_exit_code": -15' in text
+
+
+def test_native_close_error_does_not_leave_a_capture_waiting_forever(draining_broker):
+    state = draining_broker
+    state.fail_close.set()
+    state.release.set()
+    assert state.bridge.close() and state.bridge.wait_closed()
+    state.capture.finish(status="stopped")
+    text = (state.capture.directory / "events.jsonl").read_text()
+    assert "runtime.close_failed" in text and "runtime.closed" in text
+    assert "terminal private stderr" in text
+
+
 def test_broker_emits_sdk_events_but_keeps_tokens_on_native_side(tmp_path):
     native = []
     tokens = CodexExternalAuthTokens("private-test-token", "account-1", "test")

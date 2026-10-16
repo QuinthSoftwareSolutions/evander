@@ -16,6 +16,7 @@ class Runtime:
     def __init__(self):
         self.started = []
         self.stopped = []
+        self.removed = []
 
     def start_job(self, request, record, paths):
         self.started.append(request)
@@ -23,6 +24,9 @@ class Runtime:
 
     def stop_job(self, record):
         self.stopped.append(record.job_id)
+
+    def remove_job(self, record):
+        self.removed.append(record.job_id)
 
     def codex_runtime_app_server_command(self, *args):
         return ["native-codex", "app-server", "--stdio"]
@@ -43,6 +47,10 @@ class Bridge:
 
     def close(self):
         self.closed = True
+        return True
+
+    def wait_closed(self, *, timeout_seconds=0):
+        return self.closed
 
 
 @pytest.fixture
@@ -134,6 +142,48 @@ def diagnostic_job():
             }
         }
     )
+
+
+@pytest.mark.parametrize("action", ["stop_job", "remove_job"])
+def test_timed_out_broker_finalizes_only_after_its_last_writer(worker, monkeypatch, action):
+    instance, _, _ = worker
+
+    class PendingBridge(Bridge):
+        drained = False
+
+        def close(self):
+            self.closed = True
+            return False
+
+        def wait_closed(self, *, timeout_seconds=0):
+            return self.drained
+
+        def complete(self):
+            capture = self.kwargs["diagnostics"]
+            capture.event("native.stderr", {"line": "terminal private error"})
+            capture.event("runtime.closed", {"native_exit_code": -15})
+            self.drained = True
+            self.kwargs["on_drained"]()
+
+    monkeypatch.setattr("evander.worker.service.CodexRuntimeBridge", PendingBridge)
+    record = instance.start_job(diagnostic_job())
+    bridge = instance._codex_runtime_bridges[record.job_id]
+    capture = bridge.kwargs["diagnostics"]
+    getattr(instance, action)(record)
+    assert not capture.finished
+    assert "private_diagnostics_captured_at" not in instance.store.get(record.job_id).metadata
+    assert record.job_id in instance._codex_runtime_bridges
+    latest = instance.store.get(record.job_id)
+    latest.metadata["concurrent_update"] = "preserved"
+    instance.store.put(latest)
+    bridge.complete()
+    assert capture.finished and record.job_id not in instance._codex_runtime_bridges
+    latest = instance.store.get(record.job_id)
+    assert latest.metadata["private_diagnostics_captured_at"]
+    assert latest.metadata["concurrent_update"] == "preserved"
+    text = (capture.directory / "events.jsonl").read_text()
+    assert "terminal private error" in text and '"native_exit_code": -15' in text
+    assert "terminal private error" not in latest.model_dump_json()
 
 
 def test_terminal_diagnostics_survive_session_cleanup_without_exposing_raw_data(

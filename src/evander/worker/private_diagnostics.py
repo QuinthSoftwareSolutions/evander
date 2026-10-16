@@ -236,6 +236,7 @@ class JobDiagnosticCapture:
         self.rotated_bytes = 0
         self.errors = set()
         self.finished = False
+        self.finalization_lock = threading.Lock()
         self.started_at = datetime.now(UTC).isoformat()
 
     def summary(self, **fields):

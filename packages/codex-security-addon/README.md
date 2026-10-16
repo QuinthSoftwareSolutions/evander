@@ -164,6 +164,13 @@ Diagnostics failures do not turn a successful scan into a failure or block repor
 delivery. Deploy both worker code and the rebuilt scanner image for complete
 capture; runner changes participate in the existing image cache fingerprint.
 
+On stop or removal, the worker waits up to fifteen seconds for broker writers to
+drain. If they take longer, the private capture stays open. The last writer then
+triggers collection and finalization automatically, preserving terminal stderr
+and native exit records without requiring another workflow poll. Shutdown
+timeouts are recorded privately. The worker marks diagnostics as captured only
+after the writers drain.
+
 VM scans stage the same native history locally; worker retention applies only
 to the container-worker backend. Raw diagnostic paths are not scan outputs.
 

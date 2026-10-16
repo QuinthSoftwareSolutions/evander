@@ -466,20 +466,26 @@ class WorkerDaemon(GitWorkspaceOperations):
         if capture is None:
             return
         try:
-            if not capture.finished:
-                paths = WorkerSessionPaths.resolve(self.worker_root, record.session_id)
-                capture.collect(paths.artifacts, record.metadata["private_diagnostic_paths"])
-                capture.finish(
-                    status=record.status,
-                    exit_code=record.metadata.get("exit_code"),
-                    failure_cause=record.failure_cause,
-                    runtime=info or {},
-                    error=record.error,
-                )
-            record.metadata = sanitize_metadata(
-                {**record.metadata, "private_diagnostics_captured_at": now_utc().isoformat()}
-            )
-            self.store.put(record)
+            bridge = self._codex_runtime_bridges.get(record.job_id)
+            if bridge is not None and not bridge.wait_closed():
+                if info:
+                    capture.event("worker.terminal_observed", info)
+                return  # The broker's last writer will retry finalization.
+            # A terminal poll and the broker's drain callback can arrive together.
+            with capture.finalization_lock:
+                if not capture.finished:
+                    paths = WorkerSessionPaths.resolve(self.worker_root, record.session_id)
+                    capture.collect(paths.artifacts, record.metadata["private_diagnostic_paths"])
+                    capture.finish(
+                        status=record.status,
+                        exit_code=record.metadata.get("exit_code"),
+                        failure_cause=record.failure_cause,
+                        runtime=info or {},
+                        error=record.error,
+                    )
+            update = {"private_diagnostics_captured_at": now_utc().isoformat()}
+            record.metadata = sanitize_metadata({**record.metadata, **update})
+            self._merge_job_metadata(record.job_id, update)
         except Exception as exc:
             logger.warning(
                 "worker_private_diagnostics_capture_failed job_id=%s exception_class=%s",
@@ -774,6 +780,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     http_client=http_client,
                     max_processes=runtime_profile.max_processes,
                     diagnostics=diagnostics,
+                    on_drained=lambda: self._codex_runtime_drained(job_id),
                 )
                 self._codex_runtime_bridges[job_id] = bridge
                 bridge.start()
@@ -994,9 +1001,10 @@ class WorkerDaemon(GitWorkspaceOperations):
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
     def _shutdown_codex_subscription_runner(self, job_id: str) -> None:
-        bridge = self._codex_runtime_bridges.pop(job_id, None)
+        bridge = self._codex_runtime_bridges.get(job_id)
         if bridge is not None:
-            bridge.close()
+            if bridge.close():
+                self._codex_runtime_bridges.pop(job_id, None)
         with self._codex_subscription_runners_lock:
             runner = self._codex_subscription_runners.get(job_id)
         if runner is None:
@@ -1007,6 +1015,20 @@ class WorkerDaemon(GitWorkspaceOperations):
         with self._codex_subscription_runners_lock:
             if self._codex_subscription_runners.get(job_id) is runner:
                 self._codex_subscription_runners.pop(job_id, None)
+
+    def _codex_runtime_drained(self, job_id: str) -> None:
+        # A timed-out close leaves the handle and capture live until all writers
+        # have emitted their terminal records. No future poll is required.
+        self._codex_runtime_bridges.pop(job_id, None)
+        record = self.store.get(job_id)
+        if record is not None and record.status in {
+            "exited",
+            "stopped",
+            "failed",
+            "removed",
+            "cleanup_failed",
+        }:
+            self._finish_private_diagnostics(record)
 
     def _codex_subscription_completion_marker(self, record: WorkerJobRecord) -> Path:
         normalized_job_id = validate_worker_component_id(record.job_id, field_name="job_id")

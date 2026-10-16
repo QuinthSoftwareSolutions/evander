@@ -4,6 +4,7 @@
 
 - Capture brokered parent and child events, native stderr, token usage, terminal errors and credential-free HTTP status/request metadata in worker-owned storage outside session artifacts.
 - Preserve bounded native history and execution outcomes before scanner cleanup; retain evidence through session deletion and worker restart, with age and size limits.
+- Drain native broker writers before sealing diagnostics; defer finalization after a bounded shutdown timeout so late terminal stderr and exit records survive stop and removal.
 - Publish only canonical reports and scan receipts, excluding raw diagnostics and logs from archives delivered by workflows. Diagnostic capture failures do not block scans or report delivery.
 
 ## 2026-10-15 - Resolve environment website logins in workflows (0.96.0)
