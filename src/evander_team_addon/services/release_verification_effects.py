@@ -18,6 +18,7 @@ from evander.events.provider_models import (
     AgentDestroyEffectDefinition,
     AgentExecEffectDefinition,
 )
+from evander.git_refs import managed_branch_ref
 from evander.worker.models import WorkerResourceLimits
 
 from ..models import ReleaseVerificationCommand
@@ -92,6 +93,7 @@ class EffectReleaseVerificationExecutor:
         session_id: str,
         managed_repo_id: str,
         release_branch: str,
+        candidate_commit_sha: str,
     ) -> str:
         provider = AgentCloneRepoEffectProvider()
         provider.initialize(
@@ -101,7 +103,10 @@ class EffectReleaseVerificationExecutor:
                 type="effect:agent:clone-repo",
                 session_id=session_id,
                 managed_repo_id=managed_repo_id,
-                clone_branch=release_branch,
+                # Private Team refs cannot be selected by git clone --branch.
+                # The pinned-ref path fetches and verifies the frozen commit.
+                pinned_ref=managed_branch_ref(release_branch),
+                pinned_commit_sha=candidate_commit_sha,
                 git_access_mode="read-only",
             ),
             self._runtime_context,

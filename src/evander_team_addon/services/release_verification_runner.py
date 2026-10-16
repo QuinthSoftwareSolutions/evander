@@ -64,6 +64,7 @@ class ReleaseVerificationExecutor(Protocol):
         session_id: str,
         managed_repo_id: str,
         release_branch: str,
+        candidate_commit_sha: str,
     ) -> str: ...
 
     def pin_candidate(
@@ -359,6 +360,7 @@ class _ReleaseVerificationExecution:
             session_id=self.run.session_id,
             managed_repo_id=self.git.managed_repo_id,
             release_branch=self.release.release_branch,
+            candidate_commit_sha=self.candidate_commit_sha,
         )
         self._executor.pin_candidate(
             run_id=self.execution_id,
