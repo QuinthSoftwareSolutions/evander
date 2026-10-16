@@ -83,12 +83,25 @@ def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list
             return json_error("Invalid or expired artifact download link", status_code=403)
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
-        try:
-            resolved_config = service.runtime.provider_config.resolve_for_session_id(
-                artifact.metadata.session_id
-            )
-        except ValueError:
-            resolved_config = service.config
+        if artifact.metadata.provider == "workflow":
+            # Host workflow files retain their signing directory independently
+            # of the optional sender identity or a live source agent session.
+            directory_path = artifact.metadata.metadata.get("directory_path")
+            if not isinstance(directory_path, str) or not directory_path.strip():
+                return json_error("Invalid or expired artifact download link", status_code=403)
+            try:
+                resolved_config = service.runtime.provider_config.resolve_for_directory(
+                    directory_path
+                )
+            except ValueError:
+                return json_error("Invalid or expired artifact download link", status_code=403)
+        else:
+            try:
+                resolved_config = service.runtime.provider_config.resolve_for_session_id(
+                    artifact.metadata.session_id
+                )
+            except ValueError:
+                resolved_config = service.config
         try:
             verify_communication_artifact_download_token(
                 artifact_id=artifact_id,

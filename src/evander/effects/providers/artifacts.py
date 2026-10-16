@@ -446,6 +446,7 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
                 "effect_type": "effect:artifact:publish-artifacts",
                 "effect_id": effect.id,
                 "source_paths": source_paths,
+                "directory_path": str(context.metadata.get("directory_path") or "root"),
             },
         )
         return {
