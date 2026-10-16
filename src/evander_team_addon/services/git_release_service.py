@@ -35,7 +35,10 @@ from .domain.git_promotion import (
     _is_safe_synthetic_feature_deliverable,
 )
 from .domain.project_status import _recalculate_project_status
-from .domain.release_gates import _pending_predecessor_gate_obligation
+from .domain.release_gates import (
+    _pending_predecessor_gate_obligation,
+    _predecessor_release_package_ids,
+)
 from .domain.release_events import TEAM_RELEASE_APPROVED_EVENT_TYPE
 from .domain.release_packages import (
     RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY,
@@ -439,6 +442,7 @@ class TeamGitReleaseService:
                     )
                 deliverable_set = _normalized_release_deliverable_set(release.deliverable_ids)
                 if deliverable_set:
+                    predecessor_ids = _predecessor_release_package_ids(state_model, release)
                     for candidate in state_model.release_packages.values():
                         if (
                             candidate.id == release.id
@@ -446,8 +450,11 @@ class TeamGitReleaseService:
                             or candidate.state != TeamRecordState.BLOCKED
                             or (candidate.created_at, candidate.id)
                             >= (release.created_at, release.id)
-                            or _normalized_release_deliverable_set(candidate.deliverable_ids)
-                            != deliverable_set
+                            or (
+                                candidate.id not in predecessor_ids
+                                and _normalized_release_deliverable_set(candidate.deliverable_ids)
+                                != deliverable_set
+                            )
                         ):
                             continue
                         candidate.state = TeamRecordState.REJECTED
