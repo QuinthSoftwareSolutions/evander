@@ -396,6 +396,7 @@ def _seed_read_records(repo: TeamStateRepository) -> None:
             )
             state.git_work_contexts[f"{team_id}-context"] = GitWorkContext(
                 id=f"{team_id}-context",
+                checkout_id=f"gc_{team_id}_context",
                 agent_id=f"{team_id}-dev",
                 task_id=f"{team_id}-task-a",
                 dispatch_id=f"{team_id}-dispatch",
@@ -459,8 +460,9 @@ def test_team_addon_mcp_registers_read_tool_names_as_addon_tools(tmp_path: Path)
     assert set(EXPECTED_READ_TOOL_NAMES).issubset(visible)
 
 
+@pytest.mark.parametrize("detail", ["full", "summary"])
 def test_current_dispatch_context_hydrates_only_exact_dispatch_git_rows(
-    tmp_path: Path,
+    tmp_path: Path, detail: str,
 ) -> None:
     context = _runtime(tmp_path, allowed_tools=list(EXPECTED_READ_TOOL_NAMES))
     repo = _seed_read_tool_state(context.config.runtime_dir)
@@ -478,6 +480,7 @@ def test_current_dispatch_context_hydrates_only_exact_dispatch_git_rows(
         state.agent_runtimes["alpha-dev"].active_dispatch_id = dispatch_id
         state.git_work_contexts["alpha-current-context"] = GitWorkContext(
             id="alpha-current-context",
+            checkout_id="gc_alpha_current_context",
             agent_id="alpha-dev",
             task_id="alpha-task-a",
             dispatch_id=dispatch_id,
@@ -493,17 +496,24 @@ def test_current_dispatch_context_hydrates_only_exact_dispatch_git_rows(
     result = _call_tool(
         server,
         TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
-        {"session_id": "session-alpha-dev"},
+        {"session_id": "session-alpha-dev", "detail": detail},
     )
 
     _assert_read_success(result)
     record = _item(result)
     assert record["dispatch"]["id"] == "alpha-current-dispatch"
     assert [row["id"] for row in record["git_work_contexts"]] == ["alpha-current-context"]
-    assert [row["id"] for row in record["tasks"][0]["git_work_contexts"]] == [
-        "alpha-current-context"
-    ]
+    assert record["git_work_contexts"][0]["checkout_id"] == "gc_alpha_current_context"
+    if detail == "full":
+        assert [row["id"] for row in record["tasks"][0]["git_work_contexts"]] == [
+            "alpha-current-context"
+        ]
+        assert record["tasks"][0]["git_work_contexts"][0]["checkout_id"] == "gc_alpha_current_context"
+    else:
+        assert record["tasks"][0]["git_work_context_ids"] == ["alpha-current-context"]
     assert "alpha-context" not in json.dumps(record, sort_keys=True)
+    assert "gc_alpha_context" not in json.dumps(record, sort_keys=True)
+    assert "gc_beta_context" not in json.dumps(record, sort_keys=True)
 
 
 def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
@@ -1128,6 +1138,7 @@ def test_team_addon_task_read_tools_surface_callers_git_work_context(
         {
             "id": "alpha-context",
             "branch_context_id": "alpha-context",
+            "checkout_id": "gc_alpha_context",
             "agent_id": "alpha-dev",
             "task_id": "alpha-task-a",
             "agent_branch": "agents/session-alpha-dev/work-session-alpha-dev",
@@ -1147,6 +1158,8 @@ def test_team_addon_task_read_tools_surface_callers_git_work_context(
     assert _item(get_result)["git_work_contexts"] == alpha_task["git_work_contexts"]
     assert "beta-context" not in json.dumps(list_result, sort_keys=True)
     assert "beta-context" not in json.dumps(get_result, sort_keys=True)
+    assert "gc_beta_context" not in json.dumps(list_result, sort_keys=True)
+    assert "gc_beta_context" not in json.dumps(get_result, sort_keys=True)
 
 
 def test_team_addon_get_my_identity_returns_complete_bounded_identity(

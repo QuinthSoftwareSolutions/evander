@@ -2461,6 +2461,7 @@ class TeamAdminService(TeamTaskAdministration):
             if existing_context is not None:
                 expected_context = GitWorkContext(
                     id=effective_context_id,
+                    checkout_id=existing_context.checkout_id,
                     agent_id=agent.id,
                     task_id=task.id,
                     dispatch_id=normalized_dispatch_id,

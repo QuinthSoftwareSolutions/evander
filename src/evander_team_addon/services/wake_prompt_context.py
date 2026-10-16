@@ -1444,6 +1444,7 @@ def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
         (
             "id",
             "branch_context_id",
+            "checkout_id",
             "agent_id",
             "task_id",
             "agent_branch",

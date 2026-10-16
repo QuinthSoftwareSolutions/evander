@@ -902,6 +902,7 @@ class TeamReadService:
                     {
                         "id": context.id,
                         "branch_context_id": context.id,
+                        "checkout_id": context.checkout_id,
                         "agent_id": context.agent_id,
                         "task_id": context.task_id,
                         "agent_branch": context.agent_branch,
