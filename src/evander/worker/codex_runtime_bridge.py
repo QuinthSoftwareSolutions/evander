@@ -14,6 +14,7 @@ import select
 import socket
 import subprocess
 import threading
+import time
 import tomllib
 from typing import Any
 
@@ -252,9 +253,13 @@ class CodexRuntimeBridge:
         http_client,
         max_processes=12,
         process_factory=CodexAppServerProcess,
+        diagnostics=None,
+        on_drained=None,
     ):
         self.path = path
         self.command_factory = command_factory
+        self.diagnostics = diagnostics
+        self.on_drained = on_drained
         self.native_tokens = placeholder_tokens(tokens)
         self.http_relay = CodexRuntimeHttpRelay(
             path=path.with_name("models.sock"),
@@ -262,12 +267,16 @@ class CodexRuntimeBridge:
             refresh_tokens=refresh_tokens,
             client=http_client,
             max_connections=max_processes,
+            diagnostics=diagnostics,
         )
         self.process_factory = process_factory
         self.closed = threading.Event()
         self.capacity = threading.BoundedSemaphore(max_processes)
         self.clients = set()
         self.lock = threading.Lock()
+        self.drain = threading.Condition(self.lock)
+        self.shutdown_ready = False
+        self.drain_notified = False
         self.listener = None
 
     def start(self):
@@ -285,19 +294,62 @@ class CodexRuntimeBridge:
             raise
         threading.Thread(target=self._accept, name="codex-runtime-broker", daemon=True).start()
 
-    def close(self):
-        self.closed.set()
-        self.http_relay.close()
-        if self.listener:
-            self.listener.close()
-        with self.lock:
-            clients = list(self.clients)
-        for client in clients:
+    def diagnostic(self, event, **data):
+        if self.diagnostics is not None:
             try:
-                client.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-        self.path.unlink(missing_ok=True)
+                self.diagnostics.event(event, data)
+            except Exception:
+                pass  # Evidence collection must not interrupt execution.
+
+    def wait_closed(self, *, timeout_seconds=0):
+        with self.drain:
+            return self.drain.wait_for(
+                lambda: self.shutdown_ready and not self.clients,
+                timeout=max(0, timeout_seconds),
+            )
+
+    def _notify_drained(self):
+        with self.drain:
+            self.drain.notify_all()
+            if not self.shutdown_ready or self.clients or self.drain_notified:
+                return
+            self.drain_notified = True
+        if self.on_drained is not None:
+            try:
+                self.on_drained()
+            except Exception as exc:
+                self.diagnostic("runtime.finalization_failed", exception_class=type(exc).__name__)
+
+    def close(self, *, timeout_seconds=15):
+        deadline = time.monotonic() + max(0, timeout_seconds)
+        with self.drain:
+            first = not self.closed.is_set()
+            self.closed.set()
+            clients = list(self.clients)
+        if first:
+            try:
+                self.http_relay.close()
+            except Exception as exc:
+                self.diagnostic("runtime.shutdown_failed", exception_class=type(exc).__name__)
+            if self.listener:
+                self.listener.close()
+            for client in clients:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            try:
+                self.path.unlink(missing_ok=True)
+            finally:
+                with self.drain:
+                    self.shutdown_ready = True
+                self._notify_drained()
+        drained = self.wait_closed(timeout_seconds=max(0, deadline - time.monotonic()))
+        if not drained:
+            with self.drain:
+                remaining = len(self.clients)
+            self.diagnostic("runtime.shutdown_timeout", pending_connections=remaining)
+        return drained
 
     def _accept(self):
         while not self.closed.is_set():
@@ -318,12 +370,21 @@ class CodexRuntimeBridge:
                 client.close()
                 continue
             with self.lock:
+                if self.closed.is_set():
+                    client.close()
+                    self.capacity.release()
+                    return
                 self.clients.add(client)
             threading.Thread(target=self._serve, args=(client,), daemon=True).start()
 
     def _serve(self, client):
         process = None
+        exit_code = None
         send_lock = threading.Lock()
+        connection_id = os.urandom(8).hex()
+
+        def record(event, **data):
+            self.diagnostic(event, connection_id=connection_id, **data)
 
         def send(value):
             data = (json.dumps(value) + "\n").encode()
@@ -347,10 +408,19 @@ class CodexRuntimeBridge:
                     timeout=10,
                     check=True,
                 )
+                record("runtime.version", version=result.stdout[:2000])
                 send({"stream": "stdout", "text": result.stdout})
-                send({"exit_code": 0})
+                exit_code = 0
                 return
             mode, cwd, config, model, prompt = parse_arguments(argv, cwd)
+            record(
+                "runtime.started",
+                mode=mode,
+                cwd=cwd,
+                model=model,
+                reasoning_effort=config.get("model_reasoning_effort"),
+                prompt=prompt,
+            )
             overrides = [
                 f"{key}={toml_value(value)}"
                 for key, value in config.items()
@@ -362,6 +432,13 @@ class CodexRuntimeBridge:
             thread_id = None
 
             def notification(method, params):
+                # Observe children before exec's parent-thread projection. Completed
+                # items contain the full text, so omit high-volume streaming deltas.
+                # Authentication messages are never diagnostic events.
+                if not method.endswith("/delta") and (
+                    not method.startswith("account/") or method == "account/rateLimits/updated"
+                ):
+                    record("native.notification", method=method, params=params)
                 if mode == "app-server":
                     send(
                         {
@@ -404,11 +481,14 @@ class CodexRuntimeBridge:
                     raise ValueError("Subscription account changed during runtime execution")
                 return self.native_tokens.refresh_response()
 
+            if self.closed.is_set():
+                raise RuntimeError("Codex runtime is closing")
             process = self.process_factory(
                 self.command_factory(env, overrides),
                 server_request_handlers={"account/chatgptAuthTokens/refresh": refresh},
                 notification_handler=notification,
-                stderr_handler=lambda line: None,
+                stderr_handler=lambda line: record("native.stderr", line=line),
+                drain_stderr_on_close=self.diagnostics is not None,
             )
             process.start()
             verify_runtime_requirements(process.request("configRequirements/read", {}))
@@ -462,6 +542,12 @@ class CodexRuntimeBridge:
                     },
                 )
                 thread_id = thread["thread"]["id"]
+                record(
+                    "runtime.thread",
+                    thread_id=thread_id,
+                    model=thread.get("model"),
+                    reasoning_effort=thread.get("reasoningEffort"),
+                )
                 send(
                     {
                         "stream": "stdout",
@@ -489,8 +575,10 @@ class CodexRuntimeBridge:
                     if select.select([client], [], [], 0)[0] and not client.recv(
                         1, socket.MSG_PEEK
                     ):
+                        record("runtime.disconnected", thread_id=thread_id)
                         return
                 ok = terminal.get("status") == "completed"
+                record("runtime.completed", thread_id=thread_id, turn=terminal, usage=usage)
                 event = (
                     {
                         "type": "turn.completed",
@@ -504,8 +592,9 @@ class CodexRuntimeBridge:
                     else {"type": "turn.failed", "error": {"message": "Brokered Codex turn failed"}}
                 )
                 send({"stream": "stdout", "text": json.dumps(event) + "\n"})
-                send({"exit_code": 0 if ok else 1})
+                exit_code = 0 if ok else 1
         except Exception as exc:
+            record("runtime.failed", exception_class=type(exc).__name__)
             # Never return native exception text: native auth failures may contain tokens.
             try:
                 send(
@@ -514,13 +603,32 @@ class CodexRuntimeBridge:
                         "text": f"Managed Codex runtime failed ({type(exc).__name__})\n",
                     }
                 )
-                send({"exit_code": 1})
+                exit_code = 1
             except OSError:
                 pass
         finally:
-            if process:
-                process.close()
-            with self.lock:
-                self.clients.discard(client)
+            native_was_running = bool(process and process.running)
+            try:
+                if process:
+                    process.close()
+            except Exception as exc:
+                record("runtime.close_failed", exception_class=type(exc).__name__)
+                exit_code = 1
+            record(
+                "runtime.closed",
+                broker_shutdown=self.closed.is_set(),
+                native_was_running=native_was_running,
+                native_exit_code=getattr(process, "returncode", None),
+            )
+            # The runner snapshots native history upon receiving this receipt.
+            # Close/reap the native writer first so final records are flushed.
+            if exit_code is not None:
+                try:
+                    send({"exit_code": exit_code})
+                except OSError:
+                    pass
             client.close()
             self.capacity.release()
+            with self.drain:
+                self.clients.discard(client)
+            self._notify_drained()

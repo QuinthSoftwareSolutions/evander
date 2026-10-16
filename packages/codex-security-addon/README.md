@@ -122,9 +122,57 @@ Connect `completed` to the success branch and `error` to recovery. Outputs inclu
 `to_commit`, `status`, `coverage`, `findings`, `severity_counts`, and `artifacts`.
 Findings expose identifiers, occurrence IDs, titles, severity and locations. Full native evidence
 remains in the report and JSON artifacts. `artifacts.archive_key` identifies the
-private host archive, retained independently of the session. Native files are
-also under `/artifacts/security-scans/<scan_id>/`. Incomplete collection after
-session expiry may leave only the session-local diagnostics.
+private host archive, retained independently of the session. This archive contains
+canonical reports, exports, checkpoints and scan/target receipts. Raw logs and
+diagnostic histories are excluded, including when an older scanner image returns
+its legacy file list. Legacy directories are expanded using validated result
+paths; their extra exports and checkpoints require the updated image.
+
+## Private diagnostics
+
+Container-worker scans opt into worker-owned diagnostics at
+`<worker_root>/private-job-diagnostics/<job_id>/`, outside session storage and
+container mounts. Operators inspect this directory on the worker; it has no
+artifact download or workflow output API. It is never included in the findings
+archive or sent to chat channels. Treat its contents as sensitive source and
+tool output. Subscription credentials, request headers/bodies and account
+configuration are not deliberately recorded.
+
+`events.jsonl` and `events.previous.jsonl` retain recent brokered parent/child
+notifications, completed tool items, stderr, context/token usage and terminal
+turn status. Streaming text deltas are omitted. HTTP evidence contains status,
+allowlisted request IDs, retry timing and rate-limit metadata, without response
+bodies or request credentials. `summary.json` records the job outcome, container
+exit/OOM evidence when inspection supplies it, capture errors and discarded data.
+
+Before deleting its private Codex home, the runner stages native session/log
+history and `execution.json` with timing, timeout/termination reason and exit
+status. The worker copies these, raw runner logs and scan receipts to private
+storage when the job ends or is removed. On worker restart it recovers evidence
+from interrupted jobs; on abrupt container death it also looks in the remaining
+native home. A runner history snapshot is limited to 64 MiB total, 8 MiB per file,
+1024 entries and five seconds. Worker collection has the same per-file/entry/time
+limits. Truncation and capture failures are recorded where storage permits; a
+hard crash can still lose data not yet written to disk.
+
+Defaults are seven days after completion, 128 MiB per job and 1 GiB across the
+worker. Event files rotate; byte pressure evicts the oldest inactive jobs before
+discarding incoming evidence. Active jobs are protected from eviction. Expiry is
+checked at startup, on capture and every five minutes. Environment overrides are
+documented in [worker diagnostics retention](../../docs/container-worker-backend.md#private-job-diagnostics).
+Diagnostics failures do not turn a successful scan into a failure or block report
+delivery. Deploy both worker code and the rebuilt scanner image for complete
+capture; runner changes participate in the existing image cache fingerprint.
+
+On stop or removal, the worker waits up to fifteen seconds for broker writers to
+drain. If they take longer, the private capture stays open. The last writer then
+triggers collection and finalization automatically, preserving terminal stderr
+and native exit records without requiring another workflow poll. Shutdown
+timeouts are recorded privately. The worker marks diagnostics as captured only
+after the writers drain.
+
+VM scans stage the same native history locally; worker retention applies only
+to the container-worker backend. Raw diagnostic paths are not scan outputs.
 
 Duplicate execution delivery and an orchestrator restart rejoin the original scan.
 A worker restart interrupts brokered scans and reports failure; it never starts a

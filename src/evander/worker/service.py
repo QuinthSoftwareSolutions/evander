@@ -109,6 +109,7 @@ from .models import (
 )
 from .mssql import WorkerMssqlProvisioner, WorkerMssqlStore
 from .log_projection import JsonlProjectionCache, merge_tail_log_snapshot, read_log_tail
+from .private_diagnostics import PrivateJobDiagnostics
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
@@ -349,7 +350,30 @@ class WorkerDaemon(GitWorkspaceOperations):
         self._session_storage_telemetry_background_generation: int | None = None
         self._session_storage_telemetry_next_generation = 0
         self._session_storage_telemetry_applied_generation = 0
+        self._private_diagnostics = None
+        try:
+            self._private_diagnostics = PrivateJobDiagnostics.from_environment(
+                self.worker_root / "private-job-diagnostics",
+                active_jobs=lambda: {job.job_id for job in self.store.list_inflight()},
+            )
+        except Exception as exc:
+            logger.warning(
+                "worker_private_diagnostics_unavailable exception_class=%s", type(exc).__name__
+            )
         self._reconcile_orphaned_codex_subscription_jobs()
+        # Recover the crash window between persisting a terminal job and copying
+        # its evidence. No container or paid scan is started during recovery.
+        if self._private_diagnostics is not None:
+            try:
+                for job_id in self._private_diagnostics.job_ids():
+                    record = self.store.get(job_id)
+                    if record and record.status in {"exited", "stopped", "failed", "removed"}:
+                        self._finish_private_diagnostics(record)
+            except Exception as exc:
+                logger.warning(
+                    "worker_private_diagnostics_recovery_failed exception_class=%s",
+                    type(exc).__name__,
+                )
 
     def create_app(self) -> Starlette:
 
@@ -408,6 +432,66 @@ class WorkerDaemon(GitWorkspaceOperations):
             metadata["codex_subscription_exit_code"] = 1
             record.metadata = sanitize_metadata(metadata)
             self.store.put(record)
+            self._finish_private_diagnostics(record)
+
+    def _job_diagnostics(self, record):
+        paths = record.metadata.get("private_diagnostic_paths")
+        if (
+            self._private_diagnostics is None
+            or not isinstance(paths, list)
+            or not paths
+            or record.metadata.get("private_diagnostics_captured_at")
+        ):
+            return None
+        try:
+            return self._private_diagnostics.begin(
+                record.job_id,
+                metadata={
+                    "job_id": record.job_id,
+                    "session_id": record.session_id,
+                    "scan_id": record.metadata.get("scan_id"),
+                    "operation_kind": record.metadata.get("operation_kind"),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "worker_private_diagnostics_unavailable job_id=%s exception_class=%s",
+                record.job_id,
+                type(exc).__name__,
+            )
+            return None
+
+    def _finish_private_diagnostics(self, record, info=None):
+        capture = self._job_diagnostics(record)
+        if capture is None:
+            return
+        try:
+            bridge = self._codex_runtime_bridges.get(record.job_id)
+            if bridge is not None and not bridge.wait_closed():
+                if info:
+                    capture.event("worker.terminal_observed", info)
+                return  # The broker's last writer will retry finalization.
+            # A terminal poll and the broker's drain callback can arrive together.
+            with capture.finalization_lock:
+                if not capture.finished:
+                    paths = WorkerSessionPaths.resolve(self.worker_root, record.session_id)
+                    capture.collect(paths.artifacts, record.metadata["private_diagnostic_paths"])
+                    capture.finish(
+                        status=record.status,
+                        exit_code=record.metadata.get("exit_code"),
+                        failure_cause=record.failure_cause,
+                        runtime=info or {},
+                        error=record.error,
+                    )
+            update = {"private_diagnostics_captured_at": now_utc().isoformat()}
+            record.metadata = sanitize_metadata({**record.metadata, **update})
+            self._merge_job_metadata(record.job_id, update)
+        except Exception as exc:
+            logger.warning(
+                "worker_private_diagnostics_capture_failed job_id=%s exception_class=%s",
+                record.job_id,
+                type(exc).__name__,
+            )
 
     def close(self) -> None:
         for bridge in list(self._codex_runtime_bridges.values()):
@@ -427,6 +511,8 @@ class WorkerDaemon(GitWorkspaceOperations):
             self._codex_auth_broker.close()
         if self._codex_egress_proxy is not None:
             self._codex_egress_proxy.close()
+        if self._private_diagnostics is not None:
+            self._private_diagnostics.close()
 
     @property
     def codex_auth(self) -> CodexAuthBroker:
@@ -625,6 +711,16 @@ class WorkerDaemon(GitWorkspaceOperations):
         )
         self._log_path(record).touch(exist_ok=True)
         self.store.put(record)
+        diagnostics = self._job_diagnostics(record)
+        if diagnostics is not None:
+            diagnostics.event(
+                "worker.started",
+                {
+                    "image": record.image,
+                    "resource_limits": request.resource_limits.model_dump(),
+                    "runtime_profile": record.metadata.get("codex_runtime_profile"),
+                },
+            )
         if subscription_tokens is not None:
             subscription_marker = self._codex_subscription_completion_marker(record)
             subscription_marker.parent.mkdir(parents=True, exist_ok=True)
@@ -652,6 +748,7 @@ class WorkerDaemon(GitWorkspaceOperations):
             record.finished_at = now_utc()
             record.error = sanitize_text(str(exc))
             self.store.put(record)
+            self._finish_private_diagnostics(record)
             logger.exception(
                 "worker_job_start_failed job_id=%s session_id=%s", job_id, request.session_id
             )
@@ -682,6 +779,8 @@ class WorkerDaemon(GitWorkspaceOperations):
                     ),
                     http_client=http_client,
                     max_processes=runtime_profile.max_processes,
+                    diagnostics=diagnostics,
+                    on_drained=lambda: self._codex_runtime_drained(job_id),
                 )
                 self._codex_runtime_bridges[job_id] = bridge
                 bridge.start()
@@ -696,6 +795,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     record.finished_at = now_utc()
                     record.error = "Codex runtime broker could not start"
                     self.store.put(record)
+                    self._finish_private_diagnostics(record)
                 raise
         if subscription_tokens is not None and subscription_marker is not None:
             command_builder = getattr(self.container_runtime, "codex_app_server_command", None)
@@ -807,6 +907,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                         str(exc),
                     )
             self._refresh_codex_job_outcome(record, log_text=log_text)
+            self._finish_private_diagnostics(record, info)
         with self._job_record_update_lock:
             latest = self.store.get(record.job_id)
             if latest is not None:
@@ -869,6 +970,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         record.finished_at = now_utc()
         self.store.put(record)
         logger.info("worker_job_stopped job_id=%s session_id=%s", record.job_id, record.session_id)
+        self._finish_private_diagnostics(record)
         return record
 
     def remove_job(self, record: WorkerJobRecord) -> None:
@@ -889,15 +991,20 @@ class WorkerDaemon(GitWorkspaceOperations):
                 error=safe_subprocess_error(exc),
                 attempted_at=attempted_at,
             )
+            self._finish_private_diagnostics(record)
             raise
         self._remove_codex_subscription_completion_marker(record)
         self._mark_job_cleanup_success(record, attempted_at=attempted_at)
+        # Containers are gone, but their bind-mounted session files still exist.
+        # Capture after removal so remaining native processes have been stopped.
+        self._finish_private_diagnostics(record)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
     def _shutdown_codex_subscription_runner(self, job_id: str) -> None:
-        bridge = self._codex_runtime_bridges.pop(job_id, None)
+        bridge = self._codex_runtime_bridges.get(job_id)
         if bridge is not None:
-            bridge.close()
+            if bridge.close():
+                self._codex_runtime_bridges.pop(job_id, None)
         with self._codex_subscription_runners_lock:
             runner = self._codex_subscription_runners.get(job_id)
         if runner is None:
@@ -908,6 +1015,20 @@ class WorkerDaemon(GitWorkspaceOperations):
         with self._codex_subscription_runners_lock:
             if self._codex_subscription_runners.get(job_id) is runner:
                 self._codex_subscription_runners.pop(job_id, None)
+
+    def _codex_runtime_drained(self, job_id: str) -> None:
+        # A timed-out close leaves the handle and capture live until all writers
+        # have emitted their terminal records. No future poll is required.
+        self._codex_runtime_bridges.pop(job_id, None)
+        record = self.store.get(job_id)
+        if record is not None and record.status in {
+            "exited",
+            "stopped",
+            "failed",
+            "removed",
+            "cleanup_failed",
+        }:
+            self._finish_private_diagnostics(record)
 
     def _codex_subscription_completion_marker(self, record: WorkerJobRecord) -> Path:
         normalized_job_id = validate_worker_component_id(record.job_id, field_name="job_id")

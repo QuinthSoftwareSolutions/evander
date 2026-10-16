@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -127,6 +128,22 @@ class CodexSecurityScanProvider:
                     "operation_kind": "security_scan",
                     "scan_id": scan_id,
                     "idempotent_start": True,
+                    "private_diagnostic_paths": [
+                        f"security-scans/{scan_id}/{name}"
+                        for name in (
+                            "diagnostics",
+                            "execution.json",
+                            "scan.log",
+                            "launcher.log",
+                            "request.json",
+                            "target.json",
+                            "process.json",
+                            "result.json",
+                            "codex-home/sessions",
+                            "codex-home/archived_sessions",
+                            "codex-home/log",
+                        )
+                    ],
                 },
             )
         )
@@ -230,6 +247,43 @@ class CodexSecurityScanProvider:
                 not value.startswith("security-scans/" + data["scan_id"] + "/") for value in files
             ):
                 raise ValueError("Invalid security scan artifact paths")
+            prefix = "security-scans/" + data["scan_id"] + "/"
+            # Older images returned raw logs and a whole reports directory.
+            # Expand that directory to known canonical files instead of publishing
+            # arbitrary future diagnostics by recursively sweeping scan storage.
+            canonical = ("report.md", "scan-manifest.json", "findings.json", "coverage.json")
+            expanded = []
+            for value in files:
+                relative = value.removeprefix(prefix)
+                if relative == "reports":
+                    # Legacy receipts list directories; the result already names
+                    # its validated canonical files. Never include raw scan logs.
+                    expanded.extend(
+                        path
+                        for name, path in result.artifacts.items()
+                        if name in canonical and path.startswith(prefix + "reports/")
+                    )
+                else:
+                    expanded.append(value)
+            allowed = []
+            for value in expanded:
+                relative = value.removeprefix(prefix)
+                if not value.startswith(prefix) or any(
+                    part in {"..", ".", ""} for part in relative.split("/")
+                ):
+                    raise ValueError("Invalid security scan artifact paths")
+                if relative in {"result.json", "target.json"} or (
+                    relative.startswith("reports/")
+                    and (
+                        relative.split("/")[-1] in canonical
+                        or relative.endswith("/exports/results.sarif")
+                        or re.fullmatch(r"reports/.+/checkpoints/[^/]+\.json", relative)
+                    )
+                ):
+                    allowed.append(value)
+            files = sorted(set(allowed))
+            if not files:
+                raise ValueError("No public security scan report files")
             publisher = ArtifactPublishArtifactsEffectProvider()
             publisher.initialize(
                 ArtifactPublishArtifactsEffectDefinition(

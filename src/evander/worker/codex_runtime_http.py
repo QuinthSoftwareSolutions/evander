@@ -294,7 +294,8 @@ class _Handler(BaseHTTPRequestHandler):
         except _UpstreamFailure as exc:
             if not started:
                 self.reply(exc.status, b'{"error":"Subscription runtime upstream failed"}')
-        except Exception:
+        except Exception as exc:
+            relay.diagnostic("http.failed", exception_class=type(exc).__name__)
             if not started:
                 self.reply(502, b'{"error":"Subscription runtime unavailable"}')
         finally:
@@ -303,12 +304,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class CodexRuntimeHttpRelay:
-    def __init__(self, *, path: Path, tokens, refresh_tokens, client, max_connections=12):
+    def __init__(
+        self, *, path: Path, tokens, refresh_tokens, client, max_connections=12, diagnostics=None
+    ):
         self.path = path
         self.tokens = tokens
         self.account_id = tokens.account_id
         self.refresh_tokens = refresh_tokens
         self.client = client
+        self.diagnostics = diagnostics
         self.auth_lock = threading.Lock()
         self.route_lock = threading.Lock()
         self.route = None
@@ -319,6 +323,13 @@ class CodexRuntimeHttpRelay:
         self.closed = threading.Event()
         self.slots = threading.BoundedSemaphore(max_connections)
         self.server = None
+
+    def diagnostic(self, event, **data):
+        if self.diagnostics is not None:
+            try:
+                self.diagnostics.event(event, data)
+            except Exception:
+                pass  # Observability must not break the subscription relay.
 
     def start(self):
         self.path.unlink(missing_ok=True)
@@ -368,6 +379,39 @@ class CodexRuntimeHttpRelay:
             headers["x-openai-fedramp"] = "true"
         request = self.client.build_request(method, origin + target, headers=headers, content=body)
         response = self.client.send(request, stream=True, follow_redirects=False)
+        # Never retain request headers, query strings, bodies or auth material.
+        # Record every attempt, including a 401 followed by token refresh.
+        metadata = {
+            key: value[:512]
+            for key, value in response.headers.items()
+            if key
+            in {
+                "x-request-id",
+                "request-id",
+                "retry-after",
+                "x-ratelimit-limit-requests",
+                "x-ratelimit-limit-tokens",
+                "x-ratelimit-remaining-requests",
+                "x-ratelimit-remaining-tokens",
+                "x-ratelimit-reset-requests",
+                "x-ratelimit-reset-tokens",
+                "x-codex-primary-used-percent",
+                "x-codex-secondary-used-percent",
+                "x-codex-primary-window-minutes",
+                "x-codex-secondary-window-minutes",
+                "x-codex-primary-reset-after-seconds",
+                "x-codex-secondary-reset-after-seconds",
+                "x-codex-primary-reset-at",
+                "x-codex-secondary-reset-at",
+            }
+        }
+        self.diagnostic(
+            "http.response",
+            method=method,
+            path=target.split("?", 1)[0],
+            status_code=response.status_code,
+            metadata=metadata,
+        )
         with self.lock:
             if self.closed.is_set():
                 response.close()

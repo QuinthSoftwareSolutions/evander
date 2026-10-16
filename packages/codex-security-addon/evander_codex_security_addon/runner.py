@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -21,6 +22,87 @@ from uuid import uuid4
 INSTALL_ROOT = Path(__file__).resolve().parent
 HOME = Path("/home/agent")
 SCAN_ROOT = Path("/artifacts/security-scans")
+
+
+def capture_native_diagnostics(root):
+    """Stage bounded native history for the worker, before CODEX_HOME cleanup.
+
+    This directory is deliberately absent from the public files operation.
+    Never copy account/configuration files or follow links from agent storage.
+    """
+    receipt = {"files": [], "errors": [], "truncated": False}
+    remaining = 64 * 1024 * 1024
+    deadline = time.monotonic() + 5
+    count = 0
+    home = root / "codex-home"
+    if home.is_symlink() or not home.is_dir():
+        return receipt
+    for directory, dirs, files, parent_fd in os.fwalk(home, follow_symlinks=False):
+        count += 1
+        if count > 1024 or time.monotonic() > deadline:
+            receipt["truncated"] = True
+            return receipt
+        relative = Path(directory).relative_to(home)
+        if not relative.parts:
+            dirs[:] = [name for name in dirs if name in {"sessions", "archived_sessions", "log"}]
+        for name in files:
+            count += 1
+            if count > 1024 or time.monotonic() > deadline or remaining <= 0:
+                receipt["truncated"] = True
+                return receipt
+            if Path(name).suffix not in {".jsonl", ".log"}:
+                continue
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+                with os.fdopen(fd, "rb") as source:
+                    info = os.fstat(source.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        continue
+                    limit = min(8 * 1024 * 1024, remaining)
+                    copied = min(info.st_size, limit)
+                    source.seek(max(0, info.st_size - limit))
+                    data = source.read(limit)
+                destination = root / "diagnostics" / "native" / relative / name
+                current = root
+                for part in destination.parent.relative_to(root).parts:
+                    current /= part
+                    current.mkdir(mode=0o700, exist_ok=True)
+                    if current.is_symlink() or not current.is_dir():
+                        raise ValueError("Invalid diagnostics destination")
+                fd = os.open(
+                    destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+                )
+                with os.fdopen(fd, "wb") as output:
+                    output.write(data)
+                remaining -= len(data)
+                truncated = copied < info.st_size
+                receipt["truncated"] |= truncated
+                receipt["files"].append(
+                    {
+                        "path": (relative / name).as_posix(),
+                        "source_bytes": info.st_size,
+                        "copied_bytes": len(data),
+                        "truncated": truncated,
+                    }
+                )
+            except (OSError, ValueError) as exc:
+                receipt["errors"].append(type(exc).__name__)
+    return receipt
+
+
+def public_report_files(root):
+    paths = [root / "result.json", root / "target.json"]
+    for name in ("report.md", "scan-manifest.json", "findings.json", "coverage.json"):
+        paths.extend((root / "reports").rglob(name))
+    paths.extend((root / "reports").rglob("exports/results.sarif"))
+    paths.extend((root / "reports").rglob("checkpoints/*.json"))
+    return sorted(
+        {
+            path.relative_to(SCAN_ROOT.parent).as_posix()
+            for path in paths
+            if path.is_file() and not any(part.is_symlink() for part in [path, *path.parents])
+        }
+    )
 
 
 def scan_directory(scan_id):
@@ -259,6 +341,12 @@ def run(request):
             )
             write_json(root / "request.json", request)
         child = None
+        execution = {
+            "started_at": time.time(),
+            "timeout_seconds": request.get("timeout_seconds"),
+            "child_exit_code": None,
+            "termination_reason": "no_child",
+        }
         result = {"status": "failed", "error": "Scan ended before producing a result"}
         try:
             load_session_environment()
@@ -352,8 +440,11 @@ def run(request):
                             child.wait()
                             raise
                     try:
+                        execution["child_started_at"] = time.time()
+                        execution["termination_reason"] = "native_exit"
                         code = child.wait(timeout=float(request["timeout_seconds"]))
                     except subprocess.TimeoutExpired:
+                        execution["termination_reason"] = "timeout"
                         os.killpg(child.pid, signal.SIGTERM)
                         try:
                             child.wait(timeout=10)
@@ -372,15 +463,36 @@ def run(request):
                         if code and result["status"] == "completed":
                             result.update(status="failed", error=f"Scanner exited with code {code}")
         except Exception as exc:
+            execution["exception_class"] = type(exc).__name__
             result = {
                 "status": "failed",
                 "error": str(exc)[:2000],
-                "artifacts": {"diagnostics": str(root.relative_to(SCAN_ROOT.parent))},
+                "artifacts": {},
             }
         finally:
             if child and child.poll() is None:
+                execution["termination_reason"] = "cleanup_kill"
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
+            terminal_status = result["status"]
+            try:
+                if (root / "result.json").exists():
+                    terminal_status = read_json(root / "result.json")["status"]
+            except (OSError, ValueError, KeyError) as exc:
+                execution["receipt_error_class"] = type(exc).__name__
+            execution.update(
+                finished_at=time.time(),
+                status=terminal_status,
+                child_exit_code=child.poll() if child else None,
+            )
+            try:
+                execution["native_history"] = capture_native_diagnostics(root)
+            except Exception as exc:
+                execution["native_history"] = {"errors": [type(exc).__name__]}
+            try:
+                write_json(root / "execution.json", execution)
+            except Exception:
+                pass  # Diagnostics failure must not hide the scan's result.
             shutil.rmtree(root / "checkout", ignore_errors=True)
             shutil.rmtree(root / "codex-home", ignore_errors=True)
             with state_lock(root):
@@ -405,7 +517,7 @@ def status(scan_id, *, check_process=True):
             return {
                 "status": "failed",
                 "error": "Scan process was interrupted",
-                "artifacts": {"diagnostics": str(root.relative_to(SCAN_ROOT.parent))},
+                "artifacts": {},
             }
     return {"status": "running"}
 
@@ -440,7 +552,7 @@ def cancel(scan_id):
                 root / "result.json",
                 {
                     "status": "cancelled",
-                    "artifacts": {"diagnostics": str(root.relative_to(SCAN_ROOT.parent))},
+                    "artifacts": {},
                 },
             )
         process_path = root / "process.json"
@@ -492,18 +604,7 @@ def main():
         print(json.dumps(status(value, check_process=action == "status-live")))
     elif action == "files":
         root = scan_directory(value)
-        names = ("reports", "result.json", "target.json", "scan.log", "launcher.log")
-        print(
-            json.dumps(
-                {
-                    "paths": [
-                        str((root / name).relative_to(SCAN_ROOT.parent))
-                        for name in names
-                        if (root / name).exists()
-                    ]
-                }
-            )
-        )
+        print(json.dumps({"paths": public_report_files(root)}))
     elif action == "cancel":
         print(json.dumps(cancel(value)))
     else:

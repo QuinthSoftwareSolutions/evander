@@ -357,6 +357,32 @@ def test_completion_marker_replaces_nonempty_agent_directory(tmp_path: Path) -> 
     assert list(tmp_path.glob(".turn.exit.stale-*")) == []
 
 
+def test_diagnostic_process_drains_terminal_stderr_before_returning_exit_status():
+    script = (
+        "import json, signal, sys, time\n"
+        "def stop(*args):\n"
+        "    print('private terminal native error', file=sys.stderr, flush=True)\n"
+        "    sys.exit(23)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "request = json.loads(sys.stdin.readline())\n"
+        "print(json.dumps({'id': request['id'], 'result': {}}), flush=True)\n"
+        "while True: time.sleep(0.01)\n"
+    )
+    errors = []
+    process = CodexAppServerProcess(
+        (sys.executable, "-u", "-c", script),
+        stderr_handler=errors.append,
+        drain_stderr_on_close=True,
+    )
+    try:
+        process.start()
+        process.close()
+        assert process.returncode == 23
+        assert errors == ["private terminal native error"]
+    finally:
+        process.close()
+
+
 @pytest.mark.parametrize(
     "server_script",
     [

@@ -51,13 +51,14 @@ def request(relay, method="POST", path="/backend-api/codex/responses", body=b"{}
 def relay_factory(socket_tmp_path):
     relays = []
 
-    def create(handler, *, refresh=None, max_connections=12, tokens=None):
+    def create(handler, *, refresh=None, max_connections=12, tokens=None, diagnostics=None):
         value = CodexRuntimeHttpRelay(
             path=socket_tmp_path / f"models-{len(relays)}.sock",
             tokens=tokens or CodexExternalAuthTokens(SECRET, ACCOUNT, "plus"),
             refresh_tokens=refresh or (lambda **kwargs: pytest.fail("Unexpected refresh")),
             client=httpx.Client(transport=httpx.MockTransport(handler)),
             max_connections=max_connections,
+            diagnostics=diagnostics,
         )
         value.start()
         relays.append(value)
@@ -66,6 +67,41 @@ def relay_factory(socket_tmp_path):
     yield create
     for value in relays:
         value.close()
+
+
+def test_diagnostics_retain_request_ids_and_limits_without_auth_or_bodies(relay_factory):
+    from types import SimpleNamespace
+
+    events = []
+
+    def upstream(req):
+        if req.url.path == ACCOUNTS_PATH:
+            return response(data=discovery())
+        return response(
+            429,
+            body=b"private upstream body",
+            headers={
+                "x-request-id": "request-123",
+                "retry-after": "60",
+                "x-ratelimit-remaining-tokens": "0",
+                "set-cookie": "private-cookie",
+            },
+        )
+
+    relay = relay_factory(
+        upstream, diagnostics=SimpleNamespace(event=lambda name, data: events.append((name, data)))
+    )
+    status, _, body = request(relay, body=b"private request body")
+    assert status == 429 and b"private upstream body" not in body
+    event = next(data for name, data in events if data.get("status_code") == 429)
+    assert event["metadata"] == {
+        "x-request-id": "request-123",
+        "retry-after": "60",
+        "x-ratelimit-remaining-tokens": "0",
+    }
+    encoded = json.dumps(events)
+    assert SECRET not in encoded and "private-cookie" not in encoded
+    assert "private request body" not in encoded and "private upstream body" not in encoded
 
 
 def test_worker_attaches_credentials_preserves_selected_route_and_streams(relay_factory):

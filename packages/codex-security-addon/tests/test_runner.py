@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -98,6 +99,125 @@ def test_empty_diff_needs_no_model_and_produces_completed_receipt(repo, monkeypa
     result = runner.status("5" * 32)
     assert result["status"] == "completed" and result["coverage"] == "complete"
     assert result["findings"] == []
+
+
+@pytest.mark.parametrize("outcome", ["completed", "partial", "timeout", "invalid_contract"])
+def test_native_history_and_execution_outcome_retained_before_cleanup(repo, monkeypatch, outcome):
+    source, _, head = repo
+    scan_id = "a" * 32
+    root = runner.scan_directory(scan_id)
+    session = root / "codex-home/sessions/day"
+    session.mkdir(parents=True)
+    (session / "rollout.jsonl").write_text('{"event":"private native history"}\n')
+    (root / "codex-home/auth.json").write_text("never retain auth")
+
+    class Child:
+        pid = 987654321
+        code = None
+
+        def poll(self):
+            return self.code
+
+        def wait(self, timeout=None):
+            if outcome == "timeout" and self.code is None:
+                self.code = -15
+                raise subprocess.TimeoutExpired("synthetic scanner", timeout)
+            self.code = self.code if self.code is not None else 0
+            return self.code
+
+    def canonical(*args):
+        if outcome == "invalid_contract":
+            raise ValueError("sealed report missing")
+        return {
+            "status": "failed" if outcome == "partial" else "completed",
+            "coverage": "partial" if outcome == "partial" else "complete",
+        }
+
+    monkeypatch.setattr(runner.os, "getpgrp", runner.os.getpid)
+    monkeypatch.setattr(runner.os, "killpg", lambda *args: None)
+    monkeypatch.setattr(runner, "snapshot", lambda *args: (source, None, head))
+    monkeypatch.setattr(runner, "git", lambda *args: "")
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout=json.dumps({"plugin_root": "/unused", "environment": {}})
+        ),
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: Child())
+    monkeypatch.setattr(runner, "canonical_result", canonical)
+    runner.run(
+        {"scan_id": scan_id, "repo_path": str(source), "mode": "standard", "timeout_seconds": 10}
+    )
+    assert not (root / "codex-home").exists()
+    assert (
+        "private native history"
+        in (root / "diagnostics/native/sessions/day/rollout.jsonl").read_text()
+    )
+    assert not list((root / "diagnostics").rglob("auth.json"))
+    execution = runner.read_json(root / "execution.json")
+    assert (
+        execution["status"]
+        == {
+            "completed": "completed",
+            "partial": "failed",
+            "timeout": "timed_out",
+            "invalid_contract": "failed",
+        }[outcome]
+    )
+    assert execution["child_exit_code"] == (-15 if outcome == "timeout" else 0)
+    if outcome == "timeout":
+        assert execution["termination_reason"] == "timeout"
+    if outcome == "invalid_contract":
+        assert execution["exception_class"] == "ValueError"
+
+
+def test_native_capture_caps_files_and_skips_linked_evidence(repo):
+    root = runner.scan_directory("b" * 32)
+    sessions = root / "codex-home/sessions"
+    sessions.mkdir(parents=True)
+    oversized = sessions / "rollout.jsonl"
+    oversized.write_bytes(b"x" * (9 * 1024 * 1024) + b"final event")
+    outside = root / "outside.log"
+    outside.write_text("must not copy")
+    (sessions / "linked.log").symlink_to(outside)
+    os.link(outside, sessions / "hard.log")
+    os.mkfifo(sessions / "pipe.log")
+    receipt = runner.capture_native_diagnostics(root)
+    copies = [p for p in (root / "diagnostics").rglob("*") if p.is_file()]
+    assert [p.name for p in copies] == ["rollout.jsonl"]
+    assert copies[0].stat().st_size == 8 * 1024 * 1024
+    assert copies[0].read_bytes().endswith(b"final event")
+    assert receipt["truncated"]
+
+
+def test_public_files_never_include_raw_history_logs_or_directory_sweeps(repo):
+    root = runner.scan_directory("c" * 32)
+    expected = [
+        "result.json",
+        "target.json",
+        "reports/scan/report.md",
+        "reports/scan/findings.json",
+        "reports/scan/coverage.json",
+        "reports/scan/scan-manifest.json",
+        "reports/scan/exports/results.sarif",
+        "reports/scan/checkpoints/commit.json",
+    ]
+    for name in [
+        *expected,
+        "scan.log",
+        "launcher.log",
+        "execution.json",
+        "diagnostics/native/sessions/rollout.jsonl",
+        "reports/scan/debug.log",
+    ]:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic")
+    files = runner.public_report_files(root)
+    assert set(files) == {
+        str((root / name).relative_to(runner.SCAN_ROOT.parent)) for name in expected
+    }
     assert not (runner.scan_directory("5" * 32) / "checkout").exists()
 
 
