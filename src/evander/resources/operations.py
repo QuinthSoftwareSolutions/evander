@@ -2,11 +2,23 @@
 
 import hashlib
 import json
+from contextlib import ExitStack
 
 from .models import Conflict, ResourceError, Uncertain
 
 
-def perform(store, owner, resource_id, operation, arguments, request_id, invoke, *, read=False):
+def perform(
+    store,
+    owner,
+    resource_id,
+    operation,
+    arguments,
+    request_id,
+    invoke,
+    *,
+    read=False,
+    release_journal_lock=False,
+):
     if read:
         return invoke()
     if not request_id or len(request_id) > 128:
@@ -19,7 +31,8 @@ def perform(store, owner, resource_id, operation, arguments, request_id, invoke,
 
     key = digest([owner.identity(), request_id])
     fingerprint = digest([resource_id, operation, arguments])
-    with store.locked():
+    with ExitStack() as locks:
+        locks.enter_context(store.locked())
         prior = store.operation(key)
         if prior:
             if prior[0] != fingerprint:
@@ -34,6 +47,10 @@ def perform(store, owner, resource_id, operation, arguments, request_id, invoke,
             "revision": 1,
         }
         store.put_operation(key, fingerprint, result)
+        if release_journal_lock:
+            # Worker callers hold their lease execution lock. The durable
+            # uncertain record reserves this request across all other leases.
+            locks.close()
         try:
             value = invoke()
         except Exception as exc:

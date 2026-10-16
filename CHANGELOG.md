@@ -3,7 +3,7 @@
 ## 2026-10-16 - Generic SQL Server and RabbitMQ integrations (0.97.0)
 
 - Add independently installed SQL Server and RabbitMQ projects with directory-scoped registered connections, bounded data/management tools, operator pages, workflow providers and disposable resource profiles.
-- Add provider-neutral resource authority, durable intents and lifecycle notices, optional Team ownership validation, exact worker-job private tmpfs configuration and independent expiry/fault recovery. Withdraw obsolete job access before provider calls, preserve scoped grants across worker policy reloads and retain independent cleanup retries. Persistent resources have no automatic deletion; uncertain data writes are not replayed.
+- Add provider-neutral resource authority, durable intents and lifecycle notices, optional Team ownership validation, exact worker-job private tmpfs configuration and independent expiry/fault recovery. Withdraw obsolete job access before provider calls, preserve scoped grants across worker policy reloads and retain independent cleanup retries. Serialize worker operations per lease so unrelated calls cannot hold up recovery, preserving fault deadlines until recovery succeeds. Persistent resources have no automatic deletion; uncertain data writes are not replayed.
 - Add Test Fixtures 0.1.4 migration previews and drain mode, preserving existing leases and cleanup until provider absence is verified. Production server lifecycle and deployment remain operator-owned.
 - Isolate trusted worker helpers from job executables and Python configuration, select network grants using the job's destination route, and keep managed SQL creation identities under host control.
 

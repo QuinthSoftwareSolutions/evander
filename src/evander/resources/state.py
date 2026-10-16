@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,13 +37,21 @@ class Store:
         return db
 
     @contextmanager
-    def locked(self):
-        fd = os.open(self.root / "resources.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    def locked(self, lease_id=None, *, blocking=True):
+        name = (
+            "resources.lock"
+            if lease_id is None
+            else "lease-" + hashlib.sha256(lease_id.encode()).hexdigest() + ".lock"
+        )
+        fd = os.open(self.root / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        acquired = False
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            acquired = True
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
     def settings(self, directory):

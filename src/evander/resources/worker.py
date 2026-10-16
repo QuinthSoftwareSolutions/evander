@@ -27,55 +27,58 @@ class WorkerService:
         self.credentials = credentials or Credentials(Path(settings.runtime_dir), addon_id)
 
     def ensure(self, incoming):
-        with self.store.locked():
-            if incoming.profile.worker_id != self.settings.worker_id:
-                raise ResourceError("Worker assignment does not match this service")
-            try:
-                lease = self.store.get(incoming.lease_id)
-            except ResourceError:
-                if incoming.operation and incoming.operation["kind"] == "release":
-                    self.adapter.verify_absent(
-                        incoming, self.settings.connections, self.credentials
-                    )
-                    incoming.state = "released"
-                    incoming.operation = None
-                    self.store.put(incoming)
-                    return receipt(incoming)
-                if not self.settings.allocations_enabled:
-                    raise ResourceError("New worker allocations are disabled")
-                if (
-                    sum(item.state not in TERMINAL for item in self.store.leases(active_only=True))
-                    >= self.settings.max_per_worker
-                ):
-                    raise ResourceError("Worker resource quota is full")
-                lease = incoming.model_copy(deep=True)
-                lease.resources, lease.job_binding = {}, {}
-                if lease.profile.connection_id:
-                    lease.connection = self.settings.connections.get(lease.profile.connection_id)
-                    if lease.connection is None:
-                        raise ResourceError("Worker connection is not registered")
-                self.adapter.validate_profile(lease.profile)
+        with self.store.locked(incoming.lease_id):
+            with self.store.locked():
+                lease, verify_absent = self._accept(incoming)
+            if verify_absent:
+                self.adapter.verify_absent(lease, self.settings.connections, self.credentials)
+                lease.state, lease.operation = "released", None
                 self.store.put(lease)
-            if (
-                lease.owner.identity() != incoming.owner.identity()
-                or lease.profile != incoming.profile
-            ):
-                raise ResourceError("Worker lease provenance changed")
             if lease.state in TERMINAL:
                 return receipt(lease)
-            lease.owner = incoming.owner
-            lease.expires_at = max(lease.expires_at, incoming.expires_at)
-            if incoming.operation and incoming.operation["id"] != lease.last_operation_id:
-                if (
-                    lease.operation
-                    and lease.operation["id"] != incoming.operation["id"]
-                    and incoming.operation["kind"] != "release"
-                ):
-                    raise ResourceError("A different operation is already pending")
-                if lease.operation is None or incoming.operation["kind"] == "release":
-                    lease.operation = incoming.operation
-            self.store.put(lease)
             return self._reconcile(lease)
+
+    def _accept(self, incoming):
+        """Reserve quota and update accepted intent without provider I/O."""
+        if incoming.profile.worker_id != self.settings.worker_id:
+            raise ResourceError("Worker assignment does not match this service")
+        try:
+            lease = self.store.get(incoming.lease_id)
+        except ResourceError:
+            if incoming.operation and incoming.operation["kind"] == "release":
+                return incoming.model_copy(deep=True), True
+            if not self.settings.allocations_enabled:
+                raise ResourceError("New worker allocations are disabled")
+            if (
+                sum(item.state not in TERMINAL for item in self.store.leases(active_only=True))
+                >= self.settings.max_per_worker
+            ):
+                raise ResourceError("Worker resource quota is full")
+            lease = incoming.model_copy(deep=True)
+            lease.resources, lease.job_binding = {}, {}
+            if lease.profile.connection_id:
+                lease.connection = self.settings.connections.get(lease.profile.connection_id)
+                if lease.connection is None:
+                    raise ResourceError("Worker connection is not registered")
+            self.adapter.validate_profile(lease.profile)
+            self.store.put(lease)
+        if lease.owner.identity() != incoming.owner.identity() or lease.profile != incoming.profile:
+            raise ResourceError("Worker lease provenance changed")
+        if lease.state in TERMINAL:
+            return lease, False
+        lease.owner = incoming.owner
+        lease.expires_at = max(lease.expires_at, incoming.expires_at)
+        if incoming.operation and incoming.operation["id"] != lease.last_operation_id:
+            if (
+                lease.operation
+                and lease.operation["id"] != incoming.operation["id"]
+                and incoming.operation["kind"] != "release"
+            ):
+                raise ResourceError("A different operation is already pending")
+            if lease.operation is None or incoming.operation["kind"] == "release":
+                lease.operation = incoming.operation
+        self.store.put(lease)
+        return lease, False
 
     def _reconcile(self, lease):
         def save():
@@ -146,7 +149,8 @@ class WorkerService:
                             if args["action"] in {"stop", "pause"}
                             else None
                         )
-                    lease.fault_until = operation["deadline"]
+                    if operation["deadline"] is not None:
+                        lease.fault_until = operation["deadline"]
                     save()
                     if lease.fault_until is not None and self.now() >= lease.fault_until:
                         self.adapter.recover(lease)
@@ -154,6 +158,8 @@ class WorkerService:
                         status = "recovered_after_unknown_result"
                     else:
                         self.adapter.control(lease, args["action"])
+                        if args["action"] in {"start", "resume"}:
+                            lease.fault_until = None
                         status = "applied"
                     lease.last_control = {
                         "operation_id": operation["id"],
@@ -208,10 +214,21 @@ class WorkerService:
     def tick(self):
         for lease in self.store.leases(active_only=True):
             if lease.state not in TERMINAL:
-                with self.store.locked():
-                    self._reconcile(self.store.get(lease.lease_id))
+                try:
+                    with self.store.locked(lease.lease_id, blocking=False):
+                        current = self.store.get(lease.lease_id)
+                        if current.state not in TERMINAL:
+                            self._reconcile(current)
+                except BlockingIOError:
+                    # An unrelated accepted data operation must not postpone
+                    # another lease's expiry, withdrawal or fault recovery.
+                    continue
 
     def lease_call(self, lease_id, owner, operation, arguments, request_id):
+        with self.store.locked(lease_id):
+            return self._lease_call(lease_id, owner, operation, arguments, request_id)
+
+    def _lease_call(self, lease_id, owner, operation, arguments, request_id):
         from .operations import perform
 
         if operation not in self.adapter.lease_operations:
@@ -241,12 +258,12 @@ class WorkerService:
             request_id,
             lambda: self.adapter.lease_call(authorized(), operation, arguments),
             read=operation in self.adapter.read_operations,
+            release_journal_lock=True,
         )
-        with self.store.locked():
-            lease = authorized()
-            lease.owner = owner
-            lease.expires_at = self.now() + lease.profile.idle_seconds
-            self.store.put(lease)
+        lease = authorized()
+        lease.owner = owner
+        lease.expires_at = self.now() + lease.profile.idle_seconds
+        self.store.put(lease)
         return result
 
 

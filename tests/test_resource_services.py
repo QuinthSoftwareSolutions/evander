@@ -558,6 +558,162 @@ def test_fault_deadline_survives_an_unknown_ack_and_service_reload(tmp_path):
     assert not adapter.paused and worker.store.get(lease.lease_id).fault_until is None
 
 
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_failed_fault_recovery_preserves_deadline_without_a_job(tmp_path, action):
+    class Faults(Adapter):
+        paused = False
+        recoveries = 0
+
+        def validate_control(self, profile, arguments):
+            pass
+
+        def control(self, lease, action):
+            if action in {"start", "resume"}:
+                raise OSError("Docker operation failed")
+            self.paused = True
+
+        def recover(self, lease):
+            self.paused = False
+            self.recoveries += 1
+
+    clock = [1000]
+    settings = WorkerSettings(
+        runtime_dir=str(tmp_path),
+        worker_id="worker-a",
+        token_env="TEST_TOKEN",
+        allocations_enabled=True,
+        connections={"local": {}},
+    )
+    jobs, adapter = Jobs(), Faults()
+    worker = WorkerService("sample-addon", settings, adapter, jobs=jobs, now=lambda: clock[0])
+    lease = Lease(
+        lease_id="rs-" + "e" * 32,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(connection_id="local", worker_id="worker-a"),
+        created_at=1000,
+        expires_at=8200,
+    )
+    worker.ensure(lease)
+    lease.operation = {
+        "kind": "control",
+        "id": "pause-once",
+        "arguments": {"action": "pause", "duration_seconds": 60},
+    }
+    assert worker.ensure(lease)["fault_until"] == 1060
+    lease.operation = {"kind": "control", "id": action, "arguments": {"action": action}}
+    clock[0] = 1010
+    failed = worker.ensure(lease)
+    assert failed["state"] == "failed" and failed["fault_until"] == 1060
+    jobs.live = False
+    clock[0] = 1061
+    # An independent reaper must retain the safety deadline across a restart.
+    worker = WorkerService("sample-addon", settings, adapter, jobs=jobs, now=lambda: clock[0])
+    worker.tick()
+    recovered = worker.store.get(lease.lease_id)
+    assert not adapter.paused and adapter.recoveries == 1
+    assert recovered.fault_until is None and recovered.state == "awaiting_job"
+    worker.tick()
+    assert adapter.recoveries == 1
+
+
+def test_unrelated_worker_write_does_not_block_fault_recovery_or_replay_guards(tmp_path):
+    from threading import Event, Thread
+
+    started, finish_write, reaped = Event(), Event(), Event()
+    recovered, results, failures = [], [], []
+
+    class Faults(Adapter):
+        lease_operations = {"write"}
+
+        def validate_control(self, profile, arguments):
+            pass
+
+        def control(self, lease, action):
+            pass
+
+        def recover(self, lease):
+            recovered.append(lease.lease_id)
+
+        def lease_call(self, lease, operation, arguments):
+            self.writes += 1
+            started.set()
+            if not finish_write.wait(5):
+                raise TimeoutError("Test did not release blocked operation")
+            return {"accepted": True}
+
+    clock = [1000]
+    settings = WorkerSettings(
+        runtime_dir=str(tmp_path),
+        worker_id="worker-a",
+        token_env="TEST_TOKEN",
+        allocations_enabled=True,
+        connections={"local": {}},
+    )
+    jobs, adapter = Jobs(), Faults()
+    api, reaper = (
+        WorkerService("sample-addon", settings, adapter, jobs=jobs, now=lambda: clock[0])
+        for _ in range(2)
+    )
+    # Put the busy lease first in journal order: reapers must skip its lock.
+    busy, paused = (
+        Lease(
+            lease_id="rs-" + digit * 32,
+            owner=owner(),
+            profile_id="p-" + digit,
+            profile=Profile(connection_id="local", worker_id="worker-a"),
+            created_at=1000,
+            expires_at=8200,
+        )
+        for digit in ("0", "1")
+    )
+    api.ensure(busy)
+    api.ensure(paused)
+    paused.operation = {
+        "kind": "control",
+        "id": "pause-once",
+        "arguments": {"action": "pause", "duration_seconds": 60},
+    }
+    api.ensure(paused)
+
+    def write():
+        try:
+            results.append(api.lease_call(busy.lease_id, owner(), "write", {}, "write-once"))
+        except Exception as exc:
+            failures.append(exc)
+
+    def reap():
+        try:
+            reaper.tick()
+        except Exception as exc:
+            failures.append(exc)
+        finally:
+            reaped.set()
+
+    writing, reaping = Thread(target=write), Thread(target=reap)
+    writing.start()
+    try:
+        assert started.wait(2), "Provider call did not start"
+        clock[0] = 1061
+        reaping.start()
+        assert reaped.wait(2), "An unrelated provider call delayed independent recovery"
+        assert recovered == [paused.lease_id]
+        assert reaper.store.get(paused.lease_id).fault_until is None
+        # The short journal reservation must still reject cross-lease ID reuse
+        # while the original provider call has not acknowledged completion.
+        with pytest.raises(Conflict, match="another operation"):
+            reaper.lease_call(paused.lease_id, owner(), "write", {}, "write-once")
+    finally:
+        finish_write.set()
+        writing.join(3)
+        if reaping.ident is not None:
+            reaping.join(3)
+    assert not writing.is_alive() and not reaping.is_alive() and not failures
+    assert results[0]["state"] == "completed"
+    assert api.lease_call(busy.lease_id, owner(), "write", {}, "write-once") == results[0]
+    assert adapter.writes == 1
+
+
 def test_maintenance_starter_is_pure_scoped_and_needs_no_data_grants(tmp_path, domain):
     from evander.resources.starters import maintenance
     from evander.resources.providers import register_providers
