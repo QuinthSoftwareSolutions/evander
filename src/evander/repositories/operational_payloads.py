@@ -338,6 +338,52 @@ def load_lifecycle_field(
     return value
 
 
+def load_record_projection(
+    connection: sqlite3.Connection, payload: str | bytes,
+    fields: Mapping[str, tuple[str, ...] | None],
+) -> dict[str, Any]:
+    """Decode selected record fields without hydrating sibling payload trees.
+
+    A tuple selects dictionary children; None reads the whole field. Resolving
+    an encoded object root does not recursively decompress its unused children.
+    Legacy inline dictionaries and early encoded lifecycle values retain the
+    same precedence as load_record.
+    """
+    record = json.loads(payload)
+    encoded = record.get(FORMAT_KEY, {}).get("fields", {})
+    cache: dict[str, Any] = {}
+
+    def select(node, keys):
+        tag, value = node
+        if tag == "r":
+            if value not in cache:
+                row = connection.execute(
+                    "SELECT codec, payload_blob FROM workflow_operational_blobs WHERE sha256=?",
+                    (value,),
+                ).fetchone()
+                if row is None or row[0] != "zlib-json-v1":
+                    raise ValueError("Missing or unsupported operational payload blob")
+                raw = zlib.decompress(row[1])
+                if hashlib.sha256(raw).hexdigest() != value:
+                    raise ValueError("Operational payload digest mismatch")
+                cache[value] = json.loads(raw)
+            return select(cache[value], keys)
+        if keys is not None and tag == "o":
+            return {key: _decode(connection, value[key], cache) for key in keys if key in value}
+        return _decode(connection, node, cache)
+
+    result = {}
+    for field, keys in fields.items():
+        value = record.get(field)
+        if field in encoded and (field in PAYLOAD_FIELDS or value in ("", {}, [])):
+            result[field] = select(encoded[field], keys)
+        elif keys is not None and isinstance(value, dict):
+            result[field] = {key: value[key] for key in keys if key in value}
+        elif field in record:
+            result[field] = value
+    return result
+
+
 def discard_record_field_references(
     connection: sqlite3.Connection, *, kind: str, record_id: str, fields: Iterable[str],
 ) -> None:

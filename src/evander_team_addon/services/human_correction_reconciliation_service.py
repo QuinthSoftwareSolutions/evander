@@ -163,10 +163,12 @@ def _deliverable_resolution_evidence(deliverable: Any) -> list[str]:
 
 
 def _successors(state: Any, predecessor_id: str) -> list[Any]:
+    records = (state.query_records("release_packages", "supersedes_release_package_id=?", (predecessor_id,))
+               if hasattr(state, "query_records") else state.release_packages.values())
     return sorted(
         (
             release
-            for release in state.release_packages.values()
+            for release in records
             if release.supersedes_release_package_id == predecessor_id
         ),
         key=lambda release: (release.created_at, release.id),
@@ -872,14 +874,20 @@ class HumanCorrectionReconciliationService:
         self._repository = repository
 
     def reconcile(self) -> dict[str, Any]:
+        from ..lifecycle_scope import TeamLifecycleRepository
+        self._repository = TeamLifecycleRepository(self._repository, purpose="human_correction")
         last_conflict: TeamStateConflictError | None = None
         for _attempt in range(_MAX_RECONCILIATION_ATTEMPTS):
-            current = self._repository.read()
-            cases = [
-                case
-                for case in _human_correction_cases(current)
-                if _case_needs_reconciliation(current, case)
-            ]
+            try:
+                current = self._repository.read()
+                cases = [
+                    case
+                    for case in _human_correction_cases(current)
+                    if _case_needs_reconciliation(current, case)
+                ]
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                continue
             if not cases:
                 return {
                     "changed": False,

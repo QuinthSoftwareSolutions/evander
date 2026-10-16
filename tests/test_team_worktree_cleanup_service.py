@@ -575,10 +575,16 @@ def test_reconciler_reactivates_terminal_candidate_for_reused_attempt_id(tmp_pat
     assert attempt_id not in final_state.git_preparation_attempts
 
 
+@pytest.mark.parametrize("scoped", [False, True])
 def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     tmp_path,
+    scoped,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+        repository = TeamLifecycleRepository(repository)
     backend = FakeCleanupBackend([_removed_outcome()])
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
     service = TeamWorktreeCleanupService(repository, backend)
@@ -614,7 +620,7 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert result.reclaimed_bytes == 512
     assert len(backend.calls) == 1
     final_state = repository.read()
-    candidate = next(iter(final_state.worktree_cleanup_candidates.values()))
+    candidate = final_state.worktree_cleanup_candidates[candidate.id]
     assert candidate.state == WorktreeCleanupState.SUCCEEDED
     assert candidate.ignored_file_inventory == [".cache/generated.bin"]
     assert candidate.ignored_file_count == 1
@@ -632,7 +638,8 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
 
 
-def test_cleanup_retires_committed_attempt_before_pruning_its_context(tmp_path) -> None:
+@pytest.mark.parametrize("scoped", [False, True])
+def test_cleanup_retires_committed_attempt_before_pruning_its_context(tmp_path, scoped) -> None:
     repository = _seed_cleanup_state(tmp_path)
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
     attempt_id = "gitprep-committed-context"
@@ -665,6 +672,11 @@ def test_cleanup_retires_committed_attempt_before_pruning_its_context(tmp_path) 
         return state
 
     repository.update(_seed_committed_attempt)
+    base_repository = repository
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+        repository = TeamLifecycleRepository(repository)
     backend = FakeCleanupBackend([_removed_outcome()])
 
     result = TeamWorktreeCleanupService(repository, backend).reconcile(
@@ -675,14 +687,17 @@ def test_cleanup_retires_committed_attempt_before_pruning_its_context(tmp_path) 
 
     assert result.succeeded_count == 1
     assert len(backend.calls) == 1
-    state = repository.read()
+    state = base_repository.read()
     assert "context" not in state.git_work_contexts
     assert attempt_id not in state.git_preparation_attempts
     [candidate] = state.worktree_cleanup_candidates.values()
     assert candidate.state == WorktreeCleanupState.SUCCEEDED
 
 
-def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(tmp_path) -> None:
+@pytest.mark.parametrize("scoped", [False, True])
+def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(
+    tmp_path, scoped
+) -> None:
     repository = _seed_cleanup_state(tmp_path)
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
     attempt_id = "gitprep-older-lineage-context"
@@ -733,6 +748,11 @@ def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(tmp_p
         return state
 
     repository.update(_seed_multiple_dispatch_contexts)
+    base_repository = repository
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+        repository = TeamLifecycleRepository(repository)
     service = TeamWorktreeCleanupService(
         repository,
         FakeCleanupBackend([_removed_outcome()]),
@@ -741,7 +761,7 @@ def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(tmp_p
     result = service.reconcile(now=now, grace_seconds=0, dry_run=False)
 
     assert result.succeeded_count == 1
-    cleaned = repository.read()
+    cleaned = base_repository.read()
     [candidate] = cleaned.worktree_cleanup_candidates.values()
     assert candidate.git_work_context_id == "context-latest-dispatch"
     assert attempt_id not in cleaned.git_preparation_attempts
@@ -757,6 +777,91 @@ def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(tmp_p
 
     retained = repository.update(_apply_retention)
     assert "context-first-dispatch" not in retained.git_work_contexts
+
+
+def test_scoped_cleanup_keeps_a_cleaned_newer_generation_as_lineage_authority(tmp_path):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+    repository = _seed_cleanup_state(tmp_path)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    service = TeamWorktreeCleanupService(repository, FakeCleanupBackend([]))
+    state, _ = service.enqueue_candidates(now=now, grace_seconds=0)
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+
+    def history(current):
+        context = current.git_work_contexts["context"]
+        current.git_work_contexts["older-generation"] = context.model_copy(
+            update={
+                "id": "older-generation",
+                "created_at": context.created_at - timedelta(days=1),
+                "updated_at": context.updated_at - timedelta(days=1),
+            }
+        )
+        current.worktree_cleanup_candidates[candidate.id].state = WorktreeCleanupState.SUCCEEDED
+        current.worktree_cleanup_candidates[candidate.id].completed_at = now
+
+    repository.update(history)
+    scoped = TeamLifecycleRepository(repository)
+    revision = repository.read_revision()
+    _, counts = TeamWorktreeCleanupService(scoped, FakeCleanupBackend([])).enqueue_candidates(
+        now=now, grace_seconds=0
+    )
+    assert counts == {"enqueued": 0, "recovered": 0, "refreshed": 0}
+    assert repository.read_revision() == revision
+    assert {
+        row.git_work_context_id for row in repository.read().worktree_cleanup_candidates.values()
+    } == {"context"}
+
+
+def test_scoped_retention_honors_resolved_recovery_incidents(tmp_path):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import GitRecoveryIncident, TeamBlocker
+    from evander_team_addon.services.domain.git_recovery import preservation_hold
+
+    repository = _seed_cleanup_state(tmp_path)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    state, _ = TeamWorktreeCleanupService(repository, FakeCleanupBackend([])).enqueue_candidates(
+        now=now, grace_seconds=0
+    )
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+
+    def retain(current):
+        current.worktree_cleanup_candidates[candidate.id].state = WorktreeCleanupState.SUCCEEDED
+        current.blockers["recovered"] = TeamBlocker(
+            id="recovered",
+            team_id="team",
+            project_id="project",
+            task_id="task",
+            source_kind="explicit",
+            source_id="retained-work",
+            summary="Recovery resolved",
+            state="resolved",
+            route="resolved",
+            resolved_at=now,
+        )
+        current.git_recovery_incidents["incident"] = GitRecoveryIncident(
+            id="incident",
+            blocker_id="recovered",
+            project_id="project",
+            task_id="task",
+            lineage_id="task",
+            input_fingerprint="input",
+            preparation_generation="generation",
+            state="resumed",
+            preserved_context_ids=["context"],
+        )
+
+    repository.update(retain)
+    scoped = TeamLifecycleRepository(repository)
+    with scoped.command_snapshot() as snapshot:
+        assert not snapshot.git_recovery_incidents.values()
+        assert preservation_hold(snapshot, context_id="context") == "incident"
+
+    def prune(current):
+        reconcile_git_work_context_lifecycle(current, now=now, prune_before=now + timedelta(days=1))
+
+    scoped.update(prune)
+    assert "context" in repository.read().git_work_contexts
 
 
 def test_invalidated_preparation_is_cleanup_eligible_before_task_resolution(
@@ -2871,7 +2976,8 @@ def test_container_preparation_records_legacy_worker_receipt(monkeypatch) -> Non
     [pytest.param(None, id="missing-base"), pytest.param("2" * 40, id="guest-reported-base")],
 )
 def test_container_preparation_requires_server_authoritative_base(
-    monkeypatch, reported_base: str | None,
+    monkeypatch,
+    reported_base: str | None,
 ) -> None:
     class FakeContainerBackend:
         def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:

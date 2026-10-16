@@ -943,8 +943,11 @@ class TeamWorktreeCleanupService:
                     if candidate.state == WorktreeCleanupState.PENDING
                     and candidate.eligible_at <= now
                     and candidate.id not in excluded_ids
-                    and not preservation_hold(state, context_id=candidate.git_work_context_id,
-                        attempt_id=candidate.git_work_context_id.removeprefix("preparation:"))
+                    and not preservation_hold(
+                        state,
+                        context_id=candidate.git_work_context_id,
+                        attempt_id=candidate.git_work_context_id.removeprefix("preparation:"),
+                    )
                 ),
                 key=lambda item: (item.eligible_at, item.id),
             )
@@ -1221,11 +1224,17 @@ def _team_state_safety_failure(
     state: TeamState,
     candidate: WorktreeCleanupCandidate,
 ) -> WorktreeCleanupSafetyFailure | None:
-    hold = preservation_hold(state, context_id=candidate.git_work_context_id,
-                             attempt_id=candidate.git_work_context_id.removeprefix("preparation:"))
+    hold = preservation_hold(
+        state,
+        context_id=candidate.git_work_context_id,
+        attempt_id=candidate.git_work_context_id.removeprefix("preparation:"),
+    )
     if hold:
-        return WorktreeCleanupSafetyFailure(check="git_recovery_preservation_hold",
-            message=f"Work retained by Git recovery {hold}; no complete archive is recorded", retryable=True)
+        return WorktreeCleanupSafetyFailure(
+            check="git_recovery_preservation_hold",
+            message=f"Work retained by Git recovery {hold}; no complete archive is recorded",
+            retryable=True,
+        )
     current = state.worktree_cleanup_candidates.get(candidate.id)
     if current is None:
         return WorktreeCleanupSafetyFailure(
@@ -1455,10 +1464,21 @@ def _preparation_attempt_was_invalidated(
     return False
 
 
+def _load_cleanup_lineage_records(state: TeamState, candidate: WorktreeCleanupCandidate) -> None:
+    if not hasattr(state, "query_records"):
+        return
+    state.query_records(
+        "git_work_contexts", "agent_id=? AND agent_branch=?", (candidate.agent_id, candidate.branch)
+    )
+    state.query_records("git_preparation_attempts", "task_id=?", (candidate.task_id,))
+    state.query_records("deliverables", "task_id=?", (candidate.task_id,))
+
+
 def _prune_cleaned_git_context_metadata(
     state: TeamState,
     candidate: WorktreeCleanupCandidate,
 ) -> None:
+    _load_cleanup_lineage_records(state, candidate)
     referenced = {
         context_id
         for deliverable in state.deliverables.values()
@@ -1494,6 +1514,8 @@ def _cleanup_preparation_receipt_attempt_id(
     state: TeamState | None,
     candidate: WorktreeCleanupCandidate,
 ) -> str | None:
+    if state is not None:
+        _load_cleanup_lineage_records(state, candidate)
     if candidate.git_work_context_id.startswith("preparation:"):
         attempt_id = candidate.git_work_context_id.partition(":")[2]
         if state is None:
@@ -1563,10 +1585,15 @@ def _cleanup_candidate_for_context(
     *,
     context: GitWorkContext,
 ) -> WorktreeCleanupCandidate | None:
+    records = (
+        state.query_records("worktree_cleanup_candidates", "git_work_context_id=?", (context.id,))
+        if hasattr(state, "query_records")
+        else state.worktree_cleanup_candidates.values()
+    )
     matching = sorted(
         (
             candidate
-            for candidate in state.worktree_cleanup_candidates.values()
+            for candidate in records
             if candidate.task_id == context.task_id
             and candidate.agent_id == context.agent_id
             and candidate.git_work_context_id == context.id
@@ -1612,7 +1639,12 @@ def _newest_cleanup_contexts_by_lineage(
     state: TeamState,
 ) -> dict[tuple[str, str, str, str], GitWorkContext]:
     newest_by_lineage: dict[tuple[str, str, str, str], GitWorkContext] = {}
-    for context in state.git_work_contexts.values():
+    records = (
+        state.cleanup_work_context_records()
+        if hasattr(state, "cleanup_work_context_records")
+        else state.git_work_contexts.values()
+    )
+    for context in records:
         lineage = _cleanup_context_lineage(state, context)
         if lineage is None:
             continue
@@ -1686,10 +1718,15 @@ def _cleanup_candidate_with_context_identity(
     session_id: str,
     managed_repo_id: str,
 ) -> WorktreeCleanupCandidate | None:
+    records = (
+        state.query_records("worktree_cleanup_candidates", "git_work_context_id=?", (context.id,))
+        if hasattr(state, "query_records")
+        else state.worktree_cleanup_candidates.values()
+    )
     matching = sorted(
         (
             candidate
-            for candidate in state.worktree_cleanup_candidates.values()
+            for candidate in records
             if candidate.task_id == context.task_id
             and candidate.agent_id == context.agent_id
             and candidate.session_id == session_id

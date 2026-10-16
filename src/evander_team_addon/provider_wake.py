@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import (
     Mapping,
 )
@@ -36,6 +37,7 @@ from evander.runtime_generation import (
 from .costs import (
     TeamCostService,
 )
+from .lifecycle_scope import TeamLifecycleRepository
 from .mcp import (
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
 )
@@ -47,6 +49,7 @@ from .provider_artifacts import (
     _prepare_review_artifacts_for_lease,
 )
 from .provider_constants import (
+    logger,
     _TEAM_WAKE_DEFINITION_PAYLOAD_FIELDS,
     TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES,
     TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
@@ -222,6 +225,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
         repo = repository or TeamStateRepository(_runtime_dir(context))
+        repo = TeamLifecycleRepository(repo)
         run_global_maintenance = _optional_bool(
             payload.get("run_global_maintenance"),
             default=True,
@@ -509,11 +513,11 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             retry_event_ids=retry_event_ids,
         )
         dispatch_batch.run()
-        final_state = repo.read()
-        lease_summaries = [
-            _team_wake_lease_summary(lease, state=final_state)
-            for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
-        ]
+        with repo.command_snapshot() as final_state:
+            lease_summaries = [
+                _team_wake_lease_summary(lease, state=final_state)
+                for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
+            ]
         return {
             "success": not errors,
             "coalesced": False,
@@ -613,21 +617,34 @@ class _WakeDispatch:
 
     def run(self) -> None:
         try:
-            self._seed_guidance()
-            if not self._prepare_repositories():
+            self._phase("guidance", self._seed_guidance)
+            if not self._phase("git_preparation", self._prepare_repositories):
                 return
-            if not self._grant_tools():
+            if not self._phase("tool_grant", self._grant_tools):
                 return
-            if not self._prepare_review_artifacts():
+            if not self._phase("review_artifacts", self._prepare_review_artifacts):
                 return
-            self._prepare_prompt()
-            if not self._submit_prompt():
+            self._phase("prompt_preparation", self._prepare_prompt)
+            if not self._phase("worker_submission", self._submit_prompt):
                 return
-            self._activate_and_record_delivery()
+            self._phase("activation", self._activate_and_record_delivery)
         except TeamStateConflictError as exc:
             self._schedule_conflict_retry(exc)
         except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
             self._record_failure(exc)
+
+    def _phase(self, phase, operation):
+        started = time.perf_counter()
+        outcome = "failed"
+        try:
+            result = operation()
+            outcome = "succeeded" if result is not False else "deferred"
+            return result
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            log = logger.info if elapsed >= 100 or outcome != "succeeded" else logger.debug
+            log("Team wake phase=%s dispatch_id=%s duration_ms=%.1f outcome=%s",
+                phase, self.lease["dispatch_id"], elapsed, outcome)
 
     def _seed_guidance(self) -> None:
         self.lease = {

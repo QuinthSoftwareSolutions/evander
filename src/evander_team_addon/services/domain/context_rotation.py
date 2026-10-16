@@ -135,12 +135,15 @@ def _has_activity_since_last_context_rotation(
     def _newer_than_rotation(value: datetime | None) -> bool:
         return value is not None and _ensure_utc(value) > rotated_at
 
-    for task in state.tasks.values():
+    if hasattr(state, "has_recent_lifecycle_activity"):
+        return state.has_recent_lifecycle_activity(agent.id, rotated_at)
+    tasks, inbox = state.tasks.values(), state.inbox.values()
+    for task in tasks:
         if task.owner_agent_id != agent.id:
             continue
         if _newer_than_rotation(task.created_at) or _newer_than_rotation(task.updated_at):
             return True
-    for item in state.inbox.values():
+    for item in inbox:
         if item.recipient_agent_id != agent.id:
             continue
         if _newer_than_rotation(item.created_at) or _newer_than_rotation(item.updated_at):

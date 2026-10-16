@@ -293,7 +293,7 @@ class TeamStateReadProjection(TeamState):
 
 
 def _require_complete_state(state: TeamState) -> None:
-    if isinstance(state, TeamStateReadProjection):
+    if not isinstance(state, TeamState) or isinstance(state, TeamStateReadProjection):
         raise ValueError("Team read projections cannot be persisted")
 
 
@@ -454,11 +454,16 @@ class TeamStateSqliteStore(
             """
             params.extend([(due_at or utc_now()).isoformat()] * 2)
         elif kind == "history":
-            source = "SELECT id FROM team_dispatches WHERE activation_completed_at IS NOT NULL"
+            # Apply the keyset and page bound before joins/JSON lineage reads.
+            source = """SELECT id FROM team_dispatches
+                INDEXED BY idx_team_dispatches_receipt_recovery
+                WHERE activation_completed_at IS NOT NULL AND id > ?
+                ORDER BY id LIMIT ?"""
+            params.extend([after, limit + 1])
         elif kind == "completion":
             source = """
                 SELECT active_dispatch_id AS id, 0 AS priority FROM team_agent_runtimes WHERE active_dispatch_id IS NOT NULL
-                UNION SELECT id, 0 FROM team_dispatches
+                UNION SELECT id, 0 FROM team_dispatches INDEXED BY idx_team_dispatches_pending_activation
                   WHERE status IN ('preparing', 'leased') AND activation_completed_at IS NULL
                 UNION SELECT j.value AS id, 1 FROM team_agent_runtimes r,
                   json_each(r.work_lineage_thread_dispatch_ids_json) j
@@ -503,10 +508,17 @@ class TeamStateSqliteStore(
               LEFT JOIN team_agents a ON a.id = d.agent_id
               {governance}
             )
-            SELECT * FROM candidates
-            WHERE (recovery_priority > ? OR (recovery_priority = ? AND dispatch_id > ?))
-            ORDER BY recovery_priority, dispatch_id LIMIT ?
         """
+        history_page = kind == "history" and dispatch_ids is None
+        if history_page:
+            # The bounded ID subquery already orders/pages the historical lane.
+            # Reorder these <=51 hydrated rows in Python rather than asking the
+            # optimizer to sort the retained dispatch table after hydration.
+            sql += "SELECT * FROM candidates"
+        else:
+            sql += """SELECT * FROM candidates
+                WHERE (recovery_priority > ? OR (recovery_priority = ? AND dispatch_id > ?))
+                ORDER BY recovery_priority, dispatch_id LIMIT ?"""
         after_priority = 0
         if kind == "completion" and after:
             priority_text, after = after.split(":", 1)
@@ -517,8 +529,10 @@ class TeamStateSqliteStore(
                 "SELECT value FROM team_state_metadata WHERE key = 'revision'"
             ).fetchone()
             rows = connection.execute(
-                sql, [*params, after_priority, after_priority, after, limit + 1]
+                sql, params if history_page else [*params, after_priority, after_priority, after, limit + 1]
             ).fetchall()
+        if history_page:
+            rows.sort(key=lambda row: row["dispatch_id"])
         candidates = []
         for row in rows[:limit]:
             data = dict(row)
