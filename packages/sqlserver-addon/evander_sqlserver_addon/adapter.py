@@ -155,6 +155,8 @@ class Adapter:
         if operation == "manage_database":
             if args.action not in {"create", "drop"}:
                 raise ResourceError("Database management requires create/drop")
+            if args.action == "create" and args.resource_id is not None:
+                raise ResourceError("resource_id is only accepted when dropping a managed database")
             if (
                 args.action == "create"
                 and not args.name
@@ -322,10 +324,15 @@ class Adapter:
         return value[1] if value else None
 
     def manage(self, cursor, connection_id, directory, operation, args, store, operation_id):
-        key = "sql-managed:" + str(args.resource_id or operation_id)
-        record = self.managed(store, key)
         if operation == "manage_database":
+            identity = operation_id if args.action == "create" else args.resource_id
+            key = "sql-managed:" + str(identity)
+            record = self.managed(store, key)
             if args.action == "create":
+                if not operation_id or args.resource_id is not None or record is not None:
+                    raise ResourceError(
+                        "Database creation requires a new durable operation identity"
+                    )
                 if not args.name:
                     raise ResourceError("Database name is required")
                 database = ident(args.name)

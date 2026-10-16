@@ -175,6 +175,11 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
     names = [name, name + "-other"]
 
     def docker(*args, check=True):
+        if args[0] == "exec" and "python3" in args:
+            # Test inspection must also ignore the hostile PATH installed below.
+            args = list(args)
+            index = args.index("python3")
+            args[index : index + 1] = ["/usr/bin/python3", "-I", "-S"]
         return (
             subprocess.run(["docker", *args], check=check, capture_output=True, timeout=30)
             .stdout.decode()
@@ -231,6 +236,9 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
             docker("network", "create", "--internal", "--label", "evander.smoke=" + name, network)
         records = []
         for index, container in enumerate(names):
+            home = tmp_path / ("home-" + str(index))
+            home.mkdir(mode=0o777)
+            home.chmod(0o777)
             cid = docker(
                 "run",
                 "--detach",
@@ -247,6 +255,10 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
+                "--volume",
+                str(home) + ":/home/agent",
+                "--env",
+                "PYTHONPATH=/home/agent",
                 *(
                     ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777"]
                     if read_only
@@ -255,8 +267,10 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
                 "--tmpfs",
                 PRIVATE_TMPFS_SPEC,
                 "--entrypoint",
-                "python3",
+                "/usr/bin/python3",
                 image,
+                "-I",
+                "-S",
                 "-c",
                 "import time; time.sleep(300)",
             )
@@ -322,6 +336,16 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
         assert rules and all(
             "ACCEPT" in rule and lease.lease_id in " ".join(rule) for rule in rules
         )
+        poison = r"""
+from pathlib import Path
+p=Path('/home/agent')
+(p/'bin').mkdir()
+f=p/'bin/python3'
+f.write_text('#!/bin/sh\ntouch /home/agent/hijacked\nexit 0\n')
+f.chmod(0o755)
+(p/'sitecustomize.py').write_text("from pathlib import Path; Path('/home/agent/hijacked').touch()")
+"""
+        docker("exec", names[0], "python3", "-c", poison)
         changed = lease.model_copy(deep=True)
         changed.owner.key = "foreign-task"
         with pytest.raises(ResourceError):
@@ -361,6 +385,16 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path, read_only):
         assert not attempts and not rules
         assert jobs.inspect(records[0].container_id)["State"]["Running"]
         assert service.store.get(lease.lease_id).config_path is None
+        assert (
+            docker(
+                "exec",
+                names[0],
+                "python3",
+                "-c",
+                "from pathlib import Path; print(Path('/home/agent/hijacked').exists())",
+            )
+            == "False"
+        )
         assert (
             docker(
                 "exec",

@@ -1230,6 +1230,8 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 
 Every new worker job also receives a dedicated `/run/evander-resources` tmpfs for optional resource add-ons. Its contents disappear when the container stops, including with the default writable root filesystem. This shared execution mount does not require any add-on to be installed. Resource delivery rejects older jobs without ephemeral storage. The worker egress policy preserves exact resource grants in `EVANDER-RESOURCE-EGRESS` across reloads, applies blocked ranges first, and retains its default deny for other destinations.
 
+Resource-capable runner images must provide trusted `/usr/bin/env`, `/usr/bin/id` and `/usr/bin/python3`. Host helpers clear dynamic-loader hooks before execution, discard the job environment, and run Python with `-I -S` from `/`. Network source selection uses the job's kernel route to the approved destination, including when other disposable resource networks are attached.
+
 Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and
 `--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected
 profile network. `host` requires the explicit unsafe local-experiment override described above.

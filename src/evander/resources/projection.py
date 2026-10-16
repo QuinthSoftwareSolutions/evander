@@ -4,6 +4,14 @@ PRIVATE_TMPFS = "/run/evander-resources"
 PRIVATE_TMPFS_SPEC = PRIVATE_TMPFS + ":rw,nosuid,nodev,noexec,size=16m,mode=1777"
 RESOURCE_CHAIN = "EVANDER-RESOURCE-EGRESS"
 
+ROUTE = r"""
+import socket, sys
+# UDP connect selects the kernel route without sending a packet.
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+    route.connect((sys.argv[1], int(sys.argv[2])))
+    print(route.getsockname()[0])
+"""
+
 PREPARE = r"""
 import os, stat, sys
 base, lease=sys.argv[1:3]

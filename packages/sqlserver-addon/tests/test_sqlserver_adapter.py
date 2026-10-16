@@ -171,3 +171,51 @@ def test_sql_bounds_a_whole_row_before_fetch_and_encodes_bounded_binary_unicode(
 
     with pytest.raises(ResourceError, match="explicitly CAST"):
         adapter.results(WideCursor(), config, 10)
+
+
+def test_database_creation_rejects_supplied_identity_without_touching_foreign_records(tmp_path):
+    from evander.addons import AddonContext
+    from evander.resources.models import Settings
+    from evander.resources.service import ResourceService
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("An invalid create request must not access SQL or credentials")
+
+    domain = ResourceService(
+        AddonContext("sqlserver-addon", tmp_path, tmp_path / "addons/sqlserver-addon"),
+        Adapter(connect=unexpected),
+        credentials=type("NoCredentials", (), {"resolve": unexpected})(),
+    )
+    domain.store.save_settings(
+        "root/second",
+        0,
+        Settings(
+            connections={
+                "registered": {
+                    "host": "sql.example.invalid",
+                    "operations": ["manage_database"],
+                }
+            }
+        ),
+        "operator",
+    )
+    original = {
+        "id": "original",
+        "directory": "root/first",
+        "connection_id": "different",
+        "database": "existing",
+        "marker": "original-marker",
+        "state": "ready",
+    }
+    domain.store.put_operation("sql-managed:original", "original", original)
+    for supplied in ("original", "untracked-id", ""):
+        with pytest.raises(ResourceError, match="resource_id"):
+            domain.call(
+                Owner(key="caller", directory="root/second"),
+                "registered",
+                "manage_database",
+                {"action": "create", "name": "new_database", "resource_id": supplied},
+                "create",
+            )
+        assert domain.store.operation("sql-managed:original")[1] == original
+        assert domain.store.operations("root/second") == []

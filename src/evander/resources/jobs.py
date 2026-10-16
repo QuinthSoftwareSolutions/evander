@@ -11,7 +11,7 @@ import uuid
 from evander.worker.store import WorkerJobStore
 
 from .models import ResourceError
-from .projection import PREPARE, PROJECT, SEAL, UNPROJECT, PRIVATE_TMPFS, RESOURCE_CHAIN
+from .projection import PREPARE, PROJECT, SEAL, UNPROJECT, PRIVATE_TMPFS, RESOURCE_CHAIN, ROUTE
 
 
 class Jobs:
@@ -25,6 +25,45 @@ class Jobs:
         if check and result.returncode:
             raise ResourceError("Worker binding command failed")
         return result
+
+    def exec_job(self, container_id, *program, root=False, data=None):
+        flags = ["docker", "exec", "--workdir", "/"]
+        # Docker must clear loader hooks before starting even /usr/bin/env.
+        for name in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"):
+            flags.extend(["--env", name + "="])
+        if root:
+            flags.extend(["--user", "0:0"])
+        if data is not None:
+            flags.append("--interactive")
+        return self.command(
+            *flags, container_id, "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", *program, data=data
+        )
+
+    def python(self, container_id, script, *arguments, root=False, data=None):
+        return self.exec_job(
+            container_id,
+            "/usr/bin/python3",
+            "-I",
+            "-S",
+            "-c",
+            script,
+            *arguments,
+            root=root,
+            data=data,
+        )
+
+    def route_source(self, record, inspected, target, port):
+        source = str(
+            ipaddress.IPv4Address(
+                self.python(record.container_id, ROUTE, target, str(port)).stdout.decode().strip()
+            )
+        )
+        if not any(
+            source == network.get("IPAddress")
+            for network in inspected["NetworkSettings"]["Networks"].values()
+        ):
+            raise ResourceError("Destination route does not belong to the authorized job")
+        return source
 
     def inspect(self, container_id):
         result = self.command("docker", "container", "inspect", container_id, check=False)
@@ -75,78 +114,46 @@ class Jobs:
         if network and network not in inspected["NetworkSettings"]["Networks"]:
             self.command("docker", "network", "connect", network, record.container_id)
             inspected = self.inspect(record.container_id)
-        networks = inspected["NetworkSettings"]["Networks"]
-        source = next(
-            (v["IPAddress"] for k, v in networks.items() if k != network and v.get("IPAddress")),
-            None,
-        )
-        if source:
-            ipaddress.ip_address(source)
-            for connection in connections.values():
-                host, port = connection["host"], connection["port"]
-                for resolved in socket.getaddrinfo(
-                    host, port, family=socket.AF_INET, type=socket.SOCK_STREAM
-                ):
-                    target = str(ipaddress.ip_address(resolved[4][0]))
-                    route_source = next(
-                        (
-                            v["IPAddress"]
-                            for v in networks.values()
-                            if v.get("IPAddress")
-                            and ipaddress.ip_address(target)
-                            in ipaddress.ip_network(
-                                f"{v['IPAddress']}/{v.get('IPPrefixLen', 32)}", strict=False
-                            )
-                        ),
-                        source,
-                    )
-                    rule = [
-                        "-s",
-                        route_source + "/32",
-                        "-d",
-                        target + "/32",
-                        "-p",
-                        "tcp",
-                        "--dport",
-                        str(port),
-                        "-m",
-                        "comment",
-                        "--comment",
-                        self.addon_id + ":" + lease.lease_id,
-                        "-j",
-                        "ACCEPT",
-                    ]
-                    lease.job_binding["rules"].append(rule)
-                    save()
-                    self.allow_rule(RESOURCE_CHAIN, rule)
+        for connection in connections.values():
+            host, port = connection["host"], connection["port"]
+            for resolved in socket.getaddrinfo(
+                host, port, family=socket.AF_INET, type=socket.SOCK_STREAM
+            ):
+                target = str(ipaddress.ip_address(resolved[4][0]))
+                route_source = self.route_source(record, inspected, target, port)
+                rule = [
+                    "-s",
+                    route_source + "/32",
+                    "-d",
+                    target + "/32",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(port),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    self.addon_id + ":" + lease.lease_id,
+                    "-j",
+                    "ACCEPT",
+                ]
+                lease.job_binding["rules"].append(rule)
+                save()
+                self.allow_rule(RESOURCE_CHAIN, rule)
         config_path = base + "/" + lease.lease_id + "/connection.json"
-        self.command(
-            "docker",
-            "exec",
-            "--user",
-            "0:0",
+        self.python(
             record.container_id,
-            "python3",
-            "-c",
             PREPARE,
             base,
             lease.lease_id,
+            root=True,
         )
-        identity = (
-            self.command("docker", "exec", record.container_id, "id", "-u").stdout.decode().strip()
-        )
-        group = (
-            self.command("docker", "exec", record.container_id, "id", "-g").stdout.decode().strip()
-        )
+        identity = self.exec_job(record.container_id, "/usr/bin/id", "-u").stdout.decode().strip()
+        group = self.exec_job(record.container_id, "/usr/bin/id", "-g").stdout.decode().strip()
         if not identity.isdigit() or not group.isdigit() or identity == "0":
             raise ResourceError("Private resource configuration requires an unprivileged job user")
-        self.command(
-            "docker",
-            "exec",
-            "--interactive",
+        self.python(
             record.container_id,
-            "python3",
-            "-c",
             PROJECT,
             base,
             "0",
@@ -155,20 +162,15 @@ class Jobs:
                 {"lease_id": lease.lease_id, "connections": connections, "probe_connections": True}
             ).encode(),
         )
-        self.command(
-            "docker",
-            "exec",
-            "--user",
-            "0:0",
+        self.python(
             record.container_id,
-            "python3",
-            "-c",
             SEAL,
             base,
             lease.lease_id,
             identity,
             group,
             lease.job_binding["staging_path"],
+            root=True,
         )
         lease.bound_job_id, lease.config_path = record.job_id, config_path
         save()
@@ -275,18 +277,13 @@ class Jobs:
                     failed = True
             if container["State"]["Running"]:
                 try:
-                    self.command(
-                        "docker",
-                        "exec",
-                        "--user",
-                        "0:0",
+                    self.python(
                         binding["container_id"],
-                        "python3",
-                        "-c",
                         UNPROJECT,
                         binding["base"],
                         lease.lease_id,
                         binding.get("staging_path", ""),
+                        root=True,
                     )
                 except Exception:
                     failed = True

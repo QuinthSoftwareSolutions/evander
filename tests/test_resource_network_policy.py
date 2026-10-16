@@ -12,7 +12,7 @@ from jinja2 import Environment, StrictUndefined
 
 from evander.resources.jobs import Jobs
 from evander.resources.models import Lease, Owner, Profile, WorkerSettings
-from evander.resources.projection import PRIVATE_TMPFS, RESOURCE_CHAIN
+from evander.resources.projection import PRIVATE_TMPFS, RESOURCE_CHAIN, ROUTE
 from evander.resources.worker import WorkerService
 
 
@@ -125,7 +125,9 @@ def test_policy_reload_and_ready_tick_preserve_only_current_job_grants(tmp_path,
         if args[0] == "iptables":
             return subprocess.run(args, env=env, **kwargs)
         assert args[:2] == ["docker", "exec"]
-        output = b"1000\n" if args[-1] in {"-u", "-g"} else b""
+        output = (
+            b"172.24.0.10\n" if ROUTE in args else b"1000\n" if args[-1] in {"-u", "-g"} else b""
+        )
         return subprocess.CompletedProcess(args, 0, stdout=output, stderr=b"")
 
     record = SimpleNamespace(
@@ -135,7 +137,12 @@ def test_policy_reload_and_ready_tick_preserve_only_current_job_grants(tmp_path,
         "Id": "container-a",
         "State": {"Running": True},
         "HostConfig": {"Tmpfs": {PRIVATE_TMPFS: "rw"}},
-        "NetworkSettings": {"Networks": {"jobs": {"IPAddress": "172.24.0.10", "IPPrefixLen": 24}}},
+        "NetworkSettings": {
+            "Networks": {
+                "rs-existing-broker": {"IPAddress": "172.30.0.3", "IPPrefixLen": 24},
+                "worker-jobs": {"IPAddress": "172.24.0.10", "IPPrefixLen": 24},
+            }
+        },
     }
     jobs = Jobs(
         "sample-addon",
@@ -210,7 +217,7 @@ def test_policy_reload_and_ready_tick_preserve_only_current_job_grants(tmp_path,
     assert access(target="169.254.169.254", port=80) == "DROP"
     # A changed job address must revoke the old grant rather than repairing it
     # for whichever container subsequently acquires that address.
-    inspected["NetworkSettings"]["Networks"]["jobs"]["IPAddress"] = "172.24.0.11"
+    inspected["NetworkSettings"]["Networks"]["worker-jobs"]["IPAddress"] = "172.24.0.11"
     service.tick()
     assert service.store.get(lease.lease_id).bound_job_id is None
     assert access() == "DROP" and access(source="172.24.0.11") == "DROP"

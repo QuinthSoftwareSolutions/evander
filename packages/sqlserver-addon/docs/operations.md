@@ -12,6 +12,8 @@ Use the host credential store for named connection identities. Initialize custod
 
 Production server deployment, storage, upgrades, scheduled backups and recovery remain externally managed. Persistent operations are explicit connection grants and have no automatic deletion or lease expiry. Allocation enablement controls only new disposable resources. Disabling allocations retains existing leases and cleanup.
 
+Managed database creation assigns its own durable resource ID. Do not supply `resource_id` on a create request; that field selects an existing managed database only for drop. Reuse the returned ID for explicit removal in the same connection and directory.
+
 ## Worker deployment
 
 Use the project-owned systemd examples. Install `worker.json` and `worker.env` under `/etc/evander-sqlserver/`, with root-owned private permissions. Create `/var/lib/evander-sqlserver-addon` mode 0700. The API binds loopback by default on 11992; a remote control plane needs an explicitly selected private bind address and firewall access restricted to the control plane. Do not add this API port to guest defaults. Worker authentication uses a separate host-held token.

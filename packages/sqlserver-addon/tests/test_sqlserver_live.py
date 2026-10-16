@@ -158,6 +158,23 @@ def test_native_sql_controller_reload_permissions_reset_and_persistent_lifetime(
     assert persistent["state"] == "completed"
     resource_id = persistent["result"]["resource_id"]
     try:
+        original = domain.store.operation("sql-managed:" + resource_id)
+        rejected = "rejected_" + uuid.uuid4().hex
+        with pytest.raises(ResourceError, match="resource_id"):
+            domain.call(
+                owners[0],
+                "test",
+                "manage_database",
+                {
+                    "action": "create",
+                    "name": rejected,
+                    "resource_id": resource_id,
+                },
+                "reject-create-identity",
+            )
+        assert domain.store.operation("sql-managed:" + resource_id) == original
+        with domain.adapter.connection(raw, credentials.resolve(), "master") as connection:
+            assert connection.cursor().execute("SELECT DB_ID(?)", [rejected]).fetchone()[0] is None
         for i, owner in enumerate(owners):
             receipt = domain.acquire(owner, "three", "acquire")
             assert receipt["state"] == "ready"

@@ -1034,6 +1034,65 @@ def test_private_delivery_rejects_persistent_storage_before_writing(tmp_path, ne
     assert not lease.job_binding and lease.config_path is None
 
 
+def test_cleanup_ignores_job_executables_python_path_and_working_directory(tmp_path, monkeypatch):
+    import os
+    import shlex
+    import subprocess
+    from evander.resources.jobs import Jobs as JobBindings
+
+    home = tmp_path / "agent"
+    binary = home / "bin"
+    binary.mkdir(parents=True)
+    marker = home / "hijacked"
+    poisoned = binary / "python3"
+    poisoned.write_text("#!/bin/sh\nprintf owned > " + shlex.quote(str(marker)) + "\n")
+    poisoned.chmod(0o700)
+    (home / "sitecustomize.py").write_text(
+        "from pathlib import Path\nPath(" + repr(str(marker)) + ").write_text('owned')\n"
+    )
+    base = tmp_path / "private"
+    lease_id = "rs-" + "c" * 32
+    directory = base / lease_id
+    directory.mkdir(parents=True, mode=0o711)
+    base.chmod(0o711)
+    configuration = directory / "connection.json"
+    configuration.write_text("synthetic-private-credential")
+    configuration.chmod(0o600)
+
+    def run(args, **kwargs):
+        assert args[:2] == ["docker", "exec"] and "0:0" in args
+        env = {**os.environ, "PATH": str(binary) + ":/usr/bin:/bin", "PYTHONPATH": str(home)}
+        for index, argument in enumerate(args):
+            if argument == "--env":
+                key, value = args[index + 1].split("=", 1)
+                env[key] = value
+        # Execute the real helper program in the job's poisoned environment,
+        # using this test UID and private tmpdir instead of requiring host root.
+        return subprocess.run(args[args.index("job-container") + 1 :], env=env, cwd=home, **kwargs)
+
+    bindings = JobBindings("sample-addon", tmp_path / "jobs.db", run=run)
+    monkeypatch.setattr(
+        bindings,
+        "inspect",
+        lambda _: {"State": {"Running": True}, "NetworkSettings": {"Networks": {}}},
+    )
+    store = Store(tmp_path / "journal")
+    lease = Lease(
+        lease_id=lease_id,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(),
+        created_at=1000,
+        expires_at=8200,
+        bound_job_id="job-a",
+        config_path=str(configuration),
+        job_binding={"container_id": "job-container", "base": str(base), "rules": []},
+    )
+    bindings.unbind(lease, lambda: store.put(lease))
+    assert not marker.exists() and not configuration.exists()
+    assert Store(store.root).get(lease_id).job_binding == {}
+
+
 def test_resource_query_uses_factory_trace_through_real_workflow_executor(domain):
     from evander.events.models import WorkflowNodeEnvelope
     from evander.provider_config import QueryProviderConfig
