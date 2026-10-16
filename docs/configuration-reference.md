@@ -1781,6 +1781,42 @@ can address `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one use
 as `user:<user-id-or-upn>`.
 
 `effect:communication:send-message` supports Teams, Discord, and email targets.
+
+For Teams targets, `published_artifacts` can bind an array of files from durable
+published evidence. Each item requires `key` and may specify `path` (one regular
+file inside the tar.gz archive), `filename`, and `optional` (default false).
+Omitting `path` sends the whole archive. Missing optional archives or members are
+skipped; ownership, checksum, unsafe-file and size failures always stop delivery.
+The publication must belong to the workflow directory or one of its descendants.
+Publications retain their directory owner after session expiry; older publications
+outside root require the source session's retained directory ownership.
+Each send supports at most 16 files, at most 64 MiB of compressed archives and
+attachments in total, and at most 64 MiB of expanded tar data when selecting
+archive members. It honors the directory's communication file size, MIME and
+extension restrictions.
+Images use Teams hosted content; other files use the same expiring signed Truman
+downloads as agent file posts. The published archive remains durable when a
+communication download expires. This host workflow action uses the declared
+target's write/reply capability; agent MCP file-send grants and approvals retain
+their existing enforcement. No agent or model call is required. If every selected
+file is optional and missing, the action sends the text message alone. Provider
+errors fail the effect so the workflow can use its existing retry path. The
+receipt includes `artifact_ids` and `artifact_count`; sending does not guarantee
+exactly-once delivery if the process fails after the remote post succeeds.
+
+For a report plus a single evidence bundle, explicitly select only those two
+files. The whole publication is reused byte-for-byte; screenshots inside it are
+not sent individually:
+
+```json
+{
+  "published_artifacts": [
+    {"key": "smoke/build-7/findings", "path": "results/report.md", "filename": "report.md"},
+    {"key": "smoke/build-7/findings", "filename": "evidence.tar.gz"}
+  ]
+}
+```
+
 Email targets create then send a provider draft through the mailbox selected by
 `policy.auth_profile_ref`; `email_send_enabled` must be true in the effective
 directory configuration.

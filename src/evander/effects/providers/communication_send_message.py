@@ -41,6 +41,7 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
             # unknown session, turning a missing optional identity into a silent
             # delivery failure.
             sender_session_id=sender_session_id or "workflow",
+            published_artifacts=payload.get("published_artifacts"),
         )
 
     def _effect_payload(self) -> dict[str, Any]:
@@ -49,6 +50,7 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
         for field_name in (
             "communication_target_id",
             "message",
+            "published_artifacts",
             "thread_id",
             "subject",
             "sender_session_id",

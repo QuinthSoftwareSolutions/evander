@@ -152,7 +152,9 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
         session_id="session-1",
         key="runs/session-1/report",
     )
-    provider.initialize(definition, _context(tmp_path))
+    context = _context(tmp_path)
+    context.metadata["directory_path"] = "root/reports"
+    provider.initialize(definition, context)
 
     result = provider.execute()
 
@@ -163,6 +165,7 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
     stored = PublishedArtifactStore(tmp_path).get("runs/session-1/report")
     assert stored.blob_path.read_bytes() == archive_content
     assert stored.metadata.source_byte_count == len("hello\n")
+    assert stored.metadata.metadata["directory_path"] == "root/reports"
 
     with pytest.raises(ValueError, match="already exists"):
         provider.execute()

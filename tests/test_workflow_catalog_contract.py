@@ -467,6 +467,7 @@ def test_workflow_catalog_effect_communication_send_message(catalog_payload) -> 
         if node["type"] == "effect:communication:send-message"
     )
     assert [field["key"] for field in communication["fields"]] == [
+        "published_artifacts",
         "communication_target_id",
         "message",
         "thread_id",
@@ -482,6 +483,11 @@ def test_workflow_catalog_effect_communication_send_message(catalog_payload) -> 
         field["key"] == "message" and field["bindable"] and field["multiline"]
         for field in communication["fields"]
     )
+
+    published = next(field for field in communication["fields"] if field["key"] == "published_artifacts")
+    assert published["kind"] == "json"
+    assert published["json_value_type"] == "array"
+    assert published["bindable"] is True
 
 
 def test_workflow_catalog_effect_notification_send(catalog_payload) -> None:

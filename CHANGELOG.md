@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-16 - Deliver published workflow files to Teams (0.97.0)
+
+- Let host workflow messages send directory-owned published archives and selected report or image files directly through the existing Teams file-delivery path, without a delivery agent or model call.
+- Embed screenshots and send expiring Truman downloads for other files, preserving declared target capabilities and existing agent file-send policy.
+- Verify publication ownership, archive checksums, regular-file selection and file limits before staging; persist directory ownership with new publications.
+
 ## 2026-10-16 - Continue command-blocked releases with reviewed source corrections (0.96.6)
 
 - Allow an accepted, reviewed Git correction of the exact command-blocked candidate to create a successor in the same release lineage, including tasks pinned through the candidate's accepted producer branch.
