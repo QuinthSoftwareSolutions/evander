@@ -2174,13 +2174,19 @@ def _latest_delivered_wake_work_attempt_for_agent(
     work_lineage_id: str | None = None,
     filter_work_lineage: bool = False,
 ) -> TeamDispatch | None:
-    records = state.dispatches.values() if not hasattr(state, "query_records") else state.query_records(
-        "dispatches", "agent_id=? AND completed_at IS NOT NULL AND status IN ('completed','failed','expired') "
-        "AND wake_work_fingerprint IS NOT NULL AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL) "
-        "AND (? IS NULL OR cause_kind=?) AND (?=0 OR work_lineage_id IS ?)",
-        (agent_id, cause_kind, cause_kind, int(filter_work_lineage), work_lineage_id),
-        order=DISPATCH_ATTEMPT_ORDER, limit=1,
-    )
+    if hasattr(state, "query_records"):
+        where = ("agent_id=? AND completed_at IS NOT NULL AND status IN ('completed','failed','expired') "
+                 "AND wake_work_fingerprint IS NOT NULL AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)")
+        parameters = [agent_id]
+        if cause_kind is not None:
+            where += " AND cause_kind=?"
+            parameters.append(cause_kind)
+        if filter_work_lineage:
+            where += " AND work_lineage_id IS ?"
+            parameters.append(work_lineage_id)
+        records = state.query_records("dispatches", where, parameters, order=DISPATCH_ATTEMPT_ORDER, limit=1)
+    else:
+        records = state.dispatches.values()
     attempts = [
         dispatch
         for dispatch in records

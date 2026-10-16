@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .lifecycle_sql import DISPATCH_ATTEMPT_ORDER
-
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -412,16 +410,8 @@ def wake_work_changed_since_latest_attempt(
         TeamDispatchStatus.EXPIRED,
         TeamDispatchStatus.FAILED,
     }
-    records = state.dispatches.values() if not hasattr(state, "query_records") else state.query_records(
-        "dispatches", "agent_id=? AND cause_kind!='manager_fallback' AND completed_at IS NOT NULL "
-        "AND status IN ('completed','expired','failed') "
-        "AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL) AND ("
-        "wake_work_record_fingerprints_json!='{}' OR wake_work_fingerprint IS NOT NULL OR "
-        "(cause_kind NOT IN ('blocker','context_handoff') AND ("
-        "EXISTS(SELECT 1 FROM team_dispatch_inbox i WHERE i.dispatch_id=team_dispatches.id) OR "
-        "EXISTS(SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id))))",
-        (agent_id,), order=DISPATCH_ATTEMPT_ORDER, limit=1,
-    )
+    records = (state.latest_wake_work_records(agent_id) if hasattr(state, "latest_wake_work_records")
+               else state.dispatches.values())
     terminal_dispatches = [
         dispatch
         for dispatch in records

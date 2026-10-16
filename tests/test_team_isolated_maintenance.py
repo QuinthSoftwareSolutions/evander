@@ -758,6 +758,7 @@ def test_actionable_finalizations_overlap_foreground_chains_with_two_extra_teams
     from evander_team_addon.models import TeamDispatchActivity
     from evander_team_addon.services.runtime_service import TeamRuntimeService
     from test_operational_payload_storage import record as prompt_record
+    from test_team_scoped_lifecycle import _finished_task_history
     import json
 
     worker = _worker(tmp_path, chain_length=6)
@@ -782,6 +783,8 @@ def test_actionable_finalizations_overlap_foreground_chains_with_two_extra_teams
         admin.create_or_reprioritize_task(task_id=f"task-{i}", owner_agent_id=f"lead-{i}",
                                          project_id=f"project-{i}", priority=1, title="Work",
                                          description="Work", created_by_agent_id=f"manager-{i}")
+    for i in range(2):
+        _finished_task_history(repo, 5000, task_id=f"task-{i}")
     lane = IsolatedMaintenanceHook(TeamAgentPromptCompletionFinalizeHook())
     worker._lifecycle_reconciliation_hooks = (_ProviderLifecycleReconciliationHook(lane),)
     worker._completion_dispatch_hooks = (_ProviderCompletionDispatchHook(lane),)

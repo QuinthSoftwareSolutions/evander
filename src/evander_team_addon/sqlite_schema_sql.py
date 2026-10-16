@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .lifecycle_sql import ACTION_CREATED_KEY, DISPATCH_ATTEMPT_KEY, DISPATCH_COMPLETED_KEY
+from .lifecycle_sql import ACTION_CREATED_KEY, DISPATCH_ATTEMPT_KEY, DISPATCH_COMPLETED_KEY, timestamp_microseconds_sql
 
-SQLITE_SCHEMA_VERSION = 83
+SQLITE_SCHEMA_VERSION = 84
 
 _SCOPED_LIFECYCLE_INDEX_SQL = f"""
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_live
@@ -15,6 +15,34 @@ CREATE INDEX IF NOT EXISTS idx_team_dispatches_terminal_time
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_attempt_time
     ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
     WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_lineage_attempt
+    ON team_dispatches(agent_id,work_lineage_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_delivered_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND wake_work_fingerprint IS NOT NULL AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_fingerprinted_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND cause_kind!='manager_fallback' AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)
+      AND (wake_work_record_fingerprints_json!='{{}}' OR wake_work_fingerprint IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_legacy_attempt
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+      AND cause_kind!='manager_fallback' AND cause_kind NOT IN ('blocker','context_handoff')
+      AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)
+      AND wake_work_record_fingerprints_json='{{}}' AND wake_work_fingerprint IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_tasks_operational ON team_tasks(project_id,id)
+    WHERE state IN ('pending','in_progress','blocked','waiting_for_input','waiting_for_review');
+CREATE INDEX IF NOT EXISTS idx_team_deliverables_operational ON team_deliverables(task_id,id)
+    WHERE state IN ('pending','in_progress','blocked') AND superseded_by_deliverable_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_deliverables_context ON team_deliverables(branch_context_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_blockers_open ON team_blockers(id) WHERE state='open';
+CREATE INDEX IF NOT EXISTS idx_team_tasks_activity
+    ON team_tasks(owner_agent_id,max({timestamp_microseconds_sql('created_at')},{timestamp_microseconds_sql('updated_at')}),id);
+CREATE INDEX IF NOT EXISTS idx_team_inbox_activity
+    ON team_inbox(recipient_agent_id,max({timestamp_microseconds_sql('created_at')},{timestamp_microseconds_sql('updated_at')}),id);
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_context_previous
     ON team_dispatches(agent_id,session_id,native_thread_id,{DISPATCH_COMPLETED_KEY} DESC,id)
     WHERE completed_at IS NOT NULL AND status='completed';
@@ -27,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_team_dispatch_reviews_review
     ON team_dispatch_reviews(review_request_id,dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_team_action_records_legacy_notes
     ON team_action_records(id) WHERE success=1 AND json_extract(action_json,'$.tool_name')='team_record_note';
+CREATE INDEX IF NOT EXISTS idx_team_action_records_unresolved
+    ON team_action_records(agent_id,id) WHERE success=0 AND dismissed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_team_inbox_pending
     ON team_inbox(id) WHERE state='pending';
 CREATE INDEX IF NOT EXISTS idx_team_inbox_dependency_repair_evidence

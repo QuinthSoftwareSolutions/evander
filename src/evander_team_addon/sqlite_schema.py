@@ -97,7 +97,7 @@ def migrate_schema(
     The caller owns its lock and transaction. Column additions remain ordered
     around table rebuilds and data rewrites; callbacks reuse that connection.
     """
-    # v83 is indexes only. An already valid v82 store must not replay historical
+    # v83/v84 are indexes only. A valid v82 store must not replay historical
     # normalization/backfill passes or rewrite business records for this upgrade.
     try:
         versions = dict(connection.execute(

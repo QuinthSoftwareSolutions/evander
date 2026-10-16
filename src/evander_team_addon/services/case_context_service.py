@@ -309,7 +309,9 @@ def resolve_scope(state, *, case_ids=(), task_id=None, release_package_id=None):
         if state.tasks[task_id].case_id:
             requested_cases.add(state.tasks[task_id].case_id)
     if not release_package_id and not task_id:
-        tasks.update(t.id for t in state.tasks.values() if t.case_id in cases)
+        records = (state.query_records("tasks", "case_id IN (" + ",".join("?" for _ in cases) + ")", tuple(cases))
+                   if hasattr(state, "query_records") else state.tasks.values())
+        tasks.update(t.id for t in records if t.case_id in cases)
     pending = [release_package_id] if release_package_id else []
     if not release_package_id:
         seed_deliverables = {d for t in tasks for d in state.tasks[t].deliverable_ids}

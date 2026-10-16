@@ -289,10 +289,12 @@ def require_authoritative_git_review_retry_candidate(
     return authoritative_commit_sha
 
 
-def _referenced_git_work_context_ids(state: TeamState) -> set[str]:
+def _referenced_git_work_context_ids(state: TeamState, context_ids=None) -> set[str]:
+    records = (state.query_records("deliverables", "branch_context_id IN (" + ",".join("?" for _ in context_ids) + ")", tuple(context_ids))
+               if context_ids is not None and hasattr(state, "query_records") else state.deliverables.values())
     return {
         context_id
-        for deliverable in state.deliverables.values()
+        for deliverable in records
         if (context_id := deliverable.git_refs.branch_context_id) is not None
     }
 
@@ -520,10 +522,12 @@ def finalize_active_git_work_contexts_for_dispatch(
 ) -> dict[str, int]:
     """Close contexts that cannot be used after their owning dispatch ends."""
 
-    referenced_context_ids = _referenced_git_work_context_ids(state)
+    contexts = (state.query_records("git_work_contexts", "agent_id=? AND dispatch_id=? AND state='active'", (agent_id, dispatch_id))
+                if hasattr(state, "query_records") else state.git_work_contexts.values())
+    referenced_context_ids = _referenced_git_work_context_ids(state, [row.id for row in contexts])
     submitted = 0
     abandoned = 0
-    for context in state.git_work_contexts.values():
+    for context in contexts:
         if (
             context.agent_id != agent_id
             or context.dispatch_id != dispatch_id

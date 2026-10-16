@@ -5,6 +5,8 @@ from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from evander.models import SessionManifest
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
 from evander_team_addon.models import (
@@ -351,8 +353,10 @@ def test_review_capability_mismatch_retries_once_then_blocks_without_rewaking_re
     assert backend_runtime["wake_due"] is False
 
 
+@pytest.mark.parametrize("scoped", [False, True])
 def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
     tmp_path: Path,
+    scoped: bool,
 ) -> None:
     repo = _seed_review_dispatch(tmp_path)
     runtime = TeamRuntimeService(repo)
@@ -386,6 +390,9 @@ def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
         return state
 
     repo.update(_seed_unrelated_scope)
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+        runtime = TeamRuntimeService(TeamLifecycleRepository(repo, dispatch_ids=[dispatch_id]))
     state, result = runtime.record_agent_mcp_capability_preparation_failure(
         session_id="session-backend",
         agent_id="backend",

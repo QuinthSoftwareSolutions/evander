@@ -575,10 +575,15 @@ def test_reconciler_reactivates_terminal_candidate_for_reused_attempt_id(tmp_pat
     assert attempt_id not in final_state.git_preparation_attempts
 
 
+@pytest.mark.parametrize("scoped", [False, True])
 def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     tmp_path,
+    scoped,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+        repository = TeamLifecycleRepository(repository)
     backend = FakeCleanupBackend([_removed_outcome()])
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
     service = TeamWorktreeCleanupService(repository, backend)

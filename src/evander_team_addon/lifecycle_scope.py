@@ -21,8 +21,14 @@ from pydantic import TypeAdapter
 from evander.models import utc_now
 from evander.repositories.sqlite_runtime import storage_lock
 
-from .models import TeamState
-from .lifecycle_sql import ACTION_CREATED_ORDER, DISPATCH_COMPLETED_KEY, timestamp_microseconds
+from .models import TeamDispatchActivity, TeamOutboxRecord, TeamState
+from .lifecycle_sql import (
+    ACTION_CREATED_ORDER,
+    DISPATCH_ATTEMPT_ORDER,
+    DISPATCH_COMPLETED_KEY,
+    timestamp_microseconds,
+    timestamp_microseconds_sql,
+)
 from .repository import TeamStateConflictError
 from .sqlite_persistence_map import _PERSISTENCE_GROUPS
 from .sqlite_store import (
@@ -156,6 +162,45 @@ class _AffectedRecords(dict):
         return key in self.source
 
 
+class _PreparedWrites:
+    """Prepare the two journal operations used by lifecycle maintenance."""
+
+    def __init__(self, scope):
+        self.scope, self.writes = scope, []
+        self.outbox_by_key = {}
+
+    def enqueue_outbox_record(self, record):
+        stored = TeamOutboxRecord.model_validate(record)
+        if stored.idempotency_key is not None:
+            existing = self.outbox_by_key.get(stored.idempotency_key)
+            if existing is None:
+                with self.scope._read_connection() as connection:
+                    existing = self.scope.repository.base.store._lookup_outbox_by_idempotency_key(
+                        connection,
+                        stored.idempotency_key,
+                    )
+            stored = existing or stored
+            self.outbox_by_key[stored.idempotency_key] = stored
+        self.writes.append(("enqueue_outbox_record", stored))
+        return stored
+
+    def append_dispatch_activity(self, activity):
+        stored = TeamDispatchActivity.model_validate(activity)
+        self.writes.append(("append_dispatch_activity", stored))
+        return stored
+
+    def commit(self, transaction):
+        for method, record in self.writes:
+            actual = getattr(transaction, method)(record)
+            if actual.id != record.id:
+                # Outbox writers need not change Team revision. Replan rather
+                # than return an ID different from the atomically stored one.
+                raise TeamStateConflictError(
+                    expected_revision=self.scope.original_revision,
+                    current_revision=self.scope.original_revision,
+                )
+
+
 class TeamLifecycleScope:
     """Operational enumeration plus exact references, pinned by global revision."""
 
@@ -255,6 +300,84 @@ class TeamLifecycleScope:
         # Include uncommitted working records too. The domain predicate still
         # runs in Python and must observe changes already made by its command.
         return list(dict.values(records))
+
+    def child_task_ids(self, task_id):
+        records = self.query_records("tasks", "parent_task_id=?", (task_id,))
+        return sorted(task.id for task in records if task.parent_task_id == task_id)
+
+    def latest_wake_work_records(self, agent_id):
+        terminal = (
+            "agent_id=? AND cause_kind!='manager_fallback' AND completed_at IS NOT NULL "
+            "AND status IN ('completed','expired','failed') AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)"
+        )
+        self.query_records(
+            "dispatches",
+            terminal
+            + " AND (wake_work_record_fingerprints_json!='{}' OR wake_work_fingerprint IS NOT NULL)",
+            (agent_id,),
+            order=DISPATCH_ATTEMPT_ORDER,
+            limit=1,
+        )
+        # Legacy scoped attempts have no scalar fingerprint. An empty scope
+        # relation proves their absence without walking historical executions.
+        with self._read_connection() as connection:
+            has_legacy_scopes = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM team_dispatch_inbox) OR EXISTS(SELECT 1 FROM team_dispatch_reviews)"
+            ).fetchone()[0]
+        if has_legacy_scopes:
+            self.query_records(
+                "dispatches",
+                terminal
+                + " AND cause_kind NOT IN ('blocker','context_handoff') AND wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint IS NULL AND ("
+                + "EXISTS(SELECT 1 FROM team_dispatch_inbox i WHERE i.dispatch_id=team_dispatches.id) OR EXISTS(SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id))",
+                (agent_id,),
+                order=DISPATCH_ATTEMPT_ORDER,
+                limit=1,
+            )
+        return list(dict.values(self.dispatches))
+
+    def prepare_task_assessment(self):
+        # Include historical ancestors, dependencies and children only when
+        # they are connected to operational or explicitly selected tasks.
+        self.tasks._load()
+        with self._read_connection() as connection:
+            ids = self.repository.task_scope_ids(connection, self)
+        self.tasks._load(ids)
+
+    def has_recent_task_or_inbox_activity(self, agent_id, rotated_at):
+        cutoff = timestamp_microseconds(rotated_at)
+        with self._read_connection() as connection:
+            actual = self.repository.base.store._read_revision_from_connection(connection)
+            if actual != self.original_revision:
+                raise TeamStateConflictError(
+                    expected_revision=self.original_revision, current_revision=actual
+                )
+            for field, owner in (("tasks", "owner_agent_id"), ("inbox", "recipient_agent_id")):
+                records = getattr(self, field)
+                for record in dict.values(records):
+                    if (
+                        getattr(record, owner) == agent_id
+                        and max(
+                            timestamp_microseconds(record.created_at),
+                            timestamp_microseconds(record.updated_at),
+                        )
+                        > cutoff
+                    ):
+                        return True
+                excluded = sorted(set(self.baseline[field]) | set(dict.keys(records)))
+                key = (
+                    "max("
+                    + timestamp_microseconds_sql("created_at")
+                    + ","
+                    + timestamp_microseconds_sql("updated_at")
+                    + ")"
+                )
+                sql = f"SELECT 1 FROM team_{field} INDEXED BY idx_team_{field}_activity WHERE {owner}=? AND {key}>?"
+                if excluded:
+                    sql += " AND id NOT IN (" + ",".join("?" for _ in excluded) + ")"
+                if connection.execute(sql + " LIMIT 1", [agent_id, cutoff, *excluded]).fetchone():
+                    return True
+        return False
 
     def has_prior_successful_ordinary_wake(
         self, agent, *, exclude=None, mutation_allowed=True, exclude_governance=True
@@ -509,11 +632,15 @@ class TeamLifecycleRepository:
             sql = "SELECT id FROM team_dispatches WHERE status IN ('preparing','leased')"
             ids.update(row[0] for row in connection.execute(sql))
             return sorted(ids)
+        if field == "tasks":
+            return self.task_scope_ids(connection, scope)
         if field == "cases" and self.purpose == "human_correction":
             where = "source='human_release_review' AND source_ref IN (SELECT h.id FROM team_human_review_requests h "
             where += "JOIN team_release_packages r ON r.id=h.release_package_id WHERE h.state='changes_requested' AND r.state='rejected')"
         elif field == "inbox":
             where = "state='pending'"
+        elif field == "blockers":
+            where = "state='open'"
         elif field == "conversation_messages":
             where = "status IN ('queued','dispatching','running','delivered_in_dispatch')"
         elif field == "action_records":
@@ -585,6 +712,51 @@ class TeamLifecycleRepository:
             for row in connection.execute(f"SELECT {key} FROM {table} WHERE {where}", parameters)
         ]
 
+    def task_scope_ids(self, connection, scope):
+        active = (
+            "state IN ('pending','in_progress','blocked','waiting_for_input','waiting_for_review')"
+        )
+        roots = "SELECT id FROM team_tasks INDEXED BY idx_team_tasks_operational WHERE " + active
+        parameters = []
+        if scope.project_ids:
+            roots += " AND project_id IN (" + ",".join("?" for _ in scope.project_ids) + ")"
+            parameters.extend(scope.project_ids)
+        roots += " UNION SELECT task_id FROM team_deliverables INDEXED BY idx_team_deliverables_operational WHERE state IN ('pending','in_progress','blocked') AND superseded_by_deliverable_id IS NULL"
+        if self.dispatch_ids:
+            roots += (
+                " UNION SELECT task_id FROM team_dispatch_tasks WHERE dispatch_id IN ("
+                + ",".join("?" for _ in self.dispatch_ids)
+                + ")"
+            )
+            parameters.extend(self.dispatch_ids)
+        cached = set(dict.keys(scope.tasks))
+        for task in dict.values(scope.tasks):
+            cached.update(task.dependency_task_ids)
+            if task.parent_task_id:
+                cached.add(task.parent_task_id)
+            if task.deliverable_contract:
+                cached.update(task.deliverable_contract.required_contribution_task_ids)
+        cached = sorted(cached)
+        if cached:
+            roots += (
+                " UNION SELECT id FROM team_tasks WHERE id IN ("
+                + ",".join("?" for _ in cached)
+                + ")"
+            )
+            parameters.extend(cached)
+        return [
+            row[0]
+            for row in connection.execute(
+                "WITH RECURSIVE related(id) AS ("
+                + roots
+                + " UNION SELECT t.parent_task_id FROM team_tasks t JOIN related r ON r.id=t.id WHERE t.parent_task_id IS NOT NULL"
+                + " UNION SELECT t.id FROM team_tasks t JOIN related r ON t.parent_task_id=r.id"
+                + " UNION SELECT d.dependency_task_id FROM team_task_dependencies d JOIN related r ON d.task_id=r.id"
+                + " UNION SELECT j.value FROM team_tasks t JOIN related r ON r.id=t.id JOIN json_each(t.deliverable_contract_json,'$.required_contribution_task_ids') j) SELECT id FROM related",
+                parameters,
+            )
+        ]
+
     def update(self, mutator, *, expected_revision=None):
         with self.command_snapshot() as state:
             if expected_revision is not None and state.revision != expected_revision:
@@ -599,6 +771,29 @@ class TeamLifecycleRepository:
             )
 
     update_prepared = update
+
+    def update_with_command_transaction(self, mutator, *, expected_revision=None):
+        with self.command_snapshot() as state:
+            if expected_revision is not None and state.revision != expected_revision:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision, current_revision=state.revision
+                )
+            commands = _PreparedWrites(state)
+            candidate = mutator(state, commands) or state
+            candidate.updated_at = utc_now()
+            return self.commit_prepared_state_with_command_transaction(
+                previous_payload={"revision": state.original_revision},
+                candidate=candidate,
+                command_writer=commands.commit,
+            )
+
+    def update_with_dispatch_activity(self, mutator, *, activity, expected_revision=None):
+        def prepare(state, commands):
+            candidate = mutator(state) or state
+            commands.append_dispatch_activity(activity)
+            return candidate
+
+        return self.update_with_command_transaction(prepare, expected_revision=expected_revision)
 
     def update_with_outbox(self, mutator, *, outbox_records, expected_revision=None):
         with self.command_snapshot() as state:

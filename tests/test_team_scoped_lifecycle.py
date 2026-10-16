@@ -31,6 +31,33 @@ def _history(repo, count):
         connection.execute("ANALYZE")
 
 
+def _finished_task_history(repo, count, task_id="task"):
+    with sqlite3.connect(repo.store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        template = dict(connection.execute("SELECT * FROM team_tasks WHERE id=?", (task_id,)).fetchone())
+        columns = tuple(template)
+        records = []
+        for index in range(count):
+            row = {
+                **template,
+                "id": f"old-{task_id}-{index:06d}",
+                "state": "finished",
+                "case_id": None,
+                "parent_task_id": None,
+                "work_lineage_id": None,
+            }
+            records.append(tuple(row[column] for column in columns))
+        connection.executemany(
+            "INSERT INTO team_tasks("
+            + ",".join(columns)
+            + ") VALUES("
+            + ",".join("?" for _ in columns)
+            + ")",
+            records,
+        )
+        connection.execute("ANALYZE")
+
+
 @pytest.mark.parametrize("history_count", [5000, 50000])
 def test_actual_history_candidate_pages_use_bounded_index_ranges(
     tmp_path, monkeypatch, history_count
@@ -84,6 +111,7 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
     _, leases = TeamRuntimeService(repo).lease_due_agents(agent_id="backend", defer_activation=True)
     dispatch_id = leases[0]["dispatch_id"]
     _history(repo, history_count)
+    _finished_task_history(repo, history_count)
     record = SimpleNamespace(
         execution_id="delivered",
         effect_type="effect:agent:enqueue-prompt",
@@ -99,6 +127,12 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
     )
     decoded = []
     read_dispatches = TeamStateSqliteStore._read_dispatches
+    task_counts = []
+    read_tasks = TeamStateSqliteStore._read_tasks
+
+    def count_tasks(connection, payload, **kwargs):
+        read_tasks(connection, payload, **kwargs)
+        task_counts.append(len(payload["tasks"]))
 
     def count_dispatches(connection, payload, **kwargs):
         read_dispatches(connection, payload, **kwargs)
@@ -106,6 +140,7 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
 
     with monkeypatch.context() as patch:
         patch.setattr(TeamStateSqliteStore, "_read_dispatches", staticmethod(count_dispatches))
+        patch.setattr(TeamStateSqliteStore, "_read_tasks", staticmethod(count_tasks))
         patch.setattr(
             TeamStateSqliteStore, "_read_state", lambda *_a, **_k: pytest.fail("full state read")
         )
@@ -117,6 +152,7 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
         hook = TeamAgentPromptCompletionFinalizeHook()
         assert hook.on_post_completion_dispatch(worker=worker) == 2
         assert sum(decoded) < 20
+        assert sum(task_counts) < 20
         revision = repo.read_revision()
         assert hook.on_post_completion_dispatch(worker=worker) == 0
         assert repo.read_revision() == revision
@@ -131,6 +167,145 @@ def test_real_completion_hook_activates_and_finishes_without_rebuilding_state(
         )
         == 1
     )
+
+
+def test_manager_fallback_keeps_undismissed_failure_from_an_older_batch(tmp_path):
+    from datetime import timedelta
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import AgentActionRecord
+    from evander_team_addon.services.domain.manager_fallback import (
+        _manager_fallback_summary_payload,
+    )
+
+    repo = _seed_team(tmp_path)
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def seed(state):
+        for key, success, offset in (("unresolved", False, 0), ("later-success", True, 1)):
+            state.action_records[key] = AgentActionRecord(
+                id=key,
+                agent_id="backend",
+                dispatch_id=key,
+                success=success,
+                error=None if success else "Needs supervisor attention",
+                created_at=instant + timedelta(seconds=offset),
+            )
+
+    repo.update(seed)
+    for repository in (repo, TeamLifecycleRepository(repo)):
+        state = repository.read()
+        summary = _manager_fallback_summary_payload(
+            state, team=state.teams["team"], manager=state.agents["manager"], now=instant
+        )
+        assert summary["summary_counts"]["failed_action_count"] == 1
+        assert summary["latest_failed_actions"][0]["id"] == "unresolved"
+
+
+def test_handled_inbox_activity_still_arms_idle_context_rotation(tmp_path):
+    from datetime import timedelta
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import AgentInboxItem, AgentContextClearingPolicy, TeamTaskState
+    from evander_team_addon.services.domain.context_rotation import (
+        _maybe_mark_idle_context_rotation_due,
+    )
+
+    repo = _seed_team(tmp_path)
+    rotated = datetime(2026, 1, 1, tzinfo=UTC)
+    now = rotated + timedelta(minutes=2)
+
+    def seed(state):
+        task = state.tasks["task"]
+        task.state = TeamTaskState.FINISHED
+        task.created_at = task.updated_at = rotated - timedelta(days=1)
+        runtime = state.agent_runtimes["backend"]
+        runtime.last_context_rotated_at = rotated
+        runtime.context_clearing_policy = AgentContextClearingPolicy.IDLE
+        runtime.context_clearing_idle_grace_seconds = 3600
+        runtime.last_progress_at = None
+        state.inbox["handled"] = AgentInboxItem(
+            id="handled",
+            recipient_agent_id="backend",
+            item_type="progress_report",
+            state="handled",
+            created_at=rotated + timedelta(minutes=1),
+            updated_at=rotated + timedelta(minutes=1),
+        )
+
+    repo.update(seed)
+    for repository in (repo, TeamLifecycleRepository(repo)):
+        state = repository.read()
+        _maybe_mark_idle_context_rotation_due(
+            state, agent_id="backend", now=now, result={"events": []}
+        )
+        assert state.agent_runtimes["backend"].context_idle_since_at == now
+
+
+@pytest.mark.parametrize("history_count", [1000, 10000])
+@pytest.mark.parametrize("lineage", [False, True])
+def test_real_wake_planning_does_not_scan_unrelated_lineage_history(
+    tmp_path, monkeypatch, history_count, lineage
+):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import (
+        AgentInboxItem,
+        AgentContextClearingPolicy,
+        TeamWorkLineage,
+    )
+
+    repo = _seed_team(tmp_path)
+    _history(repo, history_count)
+
+    def seed(state):
+        if lineage:
+            state.work_lineages["new-lineage"] = TeamWorkLineage(id="new-lineage")
+            state.tasks["task"].work_lineage_id = "new-lineage"
+            state.agent_runtimes[
+                "backend"
+            ].context_clearing_policy = AgentContextClearingPolicy.WORK_LINEAGE
+        state.inbox["new-work"] = AgentInboxItem(
+            id="new-work",
+            recipient_agent_id="backend",
+            task_id="task",
+            item_type="operator_directive",
+            payload={"body": "Continue task"},
+        )
+
+    repo.update(seed)
+    connect = repo.store._read_connection
+    counts, statements = [], []
+
+    def bounded_connection():
+        connection = connect()
+        count = [0]
+        counts.append(count)
+
+        def progress():
+            count[0] += 100
+            return int(count[0] > 50000)
+
+        connection.set_progress_handler(progress, 100)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(repo.store, "_read_connection", bounded_connection)
+    _, leases = TeamRuntimeService(TeamLifecycleRepository(repo)).lease_due_agents(
+        agent_id="backend"
+    )
+    assert len(leases) == 1
+    assert max(count[0] for count in counts) < 50000
+    lineage_queries = [
+        sql
+        for sql in statements
+        if "SELECT id FROM team_dispatches WHERE agent_id=" in sql and "work_lineage_id IS " in sql
+    ]
+    assert bool(lineage_queries) is lineage
+    with sqlite3.connect(repo.store.path) as connection:
+        for sql in lineage_queries:
+            plan = [row[3] for row in connection.execute("EXPLAIN QUERY PLAN " + sql)]
+            assert any(
+                "idx_team_dispatches_lineage_attempt (agent_id=? AND work_lineage_id=?)" in row
+                for row in plan
+            )
 
 
 @pytest.mark.parametrize("conflict", ["revision", "activity"])
