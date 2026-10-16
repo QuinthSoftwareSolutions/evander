@@ -13,4 +13,6 @@ TimeoutStartSec=180
 NoNewPrivileges=true
 ProtectHome=true
 ProtectSystem=strict
+# SQLite can spill worker-job queries to temporary files.
+PrivateTmp=yes
 ReadWritePaths=/var/lib/evander-test-fixtures /var/lib/agent-worker/runtime
