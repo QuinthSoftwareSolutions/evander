@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from evander.repositories.sqlite_runtime import storage_lock
 from evander.repositories.operational_payloads import (
     FORMAT_KEY, discard_record_field_references, load_lifecycle_field,
-    load_record, prepare_record, store_prepared_record,
+    load_record, load_record_projection, prepare_record, store_prepared_record,
 )
 from evander.repositories.execution_history import prepare_execution_history_payloads
 from evander.repositories.orchestration_db import (
@@ -34,9 +34,50 @@ logger = logging.getLogger(__name__)
 TRecord = TypeVar("TRecord", bound=BaseModel)
 R = TypeVar("R")
 
+_PROMPT_RECEIPT_FIELDS = {
+    **dict.fromkeys(("execution_id", "effect_type", "status", "started_at", "finished_at", "outputs")),
+    "resolved_config": ("session_id", "resume_thread_id"),
+    "input_payload": ("session_id", "resume_thread_id"),
+}
+
+
+@dataclass(frozen=True)
+class PromptLifecycleReceipt:
+    execution_id: str
+    effect_type: str
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    outputs: dict[str, Any]
+    resolved_config: dict[str, Any]
+    input_payload: dict[str, Any]
+
+    @classmethod
+    def read(cls, connection, payload):
+        data = load_record_projection(connection, payload, _PROMPT_RECEIPT_FIELDS)
+        for field in ("started_at", "finished_at"):
+            data[field] = datetime.fromisoformat(data[field])
+        for field in ("outputs", "resolved_config", "input_payload"):
+            data.setdefault(field, {})
+        return cls(**data)
+
 
 def read_latest_agent_prompt_execution(
     path: Path, *, session_id: str, dispatch_id: str
+) -> dict[str, Any] | None:
+    return _read_latest_prompt_execution(path, session_id=session_id, dispatch_id=dispatch_id,
+                                         lifecycle_only=False)
+
+
+def read_latest_agent_prompt_lifecycle_receipt(
+    path: Path, *, session_id: str, dispatch_id: str
+) -> dict[str, Any] | None:
+    return _read_latest_prompt_execution(path, session_id=session_id, dispatch_id=dispatch_id,
+                                         lifecycle_only=True)
+
+
+def _read_latest_prompt_execution(
+    path: Path, *, session_id: str, dispatch_id: str, lifecycle_only: bool,
 ) -> dict[str, Any] | None:
     """Read a dispatch receipt using indexed metadata, with legacy inline fallback."""
     if not path.is_file():
@@ -69,7 +110,10 @@ def read_latest_agent_prompt_execution(
             ) ORDER BY observed_at DESC,execution_id DESC LIMIT 1""",
             (dispatch_id, session_id, dispatch_id, session_id),
         ).fetchone()
-        return load_record(connection, row["payload_json"]) if row is not None else None
+        if row is None:
+            return None
+        return (load_record_projection(connection, row["payload_json"], _PROMPT_RECEIPT_FIELDS)
+                if lifecycle_only else load_record(connection, row["payload_json"]))
 
 
 class EffectExecutionRepository(Protocol):
@@ -408,6 +452,15 @@ class SqliteExecutionRepository(Generic[TRecord]):
             return [self._record_from_row(row, connection) for row in rows]
 
     def list_prompt_records_for_dispatches(self, dispatch_ids: set[str]) -> list[TRecord]:
+        return self._prompt_records_for_dispatches(dispatch_ids, lifecycle_only=False)
+
+    def list_prompt_lifecycle_receipts(self, dispatch_ids: set[str]) -> list[PromptLifecycleReceipt]:
+        """Internal receipt projection; no prompt/configuration payload hydration."""
+        return self._prompt_records_for_dispatches(dispatch_ids, lifecycle_only=True)
+
+    def _prompt_records_for_dispatches(
+        self, dispatch_ids: set[str], *, lifecycle_only: bool,
+    ) -> list[Any]:
         """Read all receipts for a bounded set of immutable dispatches.
 
         Do not LIMIT receipts: a newer missing-thread receipt must supersede an
@@ -444,7 +497,11 @@ class SqliteExecutionRepository(Generic[TRecord]):
                     ) ORDER BY observed_at,execution_id""",
                 [*ids, *ids],
             ).fetchall()
-            return [self._record_from_row(row, connection) for row in rows]
+            if not lifecycle_only:
+                return [self._record_from_row(row, connection) for row in rows]
+            # Outputs carry durable receipts and complete missing-thread error
+            # evidence. Prompt inputs/config need only these two scalar fields.
+            return [PromptLifecycleReceipt.read(connection, row["payload_json"]) for row in rows]
 
     def list_waiting_records_page(
         self, *, node_type: str, after: str = "", limit: int = 50

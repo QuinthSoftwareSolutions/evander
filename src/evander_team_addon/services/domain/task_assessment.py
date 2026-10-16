@@ -67,6 +67,8 @@ class TaskAssessmentService:
     """Pure, recursive task lifecycle evaluation over one immutable state view."""
 
     def __init__(self, state: TeamState) -> None:
+        if hasattr(state, "prepare_task_assessment"):
+            state.prepare_task_assessment()
         self._state = state
         self._children = _children_by_parent(state)
         self._all_deliverables = _deliverables_by_task(state, include_superseded=True)
@@ -92,6 +94,8 @@ class TaskAssessmentService:
                 message=f"task {normalized_task_id or task_id} does not exist",
                 correction_context={"task_id": normalized_task_id or str(task_id)},
             )
+        if normalized_task_id not in self._static_invalid_codes and hasattr(self._state, "prepare_task_assessment"):
+            self.__init__(self._state)
         return self._assess(normalized_task_id)
 
     def assess_all(self) -> dict[str, TaskAssessment]:

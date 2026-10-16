@@ -74,10 +74,15 @@ def test_note_contract_inference_atomicity_and_idempotency(case_repo):
     assert len(case_repo.read().notes) == 1
 
 
-def test_legacy_call_and_backfill_keep_original_identifiers(case_repo):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_legacy_call_and_backfill_keep_original_identifiers(case_repo, scoped):
     state, result = record(case_repo)
     nid = result["note_id"]
     case_repo.update(lambda s: s.notes.clear())
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+        case_repo = TeamLifecycleRepository(case_repo, dispatch_ids=["dispatch-command"])
     assert legacy_notes(case_repo.read())[nid].case_id == "case"
     service = CaseContextService(case_repo)
     before = case_repo.read().revision
@@ -1140,7 +1145,8 @@ def test_detached_mcp_snapshot_grant_and_expired_session_policy(tmp_path):
         )
 
 
-def test_resumed_dispatch_gets_only_changes_and_fresh_context_gets_baseline(case_repo):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_resumed_dispatch_gets_only_changes_and_fresh_context_gets_baseline(case_repo, scoped):
     from datetime import UTC, datetime, timedelta
     from evander_team_addon.models import TeamDispatchStatus, AgentContextClearingPolicy
     from evander_team_addon.services.case_context_dispatch import (
@@ -1150,6 +1156,10 @@ def test_resumed_dispatch_gets_only_changes_and_fresh_context_gets_baseline(case
     from evander_team_addon.services.wake_prompt_context import build_compact_wake_context
 
     record(case_repo, kind="decision")
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+
+        case_repo = TeamLifecycleRepository(case_repo, dispatch_ids=["dispatch-command"])
     case_repo.update(lambda s: prepare_case_context(case_repo, s, s.dispatches["dispatch-command"]))
     first_id = case_repo.snapshots.ids_for_dispatch("dispatch-command")[0]
 

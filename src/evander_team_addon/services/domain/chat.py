@@ -370,9 +370,11 @@ def _chat_dispatch_source_messages(
             if (message := state.conversation_messages.get(message_id)) is not None
             and message.sender == "operator"
         ]
+    records = (state.query_records("conversation_messages", "dispatch_id=?", (dispatch_id,))
+               if hasattr(state, "query_records") else state.conversation_messages.values())
     return [
         message
-        for message in state.conversation_messages.values()
+        for message in records
         if message.dispatch_id == dispatch_id and message.sender == "operator"
     ]
 

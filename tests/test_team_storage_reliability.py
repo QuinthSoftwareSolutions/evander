@@ -137,6 +137,7 @@ def test_competing_chat_plans_claim_each_message_once(tmp_path):
 def test_chat_conflict_exhaustion_preserves_queue_and_schedules_targeted_retry(
     tmp_path, monkeypatch
 ):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
     repo = _seed_team(tmp_path)
     chat, message = _queued_chat(repo)
     calls = []
@@ -146,7 +147,7 @@ def test_chat_conflict_exhaustion_preserves_queue_and_schedules_targeted_retry(
         raise TeamStateConflictError(expected_revision=41, current_revision=42)
 
     monkeypatch.setattr(
-        TeamStateRepository, "commit_prepared_state_with_command_transaction", conflicting_commit
+        TeamLifecycleRepository, "commit_prepared_state_with_command_transaction", conflicting_commit
     )
     resumer = FakeResumer()
     provider = TeamWakeDueAgentsEffectProvider()

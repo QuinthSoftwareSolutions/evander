@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-16 - Restore WAL and bound Team lifecycle recovery (0.96.7)
+
+- Restore WAL during runtime initialization of current-schema databases, including closed single-file history conversions, without replaying data migrations or changing steady-state connection behavior.
+- Prepare Team activation, completion, correction and wake changes from revision-pinned working records, validate affected relationships, and atomically commit deltas with durable activity and outbox evidence.
+- Page historical recovery IDs before hydration, read prompt lifecycle receipts without unrelated inputs and configuration, and add supporting indexes through an index-only Team upgrade.
+- Report Team storage, correction and worker-preparation phases separately, with regression coverage for actionable completion work concurrent with foreground delivery.
+
 ## 2026-10-16 - Continue command-blocked releases with reviewed source corrections (0.96.6)
 
 - Allow an accepted, reviewed Git correction of the exact command-blocked candidate to create a successor in the same release lineage, including tasks pinned through the candidate's accepted producer branch.

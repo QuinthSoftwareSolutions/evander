@@ -20,6 +20,8 @@ def previous_context_snapshot(repository, state, dispatch):
     )
     if not thread_id:
         return None
+    if hasattr(state, "previous_context_snapshot_id"):
+        return state.previous_context_snapshot_id(dispatch, thread_id)
     candidates = {}
     for previous in state.dispatches.values():
         if (

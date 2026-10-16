@@ -673,9 +673,13 @@ def _existing_recovery_evidence(
     *,
     integration_task_id: str,
 ) -> AgentInboxItem | None:
+    records = (state.query_records(
+        "inbox", "json_extract(payload_json,'$.kind')=? AND json_extract(payload_json,'$.old_integration_task_id')=?",
+        (SUBMITTED_INTEGRATION_RECOVERY_AUDIT_KIND, integration_task_id),
+    ) if hasattr(state, "query_records") else state.inbox.values())
     matches = [
         item
-        for item in state.inbox.values()
+        for item in records
         if item.payload.get("kind") == SUBMITTED_INTEGRATION_RECOVERY_AUDIT_KIND
         and item.payload.get("old_integration_task_id") == integration_task_id
     ]

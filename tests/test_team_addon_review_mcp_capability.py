@@ -5,6 +5,8 @@ from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from evander.models import SessionManifest
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
 from evander_team_addon.models import (
@@ -159,6 +161,7 @@ def test_review_capability_columns_migrate_existing_database(
     database_path = tmp_path / "addons" / "team-addon" / "state.db"
     with sqlite3.connect(database_path) as connection:
         connection.execute("UPDATE team_state_metadata SET value='0' WHERE key IN ('sqlite_schema_version', 'state_schema_version')")
+        connection.execute("DROP INDEX idx_team_dispatches_missing_mcp")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN mcp_capability_receipt_json")
         connection.execute("ALTER TABLE team_blockers DROP COLUMN mcp_capability_identity_json")
 
@@ -350,8 +353,10 @@ def test_review_capability_mismatch_retries_once_then_blocks_without_rewaking_re
     assert backend_runtime["wake_due"] is False
 
 
+@pytest.mark.parametrize("scoped", [False, True])
 def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
     tmp_path: Path,
+    scoped: bool,
 ) -> None:
     repo = _seed_review_dispatch(tmp_path)
     runtime = TeamRuntimeService(repo)
@@ -385,6 +390,9 @@ def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
         return state
 
     repo.update(_seed_unrelated_scope)
+    if scoped:
+        from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+        runtime = TeamRuntimeService(TeamLifecycleRepository(repo, dispatch_ids=[dispatch_id]))
     state, result = runtime.record_agent_mcp_capability_preparation_failure(
         session_id="session-backend",
         agent_id="backend",

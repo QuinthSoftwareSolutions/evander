@@ -393,12 +393,15 @@ def _direct_successors(
     state: TeamState,
     predecessor_id: str,
 ) -> list[ReleasePackage]:
+    records = (
+        state.query_records(
+            "release_packages", "supersedes_release_package_id=?", (predecessor_id,)
+        )
+        if hasattr(state, "query_records")
+        else state.release_packages.values()
+    )
     return sorted(
-        (
-            release
-            for release in state.release_packages.values()
-            if release.supersedes_release_package_id == predecessor_id
-        ),
+        (release for release in records if release.supersedes_release_package_id == predecessor_id),
         key=lambda release: (release.created_at, release.id),
     )
 
@@ -527,14 +530,18 @@ def _blocked_successor_has_reviewed_rework(
         )
     )
     previous_ids = set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
-    return bool(current_ids) and current_ids != previous_ids and all(
-        deliverable_id in current_ids
-        or _deliverable_supersession_reaches(
-            state,
-            deliverable_id=deliverable_id,
-            current_ids=current_ids,
+    return (
+        bool(current_ids)
+        and current_ids != previous_ids
+        and all(
+            deliverable_id in current_ids
+            or _deliverable_supersession_reaches(
+                state,
+                deliverable_id=deliverable_id,
+                current_ids=current_ids,
+            )
+            for deliverable_id in previous_ids
         )
-        for deliverable_id in previous_ids
     )
 
 
@@ -697,9 +704,18 @@ def _current_successor_deliverable_ids(
     predecessor: ReleasePackage,
     correction_task: AgentTask,
 ) -> list[str]:
+    records = (
+        state.query_records(
+            "deliverables",
+            "task_id IN (SELECT id FROM team_tasks WHERE originating_task_id=? OR id=?)",
+            (correction_task.id, correction_task.id),
+        )
+        if hasattr(state, "query_records")
+        else state.deliverables.values()
+    )
     recovery_ids = sorted(
         deliverable.id
-        for deliverable in state.deliverables.values()
+        for deliverable in records
         if deliverable.state == TeamRecordState.ACCEPTED
         and deliverable.superseded_by_deliverable_id is None
         and _candidate_correction_downstream_recovery_base(
@@ -802,7 +818,12 @@ def _release_review_correction_is_ready(
     incorporated_review_ids = {
         review_id for review_id in rejected_review_ids if review_id in correction_task.description
     }
-    for item in state.inbox.values():
+    evidence = (
+        state.query_records("inbox", "task_id=?", (correction_task.id,))
+        if hasattr(state, "query_records")
+        else state.inbox.values()
+    )
+    for item in evidence:
         if (
             item.task_id != correction_task.id
             or item.payload.get("kind") != "release_review_rejection_correction_work"
@@ -821,8 +842,24 @@ def _release_review_correction_is_ready(
 
 def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
     release_ids: list[str] = []
+    records = (
+        state.release_packages.values()
+        if not hasattr(state, "query_records")
+        else state.query_records(
+            "release_packages",
+            "state='rejected' AND ((json_extract(gate_failure_json,'$.stage')='verification' "
+            "AND json_extract(gate_failure_json,'$.kind')='candidate') OR "
+            "(json_extract(gate_failure_json,'$.stage')='review' AND json_extract(gate_failure_json,'$.kind')='rejected'))"
+            + (
+                " AND project_id IN (" + ",".join("?" for _ in state.project_ids) + ")"
+                if state.project_ids
+                else ""
+            ),
+            state.project_ids,
+        )
+    )
     for predecessor in sorted(
-        state.release_packages.values(),
+        records,
         key=lambda release: (release.created_at, release.id),
     ):
         if not _is_candidate_correction_predecessor(predecessor):
@@ -886,9 +923,16 @@ def _record_successor_notice(
         or project.lead_agent_id
         or correction_task.owner_agent_id
     )
+    records = (
+        state.query_records(
+            "inbox", "task_id=? AND recipient_agent_id=?", (correction_task.id, recipient_agent_id)
+        )
+        if hasattr(state, "query_records")
+        else state.inbox.values()
+    )
     notices = [
         item
-        for item in state.inbox.values()
+        for item in records
         if item.task_id == correction_task.id
         and item.recipient_agent_id == recipient_agent_id
         and item.payload.get("kind") in {"candidate_correction_resolution", "root_task_resolution"}
@@ -1043,8 +1087,14 @@ def _open_reconciliation_blocker(
                 ),
                 created_by_actor="system:release-lineage-recovery",
                 originating_task_id=correction_task.id,
-                authored_by=correction_task.authored_by.model_copy(deep=True) if correction_task.authored_by else None,
-                work_item_attributions=[item.model_copy(deep=True) for item in correction_task.work_item_attributions] if correction_task.work_item_attributions else None,
+                authored_by=correction_task.authored_by.model_copy(deep=True)
+                if correction_task.authored_by
+                else None,
+                work_item_attributions=[
+                    item.model_copy(deep=True) for item in correction_task.work_item_attributions
+                ]
+                if correction_task.work_item_attributions
+                else None,
                 release_base_package_id=predecessor.id,
                 git_base_branch=source_branch,
                 git_base_commit_sha=source_commit,
@@ -1078,10 +1128,15 @@ def reconcile_candidate_correction_successors(
 
     effective_now = now or utc_now()
     selected_ids = set(release_package_ids or ())
+    records = (
+        [state.release_packages[key] for key in selected_ids if key in state.release_packages]
+        if selected_ids
+        else state.release_packages.values()
+    )
     predecessors = sorted(
         (
             release
-            for release in state.release_packages.values()
+            for release in records
             if _is_candidate_correction_predecessor(release)
             and (not selected_ids or release.id in selected_ids)
         ),
@@ -1417,8 +1472,14 @@ def recover_candidate_correction_successor(
                 ),
                 created_by_actor="system:candidate-correction-recovery",
                 originating_task_id=correction_task.id,
-                authored_by=correction_task.authored_by.model_copy(deep=True) if correction_task.authored_by else None,
-                work_item_attributions=[item.model_copy(deep=True) for item in correction_task.work_item_attributions] if correction_task.work_item_attributions else None,
+                authored_by=correction_task.authored_by.model_copy(deep=True)
+                if correction_task.authored_by
+                else None,
+                work_item_attributions=[
+                    item.model_copy(deep=True) for item in correction_task.work_item_attributions
+                ]
+                if correction_task.work_item_attributions
+                else None,
                 release_base_package_id=predecessor.id,
                 git_base_branch=source_branch,
                 git_base_commit_sha=source_commit,
@@ -1487,10 +1548,17 @@ class CandidateCorrectionReconciliationService:
         self._repository = repository
 
     def reconcile(self) -> dict[str, Any]:
+        from ..lifecycle_scope import TeamLifecycleRepository
+
+        self._repository = TeamLifecycleRepository(self._repository, purpose="candidate_correction")
         last_conflict: TeamStateConflictError | None = None
         for _attempt in range(_MAX_RECONCILIATION_ATTEMPTS):
-            current = self._repository.read()
-            release_ids = _candidate_release_ids_for_reconciliation(current)
+            try:
+                current = self._repository.read()
+                release_ids = _candidate_release_ids_for_reconciliation(current)
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                continue
             if not release_ids:
                 return {
                     "changed": False,

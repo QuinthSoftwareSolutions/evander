@@ -1525,6 +1525,42 @@ def test_release_review_correction_waits_for_every_current_review(
     assert len(completed["created_successor_release_package_ids"]) == 1
 
 
+def test_review_correction_uses_handled_inbox_evidence(tmp_path):
+    from evander_team_addon.models import AgentInboxItem
+
+    repo = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review")
+    seeded.tasks["correction-task"].description = "Correct the rejected candidate."
+    seeded.inbox["handled-evidence"] = AgentInboxItem(
+        id="handled-evidence", recipient_agent_id="coder", task_id="correction-task",
+        item_type="status_request", state="handled", response_requested=False,
+        payload={"kind": "release_review_rejection_correction_work", "review_request_id": "release-review"},
+    )
+    repo.update(lambda _state: seeded)
+    result = CandidateCorrectionReconciliationService(repo).reconcile()
+    assert len(result["created_successor_release_package_ids"]) == 1
+
+
+def test_successor_creation_preserves_handled_resolution_notice(tmp_path):
+    from evander_team_addon.models import AgentInboxItem
+
+    repo = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded.inbox["existing-notice"] = AgentInboxItem(
+        id="existing-notice", recipient_agent_id="lead", task_id="correction-task",
+        item_type="status_request", state="handled", response_requested=False,
+        payload={"kind": "root_task_resolution", "operator_annotation": "retain"},
+    )
+    repo.update(lambda _state: seeded)
+    result = CandidateCorrectionReconciliationService(repo).reconcile()
+    assert len(result["created_successor_release_package_ids"]) == 1
+    notices = [item for item in repo.read().inbox.values()
+               if item.payload.get("kind") in {"root_task_resolution", "candidate_correction_resolution"}]
+    assert len(notices) == 1
+    assert notices[0].id == "existing-notice"
+    assert notices[0].payload["operator_annotation"] == "retain"
+
+
 def test_cancelled_generated_correction_does_not_reconcile_successor(
     tmp_path: Path,
 ) -> None:

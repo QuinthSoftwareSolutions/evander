@@ -296,9 +296,10 @@ def _reconcile_team_queued_prompt_reservations(
 def _agent_prompt_records_for_dispatches(worker: Any, dispatch_ids: set[str]) -> list[Any]:
     if not dispatch_ids:
         return []
-    query = getattr(
-        getattr(worker, "execution_store", None), "list_prompt_records_for_dispatches", None
-    )
+    store = getattr(worker, "execution_store", None)
+    query = getattr(store, "list_prompt_lifecycle_receipts", None)
+    if not callable(query):
+        query = getattr(store, "list_prompt_records_for_dispatches", None)
     if callable(query):
         return [r for r in query(dispatch_ids) if not _record_is_queued_prompt_marker(r)]
     # Compatibility for third-party repositories. Production SQLite uses the

@@ -379,7 +379,9 @@ def _team_chat_wake_lease(
         for project_id in dispatch.project_ids
         if project_id in state.projects
     ]
-    has_prior_successful_wake = any(
+    has_prior_successful_wake = state.has_prior_successful_ordinary_wake(
+        agent, exclude=dispatch_id, mutation_allowed=mutation_allowed, exclude_governance=False,
+    ) if hasattr(state, "has_prior_successful_ordinary_wake") else any(
         prior.id != dispatch_id
         and prior.agent_id == agent.id
         and prior.session_id == agent.session_id
@@ -735,6 +737,8 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
 
         repo = repository or TeamStateRepository(_runtime_dir(context))
+        from .lifecycle_scope import TeamLifecycleRepository
+        repo = TeamLifecycleRepository(repo)
         current_state = repo.read()
         current_state = TeamAdminService(repo).advance_team_cost_budget_windows(
             current_state=current_state,
@@ -829,11 +833,11 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                     )
-        final_state = repo.read()
-        lease_summaries = [
-            _team_wake_lease_summary(lease, state=final_state)
-            for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
-        ]
+        with repo.command_snapshot() as final_state:
+            lease_summaries = [
+                _team_wake_lease_summary(lease, state=final_state)
+                for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
+            ]
         return {
             "success": not errors,
             "coalesced": False,
