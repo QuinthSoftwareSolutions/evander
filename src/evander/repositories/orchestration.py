@@ -485,15 +485,18 @@ class SqliteExecutionRepository(Generic[TRecord]):
         parameters: list[Any] = []
         cursor_clause = ""
         if after is not None:
-            cursor_clause = "AND (COALESCE(finished_at, started_at), execution_id) > (?, ?)"
+            cursor_clause = "AND (finished_at, execution_id) > (?, ?)"
             parameters.extend(after)
         parameters.append(max(1, min(100, limit)))
+        # finished_at is NOT NULL. Match the status index's ordering so even
+        # analyzed databases seek a bounded page instead of scanning history.
         with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
             connection.execute("BEGIN")
             rows = connection.execute(
                 f"""SELECT payload_json FROM {self.table_name}
+                    INDEXED BY idx_{self.table_name}_status
                     WHERE status = 'completion_pending' {cursor_clause}
-                    ORDER BY COALESCE(finished_at, started_at), execution_id LIMIT ?""",
+                    ORDER BY finished_at, execution_id LIMIT ?""",
                 parameters,
             ).fetchall()
             return [self._record_from_row(row, connection) for row in rows]

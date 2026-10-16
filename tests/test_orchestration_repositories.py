@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from completion_recovery_support import (
+    assert_completion_query_plans,
+    bounded_completion_queries,
+    completion_record,
+    seed_completed_executions,
+)
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
@@ -703,6 +709,66 @@ def test_sqlite_gate_execution_repository_dismisses_failed_records_for_node(
     assert {
         execution_id: after_payloads[execution_id] for execution_id in unchanged_before
     } == unchanged_before
+
+
+@pytest.mark.parametrize("kind", ["effect", "gate"])
+def test_completion_pending_pages_keep_timestamp_ties_and_skip_completed_records(tmp_path, kind):
+    store = (SqliteExecutionStore if kind == "effect" else SqliteGateExecutionStore)(
+        tmp_path / "orchestration.db"
+    )
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    for key, offset, status in (
+        ("later", 2, "completion_pending"),
+        ("tie-b", 0, "completion_pending"),
+        ("finished", 0, "succeeded"),
+        ("tie-a", 0, "completion_pending"),
+        ("middle", 1, "completion_pending"),
+        ("waiting", 0, "waiting"),
+    ):
+        store.put(completion_record(kind, key, status=status, at=at + timedelta(seconds=offset)))
+    assert [r.execution_id for r in store.list_completion_pending_records(limit=0)] == ["tie-a"]
+    middle = store.get_execution("middle")
+    middle.status = "succeeded"
+    store.put(middle)
+    after = ("2026-01-01T00:00:00Z", "tie-a")
+    assert [r.execution_id for r in store.list_completion_pending_records(limit=1, after=after)] == [
+        "tie-b"
+    ]
+    after = ("2026-01-01T00:00:00Z", "tie-b")
+    assert [r.execution_id for r in store.list_completion_pending_records(after=after)] == ["later"]
+    assert store.list_completion_pending_records(after=("2026-01-01T00:00:02Z", "later")) == []
+
+
+@pytest.mark.parametrize("kind", ["effect", "gate"])
+def test_completion_recovery_reads_only_an_indexed_page_after_analyze(tmp_path, monkeypatch, kind):
+    store = (SqliteExecutionStore if kind == "effect" else SqliteGateExecutionStore)(
+        tmp_path / "orchestration.db"
+    )
+    seed_completed_executions(store.path, kind=kind)
+    with connect_orchestration_db(store.path) as connection:
+        connection.execute("ANALYZE")
+    with bounded_completion_queries(monkeypatch) as statements:
+        assert store.list_completion_pending_records() == []
+        assert store.list_completion_pending_records(after=("2026-01-01T00:00:00Z", "z")) == []
+    with connect_orchestration_db_read_only(store.path) as connection:
+        assert_completion_query_plans(connection, statements, kind=kind)
+
+    # A dense pending backlog must also seek directly to the continuation page.
+    with connect_orchestration_db(store.path) as connection:
+        connection.execute(
+            f"UPDATE {kind}_executions SET status='completion_pending', "
+            "payload_json=json_set(payload_json,'$.status','completion_pending')"
+        )
+        connection.execute("ANALYZE")
+    with bounded_completion_queries(monkeypatch) as statements:
+        page = store.list_completion_pending_records(limit=1000)
+        assert [r.execution_id for r in page] == [f"historical-{i:05d}" for i in range(100)]
+        page = store.list_completion_pending_records(
+            after=("2026-01-01T00:00:00Z", "historical-05899"), limit=2
+        )
+        assert [r.execution_id for r in page] == ["historical-05900", "historical-05901"]
+    with connect_orchestration_db_read_only(store.path) as connection:
+        assert_completion_query_plans(connection, statements, kind=kind)
 
 
 def test_execution_repositories_list_waiting_and_completion_pending_records(

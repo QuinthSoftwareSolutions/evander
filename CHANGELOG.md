@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16 - Keep completion recovery indexed after history conversion (0.96.2)
+
+- Read pending gate and effect completions through existing status indexes with ordered continuation pages, keeping recovery work independent of execution-history size even after optimizer analysis.
+- Analyze only rebuilt history tables during offline conversion, preserving unrelated optimizer statistics and leaving statistics unchanged for copies that retain their storage format.
+
 ## 2026-10-16 - Retain private security scan diagnostics (0.96.1)
 
 - Capture brokered parent and child events, native stderr, token usage, terminal errors and credential-free HTTP status/request metadata in worker-owned storage outside session artifacts.

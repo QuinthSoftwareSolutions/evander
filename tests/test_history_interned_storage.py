@@ -6,7 +6,17 @@ import sqlite3
 
 import pytest
 
-from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
+from completion_recovery_support import (
+    assert_completion_query_plans,
+    bounded_completion_queries,
+    seed_completed_executions,
+)
+from history_storage_support import seed_indexed_history
+from evander.daemons.effect_orchestrator import (
+    EffectExecutionRecord,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
 from evander.orchestration.history_index_migration import copy_history_index_storage
 from evander.repositories import execution_history as history
 from evander.repositories import history_index_storage as storage
@@ -314,6 +324,54 @@ def test_retention_remains_bounded_and_preserves_live_shared_paths(tmp_path):
         assert c.execute(f"SELECT COUNT(*) FROM {storage.EXECUTIONS}").fetchone()[0] == 1
         assert c.execute(f"SELECT COUNT(*) FROM {storage.PATHS}").fetchone()[0] == 45
         assert not c.execute("PRAGMA foreign_key_check").fetchall()
+
+
+@pytest.mark.parametrize("source_interned,target_interned", [(False, True), (True, False),
+                                                           (False, False), (True, True)])
+@pytest.mark.parametrize("analyzed", [False, True])
+def test_copy_preserves_unrelated_statistics_and_bounded_recovery(
+    tmp_path, monkeypatch, source_interned, target_interned, analyzed
+):
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    seed_indexed_history(source, executions=2, fields=3)
+    if source_interned:
+        intern(source)
+    for kind in ("effect", "gate"):
+        seed_completed_executions(source, kind=kind)
+    rebuilt = {storage.EXECUTIONS, storage.GENERATIONS, storage.PATHS, storage.CURRENT,
+               storage.LEGACY, storage.OLD_CURRENT, storage.OLD_LEGACY}
+
+    def statistics(connection):
+        if not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='sqlite_stat1'"
+        ).fetchone():
+            return []
+        return sorted(tuple(row) for row in connection.execute("SELECT * FROM sqlite_stat1")
+                      if source_interned == target_interned or row[0] not in rebuilt)
+
+    with connect_orchestration_db(source) as connection:
+        if analyzed:
+            connection.execute("ANALYZE")
+        original_stats = statistics(connection)
+    close_sqlite_runtimes(source)
+    result = copy_history_index_storage(source, target, interned=target_interned)
+    assert result["changed"] == (source_interned != target_interned)
+    with sqlite3.connect(target) as connection:
+        assert statistics(connection) == original_stats
+        if result["changed"]:
+            history_tables = (
+                {storage.EXECUTIONS, storage.GENERATIONS, storage.PATHS,
+                 storage.CURRENT, storage.LEGACY}
+                if target_interned else {storage.OLD_CURRENT, storage.OLD_LEGACY}
+            )
+            assert history_tables <= {row[0] for row in connection.execute("SELECT * FROM sqlite_stat1")}
+    for kind, model in (("effect", SqliteExecutionStore), ("gate", SqliteGateExecutionStore)):
+        store = model(target)
+        with bounded_completion_queries(monkeypatch) as statements:
+            assert store.list_completion_pending_records() == []
+            assert store.list_completion_pending_records(after=("2026-01-01T00:00:00Z", "z")) == []
+        with sqlite3.connect(target) as connection:
+            assert_completion_query_plans(connection, statements, kind=kind)
 
 
 def test_copy_migration_never_changes_source_or_overwrites_destination(tmp_path):
