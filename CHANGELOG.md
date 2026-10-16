@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-16 - Validate queued prompt recovery with scoped bookkeeping (0.96.8)
+
+- Check that queued ordinary and Chat prompts preserve durable reservations and concurrent edits when scoped bookkeeping reads current rows without unnecessary snapshot retries.
+
 ## 2026-10-16 - Restore WAL and bound Team lifecycle recovery (0.96.7)
 
 - Restore WAL during runtime initialization of current-schema databases, including closed single-file history conversions, without replaying data migrations or changing steady-state connection behavior.

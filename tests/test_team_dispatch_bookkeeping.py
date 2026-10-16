@@ -454,7 +454,11 @@ def test_revision_churn_preserves_accepted_queued_ordinary_and_chat_prompts(
     repeated = provider.execute()
     state = repo.read()
     accepted = queue.read_all()
-    assert len(attempts) == 4
+    # Scoped bookkeeping can read current rows under its narrow writer lock,
+    # while aggregate snapshots may retry. Both must preserve the competing
+    # edit and the already accepted durable reservation.
+    assert attempts
+    assert state.projects["project"].name == f"Concurrent edit {len(attempts)}"
     assert result["success"] and repeated["success"]
     assert result["retry_event_ids"] == repeated["retry_event_ids"] == []
     assert result["transient_conflicts"] == repeated["transient_conflicts"] == []
