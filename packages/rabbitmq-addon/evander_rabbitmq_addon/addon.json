@@ -1,0 +1,4 @@
+{
+  "addon_id": "rabbitmq-addon",
+  "module": "evander_rabbitmq_addon"
+}

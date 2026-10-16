@@ -27,7 +27,7 @@ class Service:
             # Settings saves use this same lock. Revalidate the current policy
             # and scope before admitting a lease, never a pre-lock snapshot.
             scope, settings = self.scope(session_id, task_id, "test_fixtures_acquire")
-            if not settings.allocations_enabled:
+            if not settings.allocations_enabled and not settings.drain_only:
                 raise FixtureError("New fixture allocations are disabled")
             # Validate profiles before creating a durable request or reserving quota.
             Ensure(

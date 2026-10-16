@@ -1,5 +1,11 @@
 # Test Fixtures add-on
 
+Legacy bundle interface. New integrations should use the independent
+[SQL Server](../sqlserver-addon/README.md) and [RabbitMQ](../rabbitmq-addon/README.md)
+add-ons. Set `drain_only: true` on the control plane and workers to reject new
+bundles while retaining existing lease operations and cleanup. See the
+[migration procedure](docs/migration.md); do not uninstall while resources remain.
+
 Optional on-demand test infrastructure for authorized Team tasks on container
 workers. One installation supplies subsequent tasks automatically. New allocation
 starts disabled on both the control plane and worker.

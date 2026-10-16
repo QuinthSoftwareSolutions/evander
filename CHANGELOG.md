@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-16 - Generic SQL Server and RabbitMQ integrations (0.97.0)
+
+- Add independently installed SQL Server and RabbitMQ projects with directory-scoped registered connections, bounded data/management tools, operator pages, workflow providers and disposable resource profiles.
+- Add provider-neutral resource authority, durable intents and lifecycle notices, optional Team ownership validation, exact worker-job private configuration and independent expiry/fault recovery. Persistent resources have no automatic deletion; uncertain data writes are not replayed.
+- Add Test Fixtures 0.1.4 migration previews and drain mode, preserving existing leases and cleanup until provider absence is verified. Production server lifecycle and deployment remain operator-owned.
+
 ## 2026-10-16 - Clone private Team release candidates by pinned ref (0.96.5)
 
 - Prepare disposable release verifiers through the existing pinned-ref clone path, resolving logical Team branches to their managed private refs and checking the exact frozen candidate commit before verification commands can run.

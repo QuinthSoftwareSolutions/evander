@@ -1,0 +1,53 @@
+{
+  "allocations_enabled": false,
+  "connections": {
+    "existing": {
+      "host": "sql.internal.example",
+      "application_host": "sql.internal.example",
+      "port": 1433,
+      "encrypt": true,
+      "trust_server_certificate": false,
+      "credentials": {
+        "admin": {
+          "username_env": "EXAMPLE_SQL_ADMIN_USER",
+          "password_env": "EXAMPLE_SQL_ADMIN_PASSWORD"
+        },
+        "read": {
+          "username_env": "EXAMPLE_SQL_READ_USER",
+          "password_env": "EXAMPLE_SQL_READ_PASSWORD"
+        },
+        "write": {
+          "username_env": "EXAMPLE_SQL_WRITE_USER",
+          "password_env": "EXAMPLE_SQL_WRITE_PASSWORD"
+        }
+      },
+      "operations": []
+    }
+  },
+  "profiles": {
+    "application-test": {
+      "connection_id": "existing",
+      "worker_id": "worker-a",
+      "options": {
+        "databases": [
+          "app",
+          "audit"
+        ]
+      },
+      "idle_seconds": 7200,
+      "allowed_owner_providers": [
+        "session",
+        "workflow"
+      ]
+    }
+  },
+  "workers": {
+    "worker-a": {
+      "worker_base_url": "http://192.0.2.10:11888",
+      "service_url": "http://192.0.2.10:11992",
+      "token_env": "EVANDER_SQLSERVER_WORKER_TOKEN"
+    }
+  },
+  "max_per_worker": 2,
+  "workflow_operations": []
+}
