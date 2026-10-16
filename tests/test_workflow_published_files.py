@@ -11,6 +11,7 @@ from evander.communication_artifact_links import verify_communication_artifact_d
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
+from evander.directory_config import DirectoryConfigStore
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
@@ -117,7 +118,9 @@ def publish(delivery, *, owner="root/reports", content=None, metadata=True):
     )
 
 
-def send(delivery, specifications, *, directory="root/reports", thread_id=None):
+def send(
+    delivery, specifications, *, directory="root/reports", thread_id=None, sender_session_id=None
+):
     provider = CommunicationSendMessageEffectProvider()
     provider.initialize(
         CommunicationSendMessageEffectDefinition(
@@ -128,6 +131,7 @@ def send(delivery, specifications, *, directory="root/reports", thread_id=None):
             message="Smoke test [7](https://build.example.test/7)",
             published_artifacts="${{report.files}}",
             thread_id=thread_id,
+            sender_session_id=sender_session_id,
         ),
         EffectRuntimeContext(
             admin_service=SimpleNamespace(project_dir=delivery.project, runtime=delivery.runtime),
@@ -252,9 +256,11 @@ def test_workflow_rejects_unsafe_selected_paths_before_delivery(delivery, path):
         {"communication_file_allowed_mime_types": ["text/markdown"]},
     ],
 )
-def test_rejected_second_file_leaves_no_staged_files_or_message(delivery, config, monkeypatch):
-    resolved = GatewayConfig(runtime_dir=delivery.runtime.config.runtime_dir, **config)
-    monkeypatch.setattr(CommunicationMessageSender, "_resolved_config", lambda self: resolved)
+def test_rejected_second_file_leaves_no_staged_files_or_message(delivery, config):
+    DirectoryConfigStore(
+        delivery.runtime.directories,
+        runtime_dir=delivery.runtime.config.runtime_dir,
+    ).write("root/reports", domain="policy", payload=config)
     record = publish(delivery)
     with pytest.raises(ValueError, match="Published attachment"):
         send(delivery, specifications(record))
@@ -418,3 +424,183 @@ def test_legacy_publication_can_use_expired_session_ownership(delivery):
     result = send(delivery, specifications(record))
     assert result["artifact_count"] == 2
     assert result["message_id"] == "1792000000000"
+
+
+@pytest.mark.parametrize("filename", ["x" * 251 + ".exe.md", "report.exe..."])
+def test_content_policy_checks_the_delivered_filename(delivery, filename):
+    DirectoryConfigStore(
+        delivery.runtime.directories,
+        runtime_dir=delivery.runtime.config.runtime_dir,
+    ).write(
+        "root/reports",
+        domain="policy",
+        payload={
+            "communication_file_blocked_extensions": [".exe"],
+        },
+    )
+    record = publish(delivery)
+    with pytest.raises(ValueError, match="extension is not allowed"):
+        send(delivery, [{"key": record.key, "path": "results/report.md", "filename": filename}])
+    assert_nothing_sent_or_staged(delivery)
+
+
+def test_selected_mime_policy_uses_the_delivered_filename(delivery):
+    DirectoryConfigStore(
+        delivery.runtime.directories,
+        runtime_dir=delivery.runtime.config.runtime_dir,
+    ).write(
+        "root/reports",
+        domain="policy",
+        payload={
+            "communication_file_allowed_mime_types": ["text/markdown"],
+        },
+    )
+    record = publish(delivery)
+    with pytest.raises(ValueError, match="MIME type is not allowed"):
+        send(
+            delivery,
+            [{"key": record.key, "path": "results/report.md", "filename": "x" * 251 + ".png.md"}],
+        )
+    assert_nothing_sent_or_staged(delivery)
+
+
+@pytest.mark.parametrize("first_bytes", [0, 20000])
+def test_sparse_logical_size_is_rejected_before_extraction(delivery, monkeypatch, first_bytes):
+    DirectoryConfigStore(
+        delivery.runtime.directories,
+        runtime_dir=delivery.runtime.config.runtime_dir,
+    ).write("root/reports", domain="policy", payload={"communication_file_max_bytes": None})
+    monkeypatch.setattr("evander.messaging.published_message_artifacts.MAX_ARCHIVE_BYTES", 32768)
+    output = io.BytesIO()
+    selected = []
+    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+        if first_bytes:
+            first = tarfile.TarInfo("results/first.md")
+            first.size = first_bytes
+            archive.addfile(first, io.BytesIO(b"a" * first_bytes))
+        sparse = tarfile.TarInfo("results/sparse.md")
+        sparse.size = 1
+        sparse.pax_headers = {
+            "GNU.sparse.map": "0,1",
+            "GNU.sparse.size": str(20000 if first_bytes else 1048576),
+        }
+        archive.addfile(sparse, io.BytesIO(b"s"))
+    record = publish(delivery, content=output.getvalue())
+    if first_bytes:
+        selected.append({"key": record.key, "path": "results/first.md"})
+    selected.append({"key": record.key, "path": "results/sparse.md"})
+    original = tarfile.TarFile.extractfile
+    extracted = []
+
+    def extract(self, member, *args, **kwargs):
+        name = member.name if isinstance(member, tarfile.TarInfo) else member
+        extracted.append(name)
+        assert name != "results/sparse.md", "Oversized logical member reached extraction"
+        return original(self, member, *args, **kwargs)
+
+    monkeypatch.setattr(tarfile.TarFile, "extractfile", extract)
+    with pytest.raises(ValueError, match="Published attachments exceed"):
+        send(delivery, selected)
+    assert extracted == (["results/first.md"] if first_bytes else [])
+    assert_nothing_sent_or_staged(delivery)
+
+
+@pytest.mark.parametrize("sender_session_id", [None, "other-directory-sender"])
+def test_workflow_links_download_with_the_workflow_directory_secret(
+    delivery, monkeypatch, sender_session_id
+):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    import httpx
+    from starlette.applications import Starlette
+    from evander.admin.web.artifacts import artifact_routes
+    from evander.communication_artifact_links import issue_communication_artifact_download_link
+    from evander.models import SessionManifest
+
+    monkeypatch.setenv("REPORT_DIRECTORY_LINK_SECRET", "directory-specific-secret")
+    DirectoryConfigStore(
+        delivery.runtime.directories,
+        runtime_dir=delivery.runtime.config.runtime_dir,
+    ).write(
+        "root/reports",
+        domain="providers",
+        payload={
+            "communication_artifact_link_secret_env": "REPORT_DIRECTORY_LINK_SECRET",
+        },
+    )
+    if sender_session_id:
+        delivery.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=sender_session_id,
+                allowed_tools=[],
+                directory_path="root/other",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+    record = publish(delivery)
+    result = send(delivery, specifications(record), sender_session_id=sender_session_id)
+    files = delivery.teams.calls[0]["files"]
+    service = SimpleNamespace(runtime=delivery.runtime, config=delivery.runtime.config)
+    app = Starlette(routes=artifact_routes(service, auth=None))
+    staged = CommunicationArtifactStore(delivery.runtime.config.runtime_dir).get(
+        result["artifact_ids"][0]
+    )
+    wrong_link = issue_communication_artifact_download_link(
+        artifact_id=staged.metadata.artifact_id,
+        artifact_expires_at=staged.metadata.expires_at,
+        public_base_url="https://control.example.test",
+        secret_env="WORKFLOW_TEST_FILE_SECRET",
+        ttl_seconds=3600,
+    )
+
+    async def download():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://control.example.test"
+        ) as client:
+            downloaded = [await client.get(item["download_url"]) for item in files]
+            wrong = await client.get(wrong_link.url)
+            return downloaded, wrong
+
+    downloaded, wrong = asyncio.run(download())
+    assert [response.status_code for response in downloaded] == [200, 200]
+    assert downloaded[0].content == b"# Passed\n"
+    assert (
+        downloaded[1].content
+        == PublishedArtifactStore(delivery.runtime.config.runtime_dir)
+        .get(record.key)
+        .blob_path.read_bytes()
+    )
+    assert downloaded[0].headers["cache-control"] == "no-store"
+    assert wrong.status_code == 403
+
+
+def test_workflow_download_without_persisted_directory_fails_closed(delivery):
+    import asyncio
+    import httpx
+    from starlette.applications import Starlette
+    from evander.admin.web.artifacts import artifact_routes
+    from evander.communication_artifact_links import issue_communication_artifact_download_link
+
+    staged = CommunicationArtifactStore(delivery.runtime.config.runtime_dir).stage(
+        provider="workflow",
+        session_id="workflow",
+        content=b"report",
+        original_filename="report.md",
+    )
+    link = issue_communication_artifact_download_link(
+        artifact_id=staged.artifact_id,
+        artifact_expires_at=staged.expires_at,
+        public_base_url="https://control.example.test",
+        secret_env="WORKFLOW_TEST_FILE_SECRET",
+        ttl_seconds=3600,
+    )
+    service = SimpleNamespace(runtime=delivery.runtime, config=delivery.runtime.config)
+    app = Starlette(routes=artifact_routes(service, auth=None))
+
+    async def download():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://control.example.test"
+        ) as client:
+            return await client.get(link.url)
+
+    assert asyncio.run(download()).status_code == 403

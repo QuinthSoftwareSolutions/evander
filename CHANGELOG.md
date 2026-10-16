@@ -5,6 +5,7 @@
 - Let host workflow messages send directory-owned published archives and selected report or image files directly through the existing Teams file-delivery path, without a delivery agent or model call.
 - Embed screenshots and send expiring Truman downloads for other files, preserving declared target capabilities and existing agent file-send policy.
 - Verify publication ownership, archive checksums, regular-file selection and file limits before staging; persist directory ownership with new publications.
+- Apply directory policy to delivered filenames, bound sparse-file reads, and retain workflow-directory signing for download verification.
 
 ## 2026-10-16 - Continue command-blocked releases with reviewed source corrections (0.96.6)
 

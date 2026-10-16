@@ -1793,10 +1793,15 @@ outside root require the source session's retained directory ownership.
 Each send supports at most 16 files, at most 64 MiB of compressed archives and
 attachments in total, and at most 64 MiB of expanded tar data when selecting
 archive members. It honors the directory's communication file size, MIME and
-extension restrictions.
+extension restrictions from the directory's policy domain. Restrictions and
+selected-member MIME detection use the normalized delivered filename. Logical
+member sizes, including sparse files, also count against the hard attachment
+limit before reading.
 Images use Teams hosted content; other files use the same expiring signed Truman
 downloads as agent file posts. The published archive remains durable when a
-communication download expires. This host workflow action uses the declared
+communication download expires. Workflow download links are verified using the
+persisted workflow directory, independently of the sender session. This host
+workflow action uses the declared
 target's write/reply capability; agent MCP file-send grants and approvals retain
 their existing enforcement. No agent or model call is required. If every selected
 file is optional and missing, the action sends the text message alone. Provider

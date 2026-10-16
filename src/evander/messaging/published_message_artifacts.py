@@ -18,7 +18,7 @@ from evander.communication_artifact_links import (
     communication_artifact_public_base_url,
     issue_communication_artifact_download_link,
 )
-from evander.communication_artifacts import CommunicationArtifactStore
+from evander.communication_artifacts import CommunicationArtifactStore, normalize_safe_filename
 from evander.integration_services.teams import _artifact_is_inline_teams_image
 from evander.models import DirectoryPath
 from evander.published_artifacts import PublishedArtifactStore, validate_artifact_key
@@ -132,6 +132,7 @@ def prepare_published_teams_files(
     if not isinstance(specifications, list) or len(specifications) > 16:
         raise ValueError("published_artifacts must resolve to an array of at most 16 files")
     specs = [PublishedMessageArtifact.model_validate(item) for item in specifications]
+    file_policy = runtime.policy_config.resolve_for_directory(directory_path)
     store = PublishedArtifactStore(runtime.config.runtime_dir)
     prepared: list[tuple[str, str, bytes, str]] = []
     archives: dict[str, Any] = {}
@@ -187,14 +188,18 @@ def prepare_published_teams_files(
                 if len(matches) != 1 or not matches[0].isfile():
                     raise ValueError("Published attachment path must identify one regular file")
                 filename = spec.filename or PurePosixPath(spec.path).name
-                mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-                limit = config.communication_file_max_bytes
+                safe_filename = normalize_safe_filename(filename)
+                mime = mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
+                remaining_bytes = MAX_ARCHIVE_BYTES - attachment_bytes
+                if matches[0].size > remaining_bytes:
+                    raise ValueError("Published attachments exceed 64 MiB in total")
+                limit = file_policy.communication_file_max_bytes
                 if limit is not None and matches[0].size > limit:
                     raise ValueError("Published attachment exceeds communication_file_max_bytes")
                 with archive.extractfile(matches[0]) as source:
-                    content = source.read()
+                    content = source.read(remaining_bytes + 1)
             PublishedMessageArtifact.valid_filename(filename)
-            _require_content(config, filename, mime, len(content))
+            _require_content(file_policy, normalize_safe_filename(filename), mime, len(content))
             attachment_bytes += len(content)
             if attachment_bytes > MAX_ARCHIVE_BYTES:
                 raise ValueError("Published attachments exceed 64 MiB in total")
