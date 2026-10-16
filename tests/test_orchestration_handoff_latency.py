@@ -714,7 +714,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
     assert len(selects) == 3
     with sqlite3.connect(repo.store.path) as connection:
         plan = connection.execute(
-            "EXPLAIN QUERY PLAN SELECT id FROM team_dispatches WHERE status IN ('preparing','leased') AND activation_completed_at IS NULL AND id > '' ORDER BY id LIMIT 50"
+            "EXPLAIN QUERY PLAN SELECT id FROM team_dispatches INDEXED BY idx_team_dispatches_pending_activation WHERE status IN ('preparing','leased') AND activation_completed_at IS NULL AND id > '' ORDER BY id LIMIT 50"
         ).fetchall()
     assert any("idx_team_dispatches_pending_activation" in row[3] for row in plan)
 

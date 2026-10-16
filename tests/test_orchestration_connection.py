@@ -72,6 +72,83 @@ def test_warmed_and_cold_schema_checks_do_not_require_a_writer_lock(tmp_path):
         writer.close()
 
 
+def test_current_schema_delete_journal_is_repaired_before_readiness_is_cached(tmp_path):
+    path = tmp_path / "converted.db"
+    ensure_orchestration_schema(path)
+    close_sqlite_runtimes(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+        connection.execute("INSERT INTO orchestration_metadata VALUES ('probe', 'old')")
+
+    ensure_sqlite_initialized(
+        path, schema_key="converted-current", is_current=lambda _connection: True,
+        initialize=lambda _connection: pytest.fail("current schema must not be migrated"),
+    )
+    with connect_orchestration_db_read_only(path) as reader:
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        reader.execute("BEGIN")
+        assert reader.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='probe'"
+        ).fetchone()[0] == "old"
+        with open_sqlite_connection(path, timeout_ms=20) as writer:
+            writer.execute("UPDATE orchestration_metadata SET value_json='new' WHERE key='probe'")
+        assert reader.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='probe'"
+        ).fetchone()[0] == "old"
+
+
+def test_failed_journal_repair_is_bounded_and_not_cached(tmp_path):
+    path = tmp_path / "locked.db"
+    with sqlite3.connect(path) as setup:
+        setup.execute("CREATE TABLE readiness(value INTEGER)")
+        setup.execute("INSERT INTO readiness VALUES (1)")
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM readiness").fetchall()
+    kwargs = dict(
+        schema_key="locked-current", is_current=lambda _connection: True,
+        initialize=lambda _connection: pytest.fail("unexpected migration"), timeout_ms=30,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            ensure_sqlite_initialized(path, **kwargs)
+        assert time.monotonic() - started < 1
+    finally:
+        reader.rollback()
+        reader.close()
+    ensure_sqlite_initialized(path, **kwargs)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_concurrent_processes_repair_current_schema_journal_once(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "converted.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE readiness(value INTEGER)")
+        connection.execute("INSERT INTO readiness VALUES (1)")
+    script = """
+import sys
+from evander.repositories.sqlite_runtime import ensure_sqlite_initialized, open_sqlite_connection
+def unexpected(connection):
+    raise AssertionError('current schema must not be migrated')
+ensure_sqlite_initialized(sys.argv[1], schema_key='current',
+    is_current=lambda c: c.execute('SELECT value FROM readiness').fetchone()[0] == 1,
+    initialize=unexpected, timeout_ms=3000)
+with open_sqlite_connection(sys.argv[1], read_only=True) as connection:
+    print(connection.execute('PRAGMA journal_mode').fetchone()[0])
+"""
+
+    def initialize(_index):
+        return subprocess.run([sys.executable, "-c", script, str(path)],
+                              capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        assert list(executor.map(initialize, range(4))) == ["wal"] * 4
+
+
 def test_schema_failure_is_not_cached_and_database_replacement_reinitializes(tmp_path):
     path = tmp_path / "state.db"
     attempts = []

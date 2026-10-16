@@ -44,6 +44,7 @@ from .sqlite_migrations_worktrees import (
 )
 from .sqlite_schema_sql import (
     _LIFECYCLE_INDEX_SQL,
+    _SCOPED_LIFECYCLE_INDEX_SQL,
     _SCHEMA_SQL,
     SQLITE_SCHEMA_VERSION,
 )
@@ -96,6 +97,34 @@ def migrate_schema(
     The caller owns its lock and transaction. Column additions remain ordered
     around table rebuilds and data rewrites; callbacks reuse that connection.
     """
+    # v83 is indexes only. An already valid v82 store must not replay historical
+    # normalization/backfill passes or rewrite business records for this upgrade.
+    try:
+        versions = dict(connection.execute(
+            "SELECT key,value FROM team_state_metadata WHERE key IN ('sqlite_schema_version','state_schema_version')"
+        ))
+    except sqlite3.OperationalError as error:
+        if "no such table" not in str(error):
+            raise
+        versions = {}
+    index_only = False
+    if int(versions.get("sqlite_schema_version", 0)) >= 82 and int(versions.get("state_schema_version", 0)) >= SCHEMA_VERSION:
+        try:
+            index_only = connection.execute("SELECT 1 FROM team_case_context_snapshot_pending LIMIT 1").fetchone() is None
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error):
+                raise
+    if index_only:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        for statement in (_LIFECYCLE_INDEX_SQL + _SCOPED_LIFECYCLE_INDEX_SQL).split(";"):
+            if statement.strip():
+                connection.execute(statement)
+        connection.execute(
+            "UPDATE team_state_metadata SET value=? WHERE key='sqlite_schema_version'",
+            (str(max(SQLITE_SCHEMA_VERSION, int(versions["sqlite_schema_version"]))),),
+        )
+        return
     connection.executescript(_SCHEMA_SQL)
     connection.executescript(CONTEXT_SCHEMA_SQL)
     connection.executescript(HISTORY_SCHEMA_SQL)
@@ -142,7 +171,7 @@ def migrate_schema(
         write_state=write_state,
     )
     _prepare_small_activity_retention_index(connection)
-    for statement in _LIFECYCLE_INDEX_SQL.split(";"):
+    for statement in (_LIFECYCLE_INDEX_SQL + _SCOPED_LIFECYCLE_INDEX_SQL).split(";"):
         if statement.strip():
             connection.execute(statement)
     connection.execute(

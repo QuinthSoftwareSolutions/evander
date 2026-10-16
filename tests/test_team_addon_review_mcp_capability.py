@@ -159,6 +159,7 @@ def test_review_capability_columns_migrate_existing_database(
     database_path = tmp_path / "addons" / "team-addon" / "state.db"
     with sqlite3.connect(database_path) as connection:
         connection.execute("UPDATE team_state_metadata SET value='0' WHERE key IN ('sqlite_schema_version', 'state_schema_version')")
+        connection.execute("DROP INDEX idx_team_dispatches_missing_mcp")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN mcp_capability_receipt_json")
         connection.execute("ALTER TABLE team_blockers DROP COLUMN mcp_capability_identity_json")
 

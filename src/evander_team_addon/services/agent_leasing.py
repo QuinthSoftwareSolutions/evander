@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from contextlib import nullcontext
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -14,6 +17,7 @@ from .case_context_dispatch import prepare_case_context, dispatch_case_contexts
 from ..repository import (
     TeamStateConflictError,
 )
+from ..lifecycle_sql import DISPATCH_ATTEMPT_ORDER, DISPATCH_COMPLETED_ORDER
 from ..sqlite_store import (
     TeamStateSqliteCommandTransaction,
 )
@@ -335,46 +339,48 @@ def lease_due_agents(
         defer_activation=defer_activation,
     )
 
+    def _commit_plan(planning_state):
+        previous_payload = planning_state.model_dump(mode="json")
+        candidate = planner.plan(planning_state)
+        outbox_records = _team_event_outbox_records(blocker_routing_events)
+        activity_records = []
+        for lease in leases:
+            lease_agent = lease["agent"]
+            activity_records.append(
+                TeamDispatchActivity(
+                    id=f"activity-{uuid4().hex}",
+                    tool_name="team_dispatch_started",
+                    caller_session_id=lease_agent["session_id"],
+                    caller_identity=f"agent:{lease_agent['id']}",
+                    agent_id=lease_agent["id"],
+                    dispatch_id=lease["dispatch_id"],
+                    status=TeamDispatchActivityStatus.SUCCESS,
+                    progress_classification="none",
+                    created_at=effective_now,
+                    updated_at=effective_now,
+                )
+            )
+
+        def _write_commands(tx: TeamStateSqliteCommandTransaction) -> None:
+            for record in outbox_records:
+                tx.enqueue_outbox_record(record)
+            for activity in activity_records:
+                tx.append_dispatch_activity(activity)
+
+        return service._repository.commit_prepared_state_with_command_transaction(
+            previous_payload=previous_payload, candidate=candidate, command_writer=_write_commands,
+        )
+
     def _plan_and_commit() -> TeamState:
         last_conflict: TeamStateConflictError | None = None
         for _attempt in range(TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS):
             leases.clear()
             blocker_routing_events.clear()
-
-            planning_state = service._repository.read()
-            previous_payload = planning_state.model_dump(mode="json")
-            candidate = planner.plan(planning_state)
-            outbox_records = _team_event_outbox_records(blocker_routing_events)
-            activity_records = []
-            for lease in leases:
-                lease_agent = lease["agent"]
-                activity_records.append(
-                    TeamDispatchActivity(
-                        id=f"activity-{uuid4().hex}",
-                        tool_name="team_dispatch_started",
-                        caller_session_id=lease_agent["session_id"],
-                        caller_identity=f"agent:{lease_agent['id']}",
-                        agent_id=lease_agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        status=TeamDispatchActivityStatus.SUCCESS,
-                        progress_classification="none",
-                        created_at=effective_now,
-                        updated_at=effective_now,
-                    )
-                )
-
-            def _write_commands(tx: TeamStateSqliteCommandTransaction) -> None:
-                for record in outbox_records:
-                    tx.enqueue_outbox_record(record)
-                for activity in activity_records:
-                    tx.append_dispatch_activity(activity)
-
             try:
-                return service._repository.commit_prepared_state_with_command_transaction(
-                    previous_payload=previous_payload,
-                    candidate=candidate,
-                    command_writer=_write_commands,
-                )
+                snapshot = getattr(service._repository, "command_snapshot", None)
+                context = snapshot() if callable(snapshot) else nullcontext(service._repository.read())
+                with context as planning_state:
+                    return _commit_plan(planning_state)
             except TeamStateConflictError as exc:
                 last_conflict = exc
         assert last_conflict is not None
@@ -2071,6 +2077,8 @@ def _has_prior_successful_ordinary_wake(
     state: TeamState,
     agent: PersistentAgent,
 ) -> bool:
+    if hasattr(state, "has_prior_successful_ordinary_wake"):
+        return state.has_prior_successful_ordinary_wake(agent)
     return any(
         dispatch.agent_id == agent.id
         and dispatch.session_id == agent.session_id
@@ -2136,9 +2144,13 @@ def _latest_terminal_dispatch_for_agent(
         TeamDispatchStatus.EXPIRED,
         TeamDispatchStatus.FAILED,
     }
+    records = (state.query_records(
+        "dispatches", "agent_id=? AND completed_at IS NOT NULL AND status IN ('completed','failed','expired')",
+        (agent_id,), order=DISPATCH_COMPLETED_ORDER, limit=1,
+    ) if hasattr(state, "query_records") else state.dispatches.values())
     candidates = [
         dispatch
-        for dispatch in state.dispatches.values()
+        for dispatch in records
         if dispatch.agent_id == agent_id
         and dispatch.status in terminal
         and dispatch.completed_at is not None
@@ -2162,9 +2174,16 @@ def _latest_delivered_wake_work_attempt_for_agent(
     work_lineage_id: str | None = None,
     filter_work_lineage: bool = False,
 ) -> TeamDispatch | None:
+    records = state.dispatches.values() if not hasattr(state, "query_records") else state.query_records(
+        "dispatches", "agent_id=? AND completed_at IS NOT NULL AND status IN ('completed','failed','expired') "
+        "AND wake_work_fingerprint IS NOT NULL AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL) "
+        "AND (? IS NULL OR cause_kind=?) AND (?=0 OR work_lineage_id IS ?)",
+        (agent_id, cause_kind, cause_kind, int(filter_work_lineage), work_lineage_id),
+        order=DISPATCH_ATTEMPT_ORDER, limit=1,
+    )
     attempts = [
         dispatch
-        for dispatch in state.dispatches.values()
+        for dispatch in records
         if dispatch.agent_id == agent_id
         and (cause_kind is None or dispatch.cause_kind == cause_kind)
         and (not filter_work_lineage or dispatch.work_lineage_id == work_lineage_id)
@@ -2216,9 +2235,32 @@ def _wake_work_changed_since_latest_lineage_attempt(
         TeamDispatchStatus.EXPIRED,
         TeamDispatchStatus.FAILED,
     }
+    records = state.dispatches.values() if not hasattr(state, "query_records") else state.query_records(
+        "dispatches", """agent_id=? AND work_lineage_id IS ? AND cause_kind!='manager_fallback'
+        AND completed_at IS NOT NULL AND status IN ('completed','expired','failed')
+        AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL) AND (
+          (wake_work_record_fingerprints_json!='{}' AND NOT EXISTS(
+            SELECT 1 FROM json_each(?) required WHERE NOT EXISTS(
+              SELECT 1 FROM json_each(team_dispatches.wake_work_record_fingerprints_json) stored
+              WHERE stored.key=required.value))) OR
+          (wake_work_record_fingerprints_json='{}' AND ? AND NOT EXISTS(
+            SELECT 1 FROM json_each(?) required WHERE NOT EXISTS(
+              SELECT 1 FROM team_dispatch_inbox i WHERE i.dispatch_id=team_dispatches.id
+              AND i.inbox_item_id=required.value)) AND NOT EXISTS(
+            SELECT 1 FROM json_each(?) required WHERE NOT EXISTS(
+              SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id
+              AND r.review_request_id=required.value))) OR
+          (wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint=?
+           AND NOT EXISTS(SELECT 1 FROM team_dispatch_inbox i WHERE i.dispatch_id=team_dispatches.id)
+           AND NOT EXISTS(SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id)))""",
+        (agent_id, work_lineage_id, json.dumps(sorted(current_records)),
+         int(bool(current_inbox_ids or current_review_ids)), json.dumps(sorted(current_inbox_ids)),
+         json.dumps(sorted(current_review_ids)), current_aggregate),
+        order=DISPATCH_ATTEMPT_ORDER, limit=1,
+    )
     attempts = [
         dispatch
-        for dispatch in state.dispatches.values()
+        for dispatch in records
         if dispatch.agent_id == agent_id
         and dispatch.cause_kind != "manager_fallback"
         and dispatch.work_lineage_id == work_lineage_id
@@ -2358,7 +2400,15 @@ def _review_mcp_capability_attempt(
     if not normalized_review_ids:
         return 1
     previous_attempt = 0
-    for dispatch in state.dispatches.values():
+    records = state.dispatches.values() if not hasattr(state, "query_records") else state.query_records(
+        "dispatches", "agent_id=? AND json_extract(mcp_capability_receipt_json,'$.verification_status')='missing' "
+        "AND id IN (SELECT dispatch_id FROM team_dispatch_reviews WHERE review_request_id=?) "
+        "AND (SELECT COUNT(DISTINCT r.review_request_id) FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id)=? "
+        "AND NOT EXISTS(SELECT 1 FROM team_dispatch_reviews r WHERE r.dispatch_id=team_dispatches.id "
+        "AND r.review_request_id NOT IN (" + ",".join("?" for _ in normalized_review_ids) + "))",
+        (agent_id, normalized_review_ids[0], len(normalized_review_ids), *normalized_review_ids),
+    )
+    for dispatch in records:
         receipt = dispatch.mcp_capability_receipt
         if (
             dispatch.agent_id != agent_id

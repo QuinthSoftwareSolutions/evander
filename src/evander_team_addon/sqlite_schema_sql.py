@@ -2,7 +2,50 @@
 
 from __future__ import annotations
 
-SQLITE_SCHEMA_VERSION = 82
+from .lifecycle_sql import ACTION_CREATED_KEY, DISPATCH_ATTEMPT_KEY, DISPATCH_COMPLETED_KEY
+
+SQLITE_SCHEMA_VERSION = 83
+
+_SCOPED_LIFECYCLE_INDEX_SQL = f"""
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_live
+    ON team_dispatches(id) WHERE status IN ('preparing','leased');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_terminal_time
+    ON team_dispatches(agent_id,{DISPATCH_COMPLETED_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_attempt_time
+    ON team_dispatches(agent_id,{DISPATCH_ATTEMPT_KEY} DESC,id DESC)
+    WHERE completed_at IS NOT NULL AND status IN ('completed','expired','failed');
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_context_previous
+    ON team_dispatches(agent_id,session_id,native_thread_id,{DISPATCH_COMPLETED_KEY} DESC,id)
+    WHERE completed_at IS NOT NULL AND status='completed';
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_missing_mcp
+    ON team_dispatches(agent_id,id)
+    WHERE json_extract(mcp_capability_receipt_json,'$.verification_status')='missing';
+CREATE INDEX IF NOT EXISTS idx_team_action_records_latest
+    ON team_action_records(agent_id,{ACTION_CREATED_KEY} DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_team_dispatch_reviews_review
+    ON team_dispatch_reviews(review_request_id,dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_team_action_records_legacy_notes
+    ON team_action_records(id) WHERE success=1 AND json_extract(action_json,'$.tool_name')='team_record_note';
+CREATE INDEX IF NOT EXISTS idx_team_inbox_pending
+    ON team_inbox(id) WHERE state='pending';
+CREATE INDEX IF NOT EXISTS idx_team_inbox_dependency_repair_evidence
+    ON team_inbox(json_extract(payload_json,'$.kind'),json_extract(payload_json,'$.predecessor_task_id'),json_extract(payload_json,'$.successor_task_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_inbox_integration_recovery_evidence
+    ON team_inbox(json_extract(payload_json,'$.kind'),json_extract(payload_json,'$.old_integration_task_id'),id);
+CREATE INDEX IF NOT EXISTS idx_team_conversations_agent
+    ON team_conversations(agent_id,id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_pending
+    ON team_conversation_messages(status,conversation_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_seen_dispatch
+    ON team_conversation_messages(seen_dispatch_id,status,id);
+CREATE INDEX IF NOT EXISTS idx_team_release_packages_predecessor
+    ON team_release_packages(supersedes_release_package_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_team_release_deliverables_deliverable
+    ON team_release_deliverables(deliverable_id,package_id);
+CREATE INDEX IF NOT EXISTS idx_team_release_packages_correction
+    ON team_release_packages(state,json_extract(gate_failure_json,'$.stage'),json_extract(gate_failure_json,'$.kind'),project_id,id);
+"""
 
 _LIFECYCLE_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;

@@ -2366,10 +2366,18 @@ def _release_packages_for_deliverables(
     deliverable_ids: list[str],
 ) -> list[ReleasePackage]:
     normalized = _normalized_release_deliverable_set(deliverable_ids)
+    records = state.release_packages.values() if not hasattr(state, "query_records") else state.query_records(
+        "release_packages", "project_id=? AND "
+        + ("id IN (SELECT package_id FROM team_release_deliverables WHERE deliverable_id=?) AND " if normalized else "")
+        + "(SELECT COUNT(DISTINCT d.deliverable_id) FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id)=? "
+        + "AND NOT EXISTS(SELECT 1 FROM team_release_deliverables d WHERE d.package_id=team_release_packages.id "
+        + "AND d.deliverable_id NOT IN (" + ",".join("?" for _ in normalized) + "))",
+        (project_id, *((normalized[0],) if normalized else ()), len(normalized), *normalized),
+    )
     return [
         release
         for release in sorted(
-            state.release_packages.values(),
+            records,
             key=lambda item: (item.created_at, item.id),
             reverse=True,
         )

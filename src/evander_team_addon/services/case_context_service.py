@@ -220,7 +220,10 @@ def make_note(
 def legacy_notes(state: TeamState) -> dict[str, TeamNote]:
     """Pure legacy projection; migration persists exactly these original IDs."""
     result = dict(state.notes)
-    for action in state.action_records.values():
+    records = (state.query_records(
+        "action_records", "success=1 AND json_extract(action_json,'$.tool_name')='team_record_note'",
+    ) if hasattr(state, "query_records") else state.action_records.values())
+    for action in records:
         if (
             action.id in result
             or not action.success
@@ -689,7 +692,10 @@ class _CaseEvidenceCollection:
             )
 
     def _collect_conversation(self) -> None:
-        for item in self.state.inbox.values():
+        records = (self.state.query_records(
+            "inbox", "task_id IN (" + ",".join("?" for _ in self.tasks) + ")", tuple(self.tasks),
+        ) if hasattr(self.state, "query_records") else self.state.inbox.values())
+        for item in records:
             if item.task_id in self.tasks and (
                 self.access.reader is None or self.access.reader._inbox_visible(item)
             ):
