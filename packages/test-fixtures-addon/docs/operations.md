@@ -1,6 +1,6 @@
 # Deployment and operations
 
-Deploy core 0.95.3 or later and this package 0.1.2 at one exact Git revision.
+Deploy core 0.95.3 or later and this package 0.1.3 at one exact Git revision.
 Install `packages/test-fixtures-addon` into the control-plane and worker virtual
 environments explicitly (`uv pip install --python <venv>/bin/python ./packages/test-fixtures-addon`).
 Retain existing worker deployment and SQL setup. This add-on does not install
@@ -27,6 +27,10 @@ uses an isolated interpreter and never imports code from the agent repository.
    Allow TCP11991 only from the control plane. Do not add it to guest egress ports.
    Give the control plane a distinct fixture bearer token via its environment.
    Start the service and independent reap timer. Both use the same process lock.
+   Keep `PrivateTmp=yes` on both service units: `ProtectSystem=strict` otherwise
+   makes the host temporary directories read-only, preventing SQLite from sorting
+   larger worker-job histories. Reload systemd and restart the fixture API after
+   installing updated units; the next independent reap uses its updated unit.
    Docker retains privileged host operations; agents receive neither a Docker
    socket nor a general host command surface.
 4. Enable `test-fixtures-addon` and `evander_test_fixtures_addon` explicitly in
