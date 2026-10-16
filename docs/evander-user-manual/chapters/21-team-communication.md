@@ -199,6 +199,40 @@ An avatar is unrelated UI metadata. Saving an agent's portrait does not select t
 
 Only the top-level Team manager may escalate out of the Team.
 
+### Writing an escalation
+
+An operator should be able to understand an escalation without reading its internal
+handoff. The escalation tool and managed Team/governance guidance ask agents to use
+a short, plain-language title and three short lines separated by blank lines:
+
+- **Need:** the action or decision needed from the operator. Say **No action needed
+  from you** when the operator need not act.
+- **Why:** the blocker and its practical impact, with just enough context to make sense.
+- **Next:** who acts next and when, if known. For a decision, include a recommendation and
+  short reply choices.
+
+Aim for 60-100 words and normally stay under 120. Preserve essential risks and
+deadlines. Use meaningful work names and explain unfamiliar terms. Keep logs,
+policy identifiers, revision history and coordination instructions in Team notes or
+linked task/blocker records, with at most one useful reference in the notification.
+These are writing instructions, not a delivery limit: Team does not truncate or
+reject an escalation because of its length. Automatic escalations for unresolved
+blockers send their short summary and a Team blocker reference; the full details
+and escalation history remain in the blocker record.
+
+For example:
+
+> **Need:** Choose whether to delay the telemetry release until Monday.
+>
+> **Why:** The fix passed review, but the test environment is unavailable, so we
+> cannot finish release checks today. The current release is unaffected.
+>
+> **Next:** Mira recommends waiting. Reply **wait** or **restore tests today**.
+> Once the environment is available, Priya will rerun the checks before release.
+
+The managed guidance version changes when these instructions change, so existing
+sessions receive the updated instructions on their next eligible wake after deployment.
+
 ### Direct operator escalation
 
 The manager can send a durable escalation to the Team's configured operator destination. Team records the request first; the ordinary Evander communication workflow performs and records delivery.

@@ -36,6 +36,7 @@ from .repository import (
 )
 from .outbox_publication import request_team_outbox_publication_for_records
 from .operator_chat_steering import reconcile_operator_chat_steering_deliveries
+from .operator_escalation_guidance import OPERATOR_ESCALATION_WRITING_GUIDANCE
 from .operator_chat_context import (
     OPERATOR_CHAT_CONTEXT_GUIDANCE,
     operator_chat_conversation_context,
@@ -1327,7 +1328,8 @@ def _register_collaboration_tools(
             "Requires title, message, and request_id. The result is a receipt, not "
             "delivery confirmation: while async_effect_pending is true and "
             "downstream_effect_completed is false, report the escalation as queued "
-            "or pending, never delivered."
+            "or pending, never delivered. "
+            f"{OPERATOR_ESCALATION_WRITING_GUIDANCE}"
         ),
     )
 
@@ -2236,7 +2238,10 @@ def _register_work_management_tools(
         name=TEAM_REPORT_BLOCKER_TOOL,
         description=(
             "Report an explicit cannot-proceed condition and wake the nearest available "
-            "superior as its accountable owner."
+            "superior as its accountable owner. Use a short, plain-language summary "
+            "of the blocker and its impact; put logs and technical history in details. "
+            "If it reaches the operator, the notification uses the summary and a "
+            "Team blocker reference."
         ),
     )
 

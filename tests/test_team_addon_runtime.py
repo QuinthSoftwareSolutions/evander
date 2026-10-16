@@ -131,6 +131,9 @@ from evander_team_addon.models import (
     TaskDeliverableContract,
     _runtime_agent_payload,
 )
+from evander_team_addon.operator_escalation_guidance import (
+    OPERATOR_ESCALATION_WRITING_GUIDANCE,
+)
 from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
     TeamCreateOperatorDirectiveEffectDefinition,
@@ -5403,6 +5406,7 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     )
     assert "team-action.json" not in inactive_guidance
     guidance = str(guidance_files[1]["content"])
+    assert OPERATOR_ESCALATION_WRITING_GUIDANCE in guidance
     assert 'Persistent agent id: "portfolio-manager"' in guidance
     assert "has no team_id" in guidance
     assert "Member teams remain separate execution units" in guidance
@@ -11114,6 +11118,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert result["dispatches"][0]["agent_guidance"]["seeded"] is True
     assert len(file_copier.calls) == 1
     copied_file = file_copier.calls[0]["files"][0]
+    assert OPERATOR_ESCALATION_WRITING_GUIDANCE in copied_file["content"]
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID

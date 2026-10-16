@@ -7,7 +7,7 @@ import re
 
 logger = logging.getLogger("evander_team_addon.providers")
 
-TEAM_AGENT_GUIDANCE_VERSION = 46
+TEAM_AGENT_GUIDANCE_VERSION = 47
 
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 
@@ -15,7 +15,7 @@ TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS: tuple[str, ...] = ()
 
-TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
+TEAM_GOVERNANCE_GUIDANCE_VERSION = 3
 
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 

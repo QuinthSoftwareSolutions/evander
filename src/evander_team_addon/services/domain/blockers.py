@@ -1284,7 +1284,12 @@ def route_blocker_terminal(
                     "manager_agent_id": team.manager_agent_id,
                     "sender_session_id": manager.session_id if manager is not None else None,
                     "title": blocker.summary,
-                    "message": blocker.details or reason,
+                    "message": (
+                        f"Need: Help {team.name} unblock this work.\n\n"
+                        f"Why: {blocker.summary}\n\n"
+                        f"Next: Review Team blocker `{blocker.id}` and tell the team "
+                        "how to proceed. Full evidence and history are in that record."
+                    ),
                     "urgency": blocker.priority.value,
                     "project_id": blocker.project_id,
                     "task_id": blocker.task_id,
