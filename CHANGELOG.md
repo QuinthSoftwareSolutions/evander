@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-16 - Validate queued prompt recovery with scoped bookkeeping (0.98.1)
+
+- Check that queued ordinary and Chat prompts preserve durable reservations and concurrent edits when scoped bookkeeping reads current rows without unnecessary snapshot retries.
+
 ## 2026-10-16 - Generic SQL Server and RabbitMQ integrations (0.98.0)
 
 - Add independently installed SQL Server and RabbitMQ projects with directory-scoped registered connections, bounded data/management tools, operator pages, workflow providers and disposable resource profiles.
