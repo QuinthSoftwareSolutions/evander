@@ -35,6 +35,7 @@ class CodexAppServerProcess:
         | None = None,
         notification_handler: Callable[[str, dict[str, Any]], None] | None = None,
         stderr_handler: Callable[[str], None] | None = None,
+        drain_stderr_on_close: bool = False,
     ) -> None:
         if not command:
             raise ValueError("Codex app-server command must not be empty")
@@ -44,6 +45,7 @@ class CodexAppServerProcess:
         self.server_request_handlers = dict(server_request_handlers or {})
         self.notification_handler = notification_handler
         self.stderr_handler = stderr_handler
+        self.drain_stderr_on_close = drain_stderr_on_close
         self._process: subprocess.Popen[str] | None = None
         self.initialization_result: dict[str, Any] = {}
         self._write_lock = threading.Lock()
@@ -58,6 +60,10 @@ class CodexAppServerProcess:
     def running(self) -> bool:
         process = self._process
         return process is not None and process.poll() is None and not self._closed.is_set()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.poll() if self._process is not None else None
 
     def start(self) -> None:
         if self.running:
@@ -177,6 +183,14 @@ class CodexAppServerProcess:
                 process.kill()
                 process.wait(timeout=5)
         self._fail_pending("Codex app-server closed")
+        if (
+            self.drain_stderr_on_close
+            and self._stderr_reader is not None
+            and self._stderr_reader is not threading.current_thread()
+        ):
+            # An EOF on stdout or explicit shutdown must not discard a native
+            # crash's final stderr. Bound the wait if a descendant holds the pipe.
+            self._stderr_reader.join(timeout=2)
 
     def _write(self, payload: dict[str, Any]) -> None:
         process = self._process
@@ -217,7 +231,7 @@ class CodexAppServerProcess:
         if process is None or process.stderr is None:
             return
         for line in process.stderr:
-            if self._closed.is_set():
+            if self._closed.is_set() and not self.drain_stderr_on_close:
                 break
             if self.stderr_handler is not None:
                 self.stderr_handler(line.rstrip())

@@ -18,6 +18,37 @@ immutable bundles before atomically selecting one for future sessions. See
 [release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
 for migration, drain, retention, and rollback precautions.
 
+## Private job diagnostics
+
+Jobs can request bounded operator evidence with artifact-relative
+`metadata.private_diagnostic_paths`. The security scan add-on supplies this
+automatically. The worker collects only regular files inside that job's session
+artifacts, without following symbolic or hard links. Known authentication and
+configuration files are excluded. This metadata does not allow arbitrary host
+paths or mount the diagnostic store into containers.
+
+Evidence lives in `<worker_root>/private-job-diagnostics/<job_id>/`, with
+directories mode `0700` and files `0600`. It survives session cleanup. Inspect it
+locally on the worker using operator access; it is not returned by the worker
+logs/artifacts API or included in report archives. It may contain source code,
+tool output and native session history; do not forward it to shared channels.
+
+| Worker environment variable | Default | Meaning |
+| --- | --- | --- |
+| `EVANDER_WORKER_DIAGNOSTICS_RETENTION_DAYS` | `7` | Age limit for inactive jobs, measured from completion/last capture. |
+| `EVANDER_WORKER_DIAGNOSTICS_JOB_MIB` | `128` | Maximum private evidence bytes per job, including rotated events and copied files. |
+| `EVANDER_WORKER_DIAGNOSTICS_TOTAL_MIB` | `1024` | Maximum private evidence bytes across this worker; must be at least the per-job limit. |
+
+Configure these through the worker service environment (`evander_worker_env` in
+Ansible). Limits must be positive; the per-job budget must exceed 8 KiB.
+The worker rotates recent events, evicts oldest inactive jobs under byte pressure
+and expires inactive evidence at startup and every five minutes. In-flight jobs
+are not evicted; exhausted capacity drops evidence rather than growing without
+bound. `summary.json` records capture errors, dropped records and rotated bytes.
+Diagnostic storage failures emit only safe error classes in daemon logs and do
+not block job execution or report publication. Restart recovery copies surviving
+session evidence for interrupted brokered jobs before later session cleanup.
+
 ## Control-Plane Configuration
 
 Workers advertise `git_recovery: 1` and `git_salvage: 1` in `/healthz` capabilities.

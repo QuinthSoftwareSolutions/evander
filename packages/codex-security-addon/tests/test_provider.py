@@ -8,6 +8,7 @@ from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.security_scans import (
     SecurityScanHandle,
     SecurityScanRequest,
+    SecurityScanResult,
     SecurityScanRetryableError,
 )
 from evander_codex_security_addon import provider as implementation
@@ -82,6 +83,84 @@ def test_lost_worker_response_reuses_the_same_job_identity(launching):
     recovered = launch(provider)
     assert prepared[0].target_name == prepared[1].target_name == recovered.execution_id
     assert prepared[0].metadata["idempotent_start"] is True
+    paths = prepared[0].metadata["private_diagnostic_paths"]
+    assert "security-scans/" + "1" * 32 + "/diagnostics" in paths
+    assert "security-scans/" + "1" * 32 + "/codex-home/sessions" in paths
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_archive_publication_filters_raw_diagnostics_even_from_older_images(
+    tmp_path, monkeypatch, legacy
+):
+    scan_id = "a" * 32
+    prefix = f"security-scans/{scan_id}/"
+    provider = implementation.CodexSecurityScanProvider()
+    report_paths = [
+        prefix + "reports/scan/" + name
+        for name in ("report.md", "scan-manifest.json", "findings.json", "coverage.json")
+    ]
+    files = [
+        prefix + "result.json",
+        prefix + "target.json",
+        prefix + "scan.log",
+        prefix + "launcher.log",
+        prefix + "execution.json",
+        prefix + "diagnostics/native/sessions/rollout.jsonl",
+    ]
+    files += [prefix + "reports"] if legacy else report_paths
+    monkeypatch.setattr(provider, "_command", lambda *args: {"paths": files})
+    published = []
+
+    class Publisher:
+        def initialize(self, definition, runtime):
+            published.append(definition)
+
+        def execute(self):
+            pass
+
+    monkeypatch.setattr(implementation, "ArtifactPublishArtifactsEffectProvider", Publisher)
+    result = SecurityScanResult(
+        status="failed",
+        coverage="partial",
+        artifacts={
+            name: path
+            for name, path in zip(
+                ("report.md", "scan-manifest.json", "findings.json", "coverage.json"), report_paths
+            )
+        },
+    )
+    receipt = provider._preserve_result(
+        result,
+        SecurityScanHandle(
+            execution_id="scan-" + scan_id, metadata={"scan_id": scan_id, "session_id": "session-1"}
+        ),
+        SimpleNamespace(config_path=lambda name: tmp_path),
+    )
+    assert set(published[0].source_paths) == {
+        *report_paths,
+        prefix + "result.json",
+        prefix + "target.json",
+    }
+    assert receipt.artifacts["archive_key"] == "security-scan-" + scan_id
+
+
+def test_archive_refuses_traversal_from_worker_receipt(tmp_path, monkeypatch):
+    scan_id = "b" * 32
+    provider = implementation.CodexSecurityScanProvider()
+    monkeypatch.setattr(
+        provider,
+        "_command",
+        lambda *args: {"paths": [f"security-scans/{scan_id}/reports/../../diagnostics/report.md"]},
+    )
+    with pytest.raises(ValueError, match="Invalid security scan artifact paths"):
+        provider._preserve_result(
+            SecurityScanResult(status="failed"),
+            SecurityScanHandle(
+                execution_id="scan-" + scan_id,
+                metadata={"scan_id": scan_id, "session_id": "session-1"},
+            ),
+            SimpleNamespace(config_path=lambda name: tmp_path),
+        )
 
 
 def test_interrupted_worker_preserves_diagnostics_and_destroys_job(launching, monkeypatch):

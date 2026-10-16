@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import json
+from pathlib import Path
+import shutil
 
 import httpx
 import pytest
@@ -118,6 +121,118 @@ def test_shutdown_releases_runtime_broker(worker):
     instance._shutdown_codex_subscription_runner(record.job_id)
     assert bridge.closed
     assert record.job_id not in instance._codex_runtime_bridges
+
+
+def diagnostic_job():
+    return job().model_copy(
+        update={
+            "metadata": {
+                "idempotent_start": True,
+                "operation_kind": "security_scan",
+                "scan_id": "synthetic",
+                "private_diagnostic_paths": ["security-scans/synthetic/diagnostics"],
+            }
+        }
+    )
+
+
+def test_terminal_diagnostics_survive_session_cleanup_without_exposing_raw_data(
+    worker, monkeypatch
+):
+    instance, runtime, _ = worker
+    record = instance.start_job(diagnostic_job())
+    capture = instance._codex_runtime_bridges[record.job_id].kwargs["diagnostics"]
+    capture.event("native.stderr", {"text": "private diagnostic"})
+    history = Path(record.artifacts_path) / "security-scans/synthetic/diagnostics/rollout.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("private native history")
+    monkeypatch.setattr(
+        runtime,
+        "inspect_job",
+        lambda record: {
+            "status": "exited",
+            "exit_code": 137,
+            "oom_killed": True,
+        },
+        raising=False,
+    )
+    result = instance.inspect_job(record)
+    shutil.rmtree(instance.worker_root / "sessions" / record.session_id)
+    assert (
+        capture.directory / "files/security-scans/synthetic/diagnostics/rollout.jsonl"
+    ).read_text() == "private native history"
+    summary = json.loads((capture.directory / "summary.json").read_text())
+    assert summary["outcome"]["runtime"]["oom_killed"] is True
+    assert summary["outcome"]["runtime"]["exit_code"] == 137
+    assert "private diagnostic" not in result.model_dump_json()
+    # Polling an old job must not recreate evidence removed by retention.
+    shutil.rmtree(capture.directory)
+    instance.inspect_job(result)
+    assert not capture.directory.exists()
+
+
+def test_restart_recovers_native_history_and_previous_events(worker):
+    instance, runtime, _ = worker
+    record = instance.start_job(diagnostic_job())
+    capture = instance._codex_runtime_bridges[record.job_id].kwargs["diagnostics"]
+    capture.event("native.notification", {"threadId": "before-restart"})
+    history = Path(record.artifacts_path) / "security-scans/synthetic/diagnostics/rollout.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("before restart")
+    instance.close()
+    restarted = WorkerDaemon(
+        runtime_dir=instance.runtime_dir,
+        worker_root=instance.worker_root,
+        container_runtime=runtime,
+        codex_auth_registry=instance.codex_auth_profiles,
+    )
+    try:
+        recovered = restarted.store.get(record.job_id)
+        assert recovered.status == "failed"
+        assert "before-restart" in (capture.directory / "events.jsonl").read_text()
+        assert (
+            capture.directory / "files/security-scans/synthetic/diagnostics/rollout.jsonl"
+        ).read_text() == "before restart"
+        assert json.loads((capture.directory / "summary.json").read_text())["finished"]
+    finally:
+        restarted.close()
+
+
+def test_diagnostics_failure_does_not_block_scan_or_stop(worker, monkeypatch):
+    instance, _, _ = worker
+
+    def unavailable(*args, **kwargs):
+        raise OSError("private storage unavailable")
+
+    monkeypatch.setattr(instance._private_diagnostics, "begin", unavailable)
+    record = instance.start_job(diagnostic_job())
+    assert record.status == "running"
+    assert instance.stop_job(record).status == "stopped"
+
+
+def test_restart_captures_terminal_job_when_previous_worker_died_before_copying(worker):
+    instance, runtime, _ = worker
+    record = instance.start_job(diagnostic_job())
+    history = Path(record.artifacts_path) / "security-scans/synthetic/diagnostics/rollout.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("terminal evidence before restart")
+    record.status = "exited"
+    instance.store.put(record)
+    instance.close()
+    restarted = WorkerDaemon(
+        runtime_dir=instance.runtime_dir,
+        worker_root=instance.worker_root,
+        container_runtime=runtime,
+        codex_auth_registry=instance.codex_auth_profiles,
+    )
+    try:
+        assert restarted.store.get(record.job_id).metadata["private_diagnostics_captured_at"]
+        target = restarted.worker_root / "private-job-diagnostics" / record.job_id
+        assert (
+            target / "files/security-scans/synthetic/diagnostics/rollout.jsonl"
+        ).read_text() == "terminal evidence before restart"
+    finally:
+        restarted.close()
 
 
 def test_broker_start_failure_stops_job_and_cannot_relaunch_it(worker, monkeypatch):

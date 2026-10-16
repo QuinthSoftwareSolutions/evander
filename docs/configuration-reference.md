@@ -15,6 +15,11 @@ Deep scans require both hashes to be absent. Outputs include normalized findings
 severity counts, coverage, immutable commit IDs, and private artifact references.
 See [provider installation and operation](../packages/codex-security-addon/README.md).
 
+Security scan raw diagnostics are retained privately on container workers and
+excluded from published report archives. Worker-only retention environment
+settings and access boundaries are documented under
+[private job diagnostics](container-worker-backend.md#private-job-diagnostics).
+
 Alternative providers register a name in an add-on's `security_scan_providers`
 mapping. They implement the core `SecurityScanProvider` start/poll/cancel contract
 and return normalized `SecurityScanResult` values. Launches must reuse the supplied

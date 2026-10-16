@@ -252,9 +252,11 @@ class CodexRuntimeBridge:
         http_client,
         max_processes=12,
         process_factory=CodexAppServerProcess,
+        diagnostics=None,
     ):
         self.path = path
         self.command_factory = command_factory
+        self.diagnostics = diagnostics
         self.native_tokens = placeholder_tokens(tokens)
         self.http_relay = CodexRuntimeHttpRelay(
             path=path.with_name("models.sock"),
@@ -262,6 +264,7 @@ class CodexRuntimeBridge:
             refresh_tokens=refresh_tokens,
             client=http_client,
             max_connections=max_processes,
+            diagnostics=diagnostics,
         )
         self.process_factory = process_factory
         self.closed = threading.Event()
@@ -323,7 +326,16 @@ class CodexRuntimeBridge:
 
     def _serve(self, client):
         process = None
+        exit_code = None
         send_lock = threading.Lock()
+        connection_id = os.urandom(8).hex()
+
+        def record(event, **data):
+            if self.diagnostics is not None:
+                try:
+                    self.diagnostics.event(event, {"connection_id": connection_id, **data})
+                except Exception:
+                    pass  # Evidence collection must not interrupt execution.
 
         def send(value):
             data = (json.dumps(value) + "\n").encode()
@@ -347,10 +359,19 @@ class CodexRuntimeBridge:
                     timeout=10,
                     check=True,
                 )
+                record("runtime.version", version=result.stdout[:2000])
                 send({"stream": "stdout", "text": result.stdout})
-                send({"exit_code": 0})
+                exit_code = 0
                 return
             mode, cwd, config, model, prompt = parse_arguments(argv, cwd)
+            record(
+                "runtime.started",
+                mode=mode,
+                cwd=cwd,
+                model=model,
+                reasoning_effort=config.get("model_reasoning_effort"),
+                prompt=prompt,
+            )
             overrides = [
                 f"{key}={toml_value(value)}"
                 for key, value in config.items()
@@ -362,6 +383,13 @@ class CodexRuntimeBridge:
             thread_id = None
 
             def notification(method, params):
+                # Observe children before exec's parent-thread projection. Completed
+                # items contain the full text, so omit high-volume streaming deltas.
+                # Authentication messages are never diagnostic events.
+                if not method.endswith("/delta") and (
+                    not method.startswith("account/") or method == "account/rateLimits/updated"
+                ):
+                    record("native.notification", method=method, params=params)
                 if mode == "app-server":
                     send(
                         {
@@ -408,7 +436,8 @@ class CodexRuntimeBridge:
                 self.command_factory(env, overrides),
                 server_request_handlers={"account/chatgptAuthTokens/refresh": refresh},
                 notification_handler=notification,
-                stderr_handler=lambda line: None,
+                stderr_handler=lambda line: record("native.stderr", line=line),
+                drain_stderr_on_close=self.diagnostics is not None,
             )
             process.start()
             verify_runtime_requirements(process.request("configRequirements/read", {}))
@@ -462,6 +491,12 @@ class CodexRuntimeBridge:
                     },
                 )
                 thread_id = thread["thread"]["id"]
+                record(
+                    "runtime.thread",
+                    thread_id=thread_id,
+                    model=thread.get("model"),
+                    reasoning_effort=thread.get("reasoningEffort"),
+                )
                 send(
                     {
                         "stream": "stdout",
@@ -489,8 +524,10 @@ class CodexRuntimeBridge:
                     if select.select([client], [], [], 0)[0] and not client.recv(
                         1, socket.MSG_PEEK
                     ):
+                        record("runtime.disconnected", thread_id=thread_id)
                         return
                 ok = terminal.get("status") == "completed"
+                record("runtime.completed", thread_id=thread_id, turn=terminal, usage=usage)
                 event = (
                     {
                         "type": "turn.completed",
@@ -504,8 +541,9 @@ class CodexRuntimeBridge:
                     else {"type": "turn.failed", "error": {"message": "Brokered Codex turn failed"}}
                 )
                 send({"stream": "stdout", "text": json.dumps(event) + "\n"})
-                send({"exit_code": 0 if ok else 1})
+                exit_code = 0 if ok else 1
         except Exception as exc:
+            record("runtime.failed", exception_class=type(exc).__name__)
             # Never return native exception text: native auth failures may contain tokens.
             try:
                 send(
@@ -514,12 +552,26 @@ class CodexRuntimeBridge:
                         "text": f"Managed Codex runtime failed ({type(exc).__name__})\n",
                     }
                 )
-                send({"exit_code": 1})
+                exit_code = 1
             except OSError:
                 pass
         finally:
+            native_was_running = bool(process and process.running)
             if process:
                 process.close()
+            record(
+                "runtime.closed",
+                broker_shutdown=self.closed.is_set(),
+                native_was_running=native_was_running,
+                native_exit_code=getattr(process, "returncode", None),
+            )
+            # The runner snapshots native history upon receiving this receipt.
+            # Close/reap the native writer first so final records are flushed.
+            if exit_code is not None:
+                try:
+                    send({"exit_code": exit_code})
+                except OSError:
+                    pass
             with self.lock:
                 self.clients.discard(client)
             client.close()

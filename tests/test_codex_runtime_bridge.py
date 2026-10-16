@@ -28,6 +28,76 @@ def unused_http_client():
     )
 
 
+def test_private_diagnostics_keep_child_tools_and_failure_details_out_of_exec_frames(tmp_path):
+    from evander.worker.private_diagnostics import PrivateJobDiagnostics
+
+    store = PrivateJobDiagnostics(tmp_path / "private")
+    capture = store.begin("scan-1")
+
+    class DiagnosticProcess(NativeProcess):
+        def __init__(self, *args, stderr_handler, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.stderr = stderr_handler
+
+        def request(self, method, params):
+            if method == "turn/start":
+                self.stderr("private native warning")
+                self.notify_handler(
+                    "item/completed",
+                    {
+                        "threadId": "child-thread",
+                        "item": {
+                            "type": "commandExecution",
+                            "aggregatedOutput": "private tool output",
+                        },
+                    },
+                )
+                self.notify_handler(
+                    "thread/tokenUsage/updated",
+                    {"threadId": "child-thread", "tokenUsage": {"modelContextWindow": 128000}},
+                )
+                self.notify_handler(
+                    "turn/completed", {"threadId": "child-thread", "turn": {"status": "completed"}}
+                )
+                self.notify_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "thread-test",
+                        "turn": {
+                            "status": "failed",
+                            "error": {"message": "private terminal detail"},
+                        },
+                    },
+                )
+                return {}
+            return super().request(method, params)
+
+    tokens = CodexExternalAuthTokens("private-subscription-token", "account-1", "test")
+    bridge = CodexRuntimeBridge(
+        path=tmp_path / "broker.sock",
+        command_factory=lambda env, args: ["native"],
+        tokens=tokens,
+        refresh_tokens=lambda **kwargs: tokens,
+        http_client=unused_http_client(),
+        process_factory=DiagnosticProcess,
+        diagnostics=capture,
+    )
+    bridge.start()
+    try:
+        frames = exchange(bridge, {"argv": ["exec", "scan"], "cwd": "/home/agent"})
+        assert frames[-1] == {"exit_code": 1}
+        public = json.dumps(frames)
+        assert "private tool output" not in public and "private native warning" not in public
+        assert "private terminal detail" not in public
+        private = (capture.directory / "events.jsonl").read_text()
+        assert "private tool output" in private and "private native warning" in private
+        assert "private terminal detail" in private and "modelContextWindow" in private
+        assert tokens.access_token not in private
+    finally:
+        bridge.close()
+        store.close()
+
+
 def test_runtime_request_does_not_allow_alternate_host_paths_or_environment():
     for header in [
         {"argv": ["exec", "prompt"], "cwd": "/etc"},

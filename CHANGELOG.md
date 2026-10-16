@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-16 - Retain private security scan diagnostics (0.96.1)
+
+- Capture brokered parent and child events, native stderr, token usage, terminal errors and credential-free HTTP status/request metadata in worker-owned storage outside session artifacts.
+- Preserve bounded native history and execution outcomes before scanner cleanup; retain evidence through session deletion and worker restart, with age and size limits.
+- Publish only canonical reports and scan receipts, excluding raw diagnostics and logs from archives delivered by workflows. Diagnostic capture failures do not block scans or report delivery.
+
 ## 2026-10-15 - Resolve environment website logins in workflows (0.96.0)
 
 - Add `query:website-session:resolve-profile` to select one configured JSON login by exact browser and login API origins within the workflow directory scope. Return only readiness, profile ID and safe errors, without authenticating or decrypting credentials.
