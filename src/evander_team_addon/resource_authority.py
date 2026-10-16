@@ -23,11 +23,10 @@ class TeamResourceAuthority:
         )
         runtime = getattr(self.context.service, "runtime", None) or self.context.service
         session = runtime.policy.get_session(session_id)
-        directory = session.directory_path.as_posix()
         return Owner(
             provider="team-addon",
             key=f"{scope.team_id}:{scope.task_id}",
-            directory=directory,
+            directory=session.directory_path,
             session_id=session_id,
             reference={"task_id": scope.task_id},
             job_tags={"dispatch_id": scope.dispatch_id},
