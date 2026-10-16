@@ -42,6 +42,33 @@ _PROMPT_RECEIPT_FIELDS = {
 
 
 @dataclass(frozen=True)
+class PromptActivityRecord:
+    execution_id: str
+    idempotency_key: str
+    effect_type: str
+    status: str
+    started_at: datetime
+    completion_pending_status: str | None
+    outputs: dict[str, Any]
+    resolved_config: dict[str, Any]
+    input_payload: dict[str, Any]
+
+    @classmethod
+    def read(cls, connection, payload):
+        target_fields = ("session_id", "vm_name", "target")
+        data = load_record_projection(connection, payload, {
+            **dict.fromkeys(("execution_id", "idempotency_key", "effect_type", "status",
+                             "started_at", "completion_pending_status")),
+            **dict.fromkeys(("outputs", "resolved_config", "input_payload"), target_fields),
+        })
+        data["started_at"] = datetime.fromisoformat(data["started_at"])
+        data.setdefault("completion_pending_status", None)
+        for field in ("outputs", "resolved_config", "input_payload"):
+            data.setdefault(field, {})
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class PromptLifecycleReceipt:
     execution_id: str
     effect_type: str
@@ -457,6 +484,21 @@ class SqliteExecutionRepository(Generic[TRecord]):
     def list_prompt_lifecycle_receipts(self, dispatch_ids: set[str]) -> list[PromptLifecycleReceipt]:
         """Internal receipt projection; no prompt/configuration payload hydration."""
         return self._prompt_records_for_dispatches(dispatch_ids, lifecycle_only=True)
+
+    def list_agent_prompt_activity_records(self) -> list[PromptActivityRecord]:
+        """Read operational prompt owners without history or shared writer locks."""
+        if self.table_name != "effect_executions":
+            return []
+        with connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                """SELECT payload_json FROM effect_executions
+                   INDEXED BY idx_effect_executions_status_type
+                   WHERE status IN ('running', 'waiting', 'completion_pending')
+                     AND effect_type='effect:agent:enqueue-prompt'
+                     AND dismissed_at IS NULL"""
+            ).fetchall()
+            return [PromptActivityRecord.read(connection, row["payload_json"]) for row in rows]
 
     def _prompt_records_for_dispatches(
         self, dispatch_ids: set[str], *, lifecycle_only: bool,

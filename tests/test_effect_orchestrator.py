@@ -543,10 +543,13 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
 
 
 def _run_until_effect_statuses(
-    worker: EffectOrchestratorWorker, expected: dict[str, str], *, timeout: float = 5.0
+    worker: EffectOrchestratorWorker, expected: dict[str, str], *, timeout: float = 5.0,
+    force_recovery: bool = False,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if force_recovery:
+            worker._recovery_schedule.next_due = 0
         worker.run_once()
         statuses = {
             record.effect_id: record.status
@@ -10559,14 +10562,11 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
         ],
     )
 
-    for _ in range(6):
-        worker._recovery_schedule.next_due = 0
-        worker.run_once()
-
-    effect_payload = effect_execution_payload(worker_config)
-    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
-    assert by_effect["effect-1"]["status"] == "succeeded"
-    assert by_effect["effect-2"]["status"] == "succeeded"
+    # Completion publication and backoff are asynchronous; a fixed tick count
+    # can finish before a legitimate storage retry delivers the successor.
+    _run_until_effect_statuses(
+        worker, {"effect-1": "succeeded", "effect-2": "succeeded"}, force_recovery=True,
+    )
 
 
 def test_waiting_agent_prompt_reconciliation_skips_and_retries_when_inventory_fails(

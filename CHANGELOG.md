@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16 - Keep Team session activity checks out of execution history (0.98.2)
+
+- Check active prompt ownership through the existing status/type index and a lightweight target projection, avoiding retained failure history and the shared execution repository lock during Team wake planning.
+- Preserve pending-completion status, session/VM/target evidence, FIFO admission and prompt-lock ownership rules for legacy and encoded payloads.
+
 ## 2026-10-16 - Validate queued prompt recovery with scoped bookkeeping (0.98.1)
 
 - Check that queued ordinary and Chat prompts preserve durable reservations and concurrent edits when scoped bookkeeping reads current rows without unnecessary snapshot retries.
