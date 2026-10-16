@@ -2010,8 +2010,13 @@ def test_mark_release_published_ignores_conflicting_late_result_for_accepted_rel
     assert release.published_at == published_at
 
 
+@pytest.mark.parametrize(
+    ("lineage_predecessor", "publish_success"), [(False, True), (True, False), (True, True)]
+)
 def test_mark_release_published_supersedes_older_blocked_duplicate(
     tmp_path: Path,
+    lineage_predecessor: bool,
+    publish_success: bool,
 ) -> None:
     repo = _seed_team(tmp_path)
     _seed_publishable_release(repo)
@@ -2021,7 +2026,7 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
         state.release_packages["release-old"] = ReleasePackage(
             id="release-old",
             project_id="project",
-            deliverable_ids=list(current.deliverable_ids),
+            deliverable_ids=[] if lineage_predecessor else list(current.deliverable_ids),
             release_branch="team/team/releases/release-old",
             git_promotion_record_ids=["promotion-release-old"],
             policy_version=2,
@@ -2031,6 +2036,17 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
             created_at=current.created_at - timedelta(minutes=1),
         )
         state.projects["project"].status = ProjectStatus.BLOCKED
+        if lineage_predecessor:
+            current.supersedes_release_package_id = "release-old"
+            state.blockers["blocked-predecessor"] = TeamBlocker(
+                id="blocked-predecessor",
+                team_id="team",
+                project_id="project",
+                source_kind="release_package",
+                source_id="release-old",
+                owner_agent_id="lead",
+                summary="Failed predecessor verification",
+            )
         state.inbox["inbox-release-old"] = AgentInboxItem(
             id="inbox-release-old",
             recipient_agent_id="lead",
@@ -2067,10 +2083,17 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
     result = _mark_release_provider(
         tmp_path,
         release_package_id="release-1",
-        success=True,
+        success=publish_success,
         canonical_branch="releases/project/release-1",
         published_commit_sha="cafef00d",
     )
+
+    if not publish_success:
+        state = repo.read()
+        assert state.release_packages["release-old"].state == TeamRecordState.BLOCKED
+        assert state.blockers["blocked-predecessor"].state.value == "open"
+        assert result["superseded_release_package_ids"] == []
+        return
 
     assert result["success"] is True
     assert result["superseded_release_package_ids"] == ["release-old"]
@@ -2081,6 +2104,9 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
     state = repo.read()
     assert state.release_packages["release-old"].state == TeamRecordState.REJECTED
     assert state.release_packages["release-old"].error is None
+    if lineage_predecessor:
+        assert state.blockers["blocked-predecessor"].state.value == "resolved"
+        assert "blocked-predecessor" in result["resolved_blocker_ids"]
     assert state.inbox["inbox-release-old"].state == TeamInboxItemState.HANDLED
     assert state.inbox["inbox-promotion-old"].state == TeamInboxItemState.HANDLED
     assert state.projects["project"].status != ProjectStatus.BLOCKED

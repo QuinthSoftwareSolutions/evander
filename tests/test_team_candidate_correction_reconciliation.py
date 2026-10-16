@@ -24,10 +24,15 @@ from evander_team_addon.models import (
     ProjectGitConfig,
     ProjectReleasePolicy,
     ReleaseCandidateManifest,
+    ReleaseCandidateDeliverableEvidence,
     ReleaseGateFailure,
     ReleasePackage,
+    ReleaseReviewRequirement,
+    ReleaseVerificationCommand,
+    ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
     ReviewRequest,
+    ReviewProfile,
     ReviewRepositorySnapshot,
     Team,
     TeamBlocker,
@@ -59,6 +64,7 @@ from evander_team_addon.services.domain.release_packages import (
 )
 from evander_team_addon.services.domain.task_assessment import assess_task
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
@@ -378,6 +384,217 @@ def test_independent_exact_base_remediation_auto_joins_release_lineage() -> None
     assert successor.supersedes_release_package_id == "release-predecessor"
     assert successor.lineage_root_release_package_id == "release-predecessor"
     assert successor.lineage_sequence == 1
+
+
+def _command_blocked_source_correction_state(*, producer_base: bool = False) -> TeamState:
+    state = _candidate_correction_state(gate_kind="verification")
+    predecessor = state.release_packages["release-predecessor"]
+    command = ReleaseVerificationCommand(
+        name="Unit tests", argv=["python3", "-m", "pytest"], command_failure_action="block"
+    )
+    predecessor.state = TeamRecordState.BLOCKED
+    predecessor.gate_failure.kind = "blocked"
+    predecessor.manifest.verification_commands = [command]
+    run = state.release_verification_runs["verification-run"]
+    run.failure_kind = "command"
+    run.correction_task_id = None
+    run.command_results = [
+        ReleaseVerificationCommandResult(
+            name="Unit tests", state="failed", failure_kind="command", exit_code=1
+        )
+    ]
+    state.projects["project"].release_policy = ProjectReleasePolicy(
+        verification_commands=[command],
+        review_requirements=[
+            ReleaseReviewRequirement(
+                reviewer_agent_id="reviewer", review_profile_id="release-review"
+            )
+        ],
+    )
+    state.review_profiles["release-review"] = ReviewProfile(
+        id="release-review", team_id="team", project_id="project", name="Release review"
+    )
+    state.blockers["blocked-verification"] = TeamBlocker(
+        id="blocked-verification",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=predecessor.id,
+        owner_agent_id="lead",
+        summary="Unit-test verification failed",
+    )
+    remediation = _independent_remediation(state)
+    if producer_base:
+        original = state.deliverables["correction-deliverable"]
+        original.git_refs.commit_sha = CANDIDATE_COMMIT
+        original.git_refs.submitted_commit_sha = CANDIDATE_COMMIT
+        original.review_manifest.reviewed_commit_sha = CANDIDATE_COMMIT
+        state.review_requests["correction-review"].reviewed_commit_sha = CANDIDATE_COMMIT
+        predecessor.deliverable_ids = [original.id]
+        predecessor.manifest.deliverables = [
+            ReleaseCandidateDeliverableEvidence(
+                deliverable_id=original.id,
+                review_manifest=original.review_manifest.model_copy(deep=True),
+            )
+        ]
+        state.tasks[remediation.task_id].git_base_branch = original.git_refs.agent_branch
+    return state
+
+
+@pytest.mark.parametrize("producer_base", [False, True])
+def test_command_blocked_source_correction_preserves_lineage_and_reruns_gates(
+    tmp_path: Path,
+    producer_base: bool,
+) -> None:
+    seeded = _command_blocked_source_correction_state(producer_base=producer_base)
+    seeded.deliverables["independent-remediation-deliverable"].review_manifest = None
+    repository = TeamStateRepository(tmp_path)
+    before = repository.update(lambda _state: seeded, expected_revision=0)
+    original_run = before.release_verification_runs["verification-run"].model_copy(deep=True)
+    admin = TeamAdminService(repository)
+
+    state, created = admin.create_release_package_with_result(
+        project_id="project",
+        deliverable_ids=["independent-remediation-deliverable"],
+        release_id="release-source-correction",
+        expected_revision=before.revision,
+    )
+    successor = state.release_packages[created["release_package_ids"][0]]
+    assert successor.supersedes_release_package_id == "release-predecessor"
+    assert successor.lineage_root_release_package_id == "release-predecessor"
+    assert successor.base_commit_sha == CANDIDATE_COMMIT
+    assert successor.verification_waivers == []
+    promotion = state.git_promotions[successor.git_promotion_record_ids[0]]
+    assert [state.git_promotions[i].promotion_kind for i in successor.git_promotion_record_ids] == [
+        "correction_aggregate"
+    ]
+    assert promotion.base_commit_sha == CANDIDATE_COMMIT
+    assert promotion.sources[0].expected_commit_sha == RECOVERY_COMMIT
+    assert state.blockers["blocked-verification"].state == TeamBlockerState.OPEN
+
+    outbox_before_retry = repository.list_outbox_records()
+    with pytest.raises(ValueError, match="already has successor release package"):
+        admin.retry_release_gate_with_result(
+            release_package_id="release-predecessor",
+            gate_kind="verification",
+            gate_id="verification-run",
+            reason="Retry after creating the reviewed correction successor.",
+            operator_actor_id="operator:test",
+            expected_revision=state.revision,
+        )
+    assert TeamStateRepository(tmp_path).read() == state
+    assert repository.list_outbox_records() == outbox_before_retry
+
+    source = state.deliverables["independent-remediation-deliverable"]
+    state, _ = TeamGitReleaseService(repository).record_git_promotion_result(
+        promotion_id=promotion.id,
+        commit_sha=RECOVERY_COMMIT,
+        outputs={
+            "base_commit_sha": CANDIDATE_COMMIT,
+            "tree_hash": "b" * 40,
+            "source_manifests": {
+                source.git_refs.agent_branch: {
+                    "base_commit_sha": CANDIDATE_COMMIT,
+                    "reviewed_commit_sha": RECOVERY_COMMIT,
+                    "tree_hash": "b" * 40,
+                    "commit_shas": [RECOVERY_COMMIT],
+                    "changed_paths": ["M\tsrc/IndependentRemediation.cs"],
+                }
+            },
+        },
+        expected_revision=state.revision,
+    )
+    successor = state.release_packages[successor.id]
+    release_promotion = next(
+        state.git_promotions[i]
+        for i in successor.git_promotion_record_ids
+        if state.git_promotions[i].promotion_kind == "release"
+    )
+    state, _ = TeamGitReleaseService(repository).record_git_promotion_result(
+        promotion_id=release_promotion.id,
+        commit_sha=RECOVERY_COMMIT,
+        outputs={"base_commit_sha": CANDIDATE_COMMIT, "tree_hash": "b" * 40},
+        expected_revision=state.revision,
+    )
+    reloaded = TeamStateRepository(tmp_path).read()
+    successor = reloaded.release_packages[successor.id]
+    assert successor.candidate_commit_sha == RECOVERY_COMMIT
+    assert successor.manifest.verification_commands[0].command_failure_action == "block"
+    assert len(successor.verification_run_ids) == 1
+    fresh_run = reloaded.release_verification_runs[successor.verification_run_ids[0]]
+    assert fresh_run.state == "pending"
+    assert fresh_run.candidate_commit_sha == RECOVERY_COMMIT
+    assert [c.state for c in fresh_run.command_results] == ["pending"]
+    assert successor.review_request_ids == []
+    state, _ = TeamReleaseGateService(repository).record_verification_result(
+        release_package_id=successor.id,
+        verification_run_id=fresh_run.id,
+        candidate_commit_sha=RECOVERY_COMMIT,
+        verification_state="passed",
+        command_results=[{"name": "Unit tests", "state": "passed", "exit_code": 0}],
+    )
+    successor = state.release_packages[successor.id]
+    assert len(successor.review_request_ids) == 1
+    assert state.review_requests[successor.review_request_ids[0]].state == TeamRecordState.PENDING
+    assert reloaded.release_verification_runs["verification-run"] == original_run
+    assert reloaded.blockers["blocked-verification"].state == TeamBlockerState.OPEN
+    assert reloaded.release_packages["release-predecessor"].state == TeamRecordState.BLOCKED
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "infrastructure",
+        "retry-in-progress",
+        "policy",
+        "unreviewed",
+        "unchanged",
+        "base",
+        "producer",
+    ],
+)
+def test_command_blocked_successor_rejects_invalid_source_or_failure(
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    state = _command_blocked_source_correction_state()
+    run = state.release_verification_runs["verification-run"]
+    correction = state.deliverables["independent-remediation-deliverable"]
+    predecessor = state.release_packages["release-predecessor"]
+    if invalid == "infrastructure":
+        run.failure_kind = "infrastructure"
+    elif invalid == "policy":
+        predecessor.manifest.verification_commands[0].command_failure_action = "correction"
+    elif invalid == "unreviewed":
+        state.review_requests["independent-remediation-review"].state = TeamRecordState.PENDING
+    elif invalid == "unchanged":
+        correction.review_manifest.tree_hash = predecessor.candidate_tree_hash
+    elif invalid == "base":
+        correction.review_manifest.base_commit_sha = "f" * 40
+    elif invalid == "producer":
+        state.tasks[correction.task_id].git_base_branch = "agents/other/unrelated"
+    repository = TeamStateRepository(tmp_path)
+    before = repository.update(lambda _state: state, expected_revision=0)
+    if invalid == "retry-in-progress":
+        before, _ = TeamAdminService(repository).retry_release_gate_with_result(
+            release_package_id=predecessor.id,
+            gate_kind="verification",
+            gate_id=run.id,
+            reason="The operator restored the environment prerequisite.",
+            operator_actor_id="operator:test",
+            expected_revision=before.revision,
+        )
+
+    with pytest.raises(ValueError):
+        TeamAdminService(repository).create_release_package_with_result(
+            project_id="project",
+            deliverable_ids=[correction.id],
+            release_id="invalid-successor",
+            supersedes_release_package_id=predecessor.id,
+            expected_revision=before.revision,
+        )
+
+    assert repository.read() == before
 
 
 def test_source_deliverable_evidence_does_not_imply_correction_lineage() -> None:

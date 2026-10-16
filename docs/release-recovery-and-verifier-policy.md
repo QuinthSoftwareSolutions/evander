@@ -85,6 +85,23 @@ After repairing the prerequisite, an operator can use **Retry verification
 gate** to create another attempt for the same frozen candidate. This retry requires
 privileged operations unlocked and a reason; agents cannot retry command-blocked gates.
 
+When assessment instead establishes a source defect, keep the blocked candidate
+and failed run intact. Create a correction task pinned to that exact candidate,
+submit changed Git work, and complete normal deliverable review and acceptance.
+Then request a successor with `team_request_release`, supplying the accepted
+correction deliverable and `supersedes_release_package_id`. The current failed
+run must match the frozen command's `block` policy. Infrastructure, timeout,
+review and unrelated blocks do not authorize this source-correction route.
+
+The task can use the release branch or the accepted producer branch recorded in
+the candidate's evidence, always pinned to the exact candidate commit. The
+successor preserves the existing lineage and uses immutable correction
+aggregation; it runs normal release reviews and verification for the changed
+candidate. The predecessor's blocker stays open until successful publication of
+its successor. Once a successor exists, retries of the predecessor's gates are
+rejected; continue recovery on the successor. No waiver, unchanged-source retry
+or new unrelated lineage is needed.
+
 For `result_protocol: "json-v1"`, the platform supplies
 `EVANDER_VERIFICATION_CANDIDATE_SHA` and `EVANDER_VERIFICATION_BASE_SHA` from the
 frozen manifest. The configured evaluator must emit exactly one stdout line:
