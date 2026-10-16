@@ -294,6 +294,17 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path):
         assert (
             docker(
                 "exec",
+                names[0],
+                "python3",
+                "-c",
+                "import os,sys; print(os.access(os.path.dirname(sys.argv[1]), os.W_OK))",
+                value["config_path"],
+            )
+            == "False"
+        )
+        assert (
+            docker(
+                "exec",
                 names[1],
                 "python3",
                 "-c",
@@ -309,6 +320,54 @@ def test_native_private_job_binding_rebind_and_reaping(tmp_path):
         changed.owner.key = "foreign-task"
         with pytest.raises(ResourceError):
             service.ensure(changed)
+        # Simulate junk left by the legacy job-writable delivery protocol. The
+        # capless root helper cannot traverse this job-owned mode-000 directory.
+        docker(
+            "exec",
+            "--user",
+            "0:0",
+            names[0],
+            "python3",
+            "-c",
+            "import os,sys; os.chmod(os.path.dirname(sys.argv[1]), 0o733)",
+            value["config_path"],
+        )
+        docker(
+            "exec",
+            names[0],
+            "python3",
+            "-c",
+            "import os,sys; p=os.path.dirname(sys.argv[1]); open(p+'/connection.new','w').write('old-private'); open('/tmp/keep','w').write('unrelated'); os.symlink('/tmp/keep',p+'/link'); os.mkdir(p+'/blocked',0o700); open(p+'/blocked/junk','w').write('job-owned'); os.chmod(p+'/blocked',0)",
+            value["config_path"],
+        )
+        bound = service.store.get(lease.lease_id)
+        bound.owner.valid_until = time.time() - 1
+        service.store.put(bound)
+        provision = adapter.provision
+        attempts = []
+
+        def unavailable(*args):
+            attempts.append(True)
+            raise OSError("Provider unavailable")
+
+        adapter.provision = unavailable
+        service.tick()
+        assert not attempts and not rules
+        assert jobs.inspect(records[0].container_id)["State"]["Running"]
+        assert service.store.get(lease.lease_id).config_path is None
+        assert (
+            docker(
+                "exec",
+                names[0],
+                "python3",
+                "-c",
+                "import os,sys; assert not os.path.exists(os.path.dirname(sys.argv[1])); assert open('/tmp/keep').read()=='unrelated'; print('withdrawn')",
+                value["config_path"],
+            )
+            == "withdrawn"
+        )
+        adapter.provision = provision
+        assert service.ensure(lease)["state"] == "ready"
         docker("stop", names[0])
         records[0].status = "exited"
         jobs_store.put(records[0])

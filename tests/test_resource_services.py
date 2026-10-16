@@ -745,7 +745,7 @@ def test_network_withdrawal_keeps_intent_until_actual_rule_absence(
         },
     )
     store.put(lease)
-    with pytest.raises(ResourceError, match="network grant removal"):
+    with pytest.raises(ResourceError, match="cleanup is incomplete"):
         bindings.unbind(lease, lambda: store.put(lease))
     retained = Store(store.root).get(lease.lease_id)
     assert retained.bound_job_id == "job-a" and retained.job_binding["rules"]
@@ -772,3 +772,244 @@ def test_authorized_workflow_data_activity_refreshes_authority_and_idle_deadline
     assert domain.reconcile(lease["lease_id"])["state"] == "ready"
     clock[0] = 1300
     assert domain.get(current, lease["lease_id"])["expires_at"] == 8400
+
+
+@pytest.mark.parametrize("change", ["ended", "expired", "replaced", "unknown"])
+def test_worker_withdraws_obsolete_job_access_before_unavailable_provider(
+    tmp_path, monkeypatch, change
+):
+    from evander.resources.jobs import Jobs as JobBindings
+
+    clock = [1000]
+    monkeypatch.setattr("evander.resources.jobs.time.time", lambda: clock[0])
+    records = [
+        SimpleNamespace(job_id="job-a", status="running", metadata={}, container_id="container-a")
+    ]
+    actual = JobBindings(
+        "sample-addon",
+        tmp_path / "jobs.db",
+        jobs=SimpleNamespace(list_by_session=lambda _: records),
+    )
+    monkeypatch.setattr(
+        actual,
+        "inspect",
+        lambda container: {"Id": container, "State": {"Running": True}},
+    )
+    jobs = Jobs()
+    jobs.current = actual.current
+    adapter = Adapter()
+    service = WorkerService(
+        "sample-addon",
+        WorkerSettings(
+            runtime_dir=str(tmp_path / "resource"),
+            worker_id="worker-a",
+            token_env="TEST_TOKEN",
+            allocations_enabled=True,
+            connections={"local": {}},
+        ),
+        adapter,
+        jobs=jobs,
+        now=lambda: clock[0],
+    )
+    lease = Lease(
+        lease_id="rs-" + "a" * 32,
+        owner=Owner(key="session-a", session_id="session-a", directory="root", valid_until=1100),
+        profile_id="test",
+        profile=Profile(connection_id="local", worker_id="worker-a"),
+        created_at=1000,
+        expires_at=8200,
+    )
+    assert service.ensure(lease)["state"] == "ready"
+    assert jobs.bound is not None
+    if change == "ended":
+        records[0].status = "completed"
+    elif change == "expired":
+        # The container is still running, but its ownership authority has expired.
+        clock[0] = 1101
+    elif change == "replaced":
+        records[0].job_id, records[0].container_id = "job-b", "container-b"
+    else:
+        monkeypatch.setattr(actual, "inspect", lambda _: (_ for _ in ()).throw(OSError()))
+    provider_attempts = []
+
+    def unavailable(*args):
+        provider_attempts.append(True)
+        assert jobs.bound is None
+        raise OSError("provider offline")
+
+    monkeypatch.setattr(adapter, "provision", unavailable)
+    service.store = Store(service.store.root)
+    service.tick()
+    retained = Store(service.store.root).get(lease.lease_id)
+    assert jobs.bound is None and retained.bound_job_id is None and retained.config_path is None
+    # No provider I/O is needed merely to discover a missing or expired job.
+    assert bool(provider_attempts) == (change == "replaced")
+
+
+def test_worker_release_cleans_provider_despite_local_cleanup_failure(tmp_path):
+    jobs, adapter = Jobs(), Adapter()
+    service = WorkerService(
+        "sample-addon",
+        WorkerSettings(
+            runtime_dir=str(tmp_path),
+            worker_id="worker-a",
+            token_env="TEST_TOKEN",
+            allocations_enabled=True,
+            connections={"local": {}},
+        ),
+        adapter,
+        jobs=jobs,
+        now=lambda: 1000,
+    )
+    lease = Lease(
+        lease_id="rs-" + "b" * 32,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(connection_id="local", worker_id="worker-a"),
+        created_at=1000,
+        expires_at=8200,
+    )
+    assert service.ensure(lease)["state"] == "ready"
+    original = jobs.unbind
+    jobs.unbind = lambda *args: (_ for _ in ()).throw(ResourceError("file cleanup failed"))
+    lease.operation = {"id": "release-one", "kind": "release", "arguments": {}}
+    assert service.ensure(lease)["state"] == "cleanup_failed"
+    assert not adapter.resources
+    retained = Store(service.store.root).get(lease.lease_id)
+    assert retained.operation["id"] == "release-one" and retained.bound_job_id == "job-a"
+    jobs.unbind = original
+    service.tick()
+    final = Store(service.store.root).get(lease.lease_id)
+    assert final.state == "released" and final.bound_job_id is None and jobs.bound is None
+
+
+@pytest.mark.parametrize("failure", ["files", "network", "docker"])
+def test_worker_withdrawal_steps_are_independent_and_retryable(tmp_path, monkeypatch, failure):
+    import subprocess
+    from evander.resources.jobs import Jobs as JobBindings
+    from evander.resources.projection import UNPROJECT
+
+    calls, rules = (
+        [],
+        [["-s", "192.0.2.10/32", "-j", "ACCEPT"], ["-s", "192.0.2.11/32", "-j", "ACCEPT"]],
+    )
+    existing, broken, attached = list(rules), [True], [True]
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[0] == "iptables":
+            rule = args[5:]
+            if args[3] == "-D":
+                existing.remove(rule)
+            code = 0 if args[3] == "-D" or rule in existing else 1
+        elif args[1:3] == ["network", "disconnect"]:
+            code = int(broken[0] and failure == "network")
+            if not code:
+                attached[0] = False
+        else:
+            assert args[1] == "exec" and UNPROJECT in args
+            code = int(broken[0] and failure == "files")
+        return subprocess.CompletedProcess(args, code, stdout=b"", stderr=b"")
+
+    bindings = JobBindings("sample-addon", tmp_path / "jobs.db", run=run)
+
+    def inspect(_):
+        if broken[0] and failure == "docker":
+            raise ResourceError("Docker unavailable")
+        return {
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {"test-net": {}} if attached[0] else {}},
+        }
+
+    monkeypatch.setattr(bindings, "inspect", inspect)
+    store = Store(tmp_path / "journal")
+    lease = Lease(
+        lease_id="rs-" + "c" * 32,
+        owner=owner(),
+        profile_id="p",
+        profile=Profile(),
+        created_at=1000,
+        expires_at=8200,
+        bound_job_id="job-a",
+        config_path="/tmp/private",
+        job_binding={
+            "container_id": "job-container",
+            "base": "/tmp/evander-sample-addon",
+            "network": "test-net",
+            "rules": rules,
+        },
+    )
+    with pytest.raises(ResourceError, match="cleanup is incomplete"):
+        bindings.unbind(lease, lambda: store.put(lease))
+    retained = Store(store.root).get(lease.lease_id)
+    assert not existing and retained.job_binding["rules"] == []
+    assert calls[0][0] == "iptables"
+    if failure != "docker":
+        assert any(UNPROJECT in call for call in calls)
+        assert any(call[1:3] == ["network", "disconnect"] for call in calls)
+    if failure == "files":
+        assert not attached[0]
+    broken[0] = False
+    bindings.unbind(retained, lambda: store.put(retained))
+    final = Store(store.root).get(lease.lease_id)
+    assert not attached[0] and final.job_binding == {} and final.bound_job_id is None
+
+
+def test_resource_query_uses_factory_trace_through_real_workflow_executor(domain):
+    from evander.events.models import WorkflowNodeEnvelope
+    from evander.provider_config import QueryProviderConfig
+    from evander.queries.registry import QueryProviderFactory, QueryProviderRegistry
+    from evander.resources.providers import register_providers
+    from evander.workflow.engine.node_executors import ProviderQueryNodeExecutor
+
+    revision, settings = domain.store.settings("root")
+    settings.workflow_operations = ["discover", "inspect", "get"]
+    domain.store.save_settings("root", revision, settings, "operator")
+    registration = register_providers(lambda _: domain, "sample", {"inspect"}, {"write"})
+    executor = ProviderQueryNodeExecutor(
+        QueryProviderFactory(
+            provider_config_resolver=SimpleNamespace(
+                resolve_query_provider_config=lambda _: QueryProviderConfig(
+                    runtime_dir=domain.context.runtime_dir
+                )
+            ),
+            registry=QueryProviderRegistry(registration.query_providers),
+        )
+    )
+    discovered = []
+    domain.discover = lambda owner: discovered.append(owner) or {"profile_ids": ["test"]}
+    query = WorkflowNodeEnvelope(
+        id="read", display_name="Read", type="query:sample:read", config={}
+    )
+    graph = {"graph_id": "graph-one", "directory_path": "root"}
+    assert executor.execute(
+        query=query, graph_metadata=graph, execution_context={"workflow_run_id": "run-one"}
+    ) == {"result": {"profile_ids": ["test"]}}
+    assert discovered[0].key == "graph-one:run-one" and discovered[0].directory == "root"
+    # Inspect uses the same trusted metadata even though execute receives only config.
+    seen = []
+    domain.call = lambda owner, *args: seen.append(owner) or {"ok": True}
+    assert executor.execute(
+        query=query,
+        resolved_config={"operation": "inspect", "connection_id": "local"},
+        graph_metadata=graph,
+        execution_context={"trace_id": "run-two"},
+    ) == {"result": {"ok": True}}
+    assert seen[0].key == "graph-one:run-two"
+    with pytest.raises(ResourceError, match="trusted"):
+        executor.execute(
+            query=query,
+            graph_metadata=graph,
+            resolved_config={"arguments": {"trace_id": "untrusted"}},
+        )
+    # A known lease owned by another run must still be rejected at the domain boundary.
+    lease = domain.acquire(
+        Owner(provider="workflow", key="other:run", directory="root"), "test", "other"
+    )
+    with pytest.raises(ResourceError, match="scope"):
+        executor.execute(
+            query=query,
+            resolved_config={"operation": "get", "arguments": {"lease_id": lease["lease_id"]}},
+            graph_metadata=graph,
+            execution_context={"trace_id": "run-one"},
+        )

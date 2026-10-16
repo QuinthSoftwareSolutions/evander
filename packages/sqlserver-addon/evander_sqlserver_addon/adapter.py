@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import date, datetime, time
+from decimal import Decimal
 from contextlib import contextmanager
 import secrets
 from threading import Timer
@@ -208,6 +210,26 @@ class Adapter:
         size = len(json.dumps({"columns": columns, "rows": [], "truncated": False}).encode())
         if size > config.max_bytes:
             raise ResourceError("SQL result metadata exceeds the configured byte limit")
+        # ODBC's declared column sizes bound a complete row before SQLGetData
+        # materializes any cell. MAX/XML/unknown columns must be CAST by the
+        # caller on the server; a session SET TEXTSIZE is not an enforceable cap.
+        row_bound = 2
+        fixed = {bool: 5, int: 22, float: 32, Decimal: 64, date: 32, datetime: 64, time: 48}
+        for column in cursor.description:
+            kind = column[1] if len(column) > 1 else None
+            declared = column[3] if len(column) > 3 else None
+            if kind in fixed:
+                row_bound += fixed[kind] + 1
+            elif kind in {str, bytes} and type(declared) is int and declared > 0:
+                row_bound += (12 * declared if kind is str else 4 * ((declared + 2) // 3)) + 3
+            else:
+                raise ResourceError(
+                    "SQL result column has no safe size bound; explicitly CAST it to a bounded type"
+                )
+            if row_bound > config.max_bytes - size:
+                raise ResourceError(
+                    "SQL result row may exceed max_bytes; explicitly CAST large columns to bounded types"
+                )
         limit = min(maximum, config.max_rows)
         truncated = False
         for _ in range(limit + 1):

@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from evander_sqlserver_addon.adapter import Adapter, Options, ident
+from evander_sqlserver_addon.adapter import Adapter, Connection, Options, ident
 from evander.resources.models import Lease, Owner, Profile, ResourceError
 
 
@@ -19,7 +19,7 @@ def test_identifiers_are_quoted_and_aliases_are_configurable():
 class Cursor:
     def __init__(self):
         self.calls = []
-        self.description = [("value",)]
+        self.description = [("value", int, None, 10, 10, 0, True)]
         self.rows = iter([(1,), (2,), (3,)])
 
     def execute(self, *args):
@@ -128,3 +128,46 @@ def test_private_sql_connections_use_application_address_and_never_admin():
     value = Adapter().private_connections(lease)["app"]
     assert value["host"] == "192.0.2.1" and value["username"] == "lease-user"
     assert "192.0.2.1" in value["connection_string"]
+
+
+@pytest.mark.parametrize(
+    "kind, declared", [(str, 8_388_608), (bytes, 8_388_608), (str, 0), (bytes, -1), (object, 32)]
+)
+def test_sql_rejects_unsafe_columns_before_fetching_cells(kind, declared):
+    class UnsafeCursor:
+        description = [("payload", kind, None, declared, declared, 0, True)]
+
+        def fetchone(self):
+            pytest.fail("Oversized or unknown columns must never be materialized")
+
+    with pytest.raises(ResourceError, match="explicitly CAST"):
+        Adapter().results(
+            UnsafeCursor(), Connection(host="sql.example.invalid", max_bytes=1024), 10
+        )
+
+
+def test_sql_bounds_a_whole_row_before_fetch_and_encodes_bounded_binary_unicode():
+    class BoundedCursor:
+        description = [
+            ("text", str, None, 32, 32, 0, True),
+            ("binary", bytes, None, 32, 32, 0, True),
+        ]
+        rows = iter([("\U0001f600" * 32, b"\xff" * 32)])
+
+        def fetchone(self):
+            return next(self.rows, None)
+
+    adapter, config = Adapter(), Connection(host="sql.example.invalid", max_bytes=1024)
+    result = adapter.results(BoundedCursor(), config, 10)
+    assert result["rows"] == [["\U0001f600" * 32, "/" * 42 + "8="]]
+    assert not result["truncated"]
+
+    class WideCursor:
+        # Each column fits individually; their combined declared sizes do not.
+        description = [(name, str, None, 64, 64, 0, True) for name in ("a", "b")]
+
+        def fetchone(self):
+            pytest.fail("An oversized complete row must never be materialized")
+
+    with pytest.raises(ResourceError, match="explicitly CAST"):
+        adapter.results(WideCursor(), config, 10)

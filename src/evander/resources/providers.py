@@ -99,7 +99,7 @@ def register_providers(service_factory, prefix, read_operations, write_operation
             return {"result": domain.reconcile(lease.lease_id)}
         if operation not in settings.workflow_operations:
             raise ResourceError("Workflow operation is not enabled in this directory")
-        execution_context = execution_context or {}
+        execution_context = {**context.metadata, **(execution_context or {})}
         trace = execution_context.get("trace_id") or execution_context.get("workflow_run_id")
         graph_id = execution_context.get("graph_id") or context.metadata.get("graph_id")
         if not trace or not graph_id:

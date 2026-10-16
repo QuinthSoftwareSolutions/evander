@@ -28,6 +28,8 @@ Workflow queries use `query:sqlserver:read`; mutations use `effect:sqlserver:ope
 
 Uncertain SQL writes are journaled before dispatch and are never replayed automatically. Repeating the same request ID returns its recorded disposition. Inspect actual provider state and create an explicit new request only after deciding the outcome. Lifecycle creation and cleanup reconcile their owned resources idempotently. Reset and broker control require ready resources and a live job for worker resources.
 
+SQL results are limited by rows, bytes and query timeout. Before retrieving a row, the add-on checks the driver's declared column types and sizes against the byte limit. Unbounded types such as `varchar(max)`, `nvarchar(max)`, `varbinary(max)` and XML, and rows whose declared sizes exceed the limit, are rejected before their values are fetched. Use explicit server-side casts such as `CAST(payload AS nvarchar(128))` to select a bounded preview. This may reject a wide declared column even when its current value is short; raising `max_bytes` within the supported limit or selecting narrower columns is an explicit operator/caller choice.
+
 ## Migration and rollout
 
 Upgrade Test Fixtures to its drain-capable release. Generate a read-only preview with its `evander-test-fixtures-migrate preview` command, supplying the current control-plane settings and every worker configuration. Preserve actual endpoints, scope and image digests; confirm the suggested new API origins. The preview enables neither allocation nor production operations. Select lifecycle and discovery tool grants separately from data and management grants.

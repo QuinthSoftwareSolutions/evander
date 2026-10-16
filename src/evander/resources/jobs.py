@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import subprocess
 import time
+import uuid
 
 from evander.worker.store import WorkerJobStore
 
@@ -62,6 +63,7 @@ class Jobs:
         lease.job_binding = {
             "container_id": record.container_id,
             "base": base,
+            "staging_path": "/tmp/evander-resource-" + uuid.uuid4().hex,
             "rules": [],
             "network": lease.resources.get("network"),
         }
@@ -149,6 +151,7 @@ class Jobs:
             PROJECT,
             base,
             "0",
+            lease.job_binding["staging_path"],
             data=json.dumps(
                 {"lease_id": lease.lease_id, "connections": connections, "probe_connections": True}
             ).encode(),
@@ -166,6 +169,7 @@ class Jobs:
             lease.lease_id,
             identity,
             group,
+            lease.job_binding["staging_path"],
         )
         lease.bound_job_id, lease.config_path = record.job_id, config_path
         save()
@@ -175,42 +179,72 @@ class Jobs:
         if not binding:
             lease.bound_job_id = lease.config_path = None
             return
-        container = self.inspect(binding["container_id"])
-        if container:
-            if container["State"]["Running"]:
-                self.command(
-                    "docker",
-                    "exec",
-                    "--user",
-                    "0:0",
-                    binding["container_id"],
-                    "python3",
-                    "-c",
-                    UNPROJECT,
-                    binding["base"],
-                    lease.lease_id,
-                )
-            if (
-                binding.get("network")
-                and binding["network"] in container["NetworkSettings"]["Networks"]
-            ):
-                self.command(
-                    "docker", "network", "disconnect", binding["network"], binding["container_id"]
-                )
+        failed, remaining = False, []
+        # Firewall withdrawal must not depend on Docker, the private file, or the
+        # provider being healthy. Keep only unverified rules for the next retry.
         for rule in binding.get("rules", []):
-
-            def check_rule():
+            try:
                 status = self.command(
                     "iptables", "-w", "5", "-C", "DOCKER-USER", *rule, check=False
                 ).returncode
                 if status not in {0, 1}:
                     raise ResourceError("Cannot verify worker network grant removal")
-                return status == 0
-
-            if check_rule():
-                self.command("iptables", "-w", "5", "-D", "DOCKER-USER", *rule)
-                if check_rule():
-                    raise ResourceError("Worker network grant removal is incomplete")
+                if status == 0:
+                    self.command("iptables", "-w", "5", "-D", "DOCKER-USER", *rule)
+                    if (
+                        self.command(
+                            "iptables", "-w", "5", "-C", "DOCKER-USER", *rule, check=False
+                        ).returncode
+                        != 1
+                    ):
+                        raise ResourceError("Worker network grant removal is incomplete")
+            except Exception:
+                failed = True
+                remaining.append(rule)
+        binding["rules"] = remaining
+        save()
+        try:
+            container = self.inspect(binding["container_id"])
+        except Exception:
+            container, failed = None, True
+        if container:
+            if (
+                binding.get("network")
+                and binding["network"] in container["NetworkSettings"]["Networks"]
+            ):
+                try:
+                    self.command(
+                        "docker",
+                        "network",
+                        "disconnect",
+                        binding["network"],
+                        binding["container_id"],
+                    )
+                    current = self.inspect(binding["container_id"])
+                    if current and binding["network"] in current["NetworkSettings"]["Networks"]:
+                        raise ResourceError("Worker network disconnection is incomplete")
+                except Exception:
+                    failed = True
+            if container["State"]["Running"]:
+                try:
+                    self.command(
+                        "docker",
+                        "exec",
+                        "--user",
+                        "0:0",
+                        binding["container_id"],
+                        "python3",
+                        "-c",
+                        UNPROJECT,
+                        binding["base"],
+                        lease.lease_id,
+                        binding.get("staging_path", ""),
+                    )
+                except Exception:
+                    failed = True
+        if failed:
+            save()
+            raise ResourceError("Worker binding cleanup is incomplete; durable intent retained")
         lease.job_binding = {}
         lease.bound_job_id = lease.config_path = None
         save()

@@ -7,6 +7,7 @@ import secrets
 import subprocess
 import sys
 import time
+import tracemalloc
 import uuid
 
 import pytest
@@ -228,6 +229,36 @@ def test_native_sql_controller_reload_permissions_reset_and_persistent_lifetime(
             {"database_alias": "app", "sql": "SELECT value FROM dbo.Probe"},
             "",
         )["rows"] == [[17]]
+        # SQLGetData must not materialize a large MAX cell before applying the
+        # configured result limit. Explicit server-side bounded casts still work.
+        bounded = domain.store.get(first_id)
+        bounded.connection["max_bytes"] = 1024
+        for expression in (
+            "REPLICATE(CAST('x' AS varchar(max)), 8388608)",
+            "CONVERT(varbinary(max), REPLICATE(CAST('x' AS varchar(max)), 8388608))",
+        ):
+            tracemalloc.start()
+            try:
+                with pytest.raises(ResourceError, match="explicitly CAST"):
+                    domain.adapter.lease_call(
+                        bounded,
+                        "query",
+                        {
+                            "database_alias": "app",
+                            "sql": "SELECT " + expression + " AS payload",
+                        },
+                    )
+                assert tracemalloc.get_traced_memory()[1] < 2_000_000
+            finally:
+                tracemalloc.stop()
+        assert domain.adapter.lease_call(
+            bounded,
+            "query",
+            {
+                "database_alias": "app",
+                "sql": "SELECT CAST(REPLICATE(CAST('x' AS varchar(max)), 8388608) AS varchar(32)) AS payload",
+            },
+        )["rows"] == [["x" * 32]]
         with pytest.raises(pyodbc.Error):
             domain.lease_call(
                 owners[0],

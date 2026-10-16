@@ -81,6 +81,7 @@ class WorkerService:
         def save():
             return self.store.put(lease)
 
+        cleanup_failed = False
         try:
             if self.now() >= lease.expires_at:
                 lease.operation = {
@@ -89,25 +90,53 @@ class WorkerService:
                     "arguments": {},
                 }
                 save()
+            operation = lease.operation
+            job, job_unknown = None, False
+            try:
+                job = self.jobs.current(lease.owner)
+            except Exception:
+                job_unknown = True
+            if (
+                job is None
+                or lease.bound_job_id != job[0].job_id
+                or lease.state != "ready"
+                or operation
+                and operation["kind"] in {"reset", "release"}
+            ):
+                try:
+                    self.jobs.unbind(lease, save)
+                except Exception:
+                    cleanup_failed = True
+            # An explicit release may still remove provider resources when a local
+            # withdrawal step needs retrying. Never declare release complete early.
+            if operation and operation["kind"] == "release":
+                self.adapter.release(lease, save, self.credentials)
+                if cleanup_failed:
+                    raise ResourceError("Worker binding cleanup is incomplete")
+                lease.fault_until = None
+                lease.last_operation_id = operation["id"]
+                lease.operation = None
+                lease.state, lease.error = "released", None
+                save()
+                return receipt(lease)
+            # Fault recovery is independent of the job lookup and local cleanup.
             if lease.fault_until is not None and self.now() >= lease.fault_until:
                 self.adapter.recover(lease)
                 lease.fault_until = None
+                lease.state = "provisioning"
                 save()
-            operation = lease.operation
+            if cleanup_failed or job_unknown:
+                raise ResourceError("Current worker binding cannot be verified")
             if operation:
                 action = operation["kind"]
-                if action in {"reset", "control"} and self.jobs.current(lease.owner) is None:
-                    self.jobs.unbind(lease, save)
+                if action in {"reset", "control"} and job is None:
                     lease.state = "awaiting_job"
                     save()
                     return receipt(lease)
-                if action in {"reset", "release"}:
-                    self.jobs.unbind(lease, save)
-                    if action == "release":
-                        self.adapter.release(lease, save, self.credentials)
-                        lease.state = "released"
-                    else:
-                        self.adapter.reset(lease, save, self.credentials)
+                if action == "reset":
+                    self.adapter.reset(lease, save, self.credentials)
+                    lease.fault_until = None
+                    lease.state = "provisioning"
                 elif action == "control":
                     self.adapter.validate_control(lease.profile, operation["arguments"])
                     args = operation["arguments"]
@@ -136,19 +165,29 @@ class WorkerService:
                 lease.last_operation_id = operation["id"]
                 lease.operation = None
                 save()
-                if lease.state == "released":
-                    return receipt(lease)
-            job = self.jobs.current(lease.owner)
-            if not lease.fault_until:
-                self.adapter.provision(lease, save, self.credentials)
             if job is None:
-                self.jobs.unbind(lease, save)
                 lease.state = "awaiting_job"
-            else:
-                if not lease.fault_until and lease.bound_job_id != job[0].job_id:
-                    self.jobs.bind(lease, job, self.adapter.private_connections(lease), save)
+            elif not lease.fault_until:
+                # A ready, unchanged job needs no provider I/O on a safety tick.
+                # Any existing obsolete binding has already been withdrawn above.
+                if lease.state != "ready" or lease.bound_job_id != job[0].job_id:
+                    self.adapter.provision(lease, save, self.credentials)
+                current = self.jobs.current(lease.owner)
+                if current is None:
+                    self.jobs.unbind(lease, save)
+                    lease.state = "awaiting_job"
+                else:
+                    if lease.bound_job_id != current[0].job_id:
+                        self.jobs.bind(
+                            lease, current, self.adapter.private_connections(lease), save
+                        )
+                    lease.state = "ready"
+                    lease.expires_at = self.now() + lease.profile.idle_seconds
+            elif lease.bound_job_id == job[0].job_id:
                 lease.state = "ready"
                 lease.expires_at = self.now() + lease.profile.idle_seconds
+            else:
+                lease.state = "awaiting_job"
             lease.error = None
         except NotReady:
             lease.state = "provisioning"
@@ -157,7 +196,7 @@ class WorkerService:
             lease.error = "Worker resource operation failed; durable intent retained"
             lease.state = (
                 "cleanup_failed"
-                if lease.operation and lease.operation["kind"] == "release"
+                if cleanup_failed or lease.operation and lease.operation["kind"] == "release"
                 else "failed"
             )
         save()
