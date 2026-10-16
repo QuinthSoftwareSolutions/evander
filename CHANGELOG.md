@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16 - Clone private Team release candidates by pinned ref (0.96.5)
+
+- Prepare disposable release verifiers through the existing pinned-ref clone path, resolving logical Team branches to their managed private refs and checking the exact frozen candidate commit before verification commands can run.
+- Preserve read-only Git access, workspace cleanup, infrastructure failure classification and existing release review and approval gates.
+
 ## 2026-10-16 - Make Team escalations easier to read (0.96.4)
 
 - Guide Team managers and governance agents to write short, plain-language escalations with Need, Why and Next lines, an explicit operator action and a clear owner for follow-up.
