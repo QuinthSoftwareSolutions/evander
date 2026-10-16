@@ -7,6 +7,11 @@
 - Add Test Fixtures 0.1.4 migration previews and drain mode, preserving existing leases and cleanup until provider absence is verified. Production server lifecycle and deployment remain operator-owned.
 - Isolate trusted worker helpers from job executables and Python configuration, select network grants using the job's destination route, and keep managed SQL creation identities under host control.
 
+## 2026-10-16 - Continue command-blocked releases with reviewed source corrections (0.96.6)
+
+- Allow an accepted, reviewed Git correction of the exact command-blocked candidate to create a successor in the same release lineage, including tasks pinned through the candidate's accepted producer branch.
+- Preserve failed verifier evidence, immutable correction aggregation, normal reviews and verification; reject predecessor gate retries once a successor exists, and resolve superseded ancestor blockers only after the successor is published successfully.
+
 ## 2026-10-16 - Clone private Team release candidates by pinned ref (0.96.5)
 
 - Prepare disposable release verifiers through the existing pinned-ref clone path, resolving logical Team branches to their managed private refs and checking the exact frozen candidate commit before verification commands can run.
