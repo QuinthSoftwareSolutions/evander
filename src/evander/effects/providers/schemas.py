@@ -1290,6 +1290,7 @@ class CommunicationSendMessageEffectDefinition(EffectDefinition):
     type: Literal["effect:communication:send-message"]
     communication_target_id: str
     message: ConfigValue
+    published_artifacts: ConfigValue = Field(default_factory=list)
     thread_id: ConfigValue | None = None
     subject: ConfigValue | None = None
     sender_session_id: ConfigValue | None = None

@@ -252,6 +252,7 @@ def test_communication_send_message_uses_supported_workflow_sender_by_default(
             "thread_id": None,
             "subject": None,
             "sender_session_id": "workflow",
+            "published_artifacts": [],
         }
     ]
 

@@ -1299,6 +1299,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "tag": {"type": "string"},
     },
     "effect:communication:send-message": {
+        "artifact_ids": {"type": "array", "items": {"type": "string"}},
+        "artifact_count": {"type": "integer"},
         "success": {"type": "boolean"},
         "error_message": {"type": ["string", "null"]},
         "error_class": {"type": ["string", "null"]},
