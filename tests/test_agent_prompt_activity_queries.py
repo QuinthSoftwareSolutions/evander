@@ -33,6 +33,11 @@ def test_session_busy_check_seeks_active_prompts_without_reading_history(tmp_pat
     seed_completed_executions(store.path, kind="effect", count=history)
     store.put(prompt("wanted"))
     with connect_orchestration_db(store.path) as db:
+        db.execute("""UPDATE effect_executions SET status='failed',
+            effect_type='effect:agent:enqueue-prompt',
+            payload_json=json_set(payload_json,'$.status','failed',
+                '$.effect_type','effect:agent:enqueue-prompt')
+            WHERE execution_id!='wanted'""")
         db.execute("ANALYZE")
 
     with bounded_completion_queries(monkeypatch) as statements:
@@ -100,6 +105,26 @@ def test_busy_check_keeps_fifo_and_lock_ownership_rules(tmp_path):
     assert not busy(store, current_idempotency_key="middle", owner_id="newer")
     assert busy(store, owner_id="newer")
     assert not busy(store, owner_id="missing")
+
+
+@pytest.mark.parametrize("field", ["vm_name", "target"])
+def test_busy_check_matches_vm_or_target_without_session_evidence(tmp_path, field):
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    record = prompt("owner", outputs={field: "vm" if field == "vm_name" else "session"})
+    store.put(record)
+    assert busy(store)
+    record.effect_type = "effect:other"
+    store.put(record)
+    assert not busy(store)
+
+
+def test_busy_check_preserves_target_evidence_precedence(tmp_path):
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    record = prompt("owner", outputs={"session_id": "other", "vm_name": "other", "target": "session"},
+                    resolved_config={"session_id": "session", "vm_name": "vm", "target": "other"},
+                    input_payload={"target": "session"})
+    store.put(record)
+    assert not busy(store)
 
 
 def test_activity_snapshot_does_not_wait_for_the_shared_execution_repository_lock(tmp_path):
