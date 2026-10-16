@@ -127,6 +127,7 @@ class AddonAdminService:
                                 has_mcp_tools
                                 or has_connector_drivers
                                 or bool(registration and registration.requires_gateway_restart)
+                                or bool(registration and registration.resource_authority)
                             ),
                             has_website_session_adapters=has_website_session_adapters,
                             additional_services=registration.required_restart_services if registration else (),

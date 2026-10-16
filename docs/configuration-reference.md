@@ -76,10 +76,13 @@ for the explicit map schema, authorization checks, and bridge credentials.
 
 Independent add-ons own their configuration guides. See the
 [WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
-and [Test Fixtures configuration](../packages/test-fixtures-addon/docs/operations.md),
-plus the [add-on project convention](addons.md#project-ownership). Test fixtures
-use exact team and actual-worker bindings, default to allocation disabled, and
-keep fixture bearer/SQL credentials in host environment files.
+and the independent [SQL Server](../packages/sqlserver-addon/docs/operations.md)
+and [RabbitMQ](../packages/rabbitmq-addon/docs/operations.md) guides, plus the
+[add-on project convention](addons.md#project-ownership). Connections, profiles
+and tool grants are directory-scoped; new allocations and production operations
+start disabled. Host credential references never enter jobs. Legacy
+[Test Fixtures configuration](../packages/test-fixtures-addon/docs/operations.md)
+remains available for draining existing bundles.
 
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,

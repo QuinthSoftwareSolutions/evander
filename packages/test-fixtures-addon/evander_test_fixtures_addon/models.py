@@ -63,6 +63,7 @@ class Worker(Contract):
 
 class Settings(Contract):
     allocations_enabled: bool = False
+    drain_only: bool = False
     allowed_team_ids: list[str] = Field(default_factory=list)
     workers: dict[str, Worker] = Field(default_factory=dict)
     idle_seconds: int = Field(default=7200, ge=300, le=7200)
@@ -87,6 +88,7 @@ class WorkerSettings(Contract):
     worker_id: str
     token_env: str = "EVANDER_TEST_FIXTURES_TOKEN"
     allocations_enabled: bool = False
+    drain_only: bool = False
     max_per_worker: int = Field(default=2, ge=1, le=2)
     rabbitmq_image: str | None = Field(
         default=None, pattern=r"^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$"

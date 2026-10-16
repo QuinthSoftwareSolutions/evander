@@ -182,6 +182,7 @@ class RuntimeContext:
     )
     tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
     mcp_transport_bindings: McpTransportBindingRepository | None = None
+    resource_authorities: dict[str, Any] = field(default_factory=dict)
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)

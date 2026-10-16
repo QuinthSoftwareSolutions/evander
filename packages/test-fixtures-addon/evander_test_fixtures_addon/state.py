@@ -156,6 +156,10 @@ class Store:
                     raise Conflict(
                         "Task already has a fixture bundle; release it before acquiring another"
                     )
+            if settings.drain_only:
+                raise FixtureError(
+                    "Test Fixtures is draining; use the SQL Server and RabbitMQ add-ons for new resources"
+                )
             if (
                 sum(item["scope"]["worker_id"] == scope.worker_id for item in active)
                 >= settings.max_per_worker

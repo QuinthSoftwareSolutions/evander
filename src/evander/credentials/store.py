@@ -295,7 +295,7 @@ class CredentialStore:
             if (
                 not isinstance(value, dict)
                 or not _REF.fullmatch(value["id"])
-                or value["kind"] not in {"connector", "teams_oauth"}
+                or value["kind"] not in {"connector", "teams_oauth", "resource"}
                 or value["status"] not in {"active", "disabled", "deleted"}
                 or not isinstance(value["bindings"], list)
                 or not isinstance(value["label"], str)
@@ -366,7 +366,7 @@ class CredentialStore:
     ) -> dict:
         ref = ref or "cred_" + uuid4().hex
         self._validate_ref(ref)
-        if kind not in {"connector", "teams_oauth"}:
+        if kind not in {"connector", "teams_oauth", "resource"}:
             raise CredentialError("Unsupported credential type")
         if not isinstance(label, str) or not 1 <= len(label.strip()) <= 128:
             raise CredentialError("Credential label must contain 1 to 128 characters")

@@ -1,0 +1,60 @@
+{
+  "allocations_enabled": false,
+  "connections": {
+    "existing": {
+      "management_url": "https://mq.internal.example:15671",
+      "host": "mq.internal.example",
+      "port": 5671,
+      "tls": true,
+      "verify": true,
+      "credentials": {
+        "admin": {
+          "username_env": "EXAMPLE_MQ_ADMIN_USER",
+          "password_env": "EXAMPLE_MQ_ADMIN_PASSWORD"
+        },
+        "read": {
+          "username_env": "EXAMPLE_MQ_READ_USER",
+          "password_env": "EXAMPLE_MQ_READ_PASSWORD"
+        },
+        "write": {
+          "username_env": "EXAMPLE_MQ_WRITE_USER",
+          "password_env": "EXAMPLE_MQ_WRITE_PASSWORD"
+        }
+      },
+      "allowed_vhosts": [
+        "application"
+      ],
+      "allowed_users": [
+        "application-user"
+      ],
+      "operations": []
+    }
+  },
+  "profiles": {
+    "isolated-test": {
+      "worker_id": "worker-a",
+      "options": {
+        "mode": "isolated",
+        "image": "rabbitmq@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "idle_seconds": 7200
+    },
+    "shared-test": {
+      "connection_id": "existing",
+      "worker_id": "worker-a",
+      "options": {
+        "mode": "shared"
+      },
+      "idle_seconds": 7200
+    }
+  },
+  "workers": {
+    "worker-a": {
+      "worker_base_url": "http://192.0.2.10:11888",
+      "service_url": "http://192.0.2.10:11993",
+      "token_env": "EVANDER_RABBITMQ_WORKER_TOKEN"
+    }
+  },
+  "max_per_worker": 2,
+  "workflow_operations": []
+}

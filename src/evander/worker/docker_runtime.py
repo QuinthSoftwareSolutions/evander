@@ -17,6 +17,7 @@ from uuid import uuid4
 import httpx
 
 from evander.codex_auth import CodexTurnSpec
+from evander.resources.projection import PRIVATE_TMPFS_SPEC
 
 from .codex_runtime_policy import RUNTIME_CONFIG_OVERRIDES, prepare_runtime_policy
 from .codex_runtime_transport import transport_source
@@ -597,6 +598,9 @@ class DockerContainerRuntime:
             args.append("--read-only")
         for tmpfs in self.sandbox_profile.tmpfs:
             args.extend(["--tmpfs", tmpfs])
+        # Resource credentials must disappear even when a stopped container's
+        # writable root layer is retained. This mount is independent of profiles.
+        args.extend(["--tmpfs", PRIVATE_TMPFS_SPEC])
         if self.sandbox_profile.user:
             args.extend(["--user", self.sandbox_profile.user])
         if request.resource_limits.memory:

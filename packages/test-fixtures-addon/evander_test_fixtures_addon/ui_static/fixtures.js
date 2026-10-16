@@ -49,7 +49,7 @@ async function refresh() {
       }
       row.append(cell); $('leases').append(row);
     }
-    $('status').textContent = settings.settings.allocations_enabled ? 'New allocations enabled for configured teams.' : 'New allocations disabled. Cleanup remains active.';
+    $('status').textContent = settings.settings.drain_only ? 'Draining existing leases; new bundles are disabled.' : settings.settings.allocations_enabled ? 'New allocations enabled for configured teams.' : 'New allocations disabled. Cleanup remains active.';
   } catch(error) { if (generation === refreshGeneration) message(error); }
 }
 $('directory').oninput = () => {

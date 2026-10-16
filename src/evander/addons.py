@@ -152,8 +152,11 @@ class AddonRegistration:
     security_scan_providers: Mapping[str, Any] = field(default_factory=dict)
     # Optional owners validate their checkout's current lifecycle without core imports.
     git_submission_validator: Callable[[AddonContext, Mapping[str, Any]], bool] | None = None
+    resource_authority: Callable[[AddonContext], Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.resource_authority is not None and not callable(self.resource_authority):
+            raise ValueError("resource_authority must be callable")
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))
         display_name = str(self.display_name or "").strip()
         if not display_name:
@@ -871,6 +874,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             admin_api_routes=value.get("admin_api_routes") or (),
             admin_ui_routes=value.get("admin_ui_routes") or (),
             mcp_tools=value.get("mcp_tools"),
+            resource_authority=value.get("resource_authority"),
             mcp_tool_catalog=value.get("mcp_tool_catalog") or (),
             workflow_providers=value.get("workflow_providers"),
             connector_drivers=value.get("connector_drivers") or {},
@@ -890,6 +894,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         admin_api_routes=getattr(value, "admin_api_routes", ()),
         admin_ui_routes=getattr(value, "admin_ui_routes", ()),
         mcp_tools=getattr(value, "mcp_tools", None),
+        resource_authority=getattr(value, "resource_authority", None),
         mcp_tool_catalog=getattr(value, "mcp_tool_catalog", ()),
         workflow_providers=getattr(value, "workflow_providers", None),
         connector_drivers=getattr(value, "connector_drivers", {}),

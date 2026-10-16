@@ -11,10 +11,12 @@ For website design changes, use the optional [WordPress Add-on](../packages/word
 Its setup verifies recovery before enabling writes, and its directory-scoped workflow
 resumes publication, live checks and conditional restore after a worker restart.
 
-For disposable SQL Server and RabbitMQ test resources, install the optional
-[Test Fixtures add-on](../packages/test-fixtures-addon/docs/operations.md) on the
-control plane and selected container workers. Allocation starts disabled; its
-independent worker timer retains cleanup during a control-plane outage.
+For registered services and disposable test resources, install the independent
+[SQL Server](../packages/sqlserver-addon/docs/operations.md) and/or
+[RabbitMQ](../packages/rabbitmq-addon/docs/operations.md) add-ons. Allocation and
+production operations start disabled. Their worker timers retain cleanup during
+control-plane outages. Keep the legacy [Test Fixtures add-on](../packages/test-fixtures-addon/docs/operations.md)
+available in drain mode until its existing resources and bindings are verified absent.
 
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and

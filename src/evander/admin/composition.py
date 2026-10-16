@@ -421,7 +421,7 @@ def _build_admin_runtime_components(
             discovery_permissions=addon_mcp_discovery_permissions(addon_catalog),
         )
     for addon in addon_catalog.registrations:
-        if addon.outbound_identity_resolver is None:
+        if addon.outbound_identity_resolver is None and addon.resource_authority is None:
             continue
         addon_context = AddonContext(
             addon_id=addon.addon_id,
@@ -431,10 +431,13 @@ def _build_admin_runtime_components(
             config=config,
             service=runtime,
         )
-        runtime.register_outbound_identity_resolver(
-            addon.addon_id,
-            addon.outbound_identity_resolver(addon_context),
-        )
+        if addon.resource_authority is not None:
+            runtime.resource_authorities[addon.addon_id] = addon.resource_authority(addon_context)
+        if addon.outbound_identity_resolver is not None:
+            runtime.register_outbound_identity_resolver(
+                addon.addon_id,
+                addon.outbound_identity_resolver(addon_context),
+            )
     tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
         config.audit_log_path
     )
