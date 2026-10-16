@@ -3,7 +3,7 @@
 ## 2026-10-16 - Continue command-blocked releases with reviewed source corrections (0.96.6)
 
 - Allow an accepted, reviewed Git correction of the exact command-blocked candidate to create a successor in the same release lineage, including tasks pinned through the candidate's accepted producer branch.
-- Preserve failed verifier evidence, immutable correction aggregation, normal reviews and verification; resolve superseded ancestor blockers only after the successor is published successfully.
+- Preserve failed verifier evidence, immutable correction aggregation, normal reviews and verification; reject predecessor gate retries once a successor exists, and resolve superseded ancestor blockers only after the successor is published successfully.
 
 ## 2026-10-16 - Clone private Team release candidates by pinned ref (0.96.5)
 

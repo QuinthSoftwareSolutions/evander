@@ -472,6 +472,19 @@ def test_command_blocked_source_correction_preserves_lineage_and_reruns_gates(
     assert promotion.sources[0].expected_commit_sha == RECOVERY_COMMIT
     assert state.blockers["blocked-verification"].state == TeamBlockerState.OPEN
 
+    outbox_before_retry = repository.list_outbox_records()
+    with pytest.raises(ValueError, match="already has successor release package"):
+        admin.retry_release_gate_with_result(
+            release_package_id="release-predecessor",
+            gate_kind="verification",
+            gate_id="verification-run",
+            reason="Retry after creating the reviewed correction successor.",
+            operator_actor_id="operator:test",
+            expected_revision=state.revision,
+        )
+    assert TeamStateRepository(tmp_path).read() == state
+    assert repository.list_outbox_records() == outbox_before_retry
+
     source = state.deliverables["independent-remediation-deliverable"]
     state, _ = TeamGitReleaseService(repository).record_git_promotion_result(
         promotion_id=promotion.id,

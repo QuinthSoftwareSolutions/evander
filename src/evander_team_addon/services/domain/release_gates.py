@@ -2063,17 +2063,16 @@ def retry_release_gate(
         rejected_review_exception or rejected_verification_retry
     ):
         raise ValueError(f"release {release.id} is not blocked")
-    if rejected_review_exception or rejected_verification_retry:
-        successor_ids = sorted(
-            candidate.id
-            for candidate in state.release_packages.values()
-            if candidate.supersedes_release_package_id == release.id
+    successor_ids = sorted(
+        candidate.id
+        for candidate in state.release_packages.values()
+        if candidate.supersedes_release_package_id == release.id
+    )
+    if successor_ids:
+        raise ValueError(
+            f"release {release.id} already has successor release package(s): "
+            + ", ".join(successor_ids)
         )
-        if successor_ids:
-            raise ValueError(
-                f"release {release.id} already has successor release package(s): "
-                + ", ".join(successor_ids)
-            )
     candidate = release.candidate_commit_sha
     if candidate is None:
         raise ValueError(f"release {release.id} has no pinned candidate")

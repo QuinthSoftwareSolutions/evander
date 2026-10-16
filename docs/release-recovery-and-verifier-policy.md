@@ -98,8 +98,9 @@ the candidate's evidence, always pinned to the exact candidate commit. The
 successor preserves the existing lineage and uses immutable correction
 aggregation; it runs normal release reviews and verification for the changed
 candidate. The predecessor's blocker stays open until successful publication of
-its successor. No waiver, unchanged-source retry or new unrelated lineage is
-needed.
+its successor. Once a successor exists, retries of the predecessor's gates are
+rejected; continue recovery on the successor. No waiver, unchanged-source retry
+or new unrelated lineage is needed.
 
 For `result_protocol: "json-v1"`, the platform supplies
 `EVANDER_VERIFICATION_CANDIDATE_SHA` and `EVANDER_VERIFICATION_BASE_SHA` from the
