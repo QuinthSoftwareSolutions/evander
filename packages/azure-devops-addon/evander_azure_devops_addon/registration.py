@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from dataclasses import replace
 
 from evander.addons import AddonRegistration
 from evander.config import GatewayConfig
@@ -85,9 +86,27 @@ class HostWorker:
             )
 
 
+def register_workflow_providers():
+    from .delivery import register_providers as delivery_providers
+    from .pipeline_tasks import register_providers as task_providers
+
+    delivery, tasks = delivery_providers(), task_providers()
+    return replace(
+        delivery,
+        effect_providers={**delivery.effect_providers, **tasks.effect_providers},
+        node_definition_resolvers={
+            **delivery.node_definition_resolvers,
+            **tasks.node_definition_resolvers,
+        },
+        workflow_editor_catalog_entries=(
+            *delivery.workflow_editor_catalog_entries,
+            *tasks.workflow_editor_catalog_entries,
+        ),
+    )
+
+
 def register_addon():
     from .starter import DELIVERY_STARTER
-    from .delivery import register_providers
 
     schema = GatewayConfig.model_json_schema()
     fields = {
@@ -99,7 +118,7 @@ def register_addon():
         addon_id="azure-devops",
         display_name="Azure DevOps",
         requires_gateway_restart=True,
-        workflow_providers=register_providers,
+        workflow_providers=register_workflow_providers,
         required_restart_services=("evander-ado-worker", "evander-proxy-issue-sync"),
         metadata={
             "description": "Work items, pull requests, builds, personal credentials and delivery workflows."

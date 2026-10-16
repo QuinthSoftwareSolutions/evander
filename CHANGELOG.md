@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-16 - Azure pipeline task callbacks and live agent logs (0.99.0)
+
+- Add optional Azure DevOps effects for host-authenticated task completion and forwarding rendered agent progress into live and saved pipeline logs.
+- Persist run ownership, log checkpoints, deadlines and bounded callback retries in existing workflow state; retried waiting tasks reuse the original test and result.
+- Include generic event-driven pipeline examples. Pipeline results can depend on published test evidence while report delivery remains independent.
+
 ## 2026-10-16 - Resolve Team resource ownership from persisted sessions (0.98.3)
 
 - Preserve the canonical directory string from the session manifest when resolving Team ownership for SQL Server and RabbitMQ resources, avoiding an attribute error before acquisition.

@@ -1,0 +1,35 @@
+# Append after a successful deployment job. Configure this generic service
+# connection's URL to the Evander HTTPS origin; leave its username/password empty.
+jobs:
+  - job: AgentTests
+    pool: server
+    timeoutInMinutes: 130
+    steps:
+      - task: InvokeRESTAPI@1
+        displayName: Run agent tests and follow their progress
+        inputs:
+          connectionType: connectedServiceName
+          serviceConnection: Evander workflow events
+          method: POST
+          urlSuffix: /api/workflow-events
+          waitForCompletion: 'true'
+          headers: |
+            {"Content-Type":"application/json","Authorization":"Bearer $(EVANDER_WORKFLOW_EVENT_TOKEN)"}
+          body: |
+            {
+              "event_type": "ci.agent_test.requested",
+              "correlation_key": "$(System.DefinitionId):$(Build.BuildId)",
+              "idempotency_key": "agent-tests:$(Build.BuildId):$(System.TaskInstanceId)",
+              "payload": {
+                "task": {
+                  "pipeline_id": "$(System.DefinitionId)",
+                  "run_id": "$(Build.BuildId)",
+                  "project_id": "$(System.TeamProjectId)",
+                  "plan_id": "$(System.PlanId)",
+                  "job_id": "$(System.JobId)",
+                  "timeline_id": "$(System.TimelineId)",
+                  "task_id": "$(System.TaskInstanceId)"
+                },
+                "environment": {"commit_sha": "$(Build.SourceVersion)"}
+              }
+            }

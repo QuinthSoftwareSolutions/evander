@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander-azure-devops-addon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Optional Azure DevOps integration and issue-to-merge workflows for Evander."
 readme = "README.md"
 requires-python = ">=3.12"
