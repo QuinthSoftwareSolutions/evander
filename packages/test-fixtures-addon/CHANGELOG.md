@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 - 2026-10-16
+
+- Give the fixture worker and independent reaper private writable temporary directories while retaining strict filesystem protection. SQLite can then sort larger worker-job histories without `SQLITE_IOERR_GETTEMPPATH` preventing fixture reconciliation.
+
 ## 0.1.2 - 2026-10-15
 
 - Select the fixture vhost with `--vhost` when applying RabbitMQ limits so broker readiness succeeds.

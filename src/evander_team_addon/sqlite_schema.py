@@ -533,6 +533,7 @@ def _upgrade_git_context_columns(
             definition="TEXT",
         )
     for table_name, column_name, definition in (
+        ("team_git_work_contexts", "checkout_id", "TEXT"),
         ("team_git_work_contexts", "dependency_git_sources_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("team_git_work_contexts", "dependency_composition_recovery_id", "TEXT"),
         (

@@ -507,6 +507,7 @@ class GitStoreMixin:
         for row in connection.execute("SELECT * FROM team_git_work_contexts ORDER BY id"):
             payload["git_work_contexts"][row["id"]] = {
                 "id": row["id"],
+                "checkout_id": row["checkout_id"],
                 "agent_id": row["agent_id"],
                 "task_id": row["task_id"],
                 "dispatch_id": row["dispatch_id"],
@@ -537,7 +538,7 @@ class GitStoreMixin:
             connection.execute(
                 """
                 INSERT INTO team_git_work_contexts(
-                    id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
+                    id, checkout_id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
                     base_commit, agent_branch, commit_sha,
                     dependency_git_sources_json,
                     dependency_composition_recovery_id,
@@ -545,10 +546,11 @@ class GitStoreMixin:
                     dependency_composition_manifest_json,
                     preparation_generation, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
+                    context.get("checkout_id"),
                     context["agent_id"],
                     context["task_id"],
                     context.get("dispatch_id"),

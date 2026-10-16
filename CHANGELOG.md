@@ -1,9 +1,15 @@
 # Changelog
 
-## 2026-10-16 - Keep completion recovery indexed after history conversion (0.96.2)
+## 2026-10-16 - Keep completion recovery indexed after history conversion (0.96.3)
 
 - Read pending gate and effect completions through existing status indexes with ordered continuation pages, keeping recovery work independent of execution-history size even after optimizer analysis.
 - Analyze only rebuilt history tables during offline conversion, preserving unrelated optimizer statistics and leaving statistics unchanged for copies that retain their storage format.
+
+## 2026-10-16 - Preserve Team Git checkout identifiers and fixture reconciliation (0.96.2)
+
+- Persist canonical Team checkout IDs across database reloads and expose them in compact wake prompts, task reads and dispatch reads so agents can select the intended Git submission checkout.
+- Preserve registered IDs during preparation replay and repair legacy missing IDs on the next normal preparation without changing retained worktree provenance or authored work.
+- Publish Test Fixtures add-on 0.1.3 with private writable temporary directories for its worker and reaper services, allowing SQLite to sort larger worker-job histories under strict filesystem protection.
 
 ## 2026-10-16 - Retain private security scan diagnostics (0.96.1)
 

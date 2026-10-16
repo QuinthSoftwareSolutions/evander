@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SQLITE_SCHEMA_VERSION = 81
+SQLITE_SCHEMA_VERSION = 82
 
 _LIFECYCLE_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;
@@ -1197,6 +1197,7 @@ CREATE INDEX IF NOT EXISTS idx_team_dependency_composition_recovery_task
 
 CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     id TEXT PRIMARY KEY,
+    checkout_id TEXT,
     agent_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
     dispatch_id TEXT,

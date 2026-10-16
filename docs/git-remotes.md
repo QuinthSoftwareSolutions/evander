@@ -439,6 +439,10 @@ See [Repository indexing](repository-indexing.md) for access controls and portab
 
 Grant `submit_git_changes` to coding sessions that already have writable managed-Git access. The tool accepts an exact `expected_commit_sha` and a complete `summary_markdown` (up to 32 KiB of UTF-8 text); `managed_repo_id` and `checkout_id` select a prepared checkout when needed. Clone and Team preparation results expose opaque checkout IDs. Ambiguous selection returns the eligible IDs without executing Git. A tool grant never upgrades read-only repository access.
 
+Team checkout IDs persist across database reloads and appear in compact wake prompts, task list/detail reads and full/summary dispatch reads within the caller's existing scope. Legacy contexts without an ID are rebound through canonical registration on their next normal preparation; reads and schema migration do not infer an ID or reactivate historical contexts.
+
+Before deploying this persistence upgrade, take a consistent Team SQLite backup and coordinate the gateway, Admin Web, trigger orchestrator and effect orchestrator restart. All Team writers must run the upgraded code before verifying persistence, because an older writer can discard checkout IDs during a state save.
+
 The platform executes submission inside the session VM or container, retains ancestry and namespace checks, publishes the pinned commit and summary atomically, and verifies the managed ref and note before returning a receipt. Repeat the same request after a lost reply; unchanged verified submissions do not create another push. Staging, committing, conflict resolution, and upstream destination selection remain separate operations.
 
 Summary text is stored verbatim, preserving Markdown indentation, hard line breaks, blank lines, and line endings. The 32 KiB limit measures the supplied UTF-8 text.
