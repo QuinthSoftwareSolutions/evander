@@ -266,6 +266,89 @@ def test_manager_fallback_keeps_undismissed_failure_from_an_older_batch(tmp_path
         assert summary["latest_failed_actions"][0]["id"] == "unresolved"
 
 
+def test_later_keyed_task_assessment_refreshes_related_rework_evidence(tmp_path):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.services.domain.task_assessment import (
+        TaskAssessmentService,
+        TaskAssessmentBoundaryError,
+        require_task_resolved,
+    )
+
+    repo = _seed_team(tmp_path)
+    _finished_task_history(repo, 1)
+    with sqlite3.connect(repo.store.path) as connection:
+        connection.execute(
+            "UPDATE team_deliverables SET rework_requested_at='2026-02-01T00:00:00+00:00', rework_requested_by_agent_id='lead', rework_reason='Replace accepted result'"
+        )
+    for repository in (repo, TeamLifecycleRepository(repo)):
+        state = repository.read()
+        assessment = TaskAssessmentService(state)
+        # Construct the index before the historical task enters the working set.
+        assert assessment.assess("task").resolution_status != "resolved"
+        assert assessment.assess("old-task-000000").resolution_status != "resolved"
+        with pytest.raises(TaskAssessmentBoundaryError) as error:
+            require_task_resolved(state, "old-task-000000", boundary="release")
+        assert "accepted_deliverable_requires_replacement" in str(error.value.correction_context)
+
+
+@pytest.mark.parametrize("history_count", [1000, 10000])
+@pytest.mark.parametrize("modern", [False, True])
+def test_empty_legacy_lookup_ignores_other_agents_scopes_and_older_attempts(
+    tmp_path, monkeypatch, history_count, modern
+):
+    from evander_team_addon.lifecycle_scope import TeamLifecycleRepository
+    from evander_team_addon.models import AgentInboxItem
+
+    repo = _seed_team(tmp_path)
+    repo.update(
+        lambda state: state.inbox.__setitem__(
+            "old-lead",
+            AgentInboxItem(
+                id="old-lead",
+                recipient_agent_id="lead",
+                item_type="operator_directive",
+                state="handled",
+            ),
+        )
+    )
+    _history(repo, history_count)
+    with sqlite3.connect(repo.store.path) as connection:
+        connection.execute("UPDATE team_dispatches SET agent_id='lead',session_id='session-lead'")
+        connection.execute(
+            "INSERT INTO team_dispatch_inbox SELECT id,0,'old-lead' FROM team_dispatches"
+        )
+        if modern:
+            connection.execute(
+                "INSERT INTO team_dispatches(id,agent_id,session_id,cause_kind,status,created_at,leased_at,completed_at,wake_work_fingerprint) VALUES ('modern','backend','session-backend','scheduled_wake','completed','2026-02-01T00:00:00+00:00','2026-02-01T00:00:00+00:00','2026-02-01T00:00:00+00:00','fingerprint')"
+            )
+            connection.executemany(
+                "INSERT INTO team_dispatches(id,agent_id,session_id,cause_kind,status,created_at,leased_at,completed_at) VALUES (?,'backend','session-backend','scheduled_wake','completed','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')",
+                ((f"empty-{i}",) for i in range(history_count)),
+            )
+        connection.execute("ANALYZE")
+    counts, statements = [], []
+    connect = repo.store._read_connection
+
+    def measured():
+        connection = connect()
+        count = [0]
+        counts.append(count)
+
+        def progress():
+            count[0] += 100
+            return int(count[0] > 50000)
+
+        connection.set_progress_handler(progress, 100)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(repo.store, "_read_connection", measured)
+    with TeamLifecycleRepository(repo).command_snapshot() as state:
+        records = state.latest_wake_work_records("backend")
+        assert [row.id for row in records] == (["modern"] if modern else [])
+    assert max(count[0] for count in counts) < 10000
+
+
 @pytest.mark.parametrize("activity_kind", ["inbox", "review", "ephemeral"])
 def test_terminal_activity_still_arms_idle_context_rotation(tmp_path, activity_kind):
     from datetime import timedelta

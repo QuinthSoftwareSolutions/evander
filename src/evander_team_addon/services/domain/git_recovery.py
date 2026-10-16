@@ -220,14 +220,25 @@ def preservation_hold(state, *, attempt_id=None, context_id=None, session_id=Non
                 )
                 if row.agent_branch.startswith(prefix)
             )
+        selectors, parameters = [], []
+        for ids, field, index in (
+            (attempts, "preserved_attempt_ids", "idx_team_recovery_attempt_retention"),
+            (contexts, "preserved_context_ids", "idx_team_recovery_retention"),
+        ):
+            if not ids:
+                # SQLite 3.45 cannot plan a forced partial index after folding
+                # an empty IN branch to false. Omit that branch entirely.
+                continue
+            selectors.append(
+                f"SELECT i.id FROM team_git_recovery_incidents i INDEXED BY {index}, json_each(i.payload_json,'$.{field}') j WHERE json_array_length(i.payload_json,'$.{field}')>0 AND j.value IN ("
+                + ",".join("?" for _ in ids)
+                + ")"
+            )
+            parameters.extend(ids)
         records = state.query_records(
             "git_recovery_incidents",
-            "id IN (SELECT i.id FROM team_git_recovery_incidents i INDEXED BY idx_team_recovery_attempt_retention, json_each(i.payload_json,'$.preserved_attempt_ids') j WHERE json_array_length(i.payload_json,'$.preserved_attempt_ids')>0 AND j.value IN ("
-            + ",".join("?" for _ in attempts)
-            + ") UNION SELECT i.id FROM team_git_recovery_incidents i INDEXED BY idx_team_recovery_retention, json_each(i.payload_json,'$.preserved_context_ids') j WHERE json_array_length(i.payload_json,'$.preserved_context_ids')>0 AND j.value IN ("
-            + ",".join("?" for _ in contexts)
-            + "))",
-            [*attempts, *contexts],
+            "id IN (" + " UNION ".join(selectors) + ")" if selectors else "0",
+            parameters,
         )
     else:
         records = state.git_recovery_incidents.values()

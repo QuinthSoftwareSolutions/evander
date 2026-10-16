@@ -87,6 +87,16 @@ class _Records(dict):
     def _load(self, ids=None):
         if ids is None and self.enumerated:
             return
+        if ids is not None:
+            ids = [
+                key
+                for key in ids
+                if not dict.__contains__(self, key)
+                and key not in self.missing
+                and key not in self.scope.baseline[self.field]
+            ]
+            if not ids:
+                return
         rows = self.scope._load(self.field, ids)
         for key, payload in rows.items():
             if not dict.__contains__(self, key) and key not in self.scope.baseline[self.field]:
@@ -252,6 +262,14 @@ class TeamLifecycleScope:
                 )
             if ids is None:
                 ids = self.repository.select_ids(connection, field, self)
+                records = getattr(self, field)
+                ids = [
+                    key
+                    for key in ids
+                    if not dict.__contains__(records, key) and key not in self.baseline[field]
+                ]
+            if not ids:
+                return {}
             selections = {table: (key, tuple(ids)) for table, key in _TABLES[field]}
             # A grouped decoder must never hydrate its unselected siblings.
             reader = _STATE_GROUP_READERS.get(field, f"_read_{field}")
@@ -311,7 +329,7 @@ class TeamLifecycleScope:
             "agent_id=? AND cause_kind!='manager_fallback' AND completed_at IS NOT NULL "
             "AND status IN ('completed','expired','failed') AND (leased_at IS NOT NULL OR activation_completed_at IS NOT NULL)"
         )
-        self.query_records(
+        modern = self.query_records(
             "dispatches",
             terminal
             + " AND (wake_work_record_fingerprints_json!='{}' OR wake_work_fingerprint IS NOT NULL)",
@@ -319,20 +337,75 @@ class TeamLifecycleScope:
             order=DISPATCH_ATTEMPT_ORDER,
             limit=1,
         )
-        # Start from recorded scope IDs. Header-first EXISTS probes walk every
-        # fingerprint-free historical attempt when another agent has a scope.
+        modern = [
+            row
+            for row in modern
+            if row.agent_id == agent_id
+            and row.cause_kind != "manager_fallback"
+            and row.status in ("completed", "expired", "failed")
+            and row.completed_at is not None
+            and (row.leased_at is not None or row.activation_completed_at is not None)
+            and (row.wake_work_record_fingerprints or row.wake_work_fingerprint is not None)
+        ]
+        latest = max(
+            (
+                (timestamp_microseconds(row.leased_at or row.activation_completed_at), row.id)
+                for row in modern
+            ),
+            default=None,
+        )
+        legacy = (
+            terminal
+            + " AND cause_kind NOT IN ('blocker','context_handoff') AND wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint IS NULL"
+        )
+        parameters = [agent_id]
+        if latest:
+            # SQLite 3.45 does not range-seek a tuple whose first term is an
+            # expression index. Supply the scalar bound explicitly, then use
+            # the ID to preserve exact ordering within timestamp ties.
+            legacy += (
+                " AND "
+                + DISPATCH_ATTEMPT_KEY
+                + ">=? AND ("
+                + DISPATCH_ATTEMPT_KEY
+                + ">? OR team_dispatches.id>?)"
+            )
+            parameters.extend((latest[0], latest[0], latest[1]))
+        # Probe at most one page of indexed headers before considering the
+        # exact legacy compatibility fallback. Modern attempts fence off all
+        # older legacy history, and a short page proves absence directly.
         with self._read_connection() as connection:
+            headers = connection.execute(
+                "SELECT id FROM team_dispatches INDEXED BY idx_team_dispatches_legacy_attempt WHERE "
+                + legacy
+                + " ORDER BY "
+                + DISPATCH_ATTEMPT_ORDER
+                + " LIMIT 50",
+                parameters,
+            ).fetchall()
+            for header in headers:
+                if connection.execute(
+                    "SELECT EXISTS(SELECT 1 FROM team_dispatch_inbox WHERE dispatch_id=?) OR EXISTS(SELECT 1 FROM team_dispatch_reviews WHERE dispatch_id=?)",
+                    (header[0], header[0]),
+                ).fetchone()[0]:
+                    self.dispatches._load([header[0]])
+                    return list(dict.values(self.dispatches))
+            if len(headers) < 50:
+                return list(dict.values(self.dispatches))
+            # Only legacy databases with a full page of empty newer headers
+            # require this relation-first fallback. Cross-table existence
+            # cannot be encoded in a SQLite expression/partial index.
             ids = [
                 row[0]
                 for row in connection.execute(
                     "WITH scoped(id) AS MATERIALIZED (SELECT dispatch_id FROM team_dispatch_inbox "
                     "UNION SELECT dispatch_id FROM team_dispatch_reviews) "
-                    "SELECT d.id FROM scoped s CROSS JOIN team_dispatches d ON d.id=s.id WHERE "
-                    + terminal
-                    + " AND cause_kind NOT IN ('blocker','context_handoff') AND wake_work_record_fingerprints_json='{}' AND wake_work_fingerprint IS NULL ORDER BY "
+                    "SELECT team_dispatches.id FROM scoped s CROSS JOIN team_dispatches ON team_dispatches.id=s.id WHERE "
+                    + legacy
+                    + " ORDER BY "
                     + DISPATCH_ATTEMPT_KEY
-                    + " DESC,d.id DESC LIMIT 1",
-                    (agent_id,),
+                    + " DESC,team_dispatches.id DESC LIMIT 1",
+                    parameters,
                 )
             ]
         self.dispatches._load(ids)
@@ -382,6 +455,13 @@ class TeamLifecycleScope:
         with self._read_connection() as connection:
             ids = self.repository.task_scope_ids(connection, self)
         self.tasks._load(ids)
+        marks = ",".join("?" for _ in ids)
+        self.query_records("deliverables", "task_id IN (" + marks + ")", ids)
+        self.query_records(
+            "review_requests",
+            "deliverable_id IN (SELECT id FROM team_deliverables WHERE task_id IN (" + marks + "))",
+            ids,
+        )
 
     def work_context_pruning_facts(self, contexts):
         """Read physical cleanup and retention evidence without history models."""
