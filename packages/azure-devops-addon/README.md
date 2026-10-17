@@ -127,6 +127,9 @@ with `status: log_exhausted`.
 Callback intent is saved before sending it. If Azure accepts completion but its
 reply is lost, a matching completed task result lets the next tick recover the
 receipt and finish pending saved logs without sending another callback.
+Terminal attempt budgets are saved before requests, so process interruptions
+consume retries too. Successful log batches reset the log failure budget, allowing
+long final transcripts to drain across more than three batches.
 
 Log forwarding currently supports container-worker sessions. Callbacks also work
 for libvirt sessions or setup failures without an agent. Deploy Evander 0.99.0 or

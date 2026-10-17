@@ -201,15 +201,20 @@ def redact(text, context, token):
     return text
 
 
+def scoped_session(context, directory, session_id):
+    runtime = getattr(context.admin_service, "runtime", None)
+    session = runtime.policy.get_session(session_id) if runtime else None
+    if session is not None and session.directory_path != directory:
+        raise ValueError("Agent session is outside the workflow directory")
+    return session
+
+
 def rendered_logs(context, directory, session_id):
     """Use the worker's existing rendered transcript, without raw event JSON."""
     admin = getattr(context.admin_service, "vm_agent_admin", context.admin_service)
-    runtime = getattr(context.admin_service, "runtime", None)
-    session = runtime.policy.get_session(session_id) if runtime else None
+    session = scoped_session(context, directory, session_id)
     if session is None:
         return {}
-    if session.directory_path != directory:
-        raise ValueError("Agent session is outside the workflow directory")
     metadata = session.metadata if isinstance(session.metadata, dict) else {}
     if (
         session.vm_provider != "container_worker_vm"
@@ -259,6 +264,7 @@ class TaskEffect(EffectProviderBase):
         session_id = str(payload["session_id"]).strip()
         if not session_id:
             raise ValueError("Agent session ID is required")
+        scoped_session(context, directory, session_id)
         key = f"{task.project_id}:{task.pipeline_id}:{task.run_id}"
         store = WorkflowStateStore(context.config_path("runtime_dir"))
         lock_dir = (
@@ -331,10 +337,10 @@ class TaskEffect(EffectProviderBase):
         }
         if state.get("done"):
             status = run.get("result", "inactive") if state.get("completed") else "inactive"
-            if state.get("log_attempts", 0) >= 3:
-                status = "log_exhausted"
-            elif state["attempts"] >= 3:
+            if not state.get("completed") and state["attempts"] >= 3:
                 status = "callback_exhausted"
+            elif state.get("log_attempts", 0) >= 3:
+                status = "log_exhausted"
             return {
                 **output,
                 "done": True,
@@ -377,15 +383,21 @@ class TaskEffect(EffectProviderBase):
         if not active and not state.get("completed"):
             state["done"] = True
             output.update(done=True, status="completed" if state.get("completed") else "inactive")
+        elif not state.get("completed") and state["attempts"] >= 3:
+            state["done"] = True
+            output.update(success=False, done=True, status="callback_exhausted")
         else:
             output["start_required"] = claim and run["owner"] == owner and not run.get("result")
-            # Persist the terminal result before external writes; a restart or late
-            # completion cannot change a failure into a pass.
+            log_exhausted = bool(run.get("result")) and state.get("log_attempts", 0) >= 3
+            if run.get("result") and not log_exhausted:
+                state["log_attempts"] = state.get("log_attempts", 0) + 1
+            # Reserve terminal log attempts before I/O. Healthy batches reset this
+            # budget; interruption or failure consumes it without blocking callbacks.
             store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
             more_logs = False
             log_failed = False
             try:
-                texts = rendered_logs(context, directory, session_id)
+                texts = {} if log_exhausted else rendered_logs(context, directory, session_id)
                 for source, text in texts.items():
                     lines = text.splitlines()
                     cursor = state["cursors"].get(source, {"line": 0, "hash": ""})
@@ -412,36 +424,44 @@ class TaskEffect(EffectProviderBase):
                 # Never persist provider response bodies or log content in run state.
                 state["log_error"] = type(exc).__name__
                 log_failed = True
-            if run.get("result") and (not more_logs or log_failed):
+            if (
+                run.get("result")
+                and not more_logs
+                and not log_failed
+                and not log_exhausted
+                and not state.get("footer")
+            ):
                 try:
-                    if not log_failed and not state.get("footer"):
-                        client.append(
-                            state,
-                            record,
-                            [f"[Evander] {run['result']}: {run.get('summary', '')}"],
-                            live=not state.get("completed"),
-                        )
-                        state["footer"] = True
+                    client.append(
+                        state,
+                        record,
+                        [f"[Evander] {run['result']}: {run.get('summary', '')}"],
+                        live=not state.get("completed"),
+                    )
+                    state["footer"] = True
                 except TaskRequestError:
                     state["log_error"] = "TaskRequestError"
                     log_failed = True
-                if not state.get("completed"):
-                    state["callback_started"] = True
-                    store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
-                    try:
-                        client.complete(run["result"])
-                        state["completed"] = True
-                    except TaskRequestError:
-                        state["attempts"] += 1
-                        output.update(
-                            success=False, retry_delay_seconds=15, status="callback_retry"
-                        )
-                        if state["attempts"] >= 3:
-                            state["done"] = True
-                            output.update(done=True, status="callback_exhausted")
+            if run.get("result") and not log_failed and not log_exhausted:
+                state["log_attempts"] = 0
+            if (
+                run.get("result")
+                and (not more_logs or log_failed or log_exhausted)
+                and not state.get("completed")
+            ):
+                state["callback_started"] = True
+                state["attempts"] += 1
+                store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
+                try:
+                    client.complete(run["result"])
+                    state["completed"] = True
+                except TaskRequestError:
+                    output.update(success=False, retry_delay_seconds=15, status="callback_retry")
+                    if state["attempts"] >= 3:
+                        state["done"] = True
+                        output.update(done=True, status="callback_exhausted")
             if state.get("completed"):
-                if log_failed:
-                    state["log_attempts"] = state.get("log_attempts", 0) + 1
+                if log_failed or log_exhausted:
                     state["done"] = state["log_attempts"] >= 3
                     output.update(
                         success=False,

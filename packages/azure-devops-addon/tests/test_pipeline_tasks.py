@@ -48,6 +48,10 @@ def environment(tmp_path, monkeypatch):
         backend_error=None,
         accepted_results={},
         callback_failure=None,
+        callback_crash=False,
+        callback_calls=0,
+        log_crash=False,
+        log_calls=0,
         task_id=TASK,
     )
     config = GatewayConfig(
@@ -103,6 +107,14 @@ def environment(tmp_path, monkeypatch):
             assert "/Project/_apis/build/" in path
         else:
             assert f"/{PROJECT}/_apis/distributedtask/" in path
+        if path.endswith("/logs/8"):
+            state["log_calls"] += 1
+            if state["log_crash"]:
+                raise SystemExit("Process stopped during final log delivery")
+        if path.endswith("/events"):
+            state["callback_calls"] += 1
+            if state["callback_crash"]:
+                raise SystemExit("Process stopped before Azure accepted completion")
         if state["failure"] and state["failure"] in path:
             return httpx.Response(503, text="sensitive-provider-response host-only-build-token")
         if request.method == "GET" and path.endswith("/builds/42"):
@@ -380,8 +392,9 @@ def test_session_directory_is_checked_before_reading_or_skipping_logs(environmen
     state, run, _ = environment
     state["manifest"].directory_path = "root/other"
     state["manifest"].vm_provider = "libvirt"
-    with pytest.raises(ValueError, match="outside the workflow directory"):
-        run(complete=True, result="failed")
+    for _ in range(4):
+        with pytest.raises(ValueError, match="outside the workflow directory"):
+            run(complete=True, result="failed")
     assert state["events"] == []
 
 
@@ -415,18 +428,65 @@ def test_retried_wait_job_attaches_without_restarting_test_and_gets_saved_result
     assert state["events"][-1]["result"] == "succeeded"
 
 
-def test_callback_retries_are_bounded_and_keep_original_result(environment):
+@pytest.mark.parametrize("failure", ["/events", "/_apis/distributedtask/"])
+def test_callback_retries_are_bounded_and_keep_original_result(environment, failure):
     state, run, _ = environment
     run(claim_start=True)
-    state["failure"] = "/events"
+    state["failure"] = failure
     first = run(complete=True, result="failed")
     assert first["retry_delay_seconds"] == 15
     assert first["status"] == "callback_retry"
     run(complete=True, result="succeeded")
     assert run()["status"] == "callback_exhausted"
     state["failure"] = None
-    assert run()["done"]
+    assert run()["status"] == "callback_exhausted"
     assert state["events"] == []
+
+
+@pytest.mark.parametrize("last_accepted", [False, True])
+def test_callback_budget_survives_process_stops_and_reconciles_last_receipt(
+    environment, last_accepted
+):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["callback_crash"] = True
+    for _ in range(2):
+        with pytest.raises(SystemExit):
+            run(complete=True, result="failed")
+    state["callback_crash"] = not last_accepted
+    state["callback_failure"] = "crash"
+    with pytest.raises(SystemExit):
+        run(complete=True, result="failed")
+    expected = "failed" if last_accepted else "callback_exhausted"
+    recovered = run()
+    assert recovered["done"] and recovered["status"] == expected
+    assert run()["status"] == expected
+    assert state["callback_calls"] == 3
+    assert len(state["events"]) == (1 if last_accepted else 0)
+
+
+@pytest.mark.parametrize("already_completed", [False, True])
+def test_terminal_log_budget_survives_process_stops_without_blocking_callback(
+    environment, already_completed
+):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["text"] += "Pending terminal diagnostics\n"
+    if already_completed:
+        state["failure"] = "/logs/8"
+        assert run(complete=True, result="failed")["status"] == "log_retry"
+        state["failure"] = None
+    remaining_attempts = 2 if already_completed else 3
+    previous_calls = state["log_calls"]
+    state["log_crash"] = True
+    for _ in range(remaining_attempts):
+        with pytest.raises(SystemExit):
+            run(complete=True, result="failed")
+    recovered = run()
+    assert recovered["done"] and recovered["status"] == "log_exhausted"
+    assert run()["status"] == "log_exhausted"
+    assert state["log_calls"] - previous_calls == remaining_attempts
+    assert len(state["events"]) == 1
 
 
 def test_timeout_ends_wait_without_success(environment, monkeypatch):
@@ -483,11 +543,13 @@ def test_setup_callback_retries_azure_read_outages_without_losing_failure(enviro
 def test_large_final_log_is_drained_before_task_completion_and_reset_is_visible(environment):
     state, run, _ = environment
     run(claim_start=True)
-    state["text"] = "\n".join(f"Progress {n}" for n in range(1500)) + "\n"
+    state["text"] = "\n".join(f"Progress {n}" for n in range(4500)) + "\n"
     assert not run(complete=True, result="succeeded")["done"]
+    for _ in range(3):
+        assert not run()["done"]
     assert not state["events"]
     assert run()["done"]
-    assert "Progress 1499" in "".join(state["logs"])
+    assert "Progress 4499" in "".join(state["logs"])
     assert "changed or restarted" in "".join(state["logs"])
 
 
