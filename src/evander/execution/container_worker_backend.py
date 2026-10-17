@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
+import logging
 from datetime import datetime
 from typing import Any
 
 from evander.execution.logs import log_page_from_end as _log_page_from_end
 from evander.config import GatewayConfig
+from evander.model_usage.runtime import model_usage_store
 from evander.worker.models import (
     SAFE_ID_PATTERN,
     WorkerFileWriteRecord,
@@ -49,6 +52,8 @@ from .models import (
     ExecutionStatusKind,
     PreparedExecution,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ContainerWorkerVmExecutionBackend:
@@ -136,6 +141,18 @@ class ContainerWorkerVmExecutionBackend:
                 "nuget_relay_port": config.nuget_relay_port,
             }
         )
+        if spec.codex_turn is not None or spec.codex_runtime is not None:
+            context = model_usage_store(config.runtime_dir).get_correlation_context(
+                metadata.get("dispatch_id")
+            )
+            metadata["inference_usage_context"] = {
+                field: getattr(context, field, None) for field in (
+                    "cost_category", "workflow_run_id", "effect_id", "node_id", "trace_id",
+                )
+            }
+            metadata["inference_usage_context"].update(
+                directory_path=spec.directory_path, dispatch_id=metadata.get("dispatch_id"),
+            )
         return PreparedExecution(
             backend=self.kind,
             execution_id=execution_id,
@@ -202,6 +219,8 @@ class ContainerWorkerVmExecutionBackend:
     def inspect(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
         if mapping.cleanup_status == "cleanup_succeeded" or mapping.last_status == "removed":
+            self._sync_model_usage(mapping)
+            self.repository.put(mapping)
             return self._status_from_record(
                 mapping,
                 "removed",
@@ -227,6 +246,7 @@ class ContainerWorkerVmExecutionBackend:
         mapping.started_at = record.started_at
         mapping.finished_at = record.finished_at
         mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        self._sync_model_usage(mapping)
         self.repository.put(mapping)
         return self._status_from_record(mapping, record.status, message=record.error)
 
@@ -237,6 +257,7 @@ class ContainerWorkerVmExecutionBackend:
         mapping.last_status = record.status
         mapping.finished_at = record.finished_at
         mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        self._sync_model_usage(mapping)
         self.repository.put(mapping)
         return self._status_from_record(mapping, record.status, message=record.error)
 
@@ -285,6 +306,7 @@ class ContainerWorkerVmExecutionBackend:
             )
             raise
         completed_at = now_utc()
+        self._sync_model_usage(mapping)
         self._mark_cleanup_succeeded(
             mapping,
             attempted_at=attempted_at,
@@ -602,6 +624,8 @@ class ContainerWorkerVmExecutionBackend:
             )
             raise
         completed_at = now_utc()
+        for mapping in mappings:
+            self._sync_model_usage(mapping)
         self._mark_session_cleanup_succeeded(
             mappings,
             attempted_at=attempted_at,
@@ -775,6 +799,7 @@ class ContainerWorkerVmExecutionBackend:
             "active_tool",
             "active_tool_interruption",
             "read_only_mounts",
+            "model_usage_capture",
         ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]
@@ -785,6 +810,49 @@ class ContainerWorkerVmExecutionBackend:
             metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status
         return sanitize_metadata(metadata)
+
+    def _sync_model_usage(self, mapping: ContainerWorkerExecutionRecord) -> None:
+        """Import live receipts only. Old jobs have no capture marker or journal entries."""
+        if mapping.metadata.get("model_usage_capture") != 1 or mapping.metadata.get("model_usage_complete"):
+            return
+        try:
+            client = self._client_for_mapping(mapping)
+            cursor = int(mapping.metadata.get("model_usage_cursor", 0))
+            store = model_usage_store(self.config.runtime_dir)
+            worker_id = hashlib.sha256(mapping.worker_url.rstrip("/").encode()).hexdigest()[:16]
+            for _ in range(10):  # Bound each execution poll to 2,000 receipts.
+                page = client.model_usage(mapping.worker_job_id, cursor=cursor)
+                if page.next_cursor < cursor or ((page.has_more or page.events) and page.next_cursor == cursor):
+                    raise ValueError("worker usage cursor did not advance")
+                for event in page.events:
+                    if (
+                        event.session_id != mapping.session_id or event.billing_kind != "subscription"
+                        or event.provider != "openai_chatgpt_subscription"
+                        or event.raw_usage_metadata.get("request_metadata", {}).get("worker_job_id") != mapping.worker_job_id
+                    ):
+                        raise ValueError("worker usage does not belong to this execution")
+                    context = mapping.metadata.get("inference_usage_context") or {}
+                    event = event.model_copy(update={
+                        "event_id": f"worker-{worker_id}:{event.event_id}",
+                        "request_id": f"worker-{worker_id}:{event.request_id}",
+                        "directory_path": mapping.directory_path,
+                        "dispatch_id": mapping.metadata.get("dispatch_id"),
+                        "cost_attribution_recorded": True,
+                        **{field: context.get(field) for field in (
+                            "cost_category", "workflow_run_id", "effect_id", "node_id", "trace_id",
+                        )},
+                    })
+                    store.upsert_event(event)
+                cursor = page.next_cursor
+                mapping.metadata["model_usage_cursor"] = cursor
+                mapping.metadata["model_usage_complete"] = page.complete and not page.has_more
+                mapping.metadata.pop("model_usage_sync_error", None)
+                self.repository.put(mapping)
+                if not page.has_more:
+                    break
+        except Exception as exc:  # Reporting must not fail agent execution or cleanup.
+            mapping.metadata["model_usage_sync_error"] = type(exc).__name__
+            logger.warning("worker_usage_sync_failed exception_class=%s", type(exc).__name__)
 
     def _mark_cleanup_succeeded(
         self,

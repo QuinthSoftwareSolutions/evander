@@ -3,14 +3,16 @@ import { adminHash } from "../../adminRouting";
 import { useAdminUi } from "../admin/AdminContext";
 import { fetchJson } from "../admin/api";
 import { useDocumentVisible } from "../admin/visibility";
-import { browserCostDate, costAccountId, costAccountName, costCategoryName, costColors, costMoney, shiftCostDate,
-  type InferenceCostReport } from "./inferenceCosts";
+import { browserCostDate, costAccountId, costAccountName, costCategoryName, costColors, costMoney, inferenceTokens, shiftCostDate,
+  type InferenceCostReport, type InferenceTokenReport } from "./inferenceCosts";
 import "./inferenceCosts.css";
 
 const H = 300, LEFT = 82, RIGHT = 24, TOP = 22, BOTTOM = 55;
 const plotH = H - TOP - BOTTOM;
 
-function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: "daily" | "total" | "compare"; selected: string[] }) {
+function Chart({ report, kind, selected, tokenReport, colors }: { report: InferenceCostReport;
+  kind: "daily" | "total" | "compare"; selected: string[]; tokenReport?: InferenceTokenReport;
+  colors?: Map<string | null, string> }) {
   const [detail, setDetail] = useState("");
   const figure = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(900);
@@ -20,11 +22,19 @@ function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: 
     const observer = new ResizeObserver(([entry]) => setWidth(Math.max(320, entry.contentRect.width)));
     observer.observe(element);
     return () => observer.disconnect();
-  }, [kind, selected, report]);
+  }, [kind, selected, report, tokenReport]);
+  const tokens = kind === "daily" && !!tokenReport;
+  const daily = tokens ? tokenReport.daily.map((day) => ({ date: day.date, cost: day.total_tokens,
+    categories: day.categories.map((item) => ({ category: item.category, cost: item.total_tokens })) })) : report.daily;
+  const exactValue = tokens ? inferenceTokens : costMoney;
+  const axisValue = tokens ? (value: number) => new Intl.NumberFormat(undefined, {
+    notation: "compact", maximumFractionDigits: 1,
+  }).format(value) : costMoney;
   const plotW = width - LEFT - RIGHT;
-  const barWidth = Math.min(48, plotW / Math.max(1, report.daily.length) * 0.8);
-  const categories = [...new Set(report.groups.map((group) => group.category))];
-  const categoryColors = costColors(categories);
+  const barWidth = Math.min(48, plotW / Math.max(1, daily.length) * 0.8);
+  const categories = [...new Set(tokens ? daily.flatMap((day) => day.categories.map((item) => item.category))
+    : report.groups.map((group) => group.category))];
+  const categoryColors = colors ?? costColors(categories);
   const accountColors = costColors(report.accounts.map((account) => account.id));
   const selectedAccounts = report.accounts.filter((account) => selected.includes(account.id));
   const accounts = selectedAccounts.filter((account) => report.groups.some((group) => costAccountId(group) === account.id && group.priced_events > 0));
@@ -33,32 +43,32 @@ function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: 
     values: report.daily.map((day) => day.cumulative_cost) }]
     : accounts.map((account) => ({ id: account.id, name: costAccountName(account), color: accountColors.get(account.id)!,
       values: report.daily.map((day) => day.accounts.find((item) => item.id === account.id)?.cumulative_cost ?? 0) }));
-  const maximum = Math.max(0.01, ...(kind === "daily" ? report.daily.map((day) => day.cost) : series.flatMap((item) => item.values)));
+  const maximum = Math.max(tokens ? 1 : 0.01, ...(kind === "daily" ? daily.map((day) => day.cost) : series.flatMap((item) => item.values)));
   const y = (value: number) => TOP + plotH * (1 - value / maximum);
-  const x = (index: number) => LEFT + plotW * (index + 1) / Math.max(1, report.daily.length);
-  const title = kind === "daily" ? "Daily inference cost by category" : "Accumulated inference cost";
-  const labelStep = Math.max(1, Math.ceil(report.daily.length / Math.max(2, Math.floor(plotW / 65))));
+  const x = (index: number) => LEFT + plotW * (index + 1) / Math.max(1, daily.length);
+  const title = kind === "daily" ? (tokens ? "Daily inference tokens by category" : "Daily inference cost by category") : "Accumulated inference cost";
+  const labelStep = Math.max(1, Math.ceil(daily.length / Math.max(2, Math.floor(plotW / 65))));
   if (kind === "compare" && !accounts.length) return <p role="status">Costs are unavailable for the selected provider / API key groups.</p>;
   return <figure ref={figure} className="inference-chart">
     <figcaption>{title}</figcaption>
-    <svg viewBox={`0 0 ${width} ${H}`} role="group" aria-label={`${title}, USD by date`}>
+    <svg viewBox={`0 0 ${width} ${H}`} role="group" aria-label={`${title}, ${tokens ? "tokens" : "USD"} by date`}>
       {[0, 1, 2, 3, 4].map((tick) => <g key={tick}>
         <line className="cost-grid-line" x1={LEFT} x2={width - RIGHT} y1={y(maximum * tick / 4)} y2={y(maximum * tick / 4)} />
-        <text x={LEFT - 10} y={y(maximum * tick / 4) + 4} textAnchor="end">{costMoney(maximum * tick / 4)}</text>
+        <text x={LEFT - 10} y={y(maximum * tick / 4) + 4} textAnchor="end">{axisValue(maximum * tick / 4)}</text>
       </g>)}
-      <text x={LEFT} y={13}>USD</text>
-      {report.daily.map((day, index) => index % labelStep === 0 || index === report.daily.length - 1
-        ? <text key={day.date} x={kind === "daily" ? x(index) - plotW / report.daily.length / 2 : x(index)} y={H - 27} textAnchor="middle">{day.date.slice(5)}</text> : null)}
+      <text x={LEFT} y={13}>{tokens ? "Tokens" : "USD"}</text>
+      {daily.map((day, index) => index % labelStep === 0 || index === daily.length - 1
+        ? <text key={day.date} x={kind === "daily" ? x(index) - plotW / daily.length / 2 : x(index)} y={H - 27} textAnchor="middle">{day.date.slice(5)}</text> : null)}
       <text x={width / 2} y={H - 5} textAnchor="middle">Date ({report.timezone})</text>
-      {kind === "daily" ? report.daily.map((day, index) => {
+      {kind === "daily" ? daily.map((day, index) => {
         let offset = 0;
         return categories.map((category) => {
           const amount = day.categories.find((item) => item.category === category)?.cost ?? 0;
           const base = offset; offset += amount;
           if (!amount) return null;
-          const label = `${day.date} · ${costCategoryName(category)}: ${costMoney(amount)}`;
+          const label = `${day.date} · ${costCategoryName(category)}: ${exactValue(amount)}`;
           return <rect className="cost-bar" key={`${day.date}:${JSON.stringify(category)}`} tabIndex={0} role="img" aria-label={label}
-            x={x(index) - plotW / report.daily.length / 2 - barWidth / 2} y={y(offset)}
+            x={x(index) - plotW / daily.length / 2 - barWidth / 2} y={y(offset)}
             width={barWidth} height={Math.max(0, y(base) - y(offset))}
             fill={categoryColors.get(category)} onFocus={() => setDetail(label)} onMouseEnter={() => setDetail(label)}>
             <title>{label}</title>
@@ -121,12 +131,16 @@ export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compa
   const [start, setStart] = useState(initial.get("start") || `${browserCostDate().slice(0, 7)}-01`);
   const [through, setThrough] = useState(initial.get("end") ? shiftCostDate(initial.get("end")!, -1) : browserCostDate());
   const [mode, setMode] = useState(initial.get("mode") === "compare" ? "compare" : "total");
+  const [categoryMetric, setCategoryMetric] = useState(initial.get("category_metric") === "tokens" ? "tokens" : "cost");
   const [selected, setSelected] = useState<string[]>(() => {
     try { const value = JSON.parse(initial.get("groups") || "[]"); return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
     catch { return []; }
   });
   const timezone = initial.get("timezone") || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const [report, setReport] = useState<InferenceCostReport | null>(null);
+  const [tokenReport, setTokenReport] = useState<InferenceTokenReport | null>(null);
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -152,9 +166,24 @@ export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compa
       .catch((reason: unknown) => { if (active) { setError(reason instanceof Error ? reason.message : "Unable to load inference costs"); setLoading(false); } });
     return () => { active = false; controller.abort(); };
   }, [visible, invalidPeriod, period, start, through, timezone, selectedDirectoryPath, refresh, refreshKey]);
+  useEffect(() => {
+    if (compact || categoryMetric !== "tokens" || !visible || invalidPeriod) return;
+    let active = true;
+    const controller = new AbortController();
+    const query = new URLSearchParams({ timezone, directory_path: selectedDirectoryPath });
+    if (period === "custom") { query.set("start", start); query.set("end", shiftCostDate(through, 1)); }
+    setTokenLoading(true); setTokenError(null); setTokenReport(null);
+    fetchJson<InferenceTokenReport>(`/api/admin/reports/inference-tokens?${query}`, { signal: controller.signal })
+      .then((payload) => { if (active) { setTokenReport(payload); setTokenLoading(false); } })
+      .catch((reason: unknown) => { if (active) { setTokenError(reason instanceof Error ? reason.message : "Unable to load token usage"); setTokenLoading(false); } });
+    return () => { active = false; controller.abort(); };
+  }, [compact, categoryMetric, visible, invalidPeriod, period, start, through, timezone, selectedDirectoryPath, refresh, refreshKey]);
+  const categoryColors = costColors(tokenReport?.daily.flatMap((day) => day.categories.map((item) => item.category)) ?? [],
+    costColors(report?.groups.map((group) => group.category) ?? []));
   const reportLink = adminHash("reports", { view: "inference-costs", timezone, directory_path: selectedDirectoryPath,
     start: period === "custom" ? start : null, end: period === "custom" ? shiftCostDate(through, 1) : null,
-    mode, groups: mode === "compare" ? JSON.stringify(selected) : null });
+    mode, groups: mode === "compare" ? JSON.stringify(selected) : null,
+    category_metric: categoryMetric === "tokens" ? "tokens" : null });
   return <section className={`inference-cost-panel ${compact ? "inference-cost-compact" : ""}`} aria-label="Inference costs">
     <div className="cost-toolbar"><div><h2>Inference costs</h2><p className="muted-text">API costs · {period === "mtd" ? "Month to date" : "Custom period"} · {timezone}</p></div>
       {compact ? <a href={reportLink}>Full cost report</a> : <button type="button" onClick={() => setRefresh((value) => value + 1)}>Refresh costs</button>}
@@ -188,7 +217,24 @@ export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compa
         : mode === "compare" && !selected.some((id) => report.accounts.some((account) => account.id === id))
         ? <p>Select one or more provider / API key groups to compare.</p>
         : <Chart report={report} kind={mode === "compare" ? "compare" : "total"} selected={selected} />}
-      {!compact && <>{(report.coverage.priced_events > 0 || !report.coverage.partial) && <Chart report={report} kind="daily" selected={[]} />}<CostTable report={report} /></>}
+      {!compact && <>
+        <div className="cost-controls"><label>Category chart<select aria-label="Category chart" value={categoryMetric}
+          onChange={(event) => {
+            setCategoryMetric(event.target.value);
+            const params = new URLSearchParams(reportLink.split("?")[1] ?? "");
+            if (event.target.value === "tokens") params.set("category_metric", "tokens"); else params.delete("category_metric");
+            window.history.replaceState(null, "", `${reportLink.split("?")[0]}?${params}`);
+          }}><option value="cost">Cost</option><option value="tokens">Tokens</option></select></label></div>
+        {categoryMetric === "tokens" ? <>
+          <p className="muted-text">Total tokens from recorded API and subscription inference. Earlier subscription history may be incomplete.</p>
+          {tokenError ? <p role="alert">{tokenError}</p> : tokenLoading ? <p role="status">Loading token usage…</p> : tokenReport && <>
+            {tokenReport.coverage.partial && <p role="status">Partial token usage: {tokenReport.coverage.unavailable_events.toLocaleString()} {tokenReport.coverage.unavailable_events === 1 ? "usage record lacks token counts and is" : "usage records lack token counts and are"} excluded.</p>}
+            {tokenReport.coverage.available_events > 0 ? <Chart key="tokens" report={report} tokenReport={tokenReport} kind="daily" selected={[]} colors={categoryColors} />
+              : <p role="status">No token counts are available for this period.</p>}
+          </>}
+        </> : (report.coverage.priced_events > 0 || !report.coverage.partial) && <Chart key="cost" report={report} kind="daily" selected={[]} colors={categoryColors} />}
+        <CostTable report={report} />
+      </>}
     </>}
   </section>;
 }

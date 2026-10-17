@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import datetime
 
 from .models import ModelInferenceUsageEvent, ModelUsageCorrelationContext
+from .cost_balances import model_usage_request_key
 
 
 def ensure_cost_report_tracking(connection: sqlite3.Connection) -> None:
@@ -86,6 +88,42 @@ class CostReportSnapshot:
             "SELECT payload_json FROM model_usage_events ORDER BY occurred_at, event_id"
         ):
             yield ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+
+    def events_in_period(
+        self, *, start: datetime, end: datetime, directory_path: str,
+        include_request_siblings: bool = False,
+    ) -> Iterable[ModelInferenceUsageEvent]:
+        """Use the source period index, without building or migrating a projection."""
+        events: dict[str, ModelInferenceUsageEvent] = {}
+        for row in self.connection.execute(
+            "SELECT payload_json FROM model_usage_events WHERE occurred_at>=? AND occurred_at<? "
+            "AND (directory_path=? OR substr(directory_path,1,?)=? "
+            "OR (?='root' AND directory_path IS NULL)) ORDER BY occurred_at,event_id",
+            (start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z"),
+             directory_path, len(directory_path) + 1, directory_path + "/", directory_path),
+        ):
+            event = ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+            events[event.event_id] = event
+        if include_request_siblings:
+            # A transcript's canonical timestamp can lie on the other side of a
+            # report boundary. Resolve its relay siblings before deduplication.
+            requests: dict[str, set[str]] = {}
+            for event in events.values():
+                key = model_usage_request_key(event)
+                if event.provider == "anthropic" and key is not None:
+                    requests.setdefault(key[0], set()).add(key[1])
+            for session_id, keys in requests.items():
+                identities = sorted(keys)
+                for offset in range(0, len(identities), 400):
+                    chunk = identities[offset:offset + 400]
+                    placeholders = ",".join("?" for _ in chunk)
+                    for row in self.connection.execute(
+                        f"SELECT payload_json FROM model_usage_events WHERE session_id=? "
+                        f"AND cost_request_key IN ({placeholders})", (session_id, *chunk),
+                    ):
+                        event = ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+                        events[event.event_id] = event
+        yield from events.values()
 
     def event_ids_for(self, *, field: str, values: Iterable[str]) -> set[str]:
         if field not in {"session_id", "dispatch_id"}:

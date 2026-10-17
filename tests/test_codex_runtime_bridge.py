@@ -501,6 +501,35 @@ def test_runtime_bounds_clients_before_they_supply_a_command(tmp_path):
         bridge.close()
 
 
+def test_broker_records_parent_and_child_usage_outside_private_diagnostics(broker, tmp_path):
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+
+    bridge, _ = broker
+    journal = WorkerUsageJournal(tmp_path / "usage.db")
+    bridge.usage_recorder_factory = lambda model: SubscriptionUsageRecorder(
+        job_id="job", session_id="session", context={"model": model}, sink=journal.append,
+    )
+
+    class UsageProcess(NativeProcess):
+        def request(self, method, params):
+            if method == "turn/start":
+                for thread, turn, total in [("thread-test", "parent-turn", 50), ("child-thread", "child-turn", 10)]:
+                    self.notify_handler("turn/started", {"threadId": thread, "turn": {"id": turn}})
+                    self.notify_handler("thread/tokenUsage/updated", {
+                        "threadId": thread, "turnId": turn, "tokenUsage": {
+                            "total": {"totalTokens": total}, "last": {"totalTokens": total},
+                        },
+                    })
+                    self.notify_handler("turn/completed", {"threadId": thread, "turn": {"id": turn, "status": "completed"}})
+            return super().request(method, params)
+
+    bridge.process_factory = UsageProcess
+    frames = exchange(bridge, {"argv": ["exec", "test"], "cwd": "/home/agent", "environment": {}})
+    assert frames[-1] == {"exit_code": 0}
+    assert bridge.close()
+    assert [event.total_tokens for event in journal.page("job").events] == [50, 10]
+
+
 def exchange(bridge, header, *messages):
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(5)

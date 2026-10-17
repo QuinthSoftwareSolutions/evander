@@ -44,7 +44,8 @@ Git, and HTTP surfaces.
 - A host-side Codex subscription quota query for scheduled capacity reports, with
   remaining percentages, reset timestamps, and explicit unavailable results
 - Session cost categories with per-prompt overrides, a dashboard cost chart, and
-  [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
+  [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day,
+  with a daily category chart that can also show API and subscription token usage
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
   choice/score/boolean evaluations, Smart switch routing, a structured editor, Jev, and a
   opt-in [OpenAI Decisions](docs/classification.md#openai-decisions)

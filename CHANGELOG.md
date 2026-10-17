@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-17 - View daily inference categories by token usage (0.100.0)
+
+- Add a Cost / Tokens selector to the daily category chart, including recorded API and subscription inference without requiring pricing. Keep dashboard and monetary summaries unchanged.
+- Record new subscription App Server usage on workers, including child turns, and import credential-free receipts through authenticated, paginated execution reconciliation. Preserve dispatch-time categories and deduplicate repeated counters and deliveries.
+- Retain worker receipts through restarts and session cleanup. Show unavailable token counts as partial coverage; historical subscription imports remain manual, with no automatic migration or recovery.
+
 ## 2026-10-16 - Azure pipeline task callbacks and live agent logs (0.99.0)
 
 - Add optional Azure DevOps effects for host-authenticated task completion and forwarding rendered agent progress into live and saved pipeline logs.

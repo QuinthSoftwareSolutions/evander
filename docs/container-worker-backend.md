@@ -763,6 +763,27 @@ The response contains `outcome` (`reset`, `alreadyRedeemed`, `nothingToReset`, o
 and the refreshed `profile`. Provider selection applies when `credit_id` is omitted. This requires
 a worker Codex App Server version supporting `account/rateLimitResetCredit/consume`.
 
+### Subscription token reporting
+
+Updated worker daemons record new subscription inference counters from live Codex
+App Server notifications, including child turns in brokered runtimes. Counters
+are written to `worker-inference-usage.db` in the worker runtime directory,
+independently of session files and private diagnostics. The journal contains
+numeric usage and attribution metadata, without prompts or credentials.
+
+The control plane imports receipts during execution inspection, stop, and cleanup
+using `GET /v1/jobs/{id}/model-usage?cursor=0&limit=200`. This authenticated endpoint
+returns `events`, `next_cursor`, `has_more`, and `complete`; limits are 1–500.
+`complete` means the job is terminal and all native writers have stopped.
+Stable event identities and durable cursors make retries idempotent. Failed
+imports leave receipts on the worker for a later execution reconciliation.
+
+Deploy both the control plane and worker daemon to collect new subscription
+usage. Existing jobs without a capture marker are not scanned, and startup does
+not import old session histories. Historical backfills are separate manual
+operator actions. Subscription counters contribute to the report's token chart
+and remain excluded from its API monetary totals.
+
 ## Session Durability
 
 Durable state lives under:
@@ -1137,6 +1158,7 @@ Routes:
 - `DELETE /v1/codex-auth`
 - `POST /v1/jobs`
 - `GET /v1/jobs/{id}`
+- `GET /v1/jobs/{id}/model-usage`
 - `POST /v1/jobs/{id}/stop`
 - `DELETE /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/logs`

@@ -83,6 +83,7 @@ class ModelUsageAdminService:
     def __init__(self, dependencies: ModelUsageAdminDependencies) -> None:
         self._deps = dependencies
         self._inference_cost_report = None
+        self._inference_token_report = None
 
     def _cost_report(self):
         from evander.model_usage.inference_report import InferenceCostReport
@@ -101,6 +102,13 @@ class ModelUsageAdminService:
 
     def read_inference_cost_report(self, **kwargs) -> dict[str, Any]:
         return self._cost_report().read(catalog=self._optional_pricing_catalog(), **kwargs)
+
+    def read_inference_token_report(self, **kwargs) -> dict[str, Any]:
+        from evander.model_usage.token_report import InferenceTokenReport
+
+        if self._inference_token_report is None:
+            self._inference_token_report = InferenceTokenReport(model_usage_store(self._runtime_dir))
+        return self._inference_token_report.read(**kwargs)
 
     def set_inference_cost_categories(
         self,
