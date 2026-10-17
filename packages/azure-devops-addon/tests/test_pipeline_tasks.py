@@ -15,6 +15,7 @@ from evander.admin.services.container_worker_assignment_service import (
 )
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.policy import PolicyEngine
 from evander.worker.models import WorkerJobRecord
 from evander.worker.service import WorkerDaemon
 from evander_azure_devops_addon import pipeline_tasks as tasks
@@ -61,7 +62,10 @@ def environment(tmp_path, monkeypatch):
         azure_devops_pat_env="BUILD_PAT",
     )
     session = SimpleNamespace(
-        directory_path="root/test", vm_provider="container_worker_vm", metadata={}
+        directory_path="root/test",
+        vm_provider="container_worker_vm",
+        metadata={},
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     state["manifest"] = session
 
@@ -81,10 +85,12 @@ def environment(tmp_path, monkeypatch):
             raise state["backend_error"]
         return backend
 
+    policy = SimpleNamespace(
+        session_store=SimpleNamespace(get_session=lambda _: session if state["session"] else None)
+    )
+    policy.get_session = lambda session_id: PolicyEngine.get_session(policy, session_id)
     admin = SimpleNamespace(
-        runtime=SimpleNamespace(
-            policy=SimpleNamespace(get_session=lambda _: session if state["session"] else None)
-        ),
+        runtime=SimpleNamespace(policy=policy),
         vm_agent_admin=SimpleNamespace(container_worker_backend=resolve_backend),
     )
     context = EffectRuntimeContext(
@@ -268,6 +274,25 @@ def test_lost_callback_acknowledgement_keeps_final_log_recovery(environment, fai
     assert len(state["events"]) == 1
 
 
+def test_last_transport_failure_reconciles_receipt_without_a_fourth_callback(environment):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["failure"] = "/events"
+    for _ in range(2):
+        assert run(complete=True, result="failed")["status"] == "callback_retry"
+    state["text"] += "Diagnostics pending on the last callback\n"
+    state["failure"] = "/logs/8"
+    state["callback_failure"] = "transport"
+    assert run()["status"] == "callback_retry"
+    assert state["callback_calls"] == 3
+    state["failure"] = None
+    recovered = run()
+    assert recovered["done"] and recovered["status"] == "failed"
+    assert "Diagnostics pending on the last callback" in "".join(state["logs"])
+    assert state["callback_calls"] == 3
+    assert len(state["events"]) == 1
+
+
 @pytest.mark.parametrize("result", ["canceled", "succeeded"])
 def test_unmatched_remote_result_does_not_resume_logs_after_callback_failure(environment, result):
     state, run, _ = environment
@@ -388,10 +413,13 @@ def test_worker_assignment_failure_keeps_callback_and_log_retries_bounded(enviro
     assert len(state["events"]) == 1
 
 
-def test_session_directory_is_checked_before_reading_or_skipping_logs(environment):
+@pytest.mark.parametrize("expired", [False, True])
+def test_session_directory_is_checked_before_reading_or_skipping_logs(environment, expired):
     state, run, _ = environment
     state["manifest"].directory_path = "root/other"
     state["manifest"].vm_provider = "libvirt"
+    if expired:
+        state["manifest"].expires_at = datetime.now(UTC) - timedelta(seconds=1)
     for _ in range(4):
         with pytest.raises(ValueError, match="outside the workflow directory"):
             run(complete=True, result="failed")
@@ -437,6 +465,7 @@ def test_callback_retries_are_bounded_and_keep_original_result(environment, fail
     assert first["retry_delay_seconds"] == 15
     assert first["status"] == "callback_retry"
     run(complete=True, result="succeeded")
+    assert run()["status"] == "callback_retry"
     assert run()["status"] == "callback_exhausted"
     state["failure"] = None
     assert run()["status"] == "callback_exhausted"
@@ -527,6 +556,14 @@ def test_setup_failure_can_complete_without_an_agent(environment):
     state["session"] = False
     assert run(complete=True, result="failed", summary="Environment readiness failed")["done"]
     assert state["events"][0]["result"] == "failed"
+
+
+def test_expired_session_can_complete_without_reading_worker_logs(environment):
+    state, run, _ = environment
+    state["manifest"].expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    assert run(complete=True, result="failed")["done"]
+    assert state["events"][0]["result"] == "failed"
+    assert state["modes"] == []
 
 
 def test_setup_callback_retries_azure_read_outages_without_losing_failure(environment):

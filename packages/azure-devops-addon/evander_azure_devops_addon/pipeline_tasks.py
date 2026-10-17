@@ -18,6 +18,7 @@ from evander.addons import addon_runtime_dir
 from evander.effects.providers.base import EffectProviderBase, scoped_effect_directory_path
 from evander.events.models import ConfigValue
 from evander.optional_integrations import require_azure_devops_module
+from evander.policy import PolicyError
 from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEditorNodeCatalogEntry
 from evander.workflow.contracts import register_node_output_schema
 from evander.workflow.plugins import ProviderPluginRegistration
@@ -203,10 +204,19 @@ def redact(text, context, token):
 
 def scoped_session(context, directory, session_id):
     runtime = getattr(context.admin_service, "runtime", None)
-    session = runtime.policy.get_session(session_id) if runtime else None
+    if runtime is None:
+        return None
+    try:
+        session = runtime.policy.get_session(session_id)
+        active = True
+    except PolicyError:
+        # Inactive sessions still have to satisfy directory ownership, but their
+        # absence/expiry must not prevent reporting setup or terminal failure.
+        session = runtime.policy.session_store.get_session(session_id)
+        active = False
     if session is not None and session.directory_path != directory:
         raise ValueError("Agent session is outside the workflow directory")
-    return session
+    return session if active else None
 
 
 def rendered_logs(context, directory, session_id):
@@ -457,9 +467,9 @@ class TaskEffect(EffectProviderBase):
                     state["completed"] = True
                 except TaskRequestError:
                     output.update(success=False, retry_delay_seconds=15, status="callback_retry")
-                    if state["attempts"] >= 3:
-                        state["done"] = True
-                        output.update(done=True, status="callback_exhausted")
+                    # Even the last response may have been lost after acceptance.
+                    # The next inspection reconciles its receipt or exhausts the
+                    # budget above, without sending another callback.
             if state.get("completed"):
                 if log_failed or log_exhausted:
                     state["done"] = state["log_attempts"] >= 3

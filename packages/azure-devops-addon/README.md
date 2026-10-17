@@ -130,6 +130,10 @@ receipt and finish pending saved logs without sending another callback.
 Terminal attempt budgets are saved before requests, so process interruptions
 consume retries too. Successful log batches reset the log failure budget, allowing
 long final transcripts to drain across more than three batches.
+After the last unsuccessful callback response, one final receipt check can recover
+an accepted completion; it never sends a fourth callback. Missing or expired agent
+sessions do not block callbacks, while stored manifests still enforce directory
+ownership.
 
 Log forwarding currently supports container-worker sessions. Callbacks also work
 for libvirt sessions or setup failures without an agent. Deploy Evander 0.99.0 or
