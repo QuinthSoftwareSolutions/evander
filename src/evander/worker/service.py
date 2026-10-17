@@ -114,6 +114,7 @@ from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
 from .store import WorkerJobStore
+from .model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
 
 __all__ = [
     "WorkerDaemon",
@@ -329,6 +330,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         )
         self._codex_runtime_bridges: dict[str, CodexRuntimeBridge] = {}
         self._job_record_update_lock = threading.RLock()
+        self.usage_journal = WorkerUsageJournal(runtime_dir / "worker-inference-usage.db")
         self.mssql = mssql_provisioner or WorkerMssqlProvisioner(
             enabled=mssql_enabled,
             store=WorkerMssqlStore(runtime_dir / "mssql-state.json"),
@@ -693,12 +695,14 @@ class WorkerDaemon(GitWorkspaceOperations):
                     {
                         "codex_runtime_profile": request.codex_runtime.profile_id,
                         "subscription_profile_id": request.codex_runtime.subscription_profile_id,
+                        "model_usage_capture": 1,
                     }
                     if request.codex_runtime
                     else {}
                 )
                 | (
-                    {"codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION.value}
+                    {"codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION.value,
+                     "model_usage_capture": 1}
                     if subscription_tokens is not None
                     else {}
                 )
@@ -781,6 +785,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     max_processes=runtime_profile.max_processes,
                     diagnostics=diagnostics,
                     on_drained=lambda: self._codex_runtime_drained(job_id),
+                    usage_recorder_factory=lambda model: self._usage_recorder(record, model=model),
                 )
                 self._codex_runtime_bridges[job_id] = bridge
                 bridge.start()
@@ -818,6 +823,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                 log_path=self._log_path(record),
                 finished_marker=subscription_marker,
                 metadata_callback=lambda update: self._merge_job_metadata(job_id, update),
+                usage_recorder=self._usage_recorder(record, model=request.codex_turn.model),
                 token_refresher=lambda **kwargs: self.codex_auth_profiles.refresh_tokens(
                     subscription_profile_id,
                     **kwargs,
@@ -1193,6 +1199,29 @@ class WorkerDaemon(GitWorkspaceOperations):
             if active_tool is not None:
                 return active_tool
         return None
+
+    def model_usage_page(self, record: WorkerJobRecord, *, cursor: int = 0, limit: int = 200):
+        # Sample producer eligibility before the rows snapshot. A final writer
+        # can append and leave its map while the page query is in progress.
+        writers_stopped = (
+            record.status in {"exited", "stopped", "failed", "removed", "cleanup_failed"}
+            and record.job_id not in self._codex_subscription_runners
+            and record.job_id not in self._codex_runtime_bridges
+        )
+        return self.usage_journal.page(
+            record.job_id, cursor=cursor, limit=limit, writers_stopped=writers_stopped,
+        )
+
+    def _usage_recorder(self, record: WorkerJobRecord, *, model: str | None = None):
+        context = record.metadata.get("inference_usage_context")
+        context = dict(context) if isinstance(context, dict) else {}
+        context.setdefault("directory_path", record.metadata.get("directory_path"))
+        context.setdefault("dispatch_id", record.metadata.get("dispatch_id"))
+        context["model"] = model or record.metadata.get("model")
+        return SubscriptionUsageRecorder(
+            job_id=record.job_id, session_id=record.session_id,
+            context=context, sink=self.usage_journal.append,
+        )
 
     def _merge_job_metadata(self, job_id: str, update: dict[str, Any]) -> None:
         with self._job_record_update_lock:

@@ -36,6 +36,7 @@ from evander.worker.models import (
     WorkerTelemetryPayload,
 )
 from evander.worker.security import sanitize_metadata, sanitize_text
+from evander.worker.model_usage import WorkerUsagePage
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,12 @@ class ContainerWorkerClient:
     def get(self, job_id: str) -> WorkerJobRecord:
         response = self._request("GET", f"/v1/jobs/{job_id}")
         return WorkerJobRecord.model_validate(self._json_dict(response, operation="get job"))
+
+    def model_usage(self, job_id: str, *, cursor: int = 0, limit: int = 200) -> WorkerUsagePage:
+        response = self._request(
+            "GET", f"/v1/jobs/{job_id}/model-usage", params={"cursor": cursor, "limit": limit},
+        )
+        return WorkerUsagePage.model_validate(self._json_dict(response, operation="model usage"))
 
     def stop(self, job_id: str) -> WorkerJobRecord:
         response = self._request("POST", f"/v1/jobs/{job_id}/stop")

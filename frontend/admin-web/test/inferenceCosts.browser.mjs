@@ -27,6 +27,21 @@ const report = {
   ],
 };
 
+const tokenReport = {
+  period_start: report.period_start, period_end: report.period_end, timezone: report.timezone,
+  directory_path: "root", total_tokens: 1_250_000,
+  coverage: { available_events: 5, unavailable_events: 1, partial: true },
+  daily: [
+    { date: "2026-09-27", total_tokens: 700_000, categories: [
+      { category: "Development", total_tokens: 200_000 }, { category: "Research", total_tokens: 500_000 },
+    ] },
+    { date: "2026-09-28", total_tokens: 550_000, categories: [
+      { category: "Development", total_tokens: 300_000 }, { category: "Research", total_tokens: 200_000 },
+      { category: null, total_tokens: 50_000 },
+    ] },
+  ],
+};
+
 test("cost dashboard links to a reconciled report and retains group selection", { timeout: 60_000 }, async (t) => {
   const html = `<html><head><script type="module" src="/@vite/client"></script></head><body><div id="root"></div>
     <script type="module">
@@ -63,11 +78,15 @@ test("cost dashboard links to a reconciled report and retains group selection", 
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const requests = [];
+  const tokenRequests = [];
   let response = report;
+  let tokenResponse = tokenReport;
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/inference-costs")) requests.push(url);
+    if (url.pathname.endsWith("/inference-tokens")) tokenRequests.push(url);
     const payload = url.pathname.endsWith("/inference-costs") ? response
+      : url.pathname.endsWith("/inference-tokens") ? tokenResponse
       : url.pathname.endsWith("/conformance") ? { reports: [] } : { graphs: [] };
     return route.fulfill({ contentType: "application/json", body: JSON.stringify(payload) });
   });
@@ -76,6 +95,8 @@ test("cost dashboard links to a reconciled report and retains group selection", 
   assert.equal(requests[0].searchParams.get("timezone"), "Europe/Stockholm");
   assert.equal(requests[0].searchParams.has("start"), false);
   assert.equal(await page.getByRole("table").count(), 0);
+  assert.equal(await page.getByLabel("Category chart").count(), 0);
+  assert.equal(tokenRequests.length, 0);
   await page.getByLabel("Accumulated chart").selectOption("compare");
   await page.getByRole("img", { name: "2026-09-28 · anthropic / Unknown key: $3.00 accumulated", exact: true }).waitFor();
   await page.getByLabel("Provider / API key", { exact: true }).selectOption([primary]);
@@ -92,6 +113,25 @@ test("cost dashboard links to a reconciled report and retains group selection", 
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("img", { name: "2026-09-27 · Development: $8.00", exact: true }).focus();
   assert.match(await page.locator(".cost-chart-detail").last().textContent(), /Development: \$8.00/);
+  const developmentColor = await page.getByRole("img", { name: "2026-09-27 · Development: $8.00", exact: true }).getAttribute("fill");
+  await page.getByLabel("Category chart", { exact: true }).selectOption("tokens");
+  await page.getByRole("img", { name: "2026-09-27 · Research: 500,000 tokens", exact: true }).focus();
+  assert.match(await page.locator(".cost-chart-detail").last().textContent(), /Research: 500,000 tokens/);
+  assert.match(await page.getByRole("status").last().innerText(), /1 usage record lacks token counts/);
+  assert.equal(await page.getByRole("img", { name: "2026-09-27 · Development: 200,000 tokens", exact: true }).getAttribute("fill"), developmentColor);
+  assert.match(await page.locator("tfoot").innerText(), /\$13\.00/);
+  assert.equal(await page.getByRole("table").getByText("Research", { exact: true }).count(), 0);
+  assert.match(page.url(), /category_metric=tokens/);
+  await page.screenshot({ path: "/tmp/evander-inference-token-report-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "/tmp/evander-inference-token-report-mobile.png", fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.reload();
+  await page.getByRole("img", { name: "2026-09-27 · Research: 500,000 tokens", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Category chart", { exact: true }).inputValue(), "tokens");
+  await page.getByLabel("Category chart", { exact: true }).selectOption("cost");
+  await page.getByRole("img", { name: "2026-09-27 · Development: $8.00", exact: true }).waitFor();
+  assert.equal(await page.getByRole("img", { name: "2026-09-27 · Development: $8.00", exact: true }).getAttribute("fill"), developmentColor);
   await page.getByLabel("Period", { exact: true }).selectOption("custom");
   await page.getByLabel("From", { exact: true }).fill("2026-03-29");
   await Promise.all([page.waitForResponse((res) => res.url().includes("end=2026-03-31")),
@@ -106,5 +146,14 @@ test("cost dashboard links to a reconciled report and retains group selection", 
   await page.getByText("Partial total", { exact: true }).waitFor();
   assert.match(await page.getByRole("table").innerText(), /Unavailable/);
   assert.equal(await page.getByRole("img").count(), 0);
+  tokenResponse = { ...tokenReport, coverage: { available_events: 0, unavailable_events: 1, partial: true } };
+  await page.getByLabel("Category chart", { exact: true }).selectOption("tokens");
+  await page.getByText("No token counts are available for this period.", { exact: true }).waitFor();
+  assert.equal(tokenRequests.at(-1).searchParams.get("start"), "2026-03-29");
+  assert.equal(tokenRequests.at(-1).searchParams.get("end"), "2026-03-31");
+  tokenResponse = tokenReport;
+  await page.getByRole("button", { name: "Refresh costs", exact: true }).click();
+  await page.getByRole("img", { name: "2026-09-27 · Research: 500,000 tokens", exact: true }).waitFor();
+  assert.match(await page.getByRole("table").innerText(), /Unavailable/);
   assert.deepEqual(errors, []);
 });

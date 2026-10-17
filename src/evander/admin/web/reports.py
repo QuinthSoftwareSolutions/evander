@@ -96,14 +96,15 @@ def report_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
-    async def inference_costs(request: Request) -> JSONResponse:
+    async def inference_report(request: Request, *, tokens: bool = False) -> JSONResponse:
         directory = request.query_params.get("directory_path", "root")
         try:
             auth.require_permission(
                 request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory
             )
             payload = await run_in_threadpool(
-                service.model_usage_admin.read_inference_cost_report,
+                (service.model_usage_admin.read_inference_token_report if tokens
+                 else service.model_usage_admin.read_inference_cost_report),
                 start=_parse_cost_boundary(
                     request.query_params.get("start"),
                     timezone=request.query_params.get("timezone", "UTC"),
@@ -120,6 +121,12 @@ def report_routes(
             return json_error(str(exc), status_code=403)
         except ValueError as exc:
             return json_error(str(exc))
+
+    async def inference_costs(request: Request) -> JSONResponse:
+        return await inference_report(request)
+
+    async def inference_tokens(request: Request) -> JSONResponse:
+        return await inference_report(request, tokens=True)
 
     async def inference_cost_categories(request: Request) -> JSONResponse:
         directory = request.query_params.get("directory_path", "root")
@@ -227,6 +234,7 @@ def report_routes(
 
     return [
         Route("/api/admin/reports/inference-costs", inference_costs, methods=["GET"]),
+        Route("/api/admin/reports/inference-tokens", inference_tokens, methods=["GET"]),
         Route("/api/admin/inference-cost-categories", inference_cost_categories, methods=["GET"]),
         Route(
             "/api/admin/reports/workflow-graph-activity",

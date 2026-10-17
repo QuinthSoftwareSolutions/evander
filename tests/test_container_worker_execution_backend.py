@@ -239,6 +239,7 @@ def _backend(
 ) -> ContainerWorkerVmExecutionBackend:
     config = GatewayConfig(
         runtime_dir=tmp_path,
+        session_store_path=tmp_path / "sessions.json",
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_default_image="runner:latest",
@@ -250,6 +251,306 @@ def _backend(
             tmp_path / "container-worker-executions.json"
         ),
     )
+
+
+@pytest.mark.parametrize("recorded", [None, False, True])
+def test_subscription_category_falls_back_only_without_recorded_attribution(tmp_path, recorded):
+    from datetime import UTC, datetime
+    from evander.codex_auth import CodexTurnSpec
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from evander.model_usage.runtime import register_model_usage_correlation_context
+
+    backend = _backend(tmp_path)
+    sessions = JsonSessionManifestRepository(backend.config.session_store_path)
+    session = SessionManifest(
+        session_id="session-1", allowed_tools=[], expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+        cost_category="Session category",
+    )
+    sessions.put(session.session_id, session)
+    if recorded is not None:
+        register_model_usage_correlation_context(
+            runtime_dir=tmp_path, session_id="session-1", dispatch_id="dispatch-1",
+            cost_category=None, cost_attribution_recorded=recorded,
+        )
+    prepared = backend.prepare(ExecutionSpec(
+        backend="container_worker_vm", target_name="exec-usage", session_id="session-1",
+        command=["true"],
+        codex_turn=CodexTurnSpec(auth_mode="chatgpt_subscription", prompt="test", model="test-model"),
+        metadata={"dispatch_id": "dispatch-1"} if recorded is not None else {},
+    ))
+    sessions.put(session.session_id, session.model_copy(update={"cost_category": "Later category"}))
+    handle = backend.start(prepared)
+    assert handle.metadata["inference_usage_context"]["cost_category"] == (
+        None if recorded else "Session category"
+    )
+
+
+def test_terminal_receipt_delivery_continues_after_paging_failure_and_host_restart(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from evander.model_usage.runtime import model_usage_store
+    from evander.orchestration.providers.agent_defaults import build_agent_default_effect_handlers
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+
+    journal = WorkerUsageJournal(tmp_path / "worker" / "usage.db")
+
+    class UsageClient(FakeContainerWorkerClient):
+        unavailable = False
+        calls = []
+
+        def model_usage(self, job_id, *, cursor=0, limit=200):
+            self.calls.append(job_id)
+            if self.unavailable:
+                raise ContainerWorkerClientError("temporarily unavailable")
+            page = journal.page(job_id, cursor=cursor, limit=1)
+            page.complete = True
+            return page
+
+    client = UsageClient()
+    client.metadata_by_job["exec-usage"] = {"model_usage_capture": 1}
+    client.status_by_job["exec-usage"] = "stopped"
+    backend = _backend(tmp_path, client)
+    handle = backend.start(backend.prepare(ExecutionSpec(
+        backend="container_worker_vm", target_name="exec-usage", session_id="session-1",
+        command=["true"],
+    )))
+    writer = SubscriptionUsageRecorder(
+        job_id="exec-usage", session_id="session-1", sink=journal.append, context={},
+    )
+    writer.expect_turn("thread")
+    for total in range(10, 111, 10):
+        writer.notification("thread/tokenUsage/updated", {
+            "threadId": "thread", "turnId": "turn", "tokenUsage": {
+                "total": {"totalTokens": total}, "last": {"totalTokens": 10},
+            },
+        })
+    writer.notification("turn/completed", {
+        "threadId": "thread", "turn": {"id": "turn", "status": "completed"},
+    })
+    assert backend.inspect(handle).status == ExecutionStatusKind.STOPPED
+    assert len(model_usage_store(tmp_path).list_events()) == 10
+    client.unavailable = True
+    backend.destroy(handle)
+    # An old terminal mapping is deliberately outside the new delivery queue.
+    backend.repository.put(ContainerWorkerExecutionRecord(
+        execution_id="old", session_id="old", worker_job_id="old", target_name="old",
+        worker_url=client.base_url, last_status="stopped",
+    ))
+    monkeypatch.setattr(
+        ContainerWorkerVmExecutionBackend, "_client_for_mapping", lambda self, mapping: client,
+    )
+    worker = SimpleNamespace(config=backend.config, _wake_notifier=SimpleNamespace(notify=lambda: None))
+    factory = SimpleNamespace(registry=SimpleNamespace(registered_types=lambda: []))
+    _events, reconciliation, completion = build_agent_default_effect_handlers(provider_factory=factory)
+    for hook in completion:
+        hook.initialize(worker=worker)
+
+    def reconcile():
+        reconciliation[0].reconcile(worker=worker, graph=None)
+        lane = reconciliation[0]._hook
+        if lane._future is not None:
+            lane._future.result(timeout=5)
+        lane.poll(worker=worker)
+
+    try:
+        reconcile()  # Failure after completion is retained for a later attempt.
+        client.unavailable = False
+        from evander.worker.models import now_utc
+        retry_at = now_utc() + timedelta(minutes=5)
+        monkeypatch.setattr("evander.execution.container_worker_repository.now_utc", lambda: retry_at)
+        reconcile()  # Fresh repository/backend resume the pending terminal delivery.
+        assert len(model_usage_store(tmp_path).list_events()) == 11
+        assert backend.repository.get(handle.execution_id).metadata["model_usage_complete"] is True
+        assert backend.repository.claim_model_usage_delivery() is None
+        assert set(client.calls) == {"exec-usage"}
+    finally:
+        for hook in completion:
+            hook.close()
+
+
+@pytest.mark.parametrize("concurrent_change", ["cleanup", "delete", "replace"])
+def test_receipt_delivery_preserves_concurrent_lifecycle_changes(tmp_path, concurrent_change):
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+
+    journal = WorkerUsageJournal(tmp_path / "worker" / "usage.db")
+    foreground = None
+
+    class UsageClient(FakeContainerWorkerClient):
+        def model_usage(self, job_id, **kwargs):
+            nonlocal foreground
+            # Interleave a foreground mutation while the worker HTTP request is
+            # outstanding. Delivery must never save its older lifecycle snapshot.
+            current = backend.repository.get("exec-usage")
+            if concurrent_change == "delete":
+                backend.repository.delete(current.execution_id)
+            elif concurrent_change == "replace":
+                current.worker_job_id = "replacement-job"
+                current.metadata = {"model_usage_capture": 1, "replacement": True}
+                backend.repository.put(current)
+            else:
+                current.last_status = "removed"
+                current.cleanup_status = "cleanup_succeeded"
+                current.metadata["cleanup_status"] = "cleanup_succeeded"
+                backend.repository.put(current)
+                # This foreground reader precedes the receipt progress commit.
+                foreground = backend.repository.get(current.execution_id)
+            page = journal.page(job_id, **kwargs)
+            page.complete = True
+            return page
+
+    client = UsageClient()
+    client.metadata_by_job["exec-usage"] = {"model_usage_capture": 1}
+    backend = _backend(tmp_path, client)
+    backend.start(backend.prepare(ExecutionSpec(
+        backend="container_worker_vm", target_name="exec-usage", session_id="session-1",
+        command=["true"],
+    )))
+    writer = SubscriptionUsageRecorder(
+        job_id="exec-usage", session_id="session-1", sink=journal.append, context={},
+    )
+    writer.expect_turn("thread")
+    writer.notification("thread/tokenUsage/updated", {
+        "threadId": "thread", "turnId": "turn", "tokenUsage": {
+            "total": {"totalTokens": 10}, "last": {"totalTokens": 10},
+        },
+    })
+    backend.sync_model_usage(backend.repository.get("exec-usage"), max_pages=1)
+    current = backend.repository.get("exec-usage")
+    if concurrent_change == "delete":
+        assert current is None
+    elif concurrent_change == "replace":
+        assert current.worker_job_id == "replacement-job"
+        assert current.metadata == {"model_usage_capture": 1, "replacement": True}
+    else:
+        assert current.last_status == "removed"
+        assert current.cleanup_status == "cleanup_succeeded"
+        assert current.metadata["cleanup_status"] == "cleanup_succeeded"
+        assert current.metadata["model_usage_cursor"] > 0
+        assert current.metadata["model_usage_complete"] is True
+        foreground.metadata["model_usage_sync_error"] = "stale_error"
+        backend.repository.put(foreground)
+        current = backend.repository.get("exec-usage")
+        assert current.metadata["model_usage_cursor"] > 0
+        assert current.metadata["model_usage_complete"] is True
+        assert "model_usage_sync_error" not in current.metadata
+        assert backend.repository.claim_model_usage_delivery() is None
+
+
+def test_new_subscription_receipts_retry_after_partial_import_and_keep_frozen_attribution(tmp_path, monkeypatch):
+    from evander.codex_auth import CodexTurnSpec
+    from evander.model_usage.runtime import model_usage_store, register_model_usage_correlation_context
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+
+    journal = WorkerUsageJournal(tmp_path / "worker" / "usage.db")
+
+    class UsageClient(FakeContainerWorkerClient):
+        def model_usage(self, job_id, *, cursor=0, limit=200):
+            page = journal.page(job_id, cursor=cursor, limit=1)  # Exercise multiple pages.
+            page.complete = True
+            return page
+
+    client = UsageClient()
+    client.metadata_by_job["exec-usage"] = {"model_usage_capture": 1}
+    backend = _backend(tmp_path, client)
+    register_model_usage_correlation_context(
+        runtime_dir=tmp_path, session_id="session-1", dispatch_id="dispatch-1",
+        cost_category="Original category", cost_attribution_recorded=True,
+        workflow_run_id="run-1", directory_path="root/a",
+    )
+    handle = backend.start(backend.prepare(ExecutionSpec(
+        backend="container_worker_vm", target_name="exec-usage", session_id="session-1",
+        directory_path="root/a", command=["true"], metadata={"dispatch_id": "dispatch-1"},
+        codex_turn=CodexTurnSpec(auth_mode="chatgpt_subscription", prompt="test", model="test-model"),
+    )))
+    writer = SubscriptionUsageRecorder(
+        job_id="exec-usage", session_id="session-1", sink=journal.append,
+        context={"cost_category": "Changed worker label", "directory_path": "root/other"},
+    )
+    writer.expect_turn("thread")
+    for total in (20, 40, 60):
+        writer.notification("thread/tokenUsage/updated", {
+            "threadId": "thread", "turnId": "turn-1", "tokenUsage": {
+                "total": {"totalTokens": total}, "last": {"totalTokens": 20},
+            },
+        })
+    writer.notification("turn/completed", {"threadId": "thread", "turn": {"id": "turn-1", "status": "completed"}})
+    writer.finish()
+    # A subsequent policy/context edit must not relabel this execution's receipts.
+    register_model_usage_correlation_context(
+        runtime_dir=tmp_path, session_id="session-1", dispatch_id="dispatch-1",
+        cost_category="New category", cost_attribution_recorded=True,
+    )
+    store = model_usage_store(tmp_path)
+    original = store.upsert_event
+    calls = 0
+
+    def interrupted(event):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated temporary write failure")
+        original(event)
+
+    monkeypatch.setattr(store, "upsert_event", interrupted)
+    assert backend.inspect(handle).status == ExecutionStatusKind.RUNNING
+    assert len(store.list_events()) == 1
+    assert backend.repository.get(handle.execution_id).metadata["model_usage_sync_error"] == "OSError"
+    # A fresh backend resumes the durable cursor. Earlier deliveries stay idempotent.
+    backend = _backend(tmp_path, client)
+    backend.inspect(handle)
+    events = store.list_events()
+    assert len(events) == 3
+    from evander.model_usage.token_report import InferenceTokenReport
+    from evander.model_usage.inference_report import InferenceCostReport
+    assert InferenceTokenReport(store).read()["total_tokens"] == 60
+    costs = InferenceCostReport(tmp_path, store).read()
+    assert costs["total_cost"] == 0
+    assert costs["coverage"]["excluded_subscription_events"] == 3
+    assert {event.cost_category for event in events} == {"Original category"}
+    assert {event.directory_path for event in events} == {"root/a"}
+    assert {event.workflow_run_id for event in events} == {"run-1"}
+    assert backend.repository.get(handle.execution_id).metadata["model_usage_complete"] is True
+    backend.inspect(handle)
+    assert len(store.list_events()) == 3
+
+
+def test_subscription_usage_rejects_other_sessions_and_retries_after_cleanup(tmp_path):
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+    from evander.model_usage.runtime import model_usage_store
+
+    journal = WorkerUsageJournal(tmp_path / "worker" / "usage.db")
+
+    class UsageClient(FakeContainerWorkerClient):
+        unavailable = True
+
+        def model_usage(self, job_id, **kwargs):
+            if self.unavailable:
+                raise ContainerWorkerClientError("temporarily unavailable")
+            page = journal.page(job_id, **kwargs)
+            page.complete = True
+            return page
+
+    client = UsageClient()
+    client.metadata_by_job["exec-usage"] = {"model_usage_capture": 1}
+    backend = _backend(tmp_path, client)
+    handle = backend.start(backend.prepare(ExecutionSpec(
+        backend="container_worker_vm", target_name="exec-usage", session_id="session-1",
+        command=["true"],
+    )))
+    writer = SubscriptionUsageRecorder(
+        job_id="exec-usage", session_id="other-session", sink=journal.append, context={},
+    )
+    writer.expect_turn("thread")
+    writer.notification("thread/tokenUsage/updated", {"threadId": "thread", "turnId": "turn", "tokenUsage": {
+        "total": {"totalTokens": 10}, "last": {"totalTokens": 10},
+    }})
+    backend.destroy(handle)  # Receipt storage survives session/container cleanup.
+    client.unavailable = False
+    result = backend.inspect(handle)
+    assert result.status == ExecutionStatusKind.DESTROYED
+    assert model_usage_store(tmp_path).list_events() == []
+    assert backend.repository.get(handle.execution_id).metadata["model_usage_sync_error"] == "ValueError"
 
 
 def test_prepare_builds_metadata_without_http_call(tmp_path: Path) -> None:

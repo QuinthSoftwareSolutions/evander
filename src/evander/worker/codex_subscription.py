@@ -22,6 +22,7 @@ from evander.fast_mode import fast_mode_service_tier
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
+from .model_usage import SubscriptionUsageRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class CodexSubscriptionTurnRunner:
         metadata_callback: Callable[[dict[str, Any]], None] | None = None,
         token_refresher: Callable[..., CodexExternalAuthTokens] | None = None,
         process_factory: Callable[..., CodexAppServerProcess] = CodexAppServerProcess,
+        usage_recorder: SubscriptionUsageRecorder | None = None,
     ) -> None:
         self.command = tuple(command)
         self.turn = turn
@@ -57,6 +59,7 @@ class CodexSubscriptionTurnRunner:
         self.log_path = Path(log_path)
         self.finished_marker = Path(finished_marker)
         self.metadata_callback = metadata_callback
+        self.usage_recorder = usage_recorder
         self._process_factory = process_factory
         self._completed = threading.Event()
         self._cancelled = threading.Event()
@@ -138,6 +141,8 @@ class CodexSubscriptionTurnRunner:
             with self._startup_phase("thread_open"):
                 self._thread_id = self._open_thread(process)
             self._append_log(f"session id: {self._thread_id}\n")
+            if self.usage_recorder is not None:
+                self.usage_recorder.expect_turn(self._thread_id)
             with self._startup_phase("turn_start"):
                 turn_result = process.request(
                     "turn/start",
@@ -203,6 +208,8 @@ class CodexSubscriptionTurnRunner:
                 if process is not None:
                     process.close()
                     self._process = None
+            if self.usage_recorder is not None:
+                self.usage_recorder.finish(status="success" if exit_code == 0 else "failed")
             # Persist the structured outcome before releasing the container's
             # completion wait. Otherwise a fast status poll can observe the
             # terminal exit without the deferral needed for durable replay.
@@ -310,6 +317,8 @@ class CodexSubscriptionTurnRunner:
         return self._tokens.refresh_response()
 
     def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
+        if self.usage_recorder is not None:
+            self.usage_recorder.notification(method, params)
         if method == "item/completed":
             item = params.get("item")
             if isinstance(item, dict) and item.get("type") == "agentMessage":
