@@ -862,6 +862,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:website-session:ensure-profile": (
+        "Create or reuse an exact-origin website login from a host-approved template. "
+        "Returns a profile ID without exposing credentials or performing a login."
+    ),
     "effect:session:set-image-generation-enabled": (
         "Enable or disable session-gated image generation and editing."
     ),
@@ -4230,6 +4234,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "runtime, and Discord or email targets are not thread destinations."
                 ),
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:website-session:ensure-profile",
+        label="Ensure website login profile",
+        fields=[
+            _field("template_id", "Host template", "string", required=True, bindable=True),
+            _field("browser_origin", "Website origin", "string", required=True, bindable=True),
+            _field("login_origin", "Login API origin", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

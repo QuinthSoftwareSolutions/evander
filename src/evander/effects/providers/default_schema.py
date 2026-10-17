@@ -59,6 +59,7 @@ from evander.effects.providers.schemas import (
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     SessionSetImageGenerationEnabledEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    WebsiteSessionEnsureProfileEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
     VmCopyFilesEffectDefinition,
@@ -138,6 +139,7 @@ _EFFECT_MODEL_BY_TYPE = {
         SessionRevokeMcpToolApprovalLeaseEffectDefinition
     ),
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
+    "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectDefinition,
     "effect:session:set-image-generation-enabled": (
         SessionSetImageGenerationEnabledEffectDefinition
     ),

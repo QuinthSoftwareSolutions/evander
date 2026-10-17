@@ -4,6 +4,9 @@ from evander.code_index.providers import CodeIndexEffectProvider, CodeIndexQuery
 
 from evander.effects.providers.default_schema import effect_node_schema_resolvers
 from evander.effects.providers.security_scan import SecurityScanEffectProvider
+from evander.effects.providers.website_session_ensure_profile import (
+    WebsiteSessionEnsureProfileEffectProvider,
+)
 from evander.gates.providers.default_schema import gate_node_schema_resolvers
 from evander.queries.providers.default_schema import query_node_schema_resolvers
 from evander.triggers.providers.default_schema import trigger_node_schema_resolvers
@@ -319,6 +322,7 @@ def register_providers() -> dict[str, dict[str, type]]:
                 SessionRevokeMcpToolApprovalLeaseEffectProvider
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectProvider,
             "effect:session:set-image-generation-enabled": (
                 SessionSetImageGenerationEnabledEffectProvider
             ),

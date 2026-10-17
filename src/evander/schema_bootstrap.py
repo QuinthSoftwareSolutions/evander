@@ -1402,6 +1402,11 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "already_revoked": {"type": "boolean"},
         "revoked_at": {"type": "string"},
     },
+    "effect:website-session:ensure-profile": {
+        "success": {"type": "boolean"},
+        "profile_id": {"type": "string"},
+        "created": {"type": "boolean"},
+    },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},

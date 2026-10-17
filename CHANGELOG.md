@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-17 - Provision managed website logins in workflows (0.101.0)
+
+- Add `effect:website-session:ensure-profile` to create exact-origin login profiles for disposable environments from host-approved source profiles and destination patterns.
+- Keep credentials in encrypted host storage, return only safe profile metadata, and preserve directory isolation, concurrent retry idempotency, operator changes and credential revocation.
+- Fail profile saves when the destination directory disappears, preserving root configuration and rolling back newly copied credentials.
+- Include workflow editor fields, output schemas, host policy setup and credential-snapshot lifecycle guidance.
+
 ## 2026-10-17 - View daily inference categories by token usage (0.100.0)
 
 - Add a Cost / Tokens selector to the daily category chart, including recorded API and subscription inference without requiring pricing. Keep dashboard and monetary summaries unchanged.

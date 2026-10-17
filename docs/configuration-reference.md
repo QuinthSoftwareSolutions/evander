@@ -1029,6 +1029,7 @@ Type-specific keys:
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
+| `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `fast_mode`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
@@ -1572,6 +1573,16 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
 artifacts folder. The `path` value must be relative and stay inside that folder.
+
+`effect:website-session:ensure-profile` provisions an exact-origin website login from
+a host-approved template in `EVANDER_MANAGED_WEBSITE_PROFILE_TEMPLATES`. It returns
+`success`, `profile_id` and `created` without credentials, browser state or a login
+request. Directory and destination restrictions are checked before reading source
+credentials. Retries reuse the deterministic profile; operator changes and credential
+revocation are preserved. Generated profiles contain independent encrypted credential
+snapshots and should be removed with their environments. See
+[managed website sessions](managed-website-sessions.md#create-profiles-for-disposable-environments)
+for host policy and workflow setup.
 
 `query:website-session:resolve-profile` selects one enabled JSON website login whose
 browser origin exactly matches `browser_origin` and whose saved login endpoint uses
