@@ -6,6 +6,7 @@ import base64
 import fcntl
 import hashlib
 import re
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import quote
@@ -244,8 +245,8 @@ def rendered_logs(context, directory, session_id):
                 record.execution_id, lines=0, mode="session-history"
             )
         }
-    except ValueError:
-        # Configuration/assignment errors are log failures. The directory ownership
+    except (ValueError, sqlite3.DatabaseError):
+        # Worker configuration and storage errors are log failures. Directory ownership
         # check above remains an authorization error and must not be suppressed.
         raise RuntimeError("Agent log source is unavailable") from None
 

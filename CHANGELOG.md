@@ -6,7 +6,7 @@
 - Persist run ownership, log checkpoints, deadlines and bounded callback retries in existing workflow state; retried waiting tasks reuse the original test and result.
 - Include generic event-driven pipeline examples. Pipeline results can depend on published test evidence while report delivery remains independent.
 - Use supported editor field types, stable worker transcript snapshots and bounded final-log recovery after completion. Preserve callbacks for sessions without supported logs and order the example after deployment.
-- Route live feeds through the Azure job record and keep worker-assignment failures within bounded log recovery without blocking completion callbacks.
+- Route live feeds through the Azure job record and keep worker-assignment and execution-database failures within bounded log recovery without blocking completion callbacks.
 - Use project GUIDs for distributed-task writes and recover final logs after a lost callback acknowledgement or process interruption.
 - Reserve terminal retry budgets before external requests so interruptions cannot reset callback or final-log limits.
 - Preserve callbacks for missing or expired sessions and reconcile Azure's receipt after the final uncertain callback response.

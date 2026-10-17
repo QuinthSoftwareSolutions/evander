@@ -15,6 +15,7 @@ from evander.admin.services.container_worker_assignment_service import (
 )
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.execution.container_worker_repository import ContainerWorkerExecutionRepository
 from evander.policy import PolicyEngine
 from evander.worker.models import WorkerJobRecord
 from evander.worker.service import WorkerDaemon
@@ -79,6 +80,7 @@ def environment(tmp_path, monkeypatch):
         ),
         get_log_snapshot=snapshot,
     )
+    state["backend"] = backend
 
     def resolve_backend(**kwargs):
         if state["backend_error"] is not None:
@@ -399,6 +401,25 @@ def test_libvirt_session_can_complete_without_container_log_configuration(enviro
     assert run(complete=True, result="failed")["done"]
     assert state["events"][0]["result"] == "failed"
     assert state["modes"] == []
+
+
+def test_corrupt_worker_repository_does_not_block_callback_and_log_retries_are_bounded(
+    environment, tmp_path
+):
+    state, run, root = environment
+    database = tmp_path / "unavailable-worker.db"
+    database.write_bytes(b"not a SQLite database")
+    state["backend"].repository = ContainerWorkerExecutionRepository(database)
+    first = run(complete=True, result="failed")
+    assert first["status"] == "log_retry" and not first["done"]
+    assert state["events"][-1]["result"] == "failed"
+    assert run()["status"] == "log_retry"
+    exhausted = run()
+    assert exhausted["done"] and exhausted["status"] == "log_exhausted"
+    assert state["callback_calls"] == 1
+    saved = (root / "workflow-state.json").read_text()
+    assert str(database) not in saved
+    assert "file is not a database" not in saved
 
 
 def test_worker_assignment_failure_keeps_callback_and_log_retries_bounded(environment):
