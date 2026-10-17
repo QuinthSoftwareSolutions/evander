@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.worker.models import WorkerJobRecord
+from evander.worker.service import WorkerDaemon
 from evander_azure_devops_addon import pipeline_tasks as tasks
 from evander_azure_devops_addon.registration import register_workflow_providers
 
@@ -38,6 +40,8 @@ def environment(tmp_path, monkeypatch):
         active=True,
         wrong=None,
         session=True,
+        snapshot=None,
+        modes=[],
         task_id=TASK,
     )
     config = GatewayConfig(
@@ -46,19 +50,24 @@ def environment(tmp_path, monkeypatch):
         azure_devops_project="Project",
         azure_devops_pat_env="BUILD_PAT",
     )
+    session = SimpleNamespace(
+        directory_path="root/test", vm_provider="container_worker_vm", metadata={}
+    )
+    state["manifest"] = session
+
+    def snapshot(*args, mode, **kwargs):
+        state["modes"].append(mode)
+        return state["snapshot"](mode) if state["snapshot"] else state["text"]
+
     backend = SimpleNamespace(
         repository=SimpleNamespace(
             list_by_session=lambda _: [SimpleNamespace(execution_id="execution-1")]
         ),
-        get_log_snapshot=lambda *a, **kw: state["text"],
+        get_log_snapshot=snapshot,
     )
     admin = SimpleNamespace(
         runtime=SimpleNamespace(
-            policy=SimpleNamespace(
-                get_session=lambda _: (
-                    SimpleNamespace(directory_path="root/test") if state["session"] else None
-                )
-            )
+            policy=SimpleNamespace(get_session=lambda _: session if state["session"] else None)
         ),
         vm_agent_admin=SimpleNamespace(container_worker_backend=lambda **kw: backend),
     )
@@ -165,10 +174,136 @@ def test_log_upload_failure_does_not_advance_cursor_or_block_failed_completion(e
     state["failure"] = None
     assert run()["synced_lines"] == 1
     state["failure"] = "/logs/8"
-    assert run(complete=True, result="failed")["done"]
+    result = run(complete=True, result="failed")
+    assert not result["done"] and result["status"] == "log_retry"
     assert state["events"][-1] == dict(
         name="TaskCompleted", taskId=TASK, jobId=JOB, result="failed"
     )
+    state["failure"] = None
+    state["active"] = False
+    assert run()["done"]
+    assert "tool: sign-in failed" in "".join(state["logs"])
+    assert len(state["events"]) == 1
+
+
+@pytest.mark.parametrize("failure", ["/logs/8", "/feed"])
+def test_final_diagnostics_retry_after_completion_without_repeating_callback(environment, failure):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["text"] += "Final failure diagnostics\n"
+    state["failure"] = failure
+    assert run(complete=True, result="failed")["status"] == "log_retry"
+    assert len(state["events"]) == 1
+    feed_count = len(state["feeds"])
+    state["active"] = False
+    state["failure"] = None
+    assert run()["done"]
+    assert "Final failure diagnostics" in "".join(state["logs"])
+    assert "[Evander] failed:" in "".join(state["logs"])
+    assert len(state["feeds"]) == feed_count
+    assert len(state["events"]) == 1
+
+
+@pytest.mark.parametrize("failure", ["/logs/8", "/builds/42"])
+def test_log_retries_after_callback_are_bounded_and_survive_read_outages(environment, failure):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["failure"] = "/logs/8"  # Fail the final footer, while completing the task.
+    assert run(complete=True, result="succeeded")["status"] == "log_retry"
+    state["failure"] = failure
+    assert run()["retry_delay_seconds"] == 15
+    exhausted = run()
+    assert exhausted["done"] and exhausted["status"] == "log_exhausted"
+    state["failure"] = None
+    assert run()["status"] == "log_exhausted"
+    assert len(state["events"]) == 1
+
+
+def test_live_tool_completion_does_not_replay_rendered_session_history(environment, tmp_path):
+    state, run, _ = environment
+    thread = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    home = tmp_path / "agent-home"
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    (tmp_path / "logs").mkdir()
+    transcript = sessions / f"rollout-{thread}.jsonl"
+    events = [
+        {
+            "type": "event_msg",
+            "payload": {"type": "agent_message", "message": "Checking deployment"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call-1",
+                "arguments": json.dumps({"cmd": "dotnet test"}),
+            },
+        },
+    ]
+    transcript.write_text("".join(json.dumps(event) + "\n" for event in events))
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "worker-runtime",
+        worker_root=tmp_path / "worker-root",
+        token="test-token",
+        container_runtime=SimpleNamespace(get_logs=lambda *a, **kw: f"session id: {thread}\n"),
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="test-agent",
+        image="runner:latest",
+        command=["true"],
+        container_name="container-1",
+        status="running",
+        agent_home_path=str(home),
+        repo_root_path=str(home / "repos"),
+        artifacts_path=str(tmp_path / "artifacts"),
+        logs_path=str(tmp_path / "logs"),
+    )
+    assert "active tool call:" in daemon.get_logs(record, mode="session")
+    state["snapshot"] = lambda mode: daemon.get_logs(record, mode=mode)
+    assert run(claim_start=True)["synced_lines"] == 2
+    with transcript.open("a") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "passed",
+                    },
+                }
+            )
+            + "\n"
+        )
+    run()
+    uploaded = "".join(state["logs"])
+    assert uploaded.count("Checking deployment") == 1
+    assert uploaded.count("tool started:") == 1
+    assert "tool completed:" in uploaded
+    assert "dotnet test" in uploaded
+    assert "active tool call:" not in uploaded
+    assert "changed or restarted" not in uploaded
+    assert set(state["modes"]) == {"session-history"}
+
+
+def test_libvirt_session_can_complete_without_container_log_configuration(environment):
+    state, run, _ = environment
+    state["manifest"].vm_provider = "libvirt"
+    assert run(complete=True, result="failed")["done"]
+    assert state["events"][0]["result"] == "failed"
+    assert state["modes"] == []
+
+
+def test_session_directory_is_checked_before_reading_or_skipping_logs(environment):
+    state, run, _ = environment
+    state["manifest"].directory_path = "root/other"
+    state["manifest"].vm_provider = "libvirt"
+    with pytest.raises(ValueError, match="outside the workflow directory"):
+        run(complete=True, result="failed")
+    assert state["events"] == []
 
 
 def test_completion_flushes_pending_output_and_is_idempotent(environment):
@@ -283,3 +418,16 @@ def test_new_effects_are_in_addon_catalog_with_bindable_task_contract():
         assert kind in registration.effect_providers
         entry = next(e for e in registration.workflow_editor_catalog_entries if e.type == kind)
         assert {f.key for f in entry.fields if f.required} == {"task", "session_id"}
+        fields = {f.key: f for f in entry.fields}
+        assert {key: f.kind for key, f in fields.items()} == {
+            "task": "json",
+            "session_id": "string",
+            "claim_start": "boolean",
+            "timeout_seconds": "number",
+            "result": "enum",
+            "summary": "string",
+        }
+        assert fields["claim_start"].default_value is False
+        assert fields["timeout_seconds"].default_value == 7200
+        assert fields["result"].default_value == "failed"
+        assert {option.value for option in fields["result"].options} == {"succeeded", "failed"}

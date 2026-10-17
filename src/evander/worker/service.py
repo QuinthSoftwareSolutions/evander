@@ -1071,8 +1071,10 @@ class WorkerDaemon(GitWorkspaceOperations):
         tail_lines: int | None = None,
     ) -> str:
         selected_mode = str(mode or "augmented").strip().casefold()
-        if selected_mode not in {"augmented", "execution", "raw", "session"}:
-            raise ValueError("log mode must be one of: augmented, execution, raw, session")
+        if selected_mode not in {"augmented", "execution", "raw", "session", "session-history"}:
+            raise ValueError(
+                "log mode must be one of: augmented, execution, raw, session, session-history"
+            )
         text = self._raw_logs(record, tail_lines=tail_lines)
         if selected_mode == "raw":
             return text
@@ -1098,12 +1100,14 @@ class WorkerDaemon(GitWorkspaceOperations):
                     record,
                     text,
                     skip_existing=selected_mode == "augmented",
+                    include_running_context=selected_mode != "session-history",
                 )
         else:
             session_log = self._codex_session_log(
                 record,
                 text,
                 skip_existing=selected_mode == "augmented",
+                include_running_context=selected_mode != "session-history",
             )
             if not session_log:
                 session_log = self._claude_session_log(
@@ -1111,7 +1115,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     text,
                     skip_existing=selected_mode == "augmented",
                 )
-        if selected_mode == "session":
+        if selected_mode in {"session", "session-history"}:
             return session_log
         return self._append_codex_session_log(text, session_log)
 
@@ -1206,6 +1210,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         text: str,
         *,
         skip_existing: bool,
+        include_running_context: bool = True,
     ) -> str:
         agent_home = Path(record.agent_home_path)
         thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
@@ -1220,7 +1225,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                 agent_home,
                 thread_id,
                 metadata=record.metadata,
-                include_running_context=record.status == "running",
+                include_running_context=include_running_context and record.status == "running",
             ):
                 if message in seen or (skip_existing and message in text):
                     continue

@@ -81,6 +81,8 @@ An add-on upgrade never rewrites an activated workflow.
 Use an agentless `InvokeRESTAPI@1` job with `waitForCompletion: true` after
 deployment. The [pipeline example](examples/pipeline-task.yml) sends a non-secret
 environment handoff and task identifiers to Evander's existing workflow-event API.
+Replace its `DeployEnvironment` dependency with your deployment job's name so the
+event is sent only after deployment succeeds.
 Configure a generic service connection for the Evander HTTPS origin and a secret
 pipeline variable `EVANDER_WORKFLOW_EVENT_TOKEN`. Configure that token on Admin Web
 as `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS=example-ci:<token>`. The service connection
@@ -115,8 +117,19 @@ On every terminal path call task complete. If it returns `done: false`, schedule
 log sync after `retry_delay_seconds`; it will flush remaining batches or retry the
 saved completion. Completion attempts stop after three failures, fifteen seconds
 apart, with `status: callback_exhausted`. Set the pipeline job timeout to 130 minutes
-so a missing callback also has a bounded failure path. Cancelled/completed Azure
-tasks stop forwarding. Report delivery and resource cleanup remain separate flows.
+so a missing callback also has a bounded failure path. Cancelled Azure tasks stop
+forwarding. Report delivery and resource cleanup remain separate flows.
+If a final log upload fails, the completion callback still proceeds. Continue
+scheduling while `done` is false: saved log uploads retry after that callback,
+without sending another completion event or a live feed to the finished task.
+These log recovery attempts also stop after three failures, fifteen seconds apart,
+with `status: log_exhausted`.
+
+Log forwarding currently supports container-worker sessions. Callbacks also work
+for libvirt sessions or setup failures without an agent. Deploy Evander 0.99.0 or
+later to both the control plane and worker before enabling this feature. Pipeline
+logging uses the worker's `session-history` view, which excludes temporary active
+tool indicators so ordinary tool completion does not replay the transcript.
 
 Both effects resolve the existing directory-scoped `azure_devops_pat_env` on the
 host. The PAT needs permission to read the selected build/timeline and write task

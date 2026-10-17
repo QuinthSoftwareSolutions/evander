@@ -1,7 +1,8 @@
-# Append after a successful deployment job. Configure this generic service
+# Replace DeployEnvironment with your deployment job's name. Configure this generic service
 # connection's URL to the Evander HTTPS origin; leave its username/password empty.
 jobs:
   - job: AgentTests
+    dependsOn: DeployEnvironment
     pool: server
     timeoutInMinutes: 130
     steps:

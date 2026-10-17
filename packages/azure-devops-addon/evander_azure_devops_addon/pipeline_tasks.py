@@ -131,7 +131,7 @@ class PipelineTaskClient:
         )
         return record, active
 
-    def append(self, state, record, lines):
+    def append(self, state, record, lines, *, live=True):
         if not lines:
             return
         log_id = state.get("log_id") or (record.get("log") or {}).get("id")
@@ -153,16 +153,17 @@ class PipelineTaskClient:
             content=("\n".join(lines) + "\n").encode(),
             headers={"Content-Type": "application/octet-stream"},
         )
-        self.request(
-            "POST",
-            f"{self.records}/{self.task.task_id}/feed",
-            json={
-                "count": len(lines),
-                "value": lines,
-                "stepId": str(self.task.task_id),
-                "startLine": state.get("sent_lines", 0) + 1,
-            },
-        )
+        if live:
+            self.request(
+                "POST",
+                f"{self.records}/{self.task.task_id}/feed",
+                json={
+                    "count": len(lines),
+                    "value": lines,
+                    "stepId": str(self.task.task_id),
+                    "startLine": state.get("sent_lines", 0) + 1,
+                },
+            )
         state["sent_lines"] = state.get("sent_lines", 0) + len(lines)
 
     def complete(self, result):
@@ -209,6 +210,12 @@ def rendered_logs(context, directory, session_id):
         return {}
     if session.directory_path != directory:
         raise ValueError("Agent session is outside the workflow directory")
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    if (
+        session.vm_provider != "container_worker_vm"
+        and metadata.get("execution_backend") != "container_worker_vm"
+    ):
+        return {}
     backend = admin.container_worker_backend(session_id=session_id, directory_path=directory)
     records = backend.repository.list_by_session(session_id)
     # A thread may span several worker executions. Its rendered session transcript
@@ -216,7 +223,9 @@ def rendered_logs(context, directory, session_id):
     if not records:
         return {}
     record = records[-1]
-    return {session_id: backend.get_log_snapshot(record.execution_id, lines=0, mode="session")}
+    return {
+        session_id: backend.get_log_snapshot(record.execution_id, lines=0, mode="session-history")
+    }
 
 
 class TaskEffect(EffectProviderBase):
@@ -314,14 +323,15 @@ class TaskEffect(EffectProviderBase):
             "status": "running",
         }
         if state.get("done"):
+            status = run.get("result", "inactive") if state.get("completed") else "inactive"
+            if state.get("log_attempts", 0) >= 3:
+                status = "log_exhausted"
+            elif state["attempts"] >= 3:
+                status = "callback_exhausted"
             return {
                 **output,
                 "done": True,
-                "status": run.get("result", "inactive")
-                if state.get("completed")
-                else "callback_exhausted"
-                if state["attempts"] >= 3
-                else "inactive",
+                "status": status,
             }
         if now >= datetime.fromisoformat(run["deadline"]) and not run.get("result"):
             run.update(result="failed", summary="Test workflow exceeded its 120-minute deadline.")
@@ -336,17 +346,19 @@ class TaskEffect(EffectProviderBase):
         except TaskRequestError:
             if not run.get("result"):
                 raise
-            state["attempts"] += 1
-            state["done"] = state["attempts"] >= 3
+            counter = "log_attempts" if state.get("completed") else "attempts"
+            prefix = "log" if state.get("completed") else "callback"
+            state[counter] = state.get(counter, 0) + 1
+            state["done"] = state[counter] >= 3
             store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
             return {
                 **output,
                 "success": False,
                 "done": state["done"],
                 "retry_delay_seconds": 15,
-                "status": "callback_exhausted" if state["done"] else "callback_retry",
+                "status": f"{prefix}_exhausted" if state["done"] else f"{prefix}_retry",
             }
-        if state.get("done") or not active:
+        if not active and not state.get("completed"):
             state["done"] = True
             output.update(done=True, status="completed" if state.get("completed") else "inactive")
         else:
@@ -355,6 +367,7 @@ class TaskEffect(EffectProviderBase):
             # completion cannot change a failure into a pass.
             store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
             more_logs = False
+            log_failed = False
             try:
                 texts = rendered_logs(context, directory, session_id)
                 for source, text in texts.items():
@@ -372,7 +385,7 @@ class TaskEffect(EffectProviderBase):
                             0,
                             "[Evander] Agent log changed or restarted; resuming available output.",
                         )
-                    client.append(state, record, batch)
+                    client.append(state, record, batch, live=not state.get("completed"))
                     more_logs = more_logs or end < len(lines)
                     state["cursors"][source] = {
                         "line": end,
@@ -382,26 +395,47 @@ class TaskEffect(EffectProviderBase):
             except (OSError, RuntimeError) as exc:
                 # Never persist provider response bodies or log content in run state.
                 state["log_error"] = type(exc).__name__
-                more_logs = False
-            if run.get("result") and not more_logs:
+                log_failed = True
+            if run.get("result") and (not more_logs or log_failed):
                 try:
-                    if not state.get("footer"):
+                    if not log_failed and not state.get("footer"):
                         client.append(
-                            state, record, [f"[Evander] {run['result']}: {run.get('summary', '')}"]
+                            state,
+                            record,
+                            [f"[Evander] {run['result']}: {run.get('summary', '')}"],
+                            live=not state.get("completed"),
                         )
                         state["footer"] = True
                 except TaskRequestError:
                     state["log_error"] = "TaskRequestError"
-                try:
-                    client.complete(run["result"])
-                    state.update(done=True, completed=True)
+                    log_failed = True
+                if not state.get("completed"):
+                    try:
+                        client.complete(run["result"])
+                        state["completed"] = True
+                    except TaskRequestError:
+                        state["attempts"] += 1
+                        output.update(
+                            success=False, retry_delay_seconds=15, status="callback_retry"
+                        )
+                        if state["attempts"] >= 3:
+                            state["done"] = True
+                            output.update(done=True, status="callback_exhausted")
+            if state.get("completed"):
+                if log_failed:
+                    state["log_attempts"] = state.get("log_attempts", 0) + 1
+                    state["done"] = state["log_attempts"] >= 3
+                    output.update(
+                        success=False,
+                        done=state["done"],
+                        retry_delay_seconds=15,
+                        status="log_exhausted" if state["done"] else "log_retry",
+                    )
+                elif more_logs:
+                    output.update(status="log_retry")
+                else:
+                    state["done"] = True
                     output.update(done=True, status=run["result"])
-                except TaskRequestError:
-                    state["attempts"] += 1
-                    output.update(success=False, retry_delay_seconds=15, status="callback_retry")
-                    if state["attempts"] >= 3:
-                        state["done"] = True
-                        output.update(done=True, status="callback_exhausted")
         store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
         return output
 
@@ -416,6 +450,14 @@ def register_providers():
         "status": {"type": "string"},
     }
     entries = []
+    field_kinds = {
+        "task": "json",
+        "session_id": "string",
+        "claim_start": "boolean",
+        "timeout_seconds": "number",
+        "result": "enum",
+        "summary": "string",
+    }
     types = {
         "effect:ado:task-log-sync": "Forward agent logs to Azure task",
         "effect:ado:task-complete": "Complete Azure pipeline task",
@@ -432,7 +474,18 @@ def register_providers():
                     WorkflowEditorFieldDefinition(
                         key=key,
                         label=key.replace("_", " ").title(),
-                        kind="json" if key == "task" else "text",
+                        kind=field_kinds[key],
+                        options=[
+                            {"value": value, "label": value.title()}
+                            for value in ("succeeded", "failed")
+                        ]
+                        if key == "result"
+                        else [],
+                        default_value={
+                            "claim_start": False,
+                            "timeout_seconds": 7200,
+                            "result": "failed",
+                        }.get(key),
                         required=key in {"task", "session_id"},
                         bindable=True,
                     )
