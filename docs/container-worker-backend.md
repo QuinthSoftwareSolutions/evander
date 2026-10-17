@@ -2,6 +2,11 @@
 
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
+The job logs endpoint accepts `mode=session-history` for rendered session history
+without temporary active-tool indicators. Consumers that checkpoint forwarded logs
+can use this view without replaying history when a running tool finishes. The
+existing `session` view retains its live activity indicators.
+
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane
 API keys, publish pull requests, decide policy, or turn platform summaries into agent memory. When
 ChatGPT subscription execution is enabled, the worker additionally owns a registry of named Codex

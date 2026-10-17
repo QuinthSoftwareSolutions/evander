@@ -6268,6 +6268,7 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     response = client.get("/v1/jobs/job-1/logs", headers=_auth())
     raw_response = client.get("/v1/jobs/job-1/logs?mode=raw", headers=_auth())
     session_response = client.get("/v1/jobs/job-1/logs?mode=session", headers=_auth())
+    history_response = client.get("/v1/jobs/job-1/logs?mode=session-history", headers=_auth())
 
     assert response.status_code == 200
     assert response.text == (f"session id: {thread_id}\nI am checking the repo now.\nDone.\n")
@@ -6275,6 +6276,8 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert raw_response.text == f"session id: {thread_id}\n"
     assert session_response.status_code == 200
     assert session_response.text == "I am checking the repo now.\nDone.\n"
+    assert history_response.status_code == 200
+    assert history_response.text == "I am checking the repo now.\nDone.\n"
     assert response.text.count("I am checking the repo now.") == 1
     log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
