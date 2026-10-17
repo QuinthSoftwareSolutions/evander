@@ -46,6 +46,8 @@ def environment(tmp_path, monkeypatch):
         snapshot=None,
         modes=[],
         backend_error=None,
+        accepted_results={},
+        callback_failure=None,
         task_id=TASK,
     )
     config = GatewayConfig(
@@ -97,6 +99,10 @@ def environment(tmp_path, monkeypatch):
             == "Basic " + base64.b64encode(b":host-only-build-token").decode()
         )
         path = request.url.path
+        if request.method == "GET":
+            assert "/Project/_apis/build/" in path
+        else:
+            assert f"/{PROJECT}/_apis/distributedtask/" in path
         if state["failure"] and state["failure"] in path:
             return httpx.Response(503, text="sensitive-provider-response host-only-build-token")
         if request.method == "GET" and path.endswith("/builds/42"):
@@ -119,7 +125,11 @@ def environment(tmp_path, monkeypatch):
                             "id": state["task_id"],
                             "parentId": JOB,
                             "type": "Task",
-                            "state": "inProgress",
+                            "state": "completed"
+                            if not state["active"] or state["task_id"] in state["accepted_results"]
+                            else "inProgress",
+                            "result": state["accepted_results"].get(state["task_id"])
+                            or ("canceled" if not state["active"] else None),
                             "log": {"id": 8},
                         },
                         {"id": JOB, "type": "Job", "state": "inProgress"},
@@ -134,7 +144,15 @@ def environment(tmp_path, monkeypatch):
             assert feed["stepId"] == state["task_id"]
             state["feeds"].append(feed)
         elif path.endswith("/events"):
-            state["events"].append(json.loads(request.content))
+            event = json.loads(request.content)
+            state["events"].append(event)
+            state["accepted_results"][event["taskId"]] = event["result"]
+            failure, state["callback_failure"] = state["callback_failure"], None
+            if failure:
+                state["active"] = False
+                if failure == "crash":
+                    raise SystemExit("Process stopped after Azure accepted completion")
+                raise httpx.ReadError("Callback acknowledgement lost", request=request)
         else:
             raise AssertionError((request.method, path))
         return httpx.Response(200, json={})
@@ -215,6 +233,42 @@ def test_final_diagnostics_retry_after_completion_without_repeating_callback(env
     assert "[Evander] failed:" in "".join(state["logs"])
     assert len(state["feeds"]) == feed_count
     assert len(state["events"]) == 1
+
+
+@pytest.mark.parametrize("failure", ["transport", "crash"])
+def test_lost_callback_acknowledgement_keeps_final_log_recovery(environment, failure):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["text"] += "Diagnostics pending when completion was accepted\n"
+    state["failure"] = "/logs/8"
+    state["callback_failure"] = failure
+    if failure == "crash":
+        with pytest.raises(SystemExit):
+            run(complete=True, result="failed")
+    else:
+        assert run(complete=True, result="failed")["status"] == "callback_retry"
+    assert len(state["events"]) == 1
+    assert "Diagnostics pending" not in "".join(state["logs"])
+    state["failure"] = None
+    recovered = run()
+    assert recovered["done"] and recovered["status"] == "failed"
+    assert "Diagnostics pending" in "".join(state["logs"])
+    assert len(state["events"]) == 1
+
+
+@pytest.mark.parametrize("result", ["canceled", "succeeded"])
+def test_unmatched_remote_result_does_not_resume_logs_after_callback_failure(environment, result):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["failure"] = "/events"
+    assert run(complete=True, result="failed")["status"] == "callback_retry"
+    state["failure"] = None
+    state["active"] = False
+    state["accepted_results"][TASK] = result
+    state["text"] += "Should not be forwarded after external completion\n"
+    assert run()["status"] == "inactive"
+    assert "Should not be forwarded" not in "".join(state["logs"])
+    assert state["events"] == []
 
 
 @pytest.mark.parametrize("failure", ["/logs/8", "/builds/42"])

@@ -85,7 +85,7 @@ class PipelineTaskClient:
             timeout=15.0,
             follow_redirects=False,
         )
-        self.plan = f"distributedtask/hubs/build/plans/{task.plan_id}"
+        self.plan = f"{organization}/{task.project_id}/_apis/distributedtask/hubs/build/plans/{task.plan_id}"
         self.records = f"{self.plan}/timelines/{task.timeline_id}/records"
 
     def request(self, method, path, **kwargs):
@@ -365,6 +365,15 @@ class TaskEffect(EffectProviderBase):
                 "retry_delay_seconds": 15,
                 "status": f"{prefix}_exhausted" if state["done"] else f"{prefix}_retry",
             }
+        if (
+            not active
+            and state.get("callback_started")
+            and record.get("state") == "completed"
+            and record.get("result") == run.get("result")
+        ):
+            # The callback may have been accepted before its response was lost or
+            # this process stopped. Azure's matching terminal result is the receipt.
+            state["completed"] = True
         if not active and not state.get("completed"):
             state["done"] = True
             output.update(done=True, status="completed" if state.get("completed") else "inactive")
@@ -417,6 +426,8 @@ class TaskEffect(EffectProviderBase):
                     state["log_error"] = "TaskRequestError"
                     log_failed = True
                 if not state.get("completed"):
+                    state["callback_started"] = True
+                    store.set(directory, graph, "ado-pipeline-tasks", key, value=run)
                     try:
                         client.complete(run["result"])
                         state["completed"] = True

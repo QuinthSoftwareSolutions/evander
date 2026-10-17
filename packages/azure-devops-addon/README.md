@@ -124,6 +124,9 @@ scheduling while `done` is false: saved log uploads retry after that callback,
 without sending another completion event or a live feed to the finished task.
 These log recovery attempts also stop after three failures, fifteen seconds apart,
 with `status: log_exhausted`.
+Callback intent is saved before sending it. If Azure accepts completion but its
+reply is lost, a matching completed task result lets the next tick recover the
+receipt and finish pending saved logs without sending another callback.
 
 Log forwarding currently supports container-worker sessions. Callbacks also work
 for libvirt sessions or setup failures without an agent. Deploy Evander 0.99.0 or

@@ -7,6 +7,7 @@
 - Include generic event-driven pipeline examples. Pipeline results can depend on published test evidence while report delivery remains independent.
 - Use supported editor field types, stable worker transcript snapshots and bounded final-log recovery after completion. Preserve callbacks for sessions without supported logs and order the example after deployment.
 - Route live feeds through the Azure job record and keep worker-assignment failures within bounded log recovery without blocking completion callbacks.
+- Use project GUIDs for distributed-task writes and recover final logs after a lost callback acknowledgement or process interruption.
 
 ## 2026-10-16 - Resolve Team resource ownership from persisted sessions (0.98.3)
 
