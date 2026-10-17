@@ -10,6 +10,9 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from evander.admin.services.container_worker_assignment_service import (
+    ContainerWorkerAssignmentError,
+)
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.worker.models import WorkerJobRecord
@@ -42,6 +45,7 @@ def environment(tmp_path, monkeypatch):
         session=True,
         snapshot=None,
         modes=[],
+        backend_error=None,
         task_id=TASK,
     )
     config = GatewayConfig(
@@ -65,11 +69,17 @@ def environment(tmp_path, monkeypatch):
         ),
         get_log_snapshot=snapshot,
     )
+
+    def resolve_backend(**kwargs):
+        if state["backend_error"] is not None:
+            raise state["backend_error"]
+        return backend
+
     admin = SimpleNamespace(
         runtime=SimpleNamespace(
             policy=SimpleNamespace(get_session=lambda _: session if state["session"] else None)
         ),
-        vm_agent_admin=SimpleNamespace(container_worker_backend=lambda **kw: backend),
+        vm_agent_admin=SimpleNamespace(container_worker_backend=resolve_backend),
     )
     context = EffectRuntimeContext(
         resolved_config=config,
@@ -119,7 +129,10 @@ def environment(tmp_path, monkeypatch):
         if path.endswith("/logs/8"):
             state["logs"].append(request.content.decode())
         elif path.endswith("/feed"):
-            state["feeds"].append(json.loads(request.content))
+            assert path.endswith(f"/timelines/{TIMELINE}/records/{JOB}/feed")
+            feed = json.loads(request.content)
+            assert feed["stepId"] == state["task_id"]
+            state["feeds"].append(feed)
         elif path.endswith("/events"):
             state["events"].append(json.loads(request.content))
         else:
@@ -295,6 +308,18 @@ def test_libvirt_session_can_complete_without_container_log_configuration(enviro
     assert run(complete=True, result="failed")["done"]
     assert state["events"][0]["result"] == "failed"
     assert state["modes"] == []
+
+
+def test_worker_assignment_failure_keeps_callback_and_log_retries_bounded(environment):
+    state, run, _ = environment
+    run(claim_start=True)
+    state["backend_error"] = ContainerWorkerAssignmentError("No worker assignment")
+    result = run(complete=True, result="failed")
+    assert result["status"] == "log_retry" and not result["done"]
+    assert state["events"][-1]["result"] == "failed"
+    run()
+    assert run()["status"] == "log_exhausted"
+    assert len(state["events"]) == 1
 
 
 def test_session_directory_is_checked_before_reading_or_skipping_logs(environment):

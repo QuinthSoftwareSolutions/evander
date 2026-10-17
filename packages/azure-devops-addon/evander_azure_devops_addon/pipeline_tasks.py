@@ -156,7 +156,7 @@ class PipelineTaskClient:
         if live:
             self.request(
                 "POST",
-                f"{self.records}/{self.task.task_id}/feed",
+                f"{self.records}/{self.task.job_id}/feed",
                 json={
                     "count": len(lines),
                     "value": lines,
@@ -216,16 +216,23 @@ def rendered_logs(context, directory, session_id):
         and metadata.get("execution_backend") != "container_worker_vm"
     ):
         return {}
-    backend = admin.container_worker_backend(session_id=session_id, directory_path=directory)
-    records = backend.repository.list_by_session(session_id)
-    # A thread may span several worker executions. Its rendered session transcript
-    # is cumulative, so choose its latest execution instead of repeating the thread.
-    if not records:
-        return {}
-    record = records[-1]
-    return {
-        session_id: backend.get_log_snapshot(record.execution_id, lines=0, mode="session-history")
-    }
+    try:
+        backend = admin.container_worker_backend(session_id=session_id, directory_path=directory)
+        records = backend.repository.list_by_session(session_id)
+        # A thread may span several worker executions. Its rendered session transcript
+        # is cumulative, so choose its latest execution instead of repeating the thread.
+        if not records:
+            return {}
+        record = records[-1]
+        return {
+            session_id: backend.get_log_snapshot(
+                record.execution_id, lines=0, mode="session-history"
+            )
+        }
+    except ValueError:
+        # Configuration/assignment errors are log failures. The directory ownership
+        # check above remains an authorization error and must not be suppressed.
+        raise RuntimeError("Agent log source is unavailable") from None
 
 
 class TaskEffect(EffectProviderBase):
