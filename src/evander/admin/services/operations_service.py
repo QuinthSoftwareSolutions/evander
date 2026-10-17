@@ -305,10 +305,12 @@ class OperationsAdminService:
         )
 
     def write_directory_domain_config(
-        self, directory_path: str, domain: str, payload: dict[str, object]
+        self, directory_path: str, domain: str, payload: dict[str, object], *, strict: bool = False
     ):
+        # Scoped mutations must fail when their destination disappears rather than
+        # inheriting the operator-facing fallback to root.
         return self._directory_admin.write_domain_config(
-            self._normalize_directory_path(directory_path),
+            directory_path if strict else self._normalize_directory_path(directory_path),
             domain=domain,
             payload=payload,
         )

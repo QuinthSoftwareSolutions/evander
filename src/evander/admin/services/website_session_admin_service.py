@@ -164,7 +164,7 @@ class WebsiteSessionAdminService:
         return current
 
     def _write(self, scope, overlay):
-        result = self.operations.write_directory_domain_config(scope, "providers", overlay)
+        result = self.operations.write_directory_domain_config(scope, "providers", overlay, strict=True)
         if not result.ok:
             raise ValueError("Could not save website configuration")
 

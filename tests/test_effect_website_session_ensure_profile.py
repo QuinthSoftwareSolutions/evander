@@ -292,6 +292,35 @@ def test_write_failure_removes_only_the_new_credential_record(rig, monkeypatch):
     assert rig.admin.snapshot("root/team")["revision"] == before
 
 
+@pytest.mark.parametrize("change", ["delete", "rename"])
+def test_destination_removed_during_creation_cannot_write_root(rig, monkeypatch, change):
+    operations = rig.runtime.operations_admin
+    assert operations.write_directory_domain_config(
+        "root", "providers", {"azure_devops_project": "root-project"}).ok
+    before = operations.read_directory_domain_config("root", "providers").data.config
+    put = rig.admin.credentials.put
+
+    def remove_destination(*args):
+        ref = put(*args)
+        if change == "delete":
+            result = rig.runtime.directory_admin.delete("root/team/child")
+        else:
+            result = rig.runtime.directory_admin.update("root/team/child", new_name="renamed")
+        assert result.ok
+        return ref
+
+    monkeypatch.setattr(rig.admin.credentials, "put", remove_destination)
+    with pytest.raises(ValueError, match="Could not save website configuration"):
+        rig.effect(scope="root/team/child").execute()
+    assert operations.read_directory_domain_config("root", "providers").data.config == before
+    # Roll back the attempted copy while retaining the source's encrypted credentials.
+    with rig.admin.credentials._database() as database:
+        assert database.execute("SELECT count(*) FROM credentials").fetchone()[0] == 1
+    source = rig.runtime.runtime.provider_config.resolve_for_directory("root/team").managed_website_sessions["seed-login"]
+    assert rig.admin.credentials.read(source.credential_ref, "root/team", "seed-login", source) == {
+        "email": "operator@example.test", "password": "private-test-password"}
+
+
 @pytest.mark.parametrize("value", ["not json", "[]", '{"template":{"unexpected":true}}'])
 def test_invalid_host_policy_fails_closed(rig, monkeypatch, value):
     monkeypatch.setenv(WEBSITE_PROFILE_TEMPLATES_ENV, value)
