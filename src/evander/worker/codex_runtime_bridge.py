@@ -255,11 +255,13 @@ class CodexRuntimeBridge:
         process_factory=CodexAppServerProcess,
         diagnostics=None,
         on_drained=None,
+        usage_recorder_factory=None,
     ):
         self.path = path
         self.command_factory = command_factory
         self.diagnostics = diagnostics
         self.on_drained = on_drained
+        self.usage_recorder_factory = usage_recorder_factory
         self.native_tokens = placeholder_tokens(tokens)
         self.http_relay = CodexRuntimeHttpRelay(
             path=path.with_name("models.sock"),
@@ -379,6 +381,7 @@ class CodexRuntimeBridge:
 
     def _serve(self, client):
         process = None
+        usage_recorder = None
         exit_code = None
         send_lock = threading.Lock()
         connection_id = os.urandom(8).hex()
@@ -413,6 +416,8 @@ class CodexRuntimeBridge:
                 exit_code = 0
                 return
             mode, cwd, config, model, prompt = parse_arguments(argv, cwd)
+            if self.usage_recorder_factory is not None:
+                usage_recorder = self.usage_recorder_factory(model)
             record(
                 "runtime.started",
                 mode=mode,
@@ -432,6 +437,8 @@ class CodexRuntimeBridge:
             thread_id = None
 
             def notification(method, params):
+                if usage_recorder is not None:
+                    usage_recorder.notification(method, params)
                 # Observe children before exec's parent-thread projection. Completed
                 # items contain the full text, so omit high-volume streaming deltas.
                 # Authentication messages are never diagnostic events.
@@ -555,6 +562,8 @@ class CodexRuntimeBridge:
                         + "\n",
                     }
                 )
+                if usage_recorder is not None:
+                    usage_recorder.expect_turn(thread_id)
                 process.request(
                     "turn/start",
                     {
@@ -614,6 +623,8 @@ class CodexRuntimeBridge:
             except Exception as exc:
                 record("runtime.close_failed", exception_class=type(exc).__name__)
                 exit_code = 1
+            if usage_recorder is not None:
+                usage_recorder.finish(status="success" if exit_code == 0 else "cancelled")
             record(
                 "runtime.closed",
                 broker_shutdown=self.closed.is_set(),

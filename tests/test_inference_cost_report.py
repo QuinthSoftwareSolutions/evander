@@ -245,7 +245,8 @@ def test_transcript_keeps_request_attribution_after_relay_retention(tmp_path):
     assert result["groups"][0]["api_key_name"] == "PRIMARY_KEY"
 
 
-def test_cost_routes_authorize_scope_and_interpret_local_calendar_dates():
+@pytest.mark.parametrize("endpoint", ["inference-costs", "inference-tokens"])
+def test_cost_routes_authorize_scope_and_interpret_local_calendar_dates(endpoint):
     calls = []
 
     class Auth:
@@ -257,24 +258,25 @@ def test_cost_routes_authorize_scope_and_interpret_local_calendar_dates():
     service = SimpleNamespace(
         model_usage_admin=SimpleNamespace(
             read_inference_cost_report=lambda **kwargs: calls.append(kwargs) or {"total_cost": 3},
+            read_inference_token_report=lambda **kwargs: calls.append(kwargs) or {"total_tokens": 50},
             inference_cost_categories=lambda **kwargs: ["Review"],
         )
     )
     with TestClient(Starlette(routes=report_routes(service, Auth()))) as client:
-        assert client.get("/api/admin/reports/inference-costs").status_code == 403
+        assert client.get(f"/api/admin/reports/{endpoint}").status_code == 403
         assert (
             client.get("/api/admin/inference-cost-categories?directory_path=root/b").status_code
             == 403
         )
         response = client.get(
-            "/api/admin/reports/inference-costs?directory_path=root/a&timezone=Europe/Stockholm&start=2026-03-29&end=2026-03-30"
+            f"/api/admin/reports/{endpoint}?directory_path=root/a&timezone=Europe/Stockholm&start=2026-03-29&end=2026-03-30"
         )
         assert response.status_code == 200
         assert calls[0]["start"] == datetime(2026, 3, 28, 23, tzinfo=UTC)
         assert calls[0]["end"] == datetime(2026, 3, 29, 22, tzinfo=UTC)
         assert (
             client.get(
-                "/api/admin/reports/inference-costs?directory_path=root/a&timezone=Bad/Zone&start=2026-03-29"
+                f"/api/admin/reports/{endpoint}?directory_path=root/a&timezone=Bad/Zone&start=2026-03-29"
             ).status_code
             == 400
         )

@@ -763,6 +763,34 @@ The response contains `outcome` (`reset`, `alreadyRedeemed`, `nothingToReset`, o
 and the refreshed `profile`. Provider selection applies when `credit_id` is omitted. This requires
 a worker Codex App Server version supporting `account/rateLimitResetCredit/consume`.
 
+### Subscription token reporting
+
+Updated worker daemons record new subscription inference counters from live Codex
+App Server notifications, including child turns in brokered runtimes. Counters
+are written to `worker-inference-usage.db` in the worker runtime directory,
+independently of session files and private diagnostics. The journal contains
+numeric usage and attribution metadata, without prompts or credentials.
+If a journal write fails, the worker stages that live receipt under
+`worker-inference-usage.pending` and retries when the job's receipts are requested.
+Pending writes remain owned by the journal after the native connection closes.
+
+The control plane imports receipts during execution inspection, stop, and cleanup
+using `GET /v1/jobs/{id}/model-usage?cursor=0&limit=200`. This authenticated endpoint
+returns `events`, `next_cursor`, `has_more`, and `complete`; limits are 1–500.
+`complete` means the job is terminal, all native writers have stopped, and pending
+journal writes have been delivered.
+Stable event identities and durable cursors make retries idempotent. Failed
+imports leave receipts on the worker. The effect orchestrator also drains a
+bounded, persistent delivery queue independently of execution status, so completed
+or cleaned-up jobs continue delivery after transient failures or pagination limits.
+Only newly capture-marked jobs are enqueued; the queue never scans historical jobs.
+
+Deploy both the control plane and worker daemon to collect new subscription
+usage. Existing jobs without a capture marker are not scanned, and startup does
+not import old session histories. Historical backfills are separate manual
+operator actions. Subscription counters contribute to the report's token chart
+and remain excluded from its API monetary totals.
+
 ## Session Durability
 
 Durable state lives under:
@@ -1137,6 +1165,7 @@ Routes:
 - `DELETE /v1/codex-auth`
 - `POST /v1/jobs`
 - `GET /v1/jobs/{id}`
+- `GET /v1/jobs/{id}/model-usage`
 - `POST /v1/jobs/{id}/stop`
 - `DELETE /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/logs`

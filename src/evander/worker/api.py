@@ -73,6 +73,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                     "codex_fast_mode": 1,
                     "codex_ultrafast_mode": 1,
                     "codex_runtime_bridge": 1,
+                    "inference_usage": 1,
                 },
             }
         )
@@ -460,6 +461,21 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         record = await run_in_threadpool(daemon.inspect_job, record)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def get_model_usage(request: Request) -> JSONResponse:
+        job_id = request.path_params["job_id"]
+        record = daemon.store.get(job_id)
+        if record is None:
+            return JSONResponse({"error": "job not found"}, status_code=404)
+        try:
+            page = await run_in_threadpool(
+                daemon.model_usage_page, record,
+                cursor=int(request.query_params.get("cursor", "0")),
+                limit=int(request.query_params.get("limit", "200")),
+            )
+            return JSONResponse(page.model_dump(mode="json"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
     async def stop_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
@@ -682,6 +698,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             ),
             Route("/v1/jobs/{job_id}", delete_job, methods=["DELETE"]),
             Route("/v1/jobs/{job_id}/logs", get_logs, methods=["GET"]),
+            Route("/v1/jobs/{job_id}/model-usage", get_model_usage, methods=["GET"]),
             Route("/v1/jobs/{job_id}/artifacts", get_artifacts, methods=["GET"]),
         ],
     )

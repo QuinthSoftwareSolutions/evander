@@ -164,6 +164,40 @@ class DiskQuotaTurnProcess(FakeTurnProcess):
         raise CodexAppServerError("Codex app-server request failed: Disk quota exceeded")
 
 
+def test_subscription_runner_records_live_usage_without_reading_session_history(tmp_path):
+    from evander.worker.model_usage import SubscriptionUsageRecorder, WorkerUsageJournal
+
+    class UsageProcess(FakeTurnProcess):
+        def request(self, method, params=None, **kwargs):
+            if method == "turn/start":
+                self.notification_handler("thread/tokenUsage/updated", {
+                    "threadId": params["threadId"], "turnId": "turn-1", "tokenUsage": {
+                        "total": {"totalTokens": 10050},
+                        "last": {"inputTokens": 40, "outputTokens": 10, "totalTokens": 50},
+                    },
+                })
+            return super().request(method, params, **kwargs)
+
+    journal = WorkerUsageJournal(tmp_path / "usage.db")
+    runner = CodexSubscriptionTurnRunner(
+        command=("native",), turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION, prompt="test", model="test-model",
+            resume_mode="same_context",
+        ), cwd="/home/agent", broker=FakeBroker(),
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log", finished_marker=tmp_path / "exit",
+        process_factory=UsageProcess,
+        usage_recorder=SubscriptionUsageRecorder(
+            job_id="job", session_id="session", context={"cost_category": "Review"}, sink=journal.append,
+        ),
+    )
+    runner.run()
+    events = journal.page("job").events
+    assert [(event.input_tokens, event.output_tokens, event.total_tokens) for event in events] == [(40, 10, 50)]
+    assert events[0].cost_category == "Review"
+    assert (tmp_path / "exit").read_text() == "0"
+
+
 @pytest.mark.parametrize("effort", ["low", None])
 @pytest.mark.parametrize("fast_mode,tier", [(True, "fast"), (False, "default"), ("ultrafast", "ultrafast"), (None, "default")])
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(

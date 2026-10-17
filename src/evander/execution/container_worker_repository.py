@@ -3,7 +3,7 @@ from __future__ import annotations
 import fcntl
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import contextmanager
 from threading import RLock
@@ -17,6 +17,7 @@ from evander.worker.models import now_utc
 from evander.worker.security import sanitize_metadata
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
+_MODEL_USAGE_PROGRESS_FIELDS = ("model_usage_cursor", "model_usage_complete", "model_usage_sync_error")
 
 
 class ContainerWorkerExecutionRecord(BaseModel):
@@ -79,41 +80,106 @@ class ContainerWorkerExecutionRepository:
     def put(self, record: ContainerWorkerExecutionRecord) -> None:
         record.metadata = sanitize_metadata(record.metadata)
         record.updated_at = now_utc()
-        payload = record.model_dump(mode="json")
         self._ensure_ready()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO container_worker_executions(
-                    execution_id,
-                    session_id,
-                    worker_job_id,
-                    target_name,
-                    last_status,
-                    cleanup_status,
-                    directory_path,
-                    created_at,
-                    updated_at,
-                    finished_at,
-                    payload_json
+            current = self._current_execution(connection, record.execution_id)
+            if current is not None and self._same_worker_job(current, record):
+                # Foreground inspection/cleanup may have started before a receipt
+                # delivery advanced its cursor or sealed the export.
+                if self._newer_progress(current.metadata, record.metadata):
+                    self._copy_model_usage_progress(current.metadata, record.metadata)
+            self._insert_record(connection, record)
+            self._update_delivery_queue(connection, record)
+
+    def save_model_usage_progress(self, record: ContainerWorkerExecutionRecord) -> None:
+        """Merge only receipt progress; never restore a deleted or replaced job."""
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._current_execution(connection, record.execution_id)
+            if current is None or not self._same_worker_job(current, record):
+                return
+            if not self._newer_progress(current.metadata, record.metadata):
+                self._copy_model_usage_progress(record.metadata, current.metadata)
+                current.updated_at = now_utc()
+                self._insert_record(connection, current)
+                self._update_delivery_queue(connection, current)
+            self._copy_model_usage_progress(current.metadata, record.metadata)
+
+    def _current_execution(
+        self, connection: sqlite3.Connection, execution_id: str,
+    ) -> ContainerWorkerExecutionRecord | None:
+        return self._record_from_row(connection.execute(
+            "SELECT payload_json FROM container_worker_executions WHERE execution_id=?",
+            (execution_id,),
+        ).fetchone())
+
+    @staticmethod
+    def _same_worker_job(
+        first: ContainerWorkerExecutionRecord, second: ContainerWorkerExecutionRecord,
+    ) -> bool:
+        return (
+            first.worker_job_id == second.worker_job_id
+            and first.worker_url.rstrip("/") == second.worker_url.rstrip("/")
+            and first.session_id == second.session_id
+        )
+
+    @staticmethod
+    def _newer_progress(current: dict, incoming: dict) -> bool:
+        return bool(current.get("model_usage_complete")) or (
+            int(current.get("model_usage_cursor", 0)) > int(incoming.get("model_usage_cursor", 0))
+        )
+
+    @staticmethod
+    def _copy_model_usage_progress(source: dict, target: dict) -> None:
+        for field in _MODEL_USAGE_PROGRESS_FIELDS:
+            target.pop(field, None)
+            if field in source:
+                target[field] = source[field]
+
+    @staticmethod
+    def _update_delivery_queue(
+        connection: sqlite3.Connection, record: ContainerWorkerExecutionRecord,
+    ) -> None:
+        if record.metadata.get("model_usage_capture") == 1:
+            if record.metadata.get("model_usage_complete"):
+                connection.execute(
+                    "DELETE FROM pending_model_usage_deliveries WHERE execution_id=?",
+                    (record.execution_id,),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.execution_id,
-                    record.session_id,
-                    record.worker_job_id,
-                    record.target_name,
-                    record.last_status,
-                    record.cleanup_status,
-                    record.directory_path,
-                    datetime_to_storage(record.created_at),
-                    datetime_to_storage(record.updated_at),
-                    datetime_to_storage(record.finished_at),
-                    json_dumps(payload),
-                ),
+            else:
+                connection.execute(
+                    "INSERT OR IGNORE INTO pending_model_usage_deliveries "
+                    "(execution_id,next_attempt_at) VALUES (?,?)",
+                    (record.execution_id, datetime_to_storage(record.updated_at)),
+                )
+
+    def claim_model_usage_delivery(
+        self, *, now: datetime | None = None, retry_seconds: float = 30,
+    ) -> ContainerWorkerExecutionRecord | None:
+        """Lease one prospective delivery, including terminal executions.
+
+        The queue starts empty. Only newly captured jobs enter it through put();
+        there is no startup scan or historical job conversion.
+        """
+        now = now or now_utc()
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT e.payload_json, q.execution_id FROM pending_model_usage_deliveries q "
+                "JOIN container_worker_executions e ON e.execution_id=q.execution_id "
+                "WHERE q.next_attempt_at<=? ORDER BY q.next_attempt_at,q.execution_id LIMIT 1",
+                (datetime_to_storage(now),),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "UPDATE pending_model_usage_deliveries SET next_attempt_at=? WHERE execution_id=?",
+                (datetime_to_storage(now + timedelta(seconds=max(1, retry_seconds))), row["execution_id"]),
             )
+            return self._record_from_row(row)
 
     def delete(self, execution_id: str) -> None:
         normalized = self._normalize_key(execution_id)
@@ -125,6 +191,9 @@ class ContainerWorkerExecutionRepository:
             connection.execute(
                 "DELETE FROM container_worker_executions WHERE execution_id = ?",
                 (normalized,),
+            )
+            connection.execute(
+                "DELETE FROM pending_model_usage_deliveries WHERE execution_id=?", (normalized,),
             )
 
     def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
@@ -369,6 +438,13 @@ class ContainerWorkerExecutionRepository:
                     ON container_worker_executions(target_name);
                 CREATE INDEX IF NOT EXISTS idx_container_worker_executions_directory_created
                     ON container_worker_executions(directory_path, created_at);
+
+                CREATE TABLE IF NOT EXISTS pending_model_usage_deliveries (
+                    execution_id TEXT PRIMARY KEY,
+                    next_attempt_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pending_model_usage_deliveries_due
+                    ON pending_model_usage_deliveries(next_attempt_at, execution_id);
                 """
             )
 

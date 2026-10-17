@@ -807,6 +807,22 @@ Choose **Compare provider / API key** to select several accounts on the line
 chart, or **Total** for one accumulated total. The dashboard link retains that
 selection and the current directory scope.
 
+On the full report, **Category chart > Tokens** switches the daily stacked bars
+to total token usage from recorded API and subscription inference. The default
+is **Cost**. Only that chart switches: the monetary headline, accumulated charts,
+table, and dashboard continue to show API costs. The report URL retains the
+selected category metric. Category colors match across both modes, and tooltips
+and keyboard focus show exact token counts.
+
+Tokens do not require a price or API key. A recorded total is used when available;
+otherwise both input and output counts are required and summed. Cached input
+and reasoning breakdowns are not added again to an existing total. Missing
+counts are excluded with a separate partial-coverage notice; recorded zero
+counts remain valid. Local inference and unknown billing sources are excluded.
+Subscription coverage includes newly recorded worker usage. Historical imports
+are manual operator actions; opening the report or restarting a service does
+not import old subscription histories.
+
 Reports default to month to date in the viewer's browser timezone. A custom
 period includes both the **From** and **Through** dates. Day boundaries follow
 that timezone, including daylight-saving changes; days without costs remain in

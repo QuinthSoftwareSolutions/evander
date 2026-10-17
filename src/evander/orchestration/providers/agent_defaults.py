@@ -135,9 +135,14 @@ def build_agent_default_effect_handlers(
     tuple[LifecycleReconciliationHook, ...],
     tuple[CompletionDispatchHook, ...],
 ]:
+    from evander.model_usage.worker_delivery import WorkerUsageDeliveryHook
+
     lifecycle_hooks = tuple(
         IsolatedMaintenanceHook(hook) if getattr(hook, "isolated_maintenance", False) else hook
-        for hook in build_effect_lifecycle_hooks(provider_factory=provider_factory)
+        for hook in (
+            *build_effect_lifecycle_hooks(provider_factory=provider_factory),
+            WorkerUsageDeliveryHook(),
+        )
     )
     return (
         (AgentCompletionSpecialEventHandler(lifecycle_hooks),),
