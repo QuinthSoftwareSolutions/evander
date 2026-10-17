@@ -175,6 +175,72 @@ def test_mtd_uses_local_month_and_counts_cache_and_reasoning_subsets_once(tmp_pa
     ]
 
 
+def test_period_boundaries_handle_existing_mixed_timestamp_precision(tmp_path):
+    store = ModelUsageStore(tmp_path / "usage.db")
+    for identity, second, microsecond, count in (
+        ("whole-start", 0, 0, 1),
+        ("fraction-start", 0, 500000, 10),
+        ("whole-end", 1, 0, 100),
+        ("fraction-end", 1, 500000, 1000),
+    ):
+        store.upsert_event(
+            usage(
+                identity,
+                occurred_at=datetime(2026, 10, 1, 0, 0, second, microsecond, tzinfo=UTC),
+                total_tokens=count,
+            )
+        )
+    reader = InferenceTokenReport(store)
+    assert (
+        reader.read(
+            start=datetime(2026, 10, 1, tzinfo=UTC),
+            end=datetime(2026, 10, 1, 0, 0, 1, tzinfo=UTC),
+        )["total_tokens"]
+        == 11
+    )
+    assert (
+        reader.read(
+            start=datetime(2026, 10, 1, 0, 0, 0, 500000, tzinfo=UTC),
+            end=datetime(2026, 10, 1, 0, 0, 1, 500000, tzinfo=UTC),
+        )["total_tokens"]
+        == 110
+    )
+
+
+@pytest.mark.parametrize("transcript_first", [False, True])
+def test_directory_scope_resolves_unattributed_canonical_transcript_before_filtering(
+    tmp_path,
+    transcript_first,
+):
+    store = ModelUsageStore(tmp_path / "usage.db")
+    relay = usage(
+        "relay",
+        provider="anthropic",
+        request_id="request-1",
+        occurred_at=datetime(2026, 3, 28, tzinfo=UTC),
+    )
+    transcript = usage(
+        "transcript",
+        provider="anthropic",
+        request_id="request-1",
+        input_tokens=80,
+        directory_path=None,
+        cost_category=None,
+        billing_kind=None,
+        cost_attribution_recorded=False,
+        raw_usage_metadata={"request_metadata": {"source": TRANSCRIPT_USAGE_SOURCE}},
+    )
+    for event in [transcript, relay] if transcript_first else [relay, transcript]:
+        store.upsert_event(event)
+    reader = InferenceTokenReport(store)
+    period = dict(start=datetime(2026, 3, 29, tzinfo=UTC), end=datetime(2026, 3, 30, tzinfo=UTC))
+    assert reader.read(**period)["total_tokens"] == 90
+    scoped = reader.read(**period, directory_path="root/a")
+    assert scoped["total_tokens"] == 90
+    assert scoped["daily"][0]["categories"] == [{"category": "Development", "total_tokens": 90}]
+    assert reader.read(**period, directory_path="root/b")["total_tokens"] == 0
+
+
 @pytest.mark.parametrize(
     "changes",
     [

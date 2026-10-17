@@ -108,7 +108,14 @@ class InferenceTokenReport:
                     )
                     if not period_start <= event.occurred_at < period_end:
                         continue
-                    path = attribution.directory_path or event.directory_path
+                    path = (
+                        attribution.directory_path
+                        or event.directory_path
+                        or next(
+                            (item.directory_path for item in recorded if item.directory_path),
+                            None,
+                        )
+                    )
                     if not (
                         path == directory
                         or (path and path.startswith(directory + "/"))

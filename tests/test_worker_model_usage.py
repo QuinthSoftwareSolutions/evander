@@ -185,3 +185,127 @@ def test_worker_export_is_authenticated_bounded_and_does_not_import_history(tmp_
             assert old["events"] == []
 
     asyncio.run(check())
+
+
+def test_failed_final_writes_survive_recorder_disposal_and_retry_after_worker_restart(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+
+    path = tmp_path / "receipts.db"
+    journal = WorkerUsageJournal(path)
+    write = WorkerUsageJournal._append
+
+    def unavailable(*args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(WorkerUsageJournal, "_append", unavailable)
+    writer = recorder(journal)
+    writer.expect_turn("parent")
+    update(writer, 10, 10)
+    writer.notification(
+        "turn/completed", {"threadId": "parent", "turn": {"id": "turn-1", "status": "completed"}}
+    )
+    writer.finish()
+    del writer
+    daemon = SimpleNamespace(
+        usage_journal=journal,
+        _codex_subscription_runners={},
+        _codex_runtime_bridges={},
+    )
+    job = SimpleNamespace(job_id="job-1", status="removed")
+    page = WorkerDaemon.model_usage_page(daemon, job)
+    assert page.events == []
+    assert page.complete is False
+    # Only the staged live receipts are replayed; no session history is consulted.
+    daemon.usage_journal = WorkerUsageJournal(path)
+    assert WorkerDaemon.model_usage_page(daemon, job).complete is False
+    monkeypatch.setattr(WorkerUsageJournal, "_append", write)
+    page = WorkerDaemon.model_usage_page(daemon, job)
+    assert page.complete is True
+    assert [event.total_tokens for event in page.events] == [10]
+    assert WorkerDaemon.model_usage_page(daemon, job, cursor=page.next_cursor).events == []
+
+
+def test_export_never_seals_rows_read_before_final_writer_drains(tmp_path, monkeypatch):
+    journal = WorkerUsageJournal(tmp_path / "receipts.db")
+    writer = recorder(journal)
+    writer.expect_turn("parent")
+    daemon = SimpleNamespace(
+        usage_journal=journal,
+        _codex_subscription_runners={"job-1": writer},
+        _codex_runtime_bridges={},
+    )
+    job = SimpleNamespace(job_id="job-1", status="removed")
+    read_page = journal.page
+
+    def final_write_after_rows_snapshot(*args, **kwargs):
+        page = read_page(*args, **kwargs)
+        update(writer, 42, 42)
+        writer.notification(
+            "turn/completed",
+            {
+                "threadId": "parent",
+                "turn": {"id": "turn-1", "status": "completed"},
+            },
+        )
+        writer.finish()
+        daemon._codex_subscription_runners.clear()
+        return page
+
+    monkeypatch.setattr(journal, "page", final_write_after_rows_snapshot)
+    first = WorkerDaemon.model_usage_page(daemon, job)
+    assert first.events == []
+    assert first.complete is False
+    monkeypatch.setattr(journal, "page", read_page)
+    final = WorkerDaemon.model_usage_page(daemon, job, cursor=first.next_cursor)
+    assert final.complete is True
+    assert [event.total_tokens for event in final.events] == [42]
+
+
+def test_export_completion_belongs_to_its_rows_snapshot_during_concurrent_spool_flush(
+    tmp_path,
+    monkeypatch,
+):
+    import sqlite3
+
+    journal = WorkerUsageJournal(tmp_path / "receipts.db")
+    append = journal._append
+
+    def unavailable(*args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(journal, "_append", unavailable)
+    writer = recorder(journal)
+    writer.expect_turn("parent")
+    update(writer, 42, 42)
+    writer.notification(
+        "turn/completed",
+        {
+            "threadId": "parent",
+            "turn": {"id": "turn-1", "status": "completed"},
+        },
+    )
+    writer.finish()
+    daemon = SimpleNamespace(
+        usage_journal=journal,
+        _codex_subscription_runners={},
+        _codex_runtime_bridges={},
+    )
+    job = SimpleNamespace(job_id="job-1", status="removed")
+    read_page = journal.page
+
+    def competing_delivery_after_snapshot(*args, **kwargs):
+        page = read_page(*args, **kwargs)
+        monkeypatch.setattr(journal, "_append", append)
+        journal.flush_pending("job-1")  # Another request finishes delivery before this response.
+        return page
+
+    monkeypatch.setattr(journal, "page", competing_delivery_after_snapshot)
+    first = WorkerDaemon.model_usage_page(daemon, job)
+    assert first.events == []
+    assert first.complete is False
+    monkeypatch.setattr(journal, "page", read_page)
+    final = WorkerDaemon.model_usage_page(daemon, job, cursor=first.next_cursor)
+    assert final.complete is True
+    assert [event.total_tokens for event in final.events] == [42]

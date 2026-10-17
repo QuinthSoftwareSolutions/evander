@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from .models import ModelInferenceUsageEvent, ModelUsageCorrelationContext
 from .cost_balances import model_usage_request_key
@@ -95,18 +95,29 @@ class CostReportSnapshot:
     ) -> Iterable[ModelInferenceUsageEvent]:
         """Use the source period index, without building or migrating a projection."""
         events: dict[str, ModelInferenceUsageEvent] = {}
+        # Existing rows mix whole-second and fractional ISO timestamps. Fetch
+        # complete boundary seconds through the index, then compare datetimes:
+        # lexically, '.500000Z' sorts before 'Z' in the same second.
+        candidate_start = start.astimezone(UTC).replace(microsecond=0)
+        candidate_end = end.astimezone(UTC).replace(microsecond=0) + timedelta(seconds=1)
         for row in self.connection.execute(
             "SELECT payload_json FROM model_usage_events WHERE occurred_at>=? AND occurred_at<? "
             "AND (directory_path=? OR substr(directory_path,1,?)=? "
-            "OR (?='root' AND directory_path IS NULL)) ORDER BY occurred_at,event_id",
-            (start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z"),
-             directory_path, len(directory_path) + 1, directory_path + "/", directory_path),
+            "OR (?='root' AND directory_path IS NULL) OR (? AND provider='anthropic')) "
+            "ORDER BY occurred_at,event_id",
+            (candidate_start.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+             candidate_end.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+             directory_path, len(directory_path) + 1, directory_path + "/", directory_path,
+             include_request_siblings),
         ):
             event = ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
-            events[event.event_id] = event
+            if start <= event.occurred_at < end:
+                events[event.event_id] = event
         if include_request_siblings:
-            # A transcript's canonical timestamp can lie on the other side of a
-            # report boundary. Resolve its relay siblings before deduplication.
+            # Transcripts may lack directory attribution and their canonical
+            # timestamp may lie across a report boundary from the relay. Seed
+            # all Anthropic candidates in the indexed period, resolve siblings,
+            # then let the report apply directory scope after deduplication.
             requests: dict[str, set[str]] = {}
             for event in events.values():
                 key = model_usage_request_key(event)

@@ -1201,13 +1201,16 @@ class WorkerDaemon(GitWorkspaceOperations):
         return None
 
     def model_usage_page(self, record: WorkerJobRecord, *, cursor: int = 0, limit: int = 200):
-        page = self.usage_journal.page(record.job_id, cursor=cursor, limit=limit)
-        page.complete = (
+        # Sample producer eligibility before the rows snapshot. A final writer
+        # can append and leave its map while the page query is in progress.
+        writers_stopped = (
             record.status in {"exited", "stopped", "failed", "removed", "cleanup_failed"}
             and record.job_id not in self._codex_subscription_runners
             and record.job_id not in self._codex_runtime_bridges
         )
-        return page
+        return self.usage_journal.page(
+            record.job_id, cursor=cursor, limit=limit, writers_stopped=writers_stopped,
+        )
 
     def _usage_recorder(self, record: WorkerJobRecord, *, model: str | None = None):
         context = record.metadata.get("inference_usage_context")

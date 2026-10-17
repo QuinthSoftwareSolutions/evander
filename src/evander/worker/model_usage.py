@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
-from contextlib import closing, contextmanager
+import tempfile
+from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -33,6 +35,9 @@ class WorkerUsagePage(BaseModel):
 class WorkerUsageJournal:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = RLock()
+        self._pending: dict[str, dict[str, ModelInferenceUsageEvent]] = {}
+        self._pending_path = path.with_suffix(".pending")
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript("""
@@ -52,27 +57,110 @@ class WorkerUsageJournal:
             yield connection
 
     def append(self, job_id: str, event: ModelInferenceUsageEvent) -> None:
+        # The journal owns failed writes after the producing recorder closes.
+        with self._lock:
+            self._pending.setdefault(job_id, {})[event.event_id] = event
+            self._deliver(job_id, event)
+
+    def _append(self, job_id: str, event: ModelInferenceUsageEvent) -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO usage_receipts(event_id,job_id,payload_json) VALUES(?,?,?)",
                 (event.event_id, job_id, event.model_dump_json()),
             )
 
-    def page(self, job_id: str, *, cursor: int = 0, limit: int = 200) -> WorkerUsagePage:
+    def _spool_path(self, job_id: str, event_id: str) -> Path:
+        return (
+            self._pending_path
+            / hashlib.sha256(job_id.encode()).hexdigest()
+            / (hashlib.sha256(event_id.encode()).hexdigest() + ".json")
+        )
+
+    def _deliver(self, job_id: str, event: ModelInferenceUsageEvent) -> bool:
+        path = self._spool_path(job_id, event.event_id)
+        try:
+            self._append(job_id, event)
+        except Exception as exc:
+            # A locked/unavailable SQLite writer must not lose a final receipt.
+            # Stage only this live receipt, never native histories or credentials.
+            staged_path = None
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as staged:
+                    staged_path = Path(staged.name)
+                    staged.write(event.model_dump_json().encode())
+                    staged.flush()
+                    os.fsync(staged.fileno())
+                os.replace(staged_path, path)
+                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            except OSError:
+                logger.warning("subscription_usage_spool_failed", exc_info=False)
+            finally:
+                if staged_path is not None:
+                    with suppress(OSError):
+                        staged_path.unlink(missing_ok=True)
+            logger.warning("subscription_usage_write_failed exception_class=%s", type(exc).__name__)
+            return False
+        # A stale spool file is harmless: event identity makes redelivery idempotent.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        self._pending[job_id].pop(event.event_id, None)
+        if not self._pending[job_id]:
+            del self._pending[job_id]
+        return True
+
+    def flush_pending(self, job_id: str) -> None:
+        with self._lock:
+            directory = self._spool_path(job_id, "").parent
+            # Retry only explicitly staged live receipts for this requested job.
+            for path in directory.glob("*.json"):
+                event = ModelInferenceUsageEvent.model_validate_json(path.read_text())
+                self._pending.setdefault(job_id, {})[event.event_id] = event
+                if len(self._pending[job_id]) >= 500:
+                    break
+            for event in list(self._pending.get(job_id, {}).values())[:500]:
+                if not self._deliver(job_id, event):
+                    break
+
+    def has_pending(self, job_id: str) -> bool:
+        with self._lock:
+            return bool(self._pending.get(job_id)) or any(
+                self._spool_path(job_id, "").parent.glob("*.json")
+            )
+
+    def page(
+        self,
+        job_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 200,
+        writers_stopped: bool = False,
+    ) -> WorkerUsagePage:
         if cursor < 0 or not 1 <= limit <= 500:
             raise ValueError("cursor must be nonnegative and limit must be between 1 and 500")
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT sequence,payload_json FROM usage_receipts WHERE job_id=? AND sequence>? "
-                "ORDER BY sequence LIMIT ?",
-                (job_id, cursor, limit + 1),
-            ).fetchall()
-        page = rows[:limit]
-        return WorkerUsagePage(
-            events=[ModelInferenceUsageEvent.model_validate_json(row[1]) for row in page],
-            next_cursor=page[-1][0] if page else cursor,
-            has_more=len(rows) > limit,
-        )
+        with self._lock:
+            # Another exporter may deliver the spool too. Rows and completion
+            # must describe one snapshot, including any still-pending receipts.
+            self.flush_pending(job_id)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT sequence,payload_json FROM usage_receipts WHERE job_id=? AND sequence>? "
+                    "ORDER BY sequence LIMIT ?",
+                    (job_id, cursor, limit + 1),
+                ).fetchall()
+            page = rows[:limit]
+            return WorkerUsagePage(
+                events=[ModelInferenceUsageEvent.model_validate_json(row[1]) for row in page],
+                next_cursor=page[-1][0] if page else cursor,
+                has_more=len(rows) > limit,
+                complete=writers_stopped and not self.has_pending(job_id),
+            )
 
 
 def _counts(value: object) -> dict[str, int]:
