@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
+
+- Accept complete approved public identifiers in managed website browser storage and JWT claims when they contain a private password substring.
+- Continue rejecting separately reflected passwords, encoded credentials and credential-bearing cookies; retain existing connector checks.
+
 ## 2026-10-17 - Provision managed website logins in workflows (0.101.0)
 
 - Add `effect:website-session:ensure-profile` to create exact-origin login profiles for disposable environments from host-approved source profiles and destination patterns.
