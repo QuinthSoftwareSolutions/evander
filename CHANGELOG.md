@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-17 - Provision managed website logins in workflows (0.100.0)
+
+- Add `effect:website-session:ensure-profile` to create exact-origin login profiles for disposable environments from host-approved source profiles and destination patterns.
+- Keep credentials in encrypted host storage, return only safe profile metadata, and preserve directory isolation, concurrent retry idempotency, operator changes and credential revocation.
+- Include workflow editor fields, output schemas, host policy setup and credential-snapshot lifecycle guidance.
+
 ## 2026-10-16 - Azure pipeline task callbacks and live agent logs (0.99.0)
 
 - Add optional Azure DevOps effects for host-authenticated task completion and forwarding rendered agent progress into live and saved pipeline logs.

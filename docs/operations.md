@@ -3731,7 +3731,13 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
 Use [managed website sessions](managed-website-sessions.md) for an assistant that
 needs repeatable website login. In Admin Web's Website logins configuration, create
 a directory profile, enter encrypted host credentials, and run **Test saved login**.
-For environment-driven workflows, configure and test a separate exact-origin JSON
+For disposable environments, a host administrator can authorize a reusable source
+profile and destination patterns with `EVANDER_MANAGED_WEBSITE_PROFILE_TEMPLATES`.
+Use `effect:website-session:ensure-profile` before agent creation, then bind its
+`profile_id` to the website target. Generated profiles have independent encrypted
+credentials; remove them with their environments. See
+[workflow profile provisioning](managed-website-sessions.md#create-profiles-for-disposable-environments).
+For preconfigured environments, configure and test a separate exact-origin JSON
 profile for each environment. Use `query:website-session:resolve-profile` with the
 environment's website and API origins, then a `gate:validate` readiness check before
 updating targets and enqueueing work. Only the `valid` branch should dispatch an agent;

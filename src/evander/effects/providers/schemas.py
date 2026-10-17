@@ -1321,6 +1321,32 @@ class NotificationSendEffectDefinition(EffectDefinition):
         return text
 
 
+class WebsiteSessionEnsureProfileEffectDefinition(EffectDefinition):
+    type: Literal["effect:website-session:ensure-profile"]
+    template_id: str = Field(min_length=1, max_length=4096)
+    browser_origin: str
+    login_origin: str
+    directory_path: str | None = None
+
+    @field_validator("template_id")
+    @classmethod
+    def validate_template_id(cls, value: str) -> str:
+        import re
+        from evander.website_profile_templates import PROFILE_ID_PATTERN
+
+        value = value.strip()
+        if "${{" not in value and not re.fullmatch(PROFILE_ID_PATTERN, value):
+            raise ValueError("template_id must name a host-approved website profile template")
+        return value
+
+    @field_validator("browser_origin", "login_origin")
+    @classmethod
+    def validate_origin(cls, value: str) -> str:
+        from evander.website_profile_templates import profile_origin
+
+        return value if "${{" in value else profile_origin(value)
+
+
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     type: Literal["effect:session:update-metadata"]
     target: ConfigValue | None = None

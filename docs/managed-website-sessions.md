@@ -196,6 +196,61 @@ Profile resolution does not decrypt credentials, attempt a login, or prove that 
 saved account still works. Changes or revocation after resolution remain enforced by
 the existing login broker. No profile or credential migration is required.
 
+### Create profiles for disposable environments
+
+`effect:website-session:ensure-profile` can provision the exact-origin profile before
+creating an agent. Configure one enabled JSON source profile with its credentials in
+Website logins. A host administrator then authorizes which environments may receive
+copies by setting `EVANDER_MANAGED_WEBSITE_PROFILE_TEMPLATES` in the effect orchestrator's
+environment, for example through the deployment's protected `secrets.env`:
+
+```bash
+EVANDER_MANAGED_WEBSITE_PROFILE_TEMPLATES='{"training-environments":{"directory_path":"root/training","source_profile_id":"training-login","browser_origins":["https://test-*.example.org:8443"],"login_origins":["https://test-*.example.org:5001"]}}'
+```
+
+This setting is host policy, not directory or workflow configuration. Deploy/restart
+the effect orchestrator after changing its environment. The source profile is resolved
+in the template's named directory; child-directory overrides cannot replace it.
+Templates authorize that directory and descendants. Use exact origins or one wildcard
+within the first DNS label of a domain you control. Wildcards match no dots; the HTTPS
+scheme, remaining hostname and port must match. The source login endpoint's path,
+request fields, response mappings and session limits remain fixed.
+
+Add an effect before agent creation:
+
+```json
+{
+  "id": "login",
+  "display_name": "Prepare environment login",
+  "type": "effect:website-session:ensure-profile",
+  "config": {
+    "template_id": "training-environments",
+    "browser_origin": "${{request.browser_origin}}",
+    "login_origin": "${{request.api_origin}}"
+  }
+}
+```
+
+The effect returns `success`, `profile_id` and `created`. Its directory defaults to
+the workflow directory; an explicit `directory_path` may select a descendant only.
+On success, bind `${{login.profile_id}}` to the website target's
+`managed_website_session` in `effect:agent:create` metadata or
+`effect:session:update-metadata`. Include the API origin as another HTTP target.
+The existing managed context helper then performs authentication when the agent
+requests browser state. Profile creation itself makes no website request and returns
+no credentials or browser state. Route failures through the workflow's error handling.
+
+Profile IDs are deterministic for the template, directory and destination origins.
+Retries reuse the profile without writes; concurrent retries create one profile.
+Retries preserve operator edits, disabled profiles and removed credentials and require
+operator reconciliation. Creation refuses a destination that already has another
+enabled profile for the same browser origin.
+The generated profile has its own encrypted credential snapshot. Changing or removing
+the source credentials or template does not rotate or revoke existing copies. Manage
+generated profiles in Website logins alongside their environments, and remove them
+when deprovisioning. Existing environment-backed source credentials still require
+their original exact host grant and must be available to the effect orchestrator.
+
 Provision with `playwright=true` and use the shared helper in either execution backend:
 
 ```js

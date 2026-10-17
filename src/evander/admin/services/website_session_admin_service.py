@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -98,6 +99,63 @@ class WebsiteSessionAdminService:
                              "credentials": status,
                              "last_test": self.credentials.test_status(scope, profile_id, _revision(payload))})
         return {"directory_path": scope, "revision": _revision(overlay), "profiles": profiles}
+
+    def ensure_profile(self, *, directory_path: str, template_id: str,
+                       browser_origin: str, login_origin: str) -> dict:
+        """Create an exact-origin credential snapshot using an explicit host grant."""
+        from evander.website_profile_templates import profile_origin, website_profile_template
+
+        scope = DirectoryPath(segments=directory_path).as_posix()
+        browser_origin = profile_origin(browser_origin)
+        login_origin = profile_origin(login_origin)
+        template = website_profile_template(template_id)
+        if not template.permits(scope, browser_origin, login_origin):
+            raise ValueError("Website profile destination or directory is not host-approved")
+        identity = [scope, template_id, browser_origin, login_origin]
+        profile_id = "workflow-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
+
+        with self.operations.admin_config_mutation_lock():
+            # Resolve the source in the host grant's directory, not a child's override.
+            source = self._effective(template.directory_path).get(template.source_profile_id)
+            if source is None or not source.enabled or source.adapter != "json":
+                raise ValueError("Website profile template requires an enabled JSON login source")
+            payload = source.model_dump(mode="json")
+            payload.update(browser_origin=browser_origin,
+                           login_url=login_origin + (urlsplit(source.login_url).path or "/"),
+                           credential_source="stored", credential_ref=None)
+            profile = ManagedWebsiteSessionProfile.model_validate(payload)
+            result = self.operations.read_directory_domain_config(scope, "providers")
+            if not result.ok or result.data is None or result.data.directory.path != scope:
+                raise ValueError("Website profile destination directory does not exist")
+            overlay = copy.deepcopy(result.data.config or {})
+            profiles = self._effective(scope)
+            previous = profiles.get(profile_id)
+            if previous is not None:
+                if (profile_id not in (overlay.get("managed_website_sessions") or {})
+                        or previous.model_dump(exclude={"credential_ref"})
+                        != profile.model_dump(exclude={"credential_ref"})):
+                    raise ValueError("Existing workflow website profile configuration has changed")
+                fields = set(self._credential_status(scope, profile_id, previous)["configured_fields"])
+                if fields != set(profile.credential_fields):
+                    raise ValueError("Existing workflow website profile credentials are unavailable")
+                return {"success": True, "profile_id": profile_id, "created": False}
+            if any(p.enabled and p.adapter == "json" and p.browser_origin == browser_origin
+                   for p in profiles.values()):
+                raise ValueError("An enabled website profile already exists for this browser origin")
+            try:
+                values = self.broker.credentials(template.directory_path,
+                                                 template.source_profile_id, source)
+            except WebsiteSessionError:
+                raise ValueError("Website profile template credentials are unavailable") from None
+            profile.credential_ref = self.credentials.put(scope, profile_id, profile, values)
+            overlay.setdefault("managed_website_sessions", {})[profile_id] = profile.model_dump(mode="json")
+            try:
+                self._write(scope, overlay)
+            except Exception:
+                self.credentials.delete(profile.credential_ref, scope, profile_id)
+                raise
+            self._audit(scope, profile_id, "workflow_provision", None)
+            return {"success": True, "profile_id": profile_id, "created": True}
 
     def _check_revision(self, scope, expected_revision):
         current = self._overlay(scope)
