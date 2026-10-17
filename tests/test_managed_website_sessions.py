@@ -117,6 +117,61 @@ def test_eight_hour_expiry_renews_before_next_browser_context(rig):
     assert rig.calls[0].headers.get("x-evander-mcp-session-token") is None
 
 
+@pytest.mark.parametrize("location", ["local_storage", "session_storage"])
+@pytest.mark.parametrize("secret, identifier", [
+    ("operator", "qa.operator@example.test"),
+    ("operator", "qa+operator@example.test"),
+    ('pass"word', 'account.pass"wordü@example.test'),
+    ('pass"word\\ü', 'account.pass"word\\ü@example.test'),
+])
+def test_public_login_identifier_can_contain_private_password(rig, monkeypatch, location, secret, identifier):
+    monkeypatch.setenv("WEBSITE_USER", identifier)
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.profile.local_storage = {}
+    getattr(rig.profile, location)["currentUser"] = WebsiteStorageBinding(response_pointer="")
+    claims = {"exp": rig.now[0] + 3600, "padding": "x" * 49100, "email": identifier}
+    token = "header." + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=") + ".signature"
+    rig.handler = lambda request: httpx.Response(200, json={"email": identifier, "token": token})
+
+    state = acquire(rig)
+
+    storage = (dict((entry["name"], entry["value"])
+                    for entry in state["storageState"]["origins"][0]["localStorage"])
+               if location == "local_storage" else state["sessionStorage"])
+    assert json.loads(storage["currentUser"]) == {"email": identifier, "token": token}
+
+
+@pytest.mark.parametrize("secret, identifier, reflected", [
+    ("operator", "qa.operator@example.test", "operator"),
+    ("operator", "qa.operator@example.test", "qa.operator@example.test:operator"),
+    ("Xoperator", "operator@example.test", "Xoperator@example.test"),
+])
+def test_public_identifier_does_not_allow_separate_password_reflection(rig, monkeypatch, secret, identifier, reflected):
+    monkeypatch.setenv("WEBSITE_USER", identifier)
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.handler = lambda request: httpx.Response(200, json={
+        "email": identifier, "token": jwt(rig.now[0] + 3600), "extra": reflected,
+    })
+
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+    assert not rig.service._cache
+
+
+@pytest.mark.parametrize("secret, identifier", [
+    ("operator@example.test", "operator@example.test"),
+    ("operator", base64.b64encode(b"operator").decode()),
+    ("qa operator@example.test", "qa+operator@example.test"),
+])
+def test_public_identifier_cannot_exempt_an_entire_private_credential(rig, monkeypatch, secret, identifier):
+    monkeypatch.setenv("WEBSITE_USER", identifier)
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.handler = lambda request: httpx.Response(200, json={"email": identifier, "token": jwt(rig.now[0] + 3600)})
+
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+
+
 def test_json_login_preserves_utf8_storage_limit(rig):
     rig.profile.local_storage = {
         name: WebsiteStorageBinding(response_pointer="/payload", encoding="string")
@@ -356,6 +411,8 @@ def test_cookie_export_accepts_unrelated_temporary_authentication(rig):
 @pytest.mark.parametrize("location", ["cookie", "local_storage", "session_storage"])
 def test_broker_rejects_encoded_host_credentials(rig, monkeypatch, encoding, location):
     secret = 'private-host-"password\\with spaces\nü'
+    identifier = "operator+" + secret + "@example.test"
+    monkeypatch.setenv("WEBSITE_USER", identifier)
     monkeypatch.setenv("WEBSITE_PASSWORD", secret)
     reflected = {
         "base64": base64.b64encode(secret.encode()).decode(),
@@ -370,7 +427,7 @@ def test_broker_rejects_encoded_host_credentials(rig, monkeypatch, encoding, loc
         "nested_basic": base64.b64encode(json.dumps({"header": "Basic " + base64.b64encode(("u:" + secret).encode()).decode()}).encode()).decode(),
         "base64_boundary": base64.b64encode(("x" * 49140 + secret).encode()).decode(),
     }[encoding]
-    rig.profile.local_storage = {}
+    rig.profile.local_storage = {"identity": WebsiteStorageBinding(response_pointer="/email", encoding="string")}
     rig.profile.cookies_response_pointer = "/cookies"
     cookie = {"name": "temporary", "value": "temporary-session-token",
               "domain": "app.example.test", "path": "/", "secure": True, "sameSite": "Lax"}
@@ -380,7 +437,7 @@ def test_broker_rejects_encoded_host_credentials(rig, monkeypatch, encoding, loc
         getattr(rig.profile, location)["private"] = WebsiteStorageBinding(
             response_pointer="/reflected", encoding="string")
     rig.handler = lambda request: httpx.Response(200, json={
-        "token": jwt(rig.now[0] + 3600), "cookies": [cookie], "reflected": reflected})
+        "email": identifier, "token": jwt(rig.now[0] + 3600), "cookies": [cookie], "reflected": reflected})
     app = HttpTargetRelay(rig.config, provider_config_resolver=rig.resolver,
                           website_sessions=rig.service).create_app()
 

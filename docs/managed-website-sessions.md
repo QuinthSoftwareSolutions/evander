@@ -130,7 +130,12 @@ With `credential_source: "environment"` (the backward-compatible default),
 `credential_ref`; callers cannot choose another profile's stored credential reference. Only
 mark identifiers the application reflects, such as email, in `public_credential_fields`;
 never mark passwords. `static_fields` supplies nonsecret fixed JSON values. Missing
-credentials fail closed. Passwords reflected in selected response values are rejected.
+credentials fail closed. A complete approved public identifier can contain a password
+substring without blocking login, including when the application returns it in JSON or
+JWT claims. Password occurrences outside that identifier are still rejected. Giving
+a public identifier the same value as a private credential does not exempt that
+credential. Cookies retain the stricter check against all credential values, including
+public identifiers.
 
 `local_storage` and `session_storage` map browser storage keys to RFC 6901 response
 pointers. An empty pointer selects the whole response; `/result/accessToken` selects

@@ -395,8 +395,10 @@ class ManagedWebsiteSessionService:
             def check_secret(candidate, *, include_public=False):
                 secrets = tuple(secret for field, secret in credentials.items()
                                 if include_public or field not in profile.public_credential_fields)
+                public = (() if include_public else tuple(credentials[field]
+                          for field in profile.public_credential_fields))
                 try:
-                    reject_reflected_credentials(candidate, secrets)
+                    reject_reflected_credentials(candidate, secrets, public_values=public)
                 except CredentialError:
                     raise WebsiteSessionError("website_login_unsafe_response") from None
 
