@@ -1,0 +1,30 @@
+# Opt-in overlay after worker provisioning. Required variables:
+# package_wheel (local file), worker_python, browser_worker_config.
+- name: Install optional browser supervisor
+  hosts: browser_workers
+  become: true
+  tasks:
+    - name: Stage the prebuilt wheel
+      ansible.builtin.copy:
+        src: "{{ package_wheel }}"
+        dest: "/tmp/{{ package_wheel | basename }}"
+        mode: "0600"
+    - name: Install without downloading dependencies
+      ansible.builtin.command:
+        argv: ["{{ worker_uv | default('uv') }}", "pip", "install", "--python", "{{ worker_python }}", "--no-deps", "/tmp/{{ package_wheel | basename }}"]
+    - name: Save host-owned preview settings
+      ansible.builtin.copy:
+        content: "{{ browser_worker_config | to_nice_json }}"
+        dest: /etc/evander/browser-worker.json
+        owner: root
+        mode: "0600"
+    - name: Install supervisor unit
+      ansible.builtin.copy:
+        src: evander-browser-session-worker.service
+        dest: /etc/systemd/system/evander-browser-session-worker.service
+        mode: "0644"
+    - name: Reload without starting allocations
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        name: evander-browser-session-worker
+        enabled: true

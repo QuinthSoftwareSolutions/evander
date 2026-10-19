@@ -68,6 +68,9 @@ const EMPTY_GROUP_FORM: GroupFormState = {
 
 const DIRECT_WORKFLOW_PERMISSIONS = ["workflows.read", "workflows.write"] as const;
 const PERMISSION_LABELS: Record<string, string> = {
+  "browser_sessions.view": "View hosted browser sessions",
+  "browser_sessions.control": "Chat and control shared browsers",
+  "browser_sessions.manage": "Manage browser sessions",
   "admin.owner": "Full administrator access",
   "groups.manage": "Manage permission groups",
   "team.human_reviews.decide": "Decide release reviews",
@@ -81,6 +84,9 @@ const PERMISSION_LABELS: Record<string, string> = {
   "workflows.write": "Edit workflows",
 };
 const PERMISSION_HELP: Record<string, string> = {
+  "browser_sessions.view": "Watch hosted browsers and read viewer chat in the assigned directory.",
+  "browser_sessions.control": "Chat, annotate, and take control of an authorized hosted browser. Pair with browser_sessions.view.",
+  "browser_sessions.manage": "Create, close, extend, and configure browser sessions in the assigned directory.",
   "admin.owner": "Full Admin Web ownership. Grants every catalog permission in every directory scope.",
   "groups.manage": "Create, edit, and delete reusable permission groups and the permissions assigned to them.",
   "team.human_reviews.decide": "Decide assigned human release reviews in the request's directory scope.",

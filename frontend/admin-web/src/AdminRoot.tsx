@@ -28,6 +28,7 @@ import {
   adminHash,
   currentTab,
   nextPathFromHash,
+  adminLoginReturnPath,
   tabsForExecutionBackend,
   TABS,
   type AdminAddonNavigationPayload,
@@ -1852,6 +1853,8 @@ export default function AdminRoot() {
       setSession(payload);
       applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
       setAdminState(null);
+      const returnPath = adminLoginReturnPath(window.location.search);
+      if (returnPath) window.location.replace(returnPath);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Sign in failed.");
     } finally {
@@ -1885,7 +1888,7 @@ export default function AdminRoot() {
     }
     setAuthBusy(true);
     const loginUrl = new URL(`${API_BASE}${session.azure_sso_login_url}`, window.location.origin);
-    const nextPath = nextPathFromHash(window.location.hash);
+    const nextPath = adminLoginReturnPath(window.location.search) ?? nextPathFromHash(window.location.hash);
     if (nextPath) {
       loginUrl.searchParams.set("next", nextPath);
     }

@@ -135,6 +135,15 @@ class AdminWebAddonServiceAdapter:
     def resume_agent(self, **kwargs: Any) -> Any:
         return self._components.vm_agent_admin.resume_agent(**kwargs)
 
+    def enqueue_agent_prompt(self, *args: Any, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.enqueue_agent_prompt(*args, **kwargs)
+
+    def create_admin_agent(self, payload: Any, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.create_admin_agent(payload, **kwargs)
+
+    def delete_admin_agent(self, *args: Any, **kwargs: Any) -> Any:
+        return self._components.vm_agent_admin.delete_admin_agent(*args, **kwargs)
+
     def vm_copy_files(self, **kwargs: Any) -> Any:
         return self._components.vm_agent_admin.vm_copy_files(**kwargs)
 
@@ -282,6 +291,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path.startswith("/api/") or path.startswith("/addons/"):
             if await run_in_threadpool(self._auth.read_session, request) is None:
+                if (
+                    path.startswith("/addons/")
+                    and request.method == "GET"
+                    and "text/html" in request.headers.get("accept", "")
+                ):
+                    from urllib.parse import urlencode
+
+                    target = path + (f"?{request.url.query}" if request.url.query else "")
+                    return RedirectResponse("/?" + urlencode({"next": target}), status_code=303)
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
         return await call_next(request)

@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import jwt
@@ -567,6 +567,8 @@ class AdminWebAuth:
         session_id = str(session.get("sid") or "").strip() if session else ""
         if session_id:
             self._privileged_session_ids.discard(session_id)
+            if self.user_store is not None:
+                self.user_store.revoke_session(session_id, float(session.get("exp") or 0))
 
     def mark_privileged_for_request(self, request: Request) -> None:
         session = self.require(request)
@@ -628,6 +630,10 @@ class AdminWebAuth:
 
     def session_from_token_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if payload.get("kind") != "session":
+            return None
+        if self.user_store is not None and self.user_store.session_is_revoked(
+            str(payload.get("sid") or "")
+        ):
             return None
         if self.config.auth_mode == "azure_sso":
             user = self._user_for_session_payload(payload)
@@ -970,6 +976,13 @@ class AdminWebAuth:
         if not target:
             return None
         if not target.startswith("/") or target.startswith("//"):
+            return None
+        decoded = target
+        for _ in range(3):
+            decoded = unquote(decoded)
+        if decoded.startswith("//") or "\\" in decoded or any(
+            ord(char) < 32 or ord(char) == 127 for char in decoded
+        ):
             return None
         return target
 

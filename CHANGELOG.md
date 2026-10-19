@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-19 - Share hosted previews and local Chrome sessions (0.102.0)
+
+- Add an optional Browser Sessions add-on for hosted demonstrations, live development previews and explicitly shared user-hosted Chrome tabs.
+- Require Admin UI sign-in and directory permissions for hosted viewers; add single-use local invitations, browser-only support agents and fenced input handover.
+- Keep chat transcripts distinct while resuming the authoring task; enforce preview leases, approved profiles, isolated worker resources and cleanup before checkout deletion.
+- Include opt-in deployment assets, extension packaging and focused Python/Chrome validation.
+
 ## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
 
 - Accept complete approved public identifiers in managed website browser storage and JWT claims when they contain a private password substring.

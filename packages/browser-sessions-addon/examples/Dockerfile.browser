@@ -1,0 +1,5 @@
+ARG BROWSER_BASE_IMAGE=evander-runner:latest
+FROM ${BROWSER_BASE_IMAGE}
+COPY evander_browser_sessions_addon/controller/hosted.mjs /opt/evander-browser/hosted.mjs
+USER 1000:1000
+ENTRYPOINT ["node", "/opt/evander-browser/hosted.mjs"]

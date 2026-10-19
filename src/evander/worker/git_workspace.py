@@ -1576,6 +1576,12 @@ class GitWorkspaceOperations:
                 )
             expected_commit_sha = str(receipt["commit_sha"]).strip().casefold()
         lock_path = self._task_worktree_lock_path(paths, request.repo_name)
+        if not request.dry_run:
+            from evander.session_dependencies import SessionDependencies
+
+            SessionDependencies(self.worker_root).release(
+                "workspace:" + session_id + ":" + expected_target_dir
+            )
         outcome = cleanup_task_worktree_checkout(
             trusted_root=paths.agent_home,
             repo_dir=repo_dir,

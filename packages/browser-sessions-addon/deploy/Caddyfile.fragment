@@ -1,0 +1,5 @@
+# Merge into the existing Admin HTTPS site; keep /internal/* private.
+handle /_browser/* {
+    reverse_proxy 127.0.0.1:11890
+}
+# Existing catch-all continues to Admin Web (8100).

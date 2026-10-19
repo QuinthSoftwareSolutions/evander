@@ -498,6 +498,12 @@ class ContainerWorkerVmExecutionBackend:
         expected_target_dir: str,
         dry_run: bool = False,
     ) -> WorkerTaskWorktreeCleanupRecord:
+        if not dry_run:
+            from evander.session_dependencies import SessionDependencies
+
+            SessionDependencies(self.config.runtime_dir).release(
+                "workspace:" + session_id + ":" + expected_target_dir
+            )
         return self._client_for_session(session_id).cleanup_task_worktree(
             session_id,
             WorkerTaskWorktreeCleanupRequest(
@@ -606,6 +612,9 @@ class ContainerWorkerVmExecutionBackend:
             raise ValueError("session_id is required")
         from .preservation import require_session_data_disposable
         require_session_data_disposable(self.config.runtime_dir, normalized_session_id)
+        from evander.session_dependencies import SessionDependencies
+
+        SessionDependencies(self.config.runtime_dir).release(normalized_session_id)
         list_by_session = getattr(self.repository, "list_by_session", None)
         if callable(list_by_session):
             mappings = list(list_by_session(normalized_session_id))

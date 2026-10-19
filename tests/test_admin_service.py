@@ -19254,3 +19254,31 @@ def test_admin_operations_use_session_connection_when_worker_settings_differ(
         else:
             vm_admin.get_agent(session_id, backend="container_worker_vm", reconcile_containers=True)
     assert set(calls) == set(configs)
+
+
+def test_create_container_support_agent_applies_capability_restriction_before_persisting(tmp_path, monkeypatch):
+    from evander.admin.services.agent_capabilities import AgentCapabilityRestriction
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_directory_domain_config(
+        "root", "providers", {"container_worker_base_url": "http://worker.test:11888"}
+    )
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session",
+        lambda self, request: WorkerSessionRecord(
+            session_id=request.session_id, root_path="/worker/support",
+            agent_home_path="/worker/support/agent_home", repo_root_path="/worker/support/agent_home/repos",
+            artifacts_path="/worker/support/artifacts", logs_path="/worker/support/logs",
+            metadata_path="/worker/support/metadata.json", metadata=dict(request.metadata)))
+    monkeypatch.setattr(ContainerWorkerClient, "write_files",
+        lambda self, session_id, request: WorkerFileWriteRecord(
+            session_id=session_id, copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files]))
+    result = service.vm_agent_admin.create_admin_agent(
+        {"backend": "container_worker_vm", "session_id": "restricted-support"},
+        capability_restriction=AgentCapabilityRestriction(
+            ("get_session",), {"kind": "synthetic_support", "resource_id": "resource-a"}))
+    assert result["success"]
+    manifest = service.runtime.session_repository.get_session("restricted-support")
+    assert list(manifest.allowed_tools) == ["get_session"]
+    assert manifest.metadata["capability_binding"] == {"kind": "synthetic_support", "resource_id": "resource-a"}
+    assert manifest.connector_grants == {} and manifest.allowed_contact_ids == []
+    assert manifest.host_directory_grants == {} and manifest.communication_target_ids == []

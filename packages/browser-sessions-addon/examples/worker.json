@@ -1,0 +1,17 @@
+{
+  "worker_id": "worker-a",
+  "worker_root": "/var/lib/evander-worker",
+  "runtime_dir": "/var/lib/evander-browser-worker",
+  "token_env": "EVANDER_BROWSER_WORKER_TOKEN",
+  "allocations_enabled": false,
+  "max_sessions": 1,
+  "profiles": {
+    "web": {
+      "image": "approved-web:1",
+      "browser_image": "evander-browser-controller:1"
+    }
+  },
+  "relay_urls": [
+    "http://127.0.0.1:11890/_browser/endpoint"
+  ]
+}

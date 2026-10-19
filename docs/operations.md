@@ -4386,3 +4386,7 @@ Keep existing runtime configuration and credentials in place for later re-enable
 Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
 
 See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.
+
+## Optional shared browser sessions
+
+The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) provides authenticated hosted Chrome previews, development feedback in the same browser, and an invitation-based Chrome extension for user-hosted tabs. Install and configure it separately. Its private worker supervisor and relay do not add default guest firewall ports. Hosted viewers require Admin UI sign-in and directory-scoped browser permissions.

@@ -7,6 +7,7 @@ import {
   addonIframeHashQuery,
   addonTabsFromPayload,
   adminHash,
+  adminLoginReturnPath,
   currentTab,
   hashQueryParam,
   nextPathFromHash,
@@ -223,4 +224,12 @@ test("invalid add-on hashes and duplicate payloads are ignored", () => {
     ]).map((tab) => tab.label),
     ["Teams"],
   );
+});
+
+test("sign-in preserves a local shared-browser destination and rejects external redirects", () => {
+  const path = "/addons/browser-sessions-addon/view/browser-abc?directory=root%2Fdemo";
+  assert.equal(adminLoginReturnPath("?next=" + encodeURIComponent(path)), path);
+  for (const unsafe of ["https://evil.test", "//evil.test", "/%2fevil.test", "/\\\\evil.test", "/%0aLocation:evil"]) {
+    assert.equal(adminLoginReturnPath("?next=" + encodeURIComponent(unsafe)), null);
+  }
 });

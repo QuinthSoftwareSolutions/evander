@@ -1,0 +1,11 @@
+{
+  "command": [
+    "node",
+    "--watch",
+    "server.mjs"
+  ],
+  "port": 4200,
+  "entry_path": "/",
+  "readiness_path": "/",
+  "startup_seconds": 60
+}
