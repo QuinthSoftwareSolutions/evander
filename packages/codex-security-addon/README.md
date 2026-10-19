@@ -73,6 +73,18 @@ example profile file (owned by the worker operator; not group/world writable).
 Restart the worker after installing the profile. Existing subscription profiles,
 the worker's restricted Codex egress proxy, and account access must already work.
 
+For accounts approved for Daybreak, set `default_cyber_access_program` on the
+worker-owned `codex-security` runtime profile to `daybreak_blue` or `daybreak_red`,
+as supported by the selected model and account. `standard` explicitly selects
+standard safeguards; omitting the field preserves the native default. The broker
+passes this selection to each new or resumed native turn, including separate
+SDK child executions. An explicit `--cyber-access-program` argument takes
+precedence. The setting neither grants access nor changes the model; the server
+must accept the selected account, model, and program. Restart the worker after
+changing its profile file. Confirm a bounded scan in the selected runtime before
+starting a full repository scan. Private `runtime.started` diagnostics record the
+requested program; this records the request, not an entitlement check.
+
 API scans use the session's existing model relay. Subscription scans use a
 job-scoped Unix socket and the selected worker profile; neither access nor refresh
 tokens enter the container or native Codex process. A worker-owned HTTP relay

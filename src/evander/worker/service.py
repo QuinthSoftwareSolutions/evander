@@ -783,6 +783,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     ),
                     http_client=http_client,
                     max_processes=runtime_profile.max_processes,
+                    default_cyber_access_program=runtime_profile.default_cyber_access_program,
                     diagnostics=diagnostics,
                     on_drained=lambda: self._codex_runtime_drained(job_id),
                     usage_recorder_factory=lambda model: self._usage_recorder(record, model=model),

@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 import tomllib
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,11 +26,19 @@ from .codex_runtime_policy import RUNTIME_PROVIDER_ID, verify_runtime_requiremen
 from .unix_socket import bind_unix_socket
 
 
+_CYBER_ACCESS_PROGRAM_RPC = {
+    "standard": "standard",
+    "daybreak_blue": "daybreakBlue",
+    "daybreak_red": "daybreakRed",
+}
+
+
 class CodexRuntimeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_prefix: list[str] = Field(min_length=1)
     codex_path: str = "/usr/local/bin/codex"
     max_processes: int = Field(default=12, ge=1, le=64)
+    default_cyber_access_program: Literal["standard", "daybreak_blue", "daybreak_red"] | None = None
 
 
 def load_runtime_profiles(path: str | None) -> dict[str, CodexRuntimeProfile]:
@@ -141,6 +149,8 @@ def parse_arguments(argv, cwd):
             elif arg == "--thread-source":
                 config["_thread_source"] = value
             elif arg == "--cyber-access-program":
+                if value not in _CYBER_ACCESS_PROGRAM_RPC:
+                    raise ValueError("Unsupported Cyber access program")
                 config["_cyber_access_program"] = value
         elif arg == "resume":
             index += 1
@@ -256,12 +266,14 @@ class CodexRuntimeBridge:
         diagnostics=None,
         on_drained=None,
         usage_recorder_factory=None,
+        default_cyber_access_program=None,
     ):
         self.path = path
         self.command_factory = command_factory
         self.diagnostics = diagnostics
         self.on_drained = on_drained
         self.usage_recorder_factory = usage_recorder_factory
+        self.default_cyber_access_program = default_cyber_access_program
         self.native_tokens = placeholder_tokens(tokens)
         self.http_relay = CodexRuntimeHttpRelay(
             path=path.with_name("models.sock"),
@@ -424,6 +436,9 @@ class CodexRuntimeBridge:
                 cwd=cwd,
                 model=model,
                 reasoning_effort=config.get("model_reasoning_effort"),
+                requested_cyber_access_program=config.get(
+                    "_cyber_access_program", self.default_cyber_access_program
+                ),
                 prompt=prompt,
             )
             overrides = [
@@ -525,7 +540,9 @@ class CodexRuntimeBridge:
                 resume_thread_id = config.pop("_resume_thread_id", None)
                 thread_source = config.pop("_thread_source", None)
                 ephemeral = config.pop("_ephemeral", False)
-                cyber_access_program = config.pop("_cyber_access_program", None)
+                cyber_access_program = config.pop(
+                    "_cyber_access_program", self.default_cyber_access_program
+                )
                 thread = process.request(
                     "thread/resume" if resume_thread_id else "thread/start",
                     {
@@ -572,7 +589,7 @@ class CodexRuntimeBridge:
                         "approvalPolicy": "never",
                         "input": [{"type": "text", "text": prompt}],
                         **(
-                            {"cyberAccessProgram": cyber_access_program}
+                            {"cyberAccessProgram": _CYBER_ACCESS_PROGRAM_RPC[cyber_access_program]}
                             if cyber_access_program
                             else {}
                         ),

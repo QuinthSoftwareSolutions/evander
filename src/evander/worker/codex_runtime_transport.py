@@ -7,7 +7,6 @@ upstream routing and credential attachment independently of this TLS adapter.
 
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 import os
 from pathlib import Path
 import socket
@@ -47,7 +46,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def forward(self):
         self.close_connection = True
-        # The managed provider uses HTTP streaming exclusively.
+        # Keep native OpenAI inference on the broker's HTTP streaming path.
         if self.headers.get("Upgrade"):
             self.send_error(426, "Use the HTTP streaming transport")
             return
@@ -115,11 +114,6 @@ def main():
         f'chatgpt_base_url="{base}"',
         "--config",
         f'openai_base_url="{base}/codex"',
-        "--config",
-        'model_providers.evander_subscription={name="OpenAI",wire_api="responses",'
-        "requires_openai_auth=true,supports_websockets=false,supports_standalone_web_search=true,"
-        f"base_url={json.dumps(base + '/codex')},model_catalog_url={json.dumps(base + '/codex/models')}"
-        + "}",
     ]
     environment = dict(os.environ)
     environment["CODEX_CA_CERTIFICATE"] = ROOT + "/policy/loopback-ca.pem"

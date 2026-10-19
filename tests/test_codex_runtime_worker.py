@@ -54,7 +54,7 @@ class Bridge:
 
 
 @pytest.fixture
-def worker(tmp_path, monkeypatch):
+def worker(tmp_path, monkeypatch, request):
     monkeypatch.setattr("evander.worker.service.CodexRuntimeBridge", Bridge)
     tokens = CodexExternalAuthTokens("worker-only-subscription-token", "account", "plan")
     selected = []
@@ -71,7 +71,12 @@ def worker(tmp_path, monkeypatch):
         worker_root=tmp_path / "worker",
         container_runtime=runtime,
         codex_auth_registry=registry,
-        codex_runtime_profiles={"scan": {"command_prefix": ["scanner"]}},
+        codex_runtime_profiles={
+            "scan": {
+                "command_prefix": ["scanner"],
+                "default_cyber_access_program": getattr(request, "param", None),
+            }
+        },
     )
     yield instance, runtime, selected
     instance.close()
@@ -89,7 +94,8 @@ def job(**kwargs):
     )
 
 
-def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_tokens(worker):
+@pytest.mark.parametrize("worker", [None, "daybreak_blue"], indirect=True)
+def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_tokens(worker, request):
     instance, runtime, selected = worker
     record = instance.start_job(job())
     again = instance.start_job(job())
@@ -101,6 +107,7 @@ def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_to
     assert "worker-only-subscription-token" not in runtime.started[0].model_dump_json()
     bridge = instance._codex_runtime_bridges[record.job_id]
     assert bridge.kwargs["tokens"].access_token == "worker-only-subscription-token"
+    assert bridge.kwargs["default_cyber_access_program"] == request.node.callspec.params["worker"]
 
 
 def test_runtime_rejects_unregistered_profiles_and_wrong_executables(worker):
