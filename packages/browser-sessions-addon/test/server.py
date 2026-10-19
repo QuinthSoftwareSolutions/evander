@@ -3,6 +3,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
+import io
+import wave
 import os
 from pathlib import Path
 import socket
@@ -35,7 +37,8 @@ base = "http://127.0.0.1:" + str(port)
 os.environ.update(EVANDER_BROWSER_RELAY_TOKEN="fixture-relay-token",
                   EVANDER_ADMIN_WEB_AUTH_MODE="local_password", EVANDER_ADMIN_WEB_USERNAME="operator",
                   EVANDER_ADMIN_WEB_PASSWORD="fixture-password", EVANDER_ADMIN_WEB_COOKIE_SECURE="false",
-                  EVANDER_ADMIN_WEB_SESSION_SECRET="fixture-session-signing-secret")
+                  EVANDER_ADMIN_WEB_SESSION_SECRET="fixture-session-signing-secret",
+                  EVANDER_BROWSER_VOICE_API_KEY="fixture-speech-secret")
 
 class Bindings:
     def parent(self, agent, tool=None):
@@ -46,7 +49,8 @@ class Bindings:
         return True
 
 service = Service(folder, bindings=Bindings())
-service.store.save_settings("root", 0, Settings(enabled=True, public_base_url=base, relay_url=base))
+service.store.save_settings("root", 0, Settings(enabled=True, public_base_url=base, relay_url=base,
+    voice={"enabled": True, "api_base_url": base + "/test/provider"}))
 auth = AdminWebAuth(AdminWebConfig.from_env(), AdminWebUserStore(folder / "users.db"))
 context = SimpleNamespace(auth=auth, runtime_dir=folder, service=None)
 web.Service = lambda *args, **kwargs: service
@@ -79,12 +83,17 @@ async def perform_test_operation(request):
     session = service.store.get(sid)
     if action == "state":
         return JSONResponse(session.model_dump())
+    if action == "messages":
+        return JSONResponse({"messages": service.store.messages(sid)})
     payload = await request.json()
     if action == "command":
         actor = "agent:" + (session.support_agent_session_id or session.agent_session_id)
         result = await asyncio.to_thread(service.command, sid, actor, BrowserCommand.model_validate(payload), agent=True)
     elif action == "control":
         result = await asyncio.to_thread(service.control, sid, "user:operator", payload["action"])
+    elif action == "reply":
+        result = service.reply(session.support_agent_session_id or session.agent_session_id,
+                               sid, payload["message_id"], payload["body"])
     elif action == "style":
         (folder / "position.txt").write_text(str(payload["left"]))
         result = {"ok": True}
@@ -112,8 +121,34 @@ async def login(request):
     response.set_cookie(auth.config.cookie_name, auth.login("operator", "fixture-password"))
     return response
 
+voice_events = []
+audio_output = io.BytesIO()
+with wave.open(audio_output, "wb") as audio:
+    audio.setnchannels(1)
+    audio.setsampwidth(2)
+    audio.setframerate(24000)
+    audio.writeframes(b"\0\0" * 72000)
+voice_audio = audio_output.getvalue()
+
+async def speech_provider(request):
+    if request.headers.get("authorization") != "Bearer fixture-speech-secret":
+        return JSONResponse({"error": "invalid fixture credential"}, status_code=401)
+    if request.path_params["action"] == "transcriptions":
+        content = await request.body()
+        voice_events.append({"action": "transcribe", "bytes": len(content),
+                             "webm": b'filename="speech.webm"' in content})
+        return JSONResponse({"text": "Move the button to the left."})
+    payload = await request.json()
+    voice_events.append({"action": "speech", "text": payload["input"]})
+    return Response(voice_audio, media_type="audio/wav")
+
+async def speech_events(request):
+    return JSONResponse({"events": voice_events})
+
 relay = relay_app(folder, service=service, internal_token="fixture-relay-token")
 app = Starlette(routes=[
+    Route("/test/voice/events", speech_events),
+    Route("/test/provider/audio/{action}", speech_provider, methods=["POST"]),
     Route("/test/setup", setup, methods=["POST"]),
     Route("/test/{id}/{action}", test_operation, methods=["GET", "POST"]),
     Route("/application", application), Route("/position", position), Route("/api/auth/login", login, methods=["POST"]),

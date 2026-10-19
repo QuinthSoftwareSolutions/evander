@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import HTTPConnection
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
@@ -26,6 +26,7 @@ from evander.models import DirectoryPath
 from .models import BrowserCommand, BrowserError, CreateRequest, MessageRequest, Settings, origin
 from .relay import error, read_json
 from .service import Service
+from .voice import Voice, read_audio, require_voice_origin
 
 
 def authenticated(context, connection):
@@ -58,6 +59,7 @@ def mutation(request, settings):
 
 def admin_api_routes(context):
     service = Service(context.runtime_dir, context.service)
+    voice = Voice(service)
 
     async def settings(request):
         try:
@@ -198,6 +200,40 @@ def admin_api_routes(context):
         except (BrowserError, ValidationError, ValueError, KeyError) as exc:
             return error(exc)
 
+    async def voice_operation(request):
+        try:
+            session = service.store.get(request.path_params["session_id"])
+            if session.mode == "user_hosted":
+                raise BrowserError("Local voice chat is private to its host", "not_found", 404)
+            action = request.path_params["action"]
+            permission = CONTROL if action == "transcribe" else VIEW
+            actor = authorize(context, request, session.directory, permission)
+            if request.method == "GET" and action == "info":
+                return JSONResponse(voice.info(session.id), headers={"Cache-Control": "no-store"})
+            config = service.store.settings(session.directory)[1]
+            require_voice_origin(request, config)
+            if request.method == "POST" and action == "transcribe":
+                limits = voice.configured(session.id)
+                audio, mime = await read_audio(request, limits.max_audio_bytes)
+                result = await voice.transcribe(
+                    session.id, actor, request.headers.get("x-voice-request-id", ""), audio, mime
+                )
+                authorize(context, request, session.directory, permission)
+                return JSONResponse(result, headers={"Cache-Control": "no-store"})
+            if request.method == "POST" and action == "speech":
+                mutation(request, config)
+                payload = await read_json(request)
+                content = await voice.speech(
+                    session.id, actor, str(payload["request_id"]), str(payload["message_id"])
+                )
+                authorize(context, request, session.directory, permission)
+                return Response(content, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+            raise BrowserError("Unknown voice operation", "not_found", 404)
+        except PermissionError:
+            return error(BrowserError("Browser-session permission is required", "forbidden", 403))
+        except (BrowserError, ValueError, KeyError, ValidationError) as exc:
+            return error(exc)
+
     async def stream(websocket):
         inner = None
         connection = HTTPConnection(websocket.scope)
@@ -267,6 +303,7 @@ def admin_api_routes(context):
         Route("/sessions", sessions, methods=["GET", "POST"]),
         Route("/sessions/{session_id}", operation),
         Route("/sessions/{session_id}/{action}", operation, methods=["GET", "POST"]),
+        Route("/sessions/{session_id}/voice/{action}", voice_operation, methods=["GET", "POST"]),
         WebSocketRoute("/sessions/{session_id}/stream", stream),
     ]
 
@@ -281,7 +318,7 @@ def admin_ui_routes(context):
                 root / "index.html",
                 headers={
                     "Cache-Control": "no-store",
-                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self'; base-uri 'none'; frame-ancestors 'self'",
+                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src blob:; img-src 'self' blob: data:; style-src 'self'; base-uri 'none'; frame-ancestors 'self'",
                     "Referrer-Policy": "no-referrer",
                 },
             )

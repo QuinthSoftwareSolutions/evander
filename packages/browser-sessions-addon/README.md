@@ -32,6 +32,10 @@ For local support, create mode user_hosted and call browser_session_invite. The 
 
 Workflow nodes effect:browser-session:ensure, query:browser-session:status and effect:browser-session:close use the same service and require the workflow and owner to share a directory. See [node examples](examples/workflow-nodes.json).
 
+## Voice
+
+Enable optional speech in directory settings. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts open a scoped companion voice page from the Chrome extension. See [voice setup and usage](docs/voice.md).
+
 ## Boundaries
 
 Hosted sessions require container_worker_vm on Linux with Docker IPv4 bridge filtering. Local hosting targets Chrome 125+. Pop-up windows, browser chrome, file transfer, arbitrary JavaScript, clipboard sharing and continuous recordings are outside this version. Cross-origin navigation pauses local input until approved. Debugger detach requires a new invitation.

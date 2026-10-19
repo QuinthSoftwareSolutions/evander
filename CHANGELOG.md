@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-19 - Talk during shared browser sessions (0.105.0)
+
+- Add optional push-to-talk transcription and interruptible spoken replies to hosted viewers and invited local browser support.
+- Open local voice chat from Chrome using a narrow expiring companion-page capability; preserve session transcripts, page annotations and browser control grants.
+- Keep speech credentials on the host, bound provider requests and retain text outcomes without saving audio.
+- Include guided voice settings, packaged extension/UI assets and synthetic speech validation in real Chrome.
+
 ## 2026-10-19 - Share hosted previews and local Chrome sessions (0.104.0)
 
 - Add an optional Browser Sessions add-on for hosted demonstrations, live development previews and explicitly shared user-hosted Chrome tabs.

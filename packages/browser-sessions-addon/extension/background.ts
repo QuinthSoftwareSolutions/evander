@@ -222,6 +222,11 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
       } catch (error) { granted = false; throw error; }
     }
     if (message.kind === "message") return api("message", { request_id: crypto.randomUUID(), body: message.body });
+    if (message.kind === "voice") {
+      const result = await api("voice", {});
+      await chrome.tabs.create({ url: result.voice_url });
+      return { opened: true };
+    }
     if (message.kind === "origin") {
       const tree = await cdp("Page.getFrameTree");
       const url = tree.frameTree.frame.url;

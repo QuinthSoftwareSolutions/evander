@@ -17,6 +17,15 @@
 <label>Hosted sessions per worker<input id="quota" type="number" min="1" max="32"></label></div>
 <div class="section-heading"><h3>Workers</h3><button id="add-worker" type="button" class="quiet">Add worker</button></div><div id="workers"></div>
 <div class="section-heading"><h3>Launch profiles</h3><button id="add-profile" type="button" class="quiet">Add profile</button></div><div id="profiles"></div>
+<h3>Voice</h3><div class="form-grid">
+<label class="check"><input type="checkbox" id="voice-enabled">Enable voice for this directory</label>
+<label>Speech API base URL<input id="voice-provider" type="url"></label>
+<label>Speech credential environment variable<input id="voice-key"></label>
+<label>Transcription model<input id="voice-stt"></label>
+<label>Speech model<input id="voice-tts"></label>
+<label>Voice name<input id="voice-name"></label>
+<label>Recording limit in seconds<input id="voice-seconds" type="number" min="5" max="120"></label>
+</div><p class="muted">Use a host-owned speech API credential. Raw microphone and reply audio are processed without being saved.</p>
 <details><summary>Advanced settings</summary><label>Full configuration<textarea id="advanced-settings" rows="12" spellcheck="false"></textarea></label>
 <button id="apply-advanced" type="button" class="quiet">Apply advanced settings to form</button></details>
 <div class="form-actions"><button>Save settings</button><span id="settings-status" role="status"></span></div></form></section></main>
@@ -33,6 +42,13 @@
 <aside class="conversation"><div class="chat-heading"><h2>Talk with Truman</h2><p>Messages here stay in this viewer.</p></div>
 <div id="messages" class="messages" role="log" aria-live="polite"></div>
 <form id="chat-form"><div id="annotation" class="annotation" hidden>Point attached <button type="button" id="clear-annotation" class="quiet">Remove</button></div>
+<div class="voice-controls" id="voice-controls">
+<button type="button" data-voice-talk disabled aria-pressed="false">Enable microphone</button>
+<label class="check"><input type="checkbox" data-voice-replies disabled>Speak new replies</label>
+<button type="button" data-voice-stop disabled>Stop audio</button>
+<span data-voice-status role="status">Loading voice options…</span>
+<small>Spoken replies use an AI-generated voice. Hold Talk to record; release to send.</small>
+</div>
 <label class="sr-only" for="chat-body">Message Truman</label><textarea id="chat-body" placeholder="What would you like to change or explore?" maxlength="16000" rows="3" required></textarea>
 <div class="chat-footer"><span id="expiry"></span><button id="send">Send</button></div></form></aside></main>
 <div id="error" class="error-banner" role="alert" hidden></div>

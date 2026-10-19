@@ -1,3 +1,293 @@
+// web/voice-controls.ts
+var VoiceControls = class {
+  constructor(root, transport, context = () => null) {
+    this.transport = transport;
+    this.context = context;
+    this.talk = root.querySelector("[data-voice-talk]");
+    this.replies = root.querySelector("[data-voice-replies]");
+    this.stop = root.querySelector("[data-voice-stop]");
+    this.status = root.querySelector("[data-voice-status]");
+    this.talk.addEventListener("pointerdown", (event) => {
+      if (!this.microphoneReady || event.button !== 0) return;
+      event.preventDefault();
+      this.talk.setPointerCapture(event.pointerId);
+      void this.start();
+    });
+    this.talk.addEventListener("pointerup", () => this.finish());
+    this.talk.addEventListener("pointercancel", () => this.finish(true));
+    this.talk.addEventListener("keydown", (event) => {
+      if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
+      event.preventDefault();
+      if (!event.repeat) void this.start();
+    });
+    this.talk.addEventListener("keyup", (event) => {
+      if (this.microphoneReady && [" ", "Enter"].includes(event.key)) {
+        event.preventDefault();
+        this.finish();
+      }
+    });
+    this.talk.addEventListener("click", (event) => {
+      if (!this.microphoneReady) void this.enable();
+      else if (event.detail === 0) {
+        if (this.recording || this.opening) this.finish();
+        else void this.start();
+      }
+    });
+    this.replies.addEventListener("change", () => {
+      if (!this.replies.checked) this.stopAudio();
+    });
+    this.stop.addEventListener("click", () => this.stopAudio());
+    window.addEventListener("blur", () => this.finish(true));
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.finish(true);
+    });
+    window.addEventListener("pagehide", () => this.dispose(), { once: true });
+    void this.initialize();
+  }
+  talk;
+  replies;
+  stop;
+  status;
+  config;
+  microphoneReady = false;
+  opening = false;
+  recording = false;
+  transcribing = false;
+  released = false;
+  discard = false;
+  disposed = false;
+  recorder;
+  stream;
+  timer;
+  capture = 0;
+  audio;
+  audioAbort;
+  transcriptionAbort;
+  finishAudio;
+  playback = 0;
+  playing = false;
+  pending = [];
+  seen = /* @__PURE__ */ new Set();
+  speakAfter = Infinity;
+  say(text) {
+    this.status.textContent = text;
+  }
+  async initialize() {
+    try {
+      this.config = await this.transport.info();
+      if (this.disposed) return;
+      this.speakAfter = this.config.latest_message_seq ?? 0;
+      if (!this.config.enabled) {
+        this.say("Voice is not configured for this directory.");
+        return;
+      }
+      this.replies.disabled = false;
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        this.say("Microphone recording needs Chrome over HTTPS.");
+        return;
+      }
+      this.talk.disabled = false;
+      this.say("Enable the microphone, then hold Talk to record and send.");
+    } catch (error) {
+      if (!this.disposed) this.say(error.message);
+    }
+  }
+  async enable() {
+    if (this.opening || this.disposed) return;
+    this.opening = true;
+    this.talk.disabled = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }, video: false });
+      stream.getTracks().forEach((track) => track.stop());
+      if (this.disposed) return;
+      this.microphoneReady = true;
+      this.talk.textContent = "Hold Talk";
+      this.say("Ready. Release Talk to send your words to Truman.");
+    } catch {
+      if (!this.disposed) this.say("Microphone access was denied or unavailable.");
+    } finally {
+      this.opening = false;
+      this.talk.disabled = this.disposed;
+    }
+  }
+  async start() {
+    if (!this.config?.enabled || this.opening || this.recording || this.transcribing || this.disposed) return;
+    this.stopAudio();
+    this.opening = true;
+    this.released = false;
+    this.discard = false;
+    const capture = ++this.capture;
+    const context = structuredClone(this.context());
+    this.say("Opening microphone\u2026");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }, video: false });
+      if (this.disposed || capture !== this.capture || this.discard) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this.stream = stream;
+      const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((value) => MediaRecorder.isTypeSupported(value));
+      if (!type) throw new Error("This browser cannot record a supported audio format.");
+      const recorder = new MediaRecorder(stream, { mimeType: type });
+      this.recorder = recorder;
+      const chunks = [];
+      let bytes = 0;
+      recorder.addEventListener("dataavailable", (event) => {
+        bytes += event.data.size;
+        if (bytes > this.config.max_audio_bytes) {
+          this.finish(true);
+          this.say("Recording was too large. Try a shorter phrase.");
+        } else if (event.data.size) chunks.push(event.data);
+      });
+      recorder.addEventListener("error", () => {
+        this.finish(true);
+        this.say("Microphone recording failed.");
+      });
+      recorder.addEventListener("stop", () => {
+        clearTimeout(this.timer);
+        stream.getTracks().forEach((track) => track.stop());
+        this.stream = void 0;
+        this.recorder = void 0;
+        this.recording = false;
+        this.talk.setAttribute("aria-pressed", "false");
+        if (this.discard || this.disposed || capture !== this.capture) return;
+        const audio = new Blob(chunks, { type });
+        if (!audio.size) {
+          this.say("No audio recorded. Hold Talk while speaking.");
+          return;
+        }
+        void this.submit(audio, context);
+      }, { once: true });
+      this.recording = true;
+      this.opening = false;
+      this.talk.setAttribute("aria-pressed", "true");
+      recorder.start(250);
+      this.timer = setTimeout(() => this.finish(), this.config.max_recording_seconds * 1e3);
+      this.say("Recording. Release Talk to send.");
+      if (this.released) this.finish();
+    } catch (error) {
+      this.stream?.getTracks().forEach((track) => track.stop());
+      this.stream = void 0;
+      this.recording = false;
+      this.recorder = void 0;
+      this.talk.setAttribute("aria-pressed", "false");
+      this.say(error.message || "Microphone recording failed.");
+    } finally {
+      this.opening = false;
+    }
+  }
+  finish(discard = false) {
+    if (discard && (this.opening || this.recording) && !this.disposed) this.say("Recording cancelled.");
+    this.released = true;
+    this.discard ||= discard;
+    clearTimeout(this.timer);
+    if (this.recorder?.state === "recording") this.recorder.stop();
+    this.stream?.getTracks().forEach((track) => track.stop());
+  }
+  async submit(audio, context) {
+    this.transcribing = true;
+    this.talk.disabled = true;
+    const abort = new AbortController();
+    this.transcriptionAbort = abort;
+    const id = crypto.randomUUID();
+    this.say("Transcribing\u2026");
+    try {
+      const result = await this.transport.transcribe(audio, id, abort.signal);
+      if (this.disposed || abort.signal.aborted) return;
+      await this.transport.send(result.text, "voice-" + id, context);
+      this.say("Sent: " + result.text);
+    } catch (error) {
+      if (!this.disposed) this.say(error.message || "Voice request failed.");
+    } finally {
+      this.transcribing = false;
+      this.talk.disabled = this.disposed;
+      this.transcriptionAbort = void 0;
+      void this.play();
+    }
+  }
+  messages(rows) {
+    for (const message of rows) {
+      if (this.seen.has(message.id)) continue;
+      this.seen.add(message.id);
+      if (this.replies.checked && message.seq > this.speakAfter && message.reply_to && message.actor.startsWith("agent:"))
+        this.pending.push(message.id);
+    }
+    void this.play();
+  }
+  async play() {
+    if (this.playing || this.opening || this.recording || this.transcribing || this.disposed || !this.replies.checked) return;
+    this.playing = true;
+    const playback = this.playback;
+    try {
+      while (this.pending.length && playback === this.playback && !this.disposed && this.replies.checked) {
+        const message = this.pending.shift();
+        const abort = new AbortController();
+        this.audioAbort = abort;
+        this.stop.disabled = false;
+        this.say("Preparing spoken reply\u2026");
+        let url;
+        try {
+          const blob = await this.transport.speech(message, crypto.randomUUID(), abort.signal);
+          if (abort.signal.aborted || playback !== this.playback || this.disposed) break;
+          url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this.audio = audio;
+          this.say("Speaking. Talk or Stop audio to interrupt.");
+          await new Promise((resolve, reject) => {
+            this.finishAudio = resolve;
+            audio.onended = () => resolve();
+            audio.onerror = () => reject(new Error("Spoken audio could not be played."));
+            void audio.play().catch(() => reject(new Error("Audio playback was blocked. Toggle Speak replies and try again.")));
+          });
+        } catch (error) {
+          if (!abort.signal.aborted && !this.disposed) this.say(error.message);
+        } finally {
+          this.finishAudio = void 0;
+          this.audio = void 0;
+          if (url) URL.revokeObjectURL(url);
+        }
+      }
+    } finally {
+      this.playing = false;
+      this.stop.disabled = true;
+      this.audioAbort = void 0;
+    }
+  }
+  stopAudio() {
+    this.playback += 1;
+    this.pending = [];
+    this.audioAbort?.abort();
+    this.audio?.pause();
+    this.finishAudio?.();
+    this.stop.disabled = true;
+    if (!this.disposed) this.say("Audio stopped.");
+  }
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.capture += 1;
+    this.finish(true);
+    this.transcriptionAbort?.abort();
+    this.stopAudio();
+    this.talk.disabled = true;
+    this.replies.disabled = true;
+    this.say("Voice session ended.");
+  }
+};
+async function voiceJson(response) {
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error || "Voice session is unavailable.");
+  return value;
+}
+
 // web/viewer.ts
 var base = "/api/addons/browser-sessions-addon";
 var $ = (id) => document.getElementById(id);
@@ -13,6 +303,7 @@ var annotation;
 var settings;
 var settingsRevision = 0;
 var websocket;
+var voice;
 var frameURL = "";
 var observation = "";
 var pendingInput = Promise.resolve();
@@ -44,6 +335,7 @@ function update(value) {
   $("expiry").textContent = "Expires " + new Date(session.expires_at * 1e3).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   $("control-help").textContent = session.controller === actor ? "You control this browser. Click the application and type normally." : session.controller?.startsWith("agent:") ? "Truman controls this browser. You can point, chat, or take control." : "Agent input is paused. Take control or hand control back to Truman.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
+    voice?.dispose();
     $("empty").hidden = false;
     $("empty").querySelector("h2").textContent = session.state === "cleanup_failed" ? "Cleanup needs attention" : "Session unavailable";
     $("empty").querySelector("p").textContent = session.error ?? "Return to the session list or ask Truman to start another session.";
@@ -137,6 +429,7 @@ async function messages() {
     $("messages").append(item);
     after = Math.max(after, message.seq);
   }
+  voice?.messages(result.messages);
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
 $("chat-form").addEventListener("submit", async (event) => {
@@ -158,6 +451,51 @@ $("chat-form").addEventListener("submit", async (event) => {
 async function openViewer() {
   $("workspace").hidden = false;
   update(await api("/sessions/" + sessionId));
+  const voicePath = "/sessions/" + sessionId + "/voice";
+  async function voiceRequest(action, body, headers, signal) {
+    const response = await fetch(base + voicePath + "/" + action, {
+      method: "POST",
+      credentials: "same-origin",
+      redirect: "error",
+      headers,
+      body,
+      signal
+    });
+    if (response.status === 401 || response.status === 410) voice?.dispose();
+    return response;
+  }
+  voice = new VoiceControls($("voice-controls"), {
+    info: () => api(voicePath + "/info"),
+    transcribe: async (audio, id, signal) => voiceJson(await voiceRequest(
+      "transcribe",
+      audio,
+      { "Content-Type": audio.type, "X-Voice-Request-ID": id },
+      signal
+    )),
+    speech: async (message, id, signal) => {
+      const response = await voiceRequest(
+        "speech",
+        JSON.stringify({ message_id: message, request_id: id }),
+        { "Content-Type": "application/json" },
+        signal
+      );
+      if (!response.ok) {
+        await voiceJson(response);
+        throw new Error("Speech unavailable.");
+      }
+      return response.blob();
+    },
+    send: async (text, id, context) => {
+      await api("/sessions/" + sessionId + "/messages", {
+        request_id: id,
+        body: text,
+        annotation: context
+      });
+      annotation = void 0;
+      $("annotation").hidden = true;
+      await messages();
+    }
+  }, () => annotation ?? null);
   websocket = new WebSocket(location.origin.replace(/^http/, "ws") + base + "/sessions/" + sessionId + "/stream");
   websocket.addEventListener("message", async (event) => {
     const payload = JSON.parse(String(event.data));
@@ -208,6 +546,26 @@ function syncAdvanced() {
   input("advanced-settings").value = JSON.stringify(settings, null, 2);
 }
 function renderSettings() {
+  settings.voice ??= {};
+  input("voice-enabled").checked = settings.voice.enabled ?? false;
+  input("voice-enabled").onchange = () => {
+    settings.voice.enabled = input("voice-enabled").checked;
+    syncAdvanced();
+  };
+  for (const [id, key, fallback] of [
+    ["voice-provider", "api_base_url", "https://api.openai.com/v1"],
+    ["voice-key", "api_key_env", "EVANDER_BROWSER_VOICE_API_KEY"],
+    ["voice-stt", "transcription_model", "gpt-transcribe"],
+    ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
+    ["voice-name", "voice", "coral"],
+    ["voice-seconds", "max_recording_seconds", 45]
+  ]) {
+    input(id).value = String(settings.voice[key] ?? fallback);
+    input(id).oninput = () => {
+      settings.voice[key] = typeof fallback === "number" ? Number(input(id).value) : input(id).value;
+      syncAdvanced();
+    };
+  }
   input("enabled").checked = settings.enabled;
   input("guest-enabled").checked = settings.guest_enabled;
   input("public-url").value = settings.public_base_url;

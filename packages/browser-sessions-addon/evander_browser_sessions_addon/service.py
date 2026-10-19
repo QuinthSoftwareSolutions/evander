@@ -470,6 +470,19 @@ class Service:
             "expires_at": min(self.now() + settings.invitation_seconds, session.expires_at),
         }
 
+    def voice_invite(self, session_id, actor):
+        from .voice import Voice
+
+        session = self.store.get(session_id)
+        if session.mode != "user_hosted" or session.host_principal != actor:
+            raise BrowserError("Only the local host can open voice chat", "forbidden", 403)
+        Voice(self).configured(session_id)
+        _, settings = self.settings(session.directory)
+        token = self.store.capability(
+            session_id, "guest_voice", actor, max(1, session.expires_at - self.now())
+        )
+        return {"voice_url": settings.public_base_url + "/_browser/guest/voice#token=" + token}
+
     def pair(self, token, application_url):
         invitation = self.store.authenticate(token, "invitation", consume=True)
         session = self.store.get(invitation["session_id"])

@@ -1,3 +1,4 @@
+import { VoiceControls, voiceJson } from "./voice-controls.js";
 export {};
 const base = "/api/addons/browser-sessions-addon";
 const $ = (id: string) => document.getElementById(id)!;
@@ -8,6 +9,7 @@ const directory = new URLSearchParams(location.search).get("directory_path") ??
 const sessionId = location.pathname.match(/\/view\/([^/]+)$/)?.[1];
 let session: any, actor = "", after = 0, pointing = false, annotation: any;
 let settings: any, settingsRevision = 0, websocket: WebSocket | undefined;
+let voice: VoiceControls | undefined;
 let frameURL = "", observation = "", pendingInput = Promise.resolve();
 function showError(error: any) {
   $("error").hidden = false; $("error").textContent = error.message ?? String(error);
@@ -38,6 +40,7 @@ function update(value: any) {
     session.controller?.startsWith("agent:") ? "Truman controls this browser. You can point, chat, or take control." :
     "Agent input is paused. Take control or hand control back to Truman.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
+    voice?.dispose();
     $("empty").hidden = false;
     $("empty").querySelector("h2")!.textContent = session.state === "cleanup_failed" ? "Cleanup needs attention" : "Session unavailable";
     $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask Truman to start another session.";
@@ -113,6 +116,7 @@ async function messages() {
     item.append(name, document.createTextNode(message.body)); $("messages").append(item);
     after = Math.max(after, message.seq);
   }
+  voice?.messages(result.messages);
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
 $("chat-form").addEventListener("submit", async (event) => {
@@ -127,6 +131,33 @@ $("chat-form").addEventListener("submit", async (event) => {
 async function openViewer() {
   $("workspace").hidden = false;
   update(await api("/sessions/" + sessionId));
+  const voicePath = "/sessions/" + sessionId + "/voice";
+  async function voiceRequest(action: string, body: BodyInit, headers: Record<string, string>, signal: AbortSignal) {
+    const response = await fetch(base + voicePath + "/" + action, {
+      method: "POST", credentials: "same-origin", redirect: "error", headers, body, signal,
+    });
+    if (response.status === 401 || response.status === 410) voice?.dispose();
+    return response;
+  }
+  voice = new VoiceControls($("voice-controls"), {
+    info: () => api(voicePath + "/info"),
+    transcribe: async (audio, id, signal) => voiceJson(await voiceRequest("transcribe", audio,
+      { "Content-Type": audio.type, "X-Voice-Request-ID": id }, signal)),
+    speech: async (message, id, signal) => {
+      const response = await voiceRequest("speech", JSON.stringify({message_id:message,request_id:id}),
+        { "Content-Type": "application/json" }, signal);
+      if (!response.ok) { await voiceJson(response); throw new Error("Speech unavailable."); }
+      return response.blob();
+    },
+    send: async (text, id, context) => {
+      await api("/sessions/" + sessionId + "/messages", {
+        request_id: id, body: text, annotation: context,
+      });
+      annotation = undefined; $("annotation").hidden = true;
+      await messages();
+    },
+  }, () => annotation ?? null);
+
   websocket = new WebSocket(location.origin.replace(/^http/, "ws") + base + "/sessions/" + sessionId + "/stream");
   websocket.addEventListener("message", async (event) => {
     const payload = JSON.parse(String(event.data));
@@ -161,6 +192,24 @@ function field(card: HTMLElement, label: string, value: any, updateValue: (value
 }
 function syncAdvanced() { input("advanced-settings").value = JSON.stringify(settings, null, 2); }
 function renderSettings() {
+  settings.voice ??= {};
+  input("voice-enabled").checked = settings.voice.enabled ?? false;
+  input("voice-enabled").onchange = () => { settings.voice.enabled = input("voice-enabled").checked; syncAdvanced(); };
+  for (const [id, key, fallback] of [
+    ["voice-provider", "api_base_url", "https://api.openai.com/v1"],
+    ["voice-key", "api_key_env", "EVANDER_BROWSER_VOICE_API_KEY"],
+    ["voice-stt", "transcription_model", "gpt-transcribe"],
+    ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
+    ["voice-name", "voice", "coral"],
+    ["voice-seconds", "max_recording_seconds", 45],
+  ] as const) {
+    input(id).value = String(settings.voice[key] ?? fallback);
+    input(id).oninput = () => {
+      settings.voice[key] = typeof fallback === "number" ? Number(input(id).value) : input(id).value;
+      syncAdvanced();
+    };
+  }
+
   input("enabled").checked = settings.enabled; input("guest-enabled").checked = settings.guest_enabled;
   input("public-url").value = settings.public_base_url; input("relay-url").value = settings.relay_url;
   input("relay-token").value = settings.relay_token_env; input("lifetime").value = String(settings.lifetime_seconds / 60);

@@ -41,6 +41,11 @@ class Store:
                     state TEXT, at REAL, fingerprint TEXT);
                 CREATE TABLE IF NOT EXISTS dispatches(message_id TEXT PRIMARY KEY, state TEXT, lease_until REAL);
                 CREATE TABLE IF NOT EXISTS private_sessions(session_id TEXT PRIMARY KEY, payload TEXT);
+                CREATE TABLE IF NOT EXISTS voice_requests(session_id TEXT, actor TEXT, request_id TEXT,
+                    kind TEXT, fingerprint TEXT, state TEXT, at REAL, lease_until REAL, result TEXT,
+                    PRIMARY KEY(session_id,actor,request_id));
+                CREATE INDEX IF NOT EXISTS voice_requests_active ON voice_requests(state,lease_until);
+
             """)
         self.path.chmod(0o600)
 
@@ -346,6 +351,6 @@ class Store:
                     "DELETE FROM dispatches WHERE message_id IN (SELECT id FROM messages WHERE session_id=?)",
                     (session.id,),
                 )
-                for table in ("audit", "messages", "commands", "private_sessions"):
+                for table in ("audit", "messages", "commands", "private_sessions", "voice_requests"):
                     db.execute(f"DELETE FROM {table} WHERE session_id=?", (session.id,))
                 db.execute("DELETE FROM sessions WHERE id=?", (session.id,))

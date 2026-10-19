@@ -3298,3 +3298,5 @@ See [Git submission through MCP](git-remotes.md#submitting-committed-work-throug
 ## Optional shared browser sessions
 
 The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) provides authenticated hosted Chrome previews, development feedback in the same browser, and an invitation-based Chrome extension for user-hosted tabs. Install and configure it separately. Its private worker supervisor and relay do not add default guest firewall ports. Hosted viewers require Admin UI sign-in and directory-scoped browser permissions.
+
+Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](../packages/browser-sessions-addon/docs/voice.md).

@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Talk with Truman · Evander</title>
+<link rel="stylesheet" href="/_browser/voice-assets/voice.css"></head>
+<body><main><p class="eyebrow">EVANDER · SHARED BROWSER</p><h1>Talk with Truman</h1>
+<p>Keep your application tab open. Voice and text messages go to the same support task.</p>
+<p id="session-title"></p><p id="scope"></p>
+<div class="voice-controls" id="voice-controls">
+<button type="button" data-voice-talk disabled aria-pressed="false">Enable microphone</button>
+<label class="check"><input type="checkbox" data-voice-replies disabled>Speak new replies</label>
+<button type="button" data-voice-stop disabled>Stop audio</button>
+<span data-voice-status role="status">Loading voice options…</span>
+<small>Spoken replies use an AI-generated voice. Hold Talk to record; release to send.</small>
+</div>
+<div id="messages" role="log" aria-live="polite"></div>
+<form id="chat"><label>Message Truman<textarea id="body" rows="3" maxlength="16000" required></textarea></label><button>Send</button></form>
+<p id="error" role="alert"></p></main>
+<script type="module" src="/_browser/voice-assets/voice.js"></script></body></html>
