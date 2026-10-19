@@ -1331,6 +1331,12 @@ new control-plane fields, and rerun the Codex bootstrap for existing VMs. See
 
 ### Microsoft Teams delegated auth
 
+- The optional [Teams editing tool and workflow effect](../packages/teams-graph-addon/README.md#edit-a-message-sent-by-an-agent-session)
+  require an explicit session tool grant and the target's write/reply capability. Only newly recorded
+  sends by that same active session are editable. Channel editing requires approved delegated edit
+  consent and a tenant policy permitting message editing; an upgrade never adds scopes or grants.
+  Back up outbound receipts with runtime data, and retry the original text after uncertain writes.
+
 - Prefer [managed Teams custody](credentials.md) for new identities. Initialize the encrypted
   store, prepare sign-in in Configuration → Credentials, then use the existing Teams auth panel.
   Migrate existing JSON credentials during maintenance. Managed references require approved

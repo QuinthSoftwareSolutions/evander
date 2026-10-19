@@ -1030,6 +1030,7 @@ Type-specific keys:
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
 | `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
+| `effect:teams:update-message` (Teams/Graph add-on) | `session_id`, `channel_target`, `message_id`, `message` | `thread_id`, `expected_revision`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `fast_mode`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
@@ -1795,6 +1796,14 @@ can address `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one use
 as `user:<user-id-or-upn>`.
 
 `effect:communication:send-message` supports Teams, Discord, and email targets.
+
+The optional Teams/Graph `effect:teams:update-message` effect edits a message recorded as sent by
+the supplied active session. It calls the same host command as `teams_update_message`, requires
+that tool grant plus target write/reply capability, and enforces the workflow's directory scope.
+All six inputs have ordinary bindable editor fields; outputs include status, IDs, nullable thread
+and web URL, and an integer `message_revision`. Successful Teams posts now return revision 1.
+No default grants or Microsoft scopes change. See the add-on's
+[editing contract and recovery guidance](../packages/teams-graph-addon/README.md#edit-a-message-sent-by-an-agent-session).
 
 For Teams targets, `published_artifacts` can bind an array of files from durable
 published evidence. Each item requires `key` and may specify `path` (one regular

@@ -3,6 +3,8 @@
 from __future__ import annotations
 import mimetypes
 import time
+import html
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Literal, Protocol
@@ -17,8 +19,9 @@ from evander.inline_media import (
     InlineMediaDownload,
     inline_media_download_from_embedded_payload,
 )
-from evander.repositories.records import TeamsRecordsRepository
+from evander.repositories.records import TeamsRecordsRepository, teams_records_with_outbound
 from evander.text_formatting import render_markdownish_text_to_html
+from evander.teams_outbound import TeamsOutboundReceipt, TeamsOutboundEditState
 
 from .common import (
     _sanitize_attachment_metadata,
@@ -252,6 +255,16 @@ class TeamsService(Protocol):
     ) -> dict[str, Any]: ...
 
     def ensure_one_on_one_chat(self, user_ref: str) -> str: ...
+
+    def update_message(
+        self,
+        session_id: str,
+        channel_target: str,
+        message_id: str,
+        message: str,
+        thread_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]: ...
 
     def list_attachments(
         self, message_id: str, *, channel_target: str | None = None
@@ -748,7 +761,7 @@ class StubTeamsService(ManagedTeamsService):
         allowed_user_targets_provider: Callable[[], list[str]] = lambda: [],
         read_reaction_emoji: str = "👀",
     ) -> None:
-        self.message_store = message_store
+        self.message_store = teams_records_with_outbound(message_store)
         self.allowed_user_targets_provider = allowed_user_targets_provider
         self.read_reaction_emoji = read_reaction_emoji
 
@@ -843,17 +856,84 @@ class StubTeamsService(ManagedTeamsService):
         thread_id: str | None = None,
         mentions: list[str] | None = None,
     ) -> dict[str, Any]:
+        return self._post_message(message, channel_target, session_id, thread_id, mentions)
+
+    def _post_message(
+        self, message, channel_target, session_id, thread_id=None, mentions=None, artifacts=None
+    ):
         target = parse_teams_target(channel_target)
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
-        normalize_teams_mention_refs(mentions)
+        normalized_mentions = normalize_teams_mention_refs(mentions)
         normalized_thread_id = str(thread_id or "").strip() or None
+        if target.kind == "chat" and normalized_thread_id is not None:
+            raise ValueError("Teams chat targets do not support thread replies.")
+        message_id = "stub-" + uuid4().hex
+        effective_thread = (
+            (normalized_thread_id or message_id) if target.kind == "channel" else None
+        )
+        prefix = ""
+        if normalized_mentions:
+            prefix = (
+                "<p>"
+                + " ".join(
+                    f'<at id="{i}">{html.escape(ref.removeprefix("user:"))}</at>'
+                    for i, ref in enumerate(normalized_mentions)
+                )
+                + "</p>"
+            )
+        text_html = _teams_message_to_html(message)
+        attachments = []
+        suffix = ""
+        for index, artifact in enumerate(artifacts or []):
+            attachment = {
+                "id": f"stub-attachment-{index}",
+                "name": str(artifact.get("filename") or artifact.get("name") or "file"),
+            }
+            attachments.append(attachment)
+            suffix += f'<p><attachment id="{attachment["id"]}"></attachment></p>'
+        receipt = TeamsOutboundReceipt(
+            channel_target=target.normalized,
+            message_id=message_id,
+            session_id=session_id,
+            thread_id=effective_thread,
+            author={"kind": "user", "id": "stub-sender"},
+            body_prefix=prefix,
+            body_suffix=suffix,
+            protected={"mentions": normalized_mentions, "attachments": attachments},
+        )
+        self.message_store.create_outbound_receipt(
+            receipt,
+            TeamsOutboundEditState(text_html=text_html, body_html=prefix + text_html + suffix),
+        )
+        envelope = TeamsMessageEnvelope(
+            cursor=f"{target.normalized}/{message_id}",
+            message_id=message_id,
+            author_id="stub-sender",
+            team_id=target.team_id or "",
+            channel_id=target.channel_id or "",
+            chat_id=target.chat_id,
+            thread_id=effective_thread,
+            content=prefix + text_html + suffix,
+            metadata={
+                "source": "teams_graph_api_status",
+                "backend": "stub",
+                "target": target.normalized,
+                "session_id": session_id,
+                "mentions": normalized_mentions,
+                "attachments": attachments,
+            },
+        )
+        self.message_store.put(envelope.cursor, envelope)
         result: dict[str, Any] = {
             "status": "stubbed",
             "channel_target": target.normalized,
             "thread_id": normalized_thread_id,
             "session_id": session_id,
             "message_preview": message[:120],
+            "message_id": message_id,
+            "message_revision": 1,
+            "web_url": None,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -861,6 +941,60 @@ class StubTeamsService(ManagedTeamsService):
             result["team_id"] = target.team_id
             result["channel_id"] = target.channel_id
         return result
+
+    def update_message(
+        self,
+        session_id: str,
+        channel_target: str,
+        message_id: str,
+        message: str,
+        thread_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        if target.kind == "user":
+            raise ValueError("Use an existing Teams channel or chat target")
+        store = self.message_store
+        with store.lock_outbound_message(target.normalized, message_id):
+            receipt = store.get_outbound_receipt(target.normalized, message_id)
+            if receipt is None or receipt.session_id != session_id:
+                raise ValueError("No outbound ownership receipt for this session and conversation")
+            if (target.kind == "chat" and thread_id is not None) or (
+                thread_id is not None and thread_id != receipt.thread_id
+            ):
+                raise ValueError("thread_id does not match the recorded Teams message")
+            state = store.get_outbound_edit_state(target.normalized, message_id)
+            if state is None or not receipt.editable:
+                raise ValueError("Teams message is uneditable")
+            text_html = _teams_message_to_html(message)
+            status = "unchanged"
+            if text_html != state.text_html:
+                if expected_revision is not None and expected_revision != state.revision:
+                    raise ValueError(
+                        f"Stale Teams message revision; current revision is {state.revision}"
+                    )
+                state = TeamsOutboundEditState(
+                    revision=state.revision + 1,
+                    text_html=text_html,
+                    body_html=receipt.body_prefix + text_html + receipt.body_suffix,
+                )
+                store.save_outbound_edit_state(target.normalized, message_id, state)
+                envelope = store.get(f"{target.normalized}/{message_id}")
+                if envelope is not None:
+                    store.put(
+                        envelope.cursor, envelope.model_copy(update={"content": state.body_html})
+                    )
+                status = "stubbed"
+            return {
+                "success": True,
+                "status": status,
+                "session_id": session_id,
+                "channel_target": target.normalized,
+                "message_id": message_id,
+                "thread_id": receipt.thread_id,
+                "message_revision": state.revision,
+                "web_url": receipt.web_url,
+            }
 
     def list_attachments(
         self, message_id: str, *, channel_target: str | None = None
@@ -916,7 +1050,9 @@ class StubTeamsService(ManagedTeamsService):
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
-        result = self.post_status(message, target.normalized, session_id, thread_id=thread_id)
+        result = self._post_message(
+            message, target.normalized, session_id, thread_id, artifacts=artifacts
+        )
         result["artifact_count"] = len(artifacts)
         return result
 

@@ -20,6 +20,7 @@ from evander.services import (
 from evander.teams_meeting import voice_session_transcript_from_teams_events
 
 from evander.gateway.communication_support import CommunicationToolHelpers, TeamsMentionRefsArgument
+from .commands import TeamsMessageCommands
 
 
 def create_teams_tools(
@@ -33,6 +34,30 @@ def create_teams_tools(
     _teams_cursor_for_target = helpers.teams_cursor_for_target
     audit_failure = helpers.audit_failure
     audit_success = helpers.audit_success
+
+    def teams_update_message(
+        session_id: str,
+        channel_target: str,
+        message_id: str,
+        message: str,
+        thread_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Replace text in a message sent by this session, preserving mentions and rich content.
+
+        Use the post result's message_revision as expected_revision for guarded edits.
+        User aliases and messages without an outbound ownership receipt cannot be edited.
+        """
+        return TeamsMessageCommands(
+            context, audit_success=audit_success, audit_failure=audit_failure
+        ).update_message(
+            session_id,
+            channel_target,
+            message_id,
+            message,
+            thread_id,
+            expected_revision,
+        )
 
     def teams_get_messages(
         session_id: str,
@@ -550,7 +575,10 @@ def create_teams_tools(
                     "published_links": published_link_audit,
                 },
             )
-            return response.model_dump(mode="json")
+            payload = response.model_dump(mode="json")
+            if "message_revision" in result:
+                payload["message_revision"] = result["message_revision"]
+            return payload
         except PolicyError as exc:
             audit_failure(session_id, ToolName.TEAMS_POST_FILE, args, str(exc))
             raise
@@ -568,6 +596,7 @@ def create_teams_tools(
     return {
         "teams_get_messages": teams_get_messages,
         "teams_post_status": teams_post_status,
+        "teams_update_message": teams_update_message,
         "teams_meeting_get_events": teams_meeting_get_events,
         "teams_meeting_speak": teams_meeting_speak,
         "teams_meeting_stop": teams_meeting_stop,
