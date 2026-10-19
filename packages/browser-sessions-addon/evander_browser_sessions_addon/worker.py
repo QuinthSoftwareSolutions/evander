@@ -308,7 +308,14 @@ class Supervisor:
             "-j",
             "ACCEPT",
         )
-        self.ipt("-A", chain, "-s", subnet, "-d", subnet, "-j", "ACCEPT")
+        # The bridge gateway is a host address inside this subnet. Permit only
+        # the browser's declared application ports; never accept the whole subnet
+        # in a chain also reached from INPUT.
+        for port in [lease["manifest"]["port"], *lease["manifest"]["additional_ports"]]:
+            self.ipt(
+                "-A", chain, "-s", lease["browser_ip"], "-d", lease["app_ip"],
+                "-p", "tcp", "--dport", str(port), "-j", "ACCEPT",
+            )
         for source, host, port in lease["egress"]:
             self.ipt(
                 "-A",

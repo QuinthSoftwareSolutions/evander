@@ -137,6 +137,7 @@ class Broker:
             if session.state == "disconnected":
 
                 def reconnect(value):
+                    self.store.active(value)
                     value.state, value.controller = "paused", None
                     value.control_generation += 1
 
@@ -155,6 +156,7 @@ class Broker:
                     if origin(frame.url) not in session.allowed_origins:
                         # A navigation revokes control before any new-origin pixels leave the endpoint.
                         def pause(value):
+                            self.store.active(value)
                             value.state, value.controller = "paused", None
                             value.control_generation += 1
 
@@ -196,6 +198,7 @@ class Broker:
                     ):
 
                         def ready(value):
+                            self.store.active(value)
                             value.state = "ready" if value.controller else "paused"
                             value.current_url = str(payload["url"])
 
@@ -203,6 +206,7 @@ class Broker:
                 elif payload.get("kind") == "paused":
 
                     def paused(value):
+                        self.store.active(value)
                         value.controller, value.state = None, "paused"
                         value.control_generation += 1
 
@@ -237,12 +241,11 @@ class Broker:
                 self.endpoints.pop(session_id, None)
                 self.latest.pop(session_id, None)
                 session = self.store.get(session_id)
-                if session.state not in TERMINAL and session.state not in {
-                    "closing",
-                    "cleanup_failed",
-                }:
+                if session.state in {"starting", "ready", "paused", "disconnected"}:
 
                     def disconnected(value):
+                        if value.state not in {"starting", "ready", "paused", "disconnected"}:
+                            return
                         value.state, value.controller = "disconnected", None
                         value.control_generation += 1
 

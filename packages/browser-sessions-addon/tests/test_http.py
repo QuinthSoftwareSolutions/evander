@@ -207,3 +207,23 @@ def test_directory_permission_is_rechecked_and_viewers_cannot_take_control(admin
             login="viewer", group_id="browser-viewers", directory_path="root/demo"
         )
         assert client.get(path).status_code == 403
+
+
+def test_failed_preview_cannot_be_resurrected_by_disconnect_or_reconnect(domain, hosted):
+    service, _, _ = domain
+    app = relay_app(service.runtime_dir, service=service, internal_token="private")
+    token = service.store.capability(hosted.id, "hosted_endpoint", "worker:a", 600)
+    client = TestClient(app)
+    with client.websocket_connect("/_browser/endpoint") as endpoint:
+        endpoint.send_json({"kind": "authenticate", "version": 1, "token": token})
+        endpoint.receive_json()
+        service.store.mutate(
+            hosted.id, "system", lambda value: setattr(value, "state", "failed")
+        )
+        endpoint.send_json({"kind": "heartbeat"})
+        assert endpoint.receive()["type"] == "websocket.close"
+    assert service.store.get(hosted.id).state == "failed"
+    with client.websocket_connect("/_browser/endpoint") as endpoint:
+        endpoint.send_json({"kind": "authenticate", "version": 1, "token": token})
+        assert endpoint.receive()["type"] == "websocket.close"
+    assert service.store.get(hosted.id).state == "failed"

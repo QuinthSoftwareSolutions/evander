@@ -202,3 +202,49 @@ def test_stopped_preview_process_is_detected_and_can_be_released(worker, monkeyp
     assert recovered.get(result["id"])["state"] == "failed"
     assert recovered.close(result["id"]) == {"released": True}
     assert not docker.resources
+
+
+def test_preview_packet_policy_denies_bridge_host_and_undeclared_ports(worker):
+    import ipaddress
+
+    supervisor, docker, _, _ = worker
+    lease = {
+        "name": "evbs-firewall",
+        "subnet": "172.30.22.0/24",
+        "app_ip": "172.30.22.2",
+        "browser_ip": "172.30.22.3",
+        "manifest": {"port": 4200, "additional_ports": [5000]},
+        "egress": [
+            ("172.30.22.2", "172.30.22.1", 1433),
+            ("172.30.22.3", "192.0.2.10", 443),
+        ],
+    }
+    supervisor.firewall(lease)
+    rules = [call for call in docker.calls if call[0] == "iptables" and "-A" in call]
+
+    def verdict(source, destination, port):
+        for rule in rules:
+            def option(flag):
+                return rule[rule.index(flag) + 1] if flag in rule else None
+            if option("--ctstate") and "NEW" not in option("--ctstate").split(","):
+                continue
+            if option("-s") and ipaddress.ip_address(source) not in ipaddress.ip_network(option("-s")):
+                continue
+            if option("-d") and ipaddress.ip_address(destination) not in ipaddress.ip_network(option("-d")):
+                continue
+            if option("--dport") and int(option("--dport")) != port:
+                continue
+            return option("-j")
+        return "RETURN"
+
+    for source in ("172.30.22.2", "172.30.22.3"):
+        for port in (22, 443, 8000, 11891):
+            assert verdict(source, "172.30.22.1", port) == "DROP"
+        assert verdict(source, "172.30.22.20", 4200) == "DROP"
+    assert verdict("172.30.22.3", "172.30.22.2", 4200) == "ACCEPT"
+    assert verdict("172.30.22.3", "172.30.22.2", 5000) == "ACCEPT"
+    assert verdict("172.30.22.3", "172.30.22.2", 22) == "DROP"
+    assert verdict("172.30.22.2", "172.30.22.3", 4200) == "DROP"
+    assert verdict("172.30.22.2", "172.30.22.1", 1433) == "ACCEPT"
+    assert verdict("172.30.22.3", "192.0.2.10", 443) == "ACCEPT"
+    assert verdict("172.30.22.2", "192.0.2.10", 443) == "DROP"
