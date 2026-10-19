@@ -67,7 +67,8 @@
           "display_name": "publish format",
           "type": "query:miro:get-canvas-format",
           "config": {
-            "connection_id": "REPLACE_CONNECTION"
+            "connection_id": "REPLACE_CONNECTION",
+            "session_id": "REPLACE_AUTHOR_SESSION"
           }
         }
       },
@@ -101,7 +102,8 @@
             "connection_id": "REPLACE_CONNECTION",
             "board_id": "REPLACE_BOARD",
             "frame_id": "${{explain-request.payload.frame_id ?? null}}",
-            "canvas_scope": "${{explain-request.payload.canvas_scope ?? null}}"
+            "canvas_scope": "${{explain-request.payload.canvas_scope ?? null}}",
+            "session_id": "REPLACE_AUTHOR_SESSION"
           }
         }
       },
@@ -126,7 +128,8 @@
             "board_id": "REPLACE_BOARD",
             "poll_interval_seconds": 900,
             "include_self": false,
-            "emit_initial": false
+            "emit_initial": false,
+            "session_id": "REPLACE_AUTHOR_SESSION"
           }
         }
       },
@@ -137,7 +140,8 @@
           "type": "query:miro:get-snapshot",
           "config": {
             "connection_id": "REPLACE_CONNECTION",
-            "snapshot_id": "${{feedback-observed.payload.snapshot_id}}"
+            "snapshot_id": "${{feedback-observed.payload.snapshot_id}}",
+            "session_id": "REPLACE_AUTHOR_SESSION"
           }
         }
       },
@@ -169,7 +173,8 @@
           "type": "query:miro:get-snapshot",
           "config": {
             "connection_id": "REPLACE_CONNECTION",
-            "snapshot_id": "${{review-request.payload.snapshot_id}}"
+            "snapshot_id": "${{review-request.payload.snapshot_id}}",
+            "session_id": "REPLACE_AUTHOR_SESSION"
           }
         }
       },

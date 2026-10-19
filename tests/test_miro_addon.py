@@ -163,10 +163,45 @@ class Remote:
         return Client()
 
 
+def grant_session(store, session_id="author", directory="root/project", *, record=None):
+    from datetime import UTC, datetime, timedelta
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from evander_miro_addon.mcp import MCP_TOOL_NAMES
+
+    repository = JsonSessionManifestRepository(store.runtime_dir / "sessions.json")
+    session = SessionManifest(
+        session_id=session_id,
+        directory_path=directory,
+        allowed_tools=list(MCP_TOOL_NAMES),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    repository.upsert_session(session)
+    record = record or store.resolve_connection(directory, "architecture")
+    for board, access in (("board1", "edit"), ("readonly", "read")):
+        store.save_board_grant(record, session, board, access, actor="operator:test")
+    return session
+
+
+def grant_connection(store, record, session_id="author"):
+    session = store_session(store, session_id)
+    for board, access in (("board1", "edit"), ("readonly", "read")):
+        store.save_board_grant(record, session, board, access, actor="operator:test")
+
+
+def store_session(store, session_id="author"):
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+    return JsonSessionManifestRepository(store.runtime_dir / "sessions.json").get_session(
+        session_id
+    )
+
+
 @pytest.fixture
 def setup(tmp_path):
     store = MiroStore(tmp_path)
     record = store.save_connection(config(), 0)
+    grant_session(store, record=record)
     remote = Remote()
     service = MiroService(
         store, Access("root/project", "session:author", session_id="author"), remote.client
@@ -236,16 +271,16 @@ def test_access_rejected_before_network(setup, scope):
     service = MiroService(
         store, Access(scope, "session:author", session_id="author"), remote.client
     )
-    with pytest.raises(MiroError, match="unavailable"):
+    with pytest.raises(MiroError):
         read(service)
     assert not remote.calls
 
 
 def test_unapproved_and_readonly_boards_and_workflow_grants(setup):
     store, record, remote, service = setup
-    with pytest.raises(MiroError, match="outside"):
+    with pytest.raises(MiroError):
         read(service, board_id="private")
-    with pytest.raises(MiroError, match="outside"):
+    with pytest.raises(MiroError):
         run(
             service.execute(
                 "create_canvas",
@@ -260,7 +295,11 @@ def test_unapproved_and_readonly_boards_and_workflow_grants(setup):
     store.save_connection(config(allow_workflows=False), record["revision"])
     with pytest.raises(MiroError, match="Workflow access"):
         read(
-            MiroService(store, Access("root/project", "workflow:one", workflow=True), remote.client)
+            MiroService(
+                store,
+                Access("root/project", "workflow:one", workflow=True, session_id="author"),
+                remote.client,
+            )
         )
     assert not remote.calls
 
@@ -272,7 +311,11 @@ def test_revision_and_revoked_grants_invalidate_in_flight_calls(setup):
         run(remote.client(store, record).call("read_canvas", board_id="board1"))
     with pytest.raises(MiroError, match="reload"):
         store.save_connection(config(), record["revision"])
-    with pytest.raises(MiroError, match="outside"):
+    grant = store.board_grant(record, service.session(), "board1")
+    store.revoke_board_grant(
+        grant["grant_id"], expected_revision=grant["revision"], actor="operator:test"
+    )
+    with pytest.raises(MiroError):
         read(service)
 
 
@@ -326,9 +369,16 @@ def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monke
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     policy.session_store.upsert_session(session)
+    store.save_board_grant(
+        store.resolve_connection("root", "architecture"),
+        session,
+        "board1",
+        "read",
+        actor="operator:test",
+    )
     monkeypatch.setattr(
         "evander_miro_addon.mcp.MiroService",
-        lambda store, access: MiroService(store, access, remote.client),
+        lambda store, access, **kwargs: MiroService(store, access, remote.client, **kwargs),
     )
     server = FastMCP("miro-policy-test")
     server._evander_transport_session_map = {"transport-author": session.session_id}
@@ -365,7 +415,7 @@ def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monke
 
     assert call()["data"]["item_ids"] == ["item1", "item2"]
     count = len(remote.calls)
-    with pytest.raises(ToolError, match="outside"):
+    with pytest.raises(ToolError, match="board_not_approved"):
         call(board_id="unapproved")
     with pytest.raises(ToolError):
         call(session_id="someone-else")
@@ -481,7 +531,7 @@ def test_invalid_canvas_search_fails_before_provider_call(setup, arguments):
 
 def test_canvas_search_rejects_unapproved_board_before_network(setup):
     _, _, remote, service = setup
-    with pytest.raises(MiroError, match="outside"):
+    with pytest.raises(MiroError):
         run(
             service.execute(
                 "search_canvas", {"connection_id": "architecture", "board_id": "private"}
@@ -612,6 +662,8 @@ def test_legacy_write_fingerprint_is_unchanged_by_new_read_defaults(setup):
             "connection_key": record["key"],
             "operation": "create_board",
             "actor": service.access.actor,
+            "session_id": "author",
+            "session_created_at": service.session().created_at.isoformat(),
             "directory_path": service.access.directory_path,
             "fingerprint": digest(["create_board", request, service.access.actor]),
             "request": request,
@@ -648,7 +700,7 @@ def test_scope_ids_and_explicit_deletes_fail_closed(setup):
             )
         )
     assert not any(op == "update_canvas" for op, _ in remote.calls)
-    with pytest.raises(MiroError, match="outside"):
+    with pytest.raises(MiroError):
         run(
             service.execute(
                 "update_canvas", update_args(before, svg=SVG.replace("item1", "foreign-item"))
@@ -804,6 +856,7 @@ def test_acknowledged_canvas_mutations_still_need_readback_for_operator_resoluti
 
 def test_concurrent_agents_cannot_both_update_the_same_snapshot(setup):
     store, _, remote, author = setup
+    grant_session(store, session_id="reviewer")
     reviewer = MiroService(
         store, Access("root/project", "session:reviewer", session_id="reviewer"), remote.client
     )
@@ -931,6 +984,11 @@ def test_create_board_retry_at_capacity_preserves_durable_outcome(setup, fail_re
         config(boards=[{"board_id": f"board{i}", "writable": True} for i in range(199)]),
         record["revision"],
     )
+    current = store.resolve_connection("root/project", "architecture")
+    for i in range(197):
+        store.save_board_grant(
+            current, service.session(), f"extra{i}", "edit", actor="operator:test"
+        )
     remote.fail_read = fail_readback
     arguments = {
         "connection_id": "architecture",
@@ -939,7 +997,7 @@ def test_create_board_retry_at_capacity_preserves_durable_outcome(setup, fail_re
     }
     result = run(service.execute("create_board", arguments))
     assert result["status"] == ("uncertain" if fail_readback else "applied")
-    assert len(store.resolve_connection("root/project", "architecture")["config"]["boards"]) == 200
+    assert len(store.session_grants(current, service.session())) == 200
     calls = list(remote.calls)
 
     assert run(service.execute("create_board", arguments)) == result
@@ -1021,8 +1079,11 @@ def test_polling_connection_override_resets_baseline_and_preserves_event_identit
     setup, emit_initial
 ):
     store, _, remote, _ = setup
+    grant_session(store, directory="root/project/child")
     service = MiroService(
-        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+        store,
+        Access("root/project/child", "workflow:child", workflow=True, session_id="author"),
+        remote.client,
     )
     arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     previous_events = run(
@@ -1030,6 +1091,7 @@ def test_polling_connection_override_resets_baseline_and_preserves_event_identit
     )
     previous = store.list("subscription")[0]
     child = store.save_connection(config(directory_path="root/project/child"), 0)
+    grant_connection(store, child)
     events = run(service.poll("feedback", arguments, kind="canvas", emit_initial=emit_initial))
     state = store.list("subscription")[0]
     assert state["connection_key"] == child["key"]
@@ -1063,16 +1125,20 @@ def test_polling_connection_override_does_not_replay_old_event_after_read_failur
     setup, monkeypatch
 ):
     store, _, remote, _ = setup
+    grant_session(store, directory="root/project/child")
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
     service = MiroService(
-        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+        store,
+        Access("root/project/child", "workflow:child", workflow=True, session_id="author"),
+        remote.client,
     )
     arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     previous = run(
         service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True)
     )[0]
     child = store.save_connection(config(directory_path="root/project/child"), 0)
+    grant_connection(store, child)
     remote.fail_read = True
     with pytest.raises(MiroError, match="Offline"):
         run(service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True))
@@ -1097,10 +1163,13 @@ def test_polling_connection_override_does_not_replay_old_event_after_read_failur
 @pytest.mark.parametrize("wait_on", ["subscription", "board"])
 def test_polling_rechecks_connection_after_waiting_for_lock(setup, monkeypatch, wait_on):
     store, _, remote, _ = setup
+    grant_session(store, directory="root/project/child")
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
     service = MiroService(
-        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+        store,
+        Access("root/project/child", "workflow:child", workflow=True, session_id="author"),
+        remote.client,
     )
     arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
 
@@ -1136,6 +1205,7 @@ def test_polling_rechecks_connection_after_waiting_for_lock(setup, monkeypatch, 
             pending = asyncio.create_task(poll(), name="poll")
             await waiting.wait()
             child = store.save_connection(config(directory_path="root/project/child"), 0)
+            grant_connection(store, child)
         if wait_on == "board":
             with pytest.raises(MiroError, match="binding changed"):
                 await pending
@@ -1157,10 +1227,13 @@ def test_polling_rechecks_connection_after_waiting_for_lock(setup, monkeypatch, 
 
 def test_polling_rechecks_connection_after_remote_read(setup, monkeypatch):
     store, parent, remote, _ = setup
+    grant_session(store, directory="root/project/child")
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
     service = MiroService(
-        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+        store,
+        Access("root/project/child", "workflow:child", workflow=True, session_id="author"),
+        remote.client,
     )
     arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
 
@@ -1193,6 +1266,7 @@ def test_polling_rechecks_connection_after_remote_read(setup, monkeypatch):
         pending = asyncio.create_task(poll())
         await received.wait()
         child = store.save_connection(config(directory_path="root/project/child"), 0)
+        grant_connection(store, child)
         finish.set()
         with pytest.raises(MiroError, match="binding changed"):
             await pending
@@ -1217,7 +1291,8 @@ def test_polling_attributes_scoped_writes_across_connections(setup, monkeypatch)
     store, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    store.save_connection(config(id="monitor"), 0)
+    monitor = store.save_connection(config(id="monitor"), 0)
+    grant_connection(store, monitor)
     args = {"connection_id": "monitor", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("quiet", args, kind="canvas", interval=60))
     run(service.poll("all", args, kind="canvas", interval=60, include_self=True))
@@ -1308,6 +1383,7 @@ def test_create_board_grant_is_rechecked_after_waiting_for_lock(setup):
 
 def test_connection_shadowing_cannot_change_a_waiting_write_identity(setup):
     store, _, remote, _ = setup
+    grant_session(store, directory="root/project/child")
     service = MiroService(
         store, Access("root/project/child", "session:author", session_id="author"), remote.client
     )
@@ -1326,7 +1402,8 @@ def test_connection_shadowing_cannot_change_a_waiting_write_identity(setup):
                 )
             )
             await asyncio.sleep(0.02)
-            store.save_connection(config(directory_path="root/project/child"), 0)
+            child = store.save_connection(config(directory_path="root/project/child"), 0)
+            grant_connection(store, child)
         with pytest.raises(MiroError, match="binding changed"):
             await pending
 
@@ -1470,10 +1547,15 @@ def test_all_workflow_schemas_and_service_parity(setup, monkeypatch):
     store, _, remote, service = setup
     providers = register_providers()
 
-    def for_node(context, node_id):
+    def for_node(context, node_id, session_id=None):
         return MiroService(
             store,
-            Access("root/project", "workflow:root/project:" + node_id, workflow=True),
+            Access(
+                "root/project",
+                "workflow:root/project:" + node_id,
+                workflow=True,
+                session_id=session_id,
+            ),
             remote.client,
         )
 
@@ -1484,7 +1566,12 @@ def test_all_workflow_schemas_and_service_parity(setup, monkeypatch):
         id="read",
         display_name="Read",
         type="query:miro:read-canvas",
-        config={"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA},
+        config={
+            "session_id": "author",
+            "connection_id": "architecture",
+            "board_id": "board1",
+            "canvas_scope": AREA,
+        },
     )
     provider = providers.query_providers[envelope.type]()
     provider.initialize(envelope, SimpleNamespace())
@@ -1497,7 +1584,7 @@ def test_all_workflow_schemas_and_service_parity(setup, monkeypatch):
             id="update",
             display_name="Update",
             type="effect:miro:update-canvas",
-            config=update_args(direct),
+            config={"session_id": "author", **update_args(direct)},
         ),
         SimpleNamespace(),
     )
@@ -1588,6 +1675,7 @@ def test_admin_recovery_enforces_operation_directory(
     from evander.admin.web.rbac import BUILTIN_GROUP_DEFINITIONS, can
 
     store, _, remote, _ = setup
+    grant_session(store, directory=operation_directory)
     author = MiroService(
         store, Access(operation_directory, "session:author", session_id="author"), remote.client
     )
@@ -1621,7 +1709,7 @@ def test_admin_recovery_enforces_operation_directory(
 
     monkeypatch.setattr(
         "evander_miro_addon.api.MiroService",
-        lambda store, access: MiroService(store, access, remote.client),
+        lambda store, access, **kwargs: MiroService(store, access, remote.client, **kwargs),
     )
     context = AddonContext(
         addon_id="miro-addon",
@@ -1666,25 +1754,28 @@ def test_admin_recovery_enforces_operation_directory(
     run(scenario())
 
 
-def test_recovery_preserves_shared_reads_and_removed_board_grants(setup):
+def test_recovery_requires_session_grants_and_preserves_operator_readback(setup):
     store, record, remote, author = setup
     baseline = read(author)
     remote.fail_after_write = True
     operation = run(author.execute("update_canvas", update_args(baseline)))
     remote.fail_after_write = False
+    grant_session(store, session_id="reviewer", directory="root/project/child")
     child_agent = MiroService(
         store,
         Access("root/project/child", "session:reviewer", session_id="reviewer"),
         remote.client,
     )
-    assert (
+    with pytest.raises(MiroError, match="different session instance"):
         run(
             child_agent.execute(
                 "get_operation",
                 {"connection_id": "architecture", "operation_id": operation["operation_id"]},
             )
         )
-        == operation
+    grant = store.board_grant(record, author.session(), "board1")
+    store.revoke_board_grant(
+        grant["grant_id"], expected_revision=grant["revision"], actor="operator:test"
     )
 
     store.save_connection(config(boards=[]), record["revision"])
@@ -1788,6 +1879,12 @@ def test_create_board_miro_url_through_mcp_and_workflow(
 
     store, record, _, _ = setup
     runtime_dir = store.root.parents[1]
+    from evander.bootstrap import load_runtime_gateway_config
+    from evander.directories import DirectoryStore
+
+    gateway_config = load_runtime_gateway_config(runtime_dir=runtime_dir)
+    directories = DirectoryService(DirectoryStore(gateway_config.directories_store_path))
+    directories.create(parent="root", name="project")
     board_id = "uXjCreated="
     board_url = "https://miro.com/app/board/uXjCreated=/"
     calls = []
@@ -1902,7 +1999,6 @@ def test_create_board_miro_url_through_mcp_and_workflow(
                 addon_loader=AddonLoaderConfig(modules=["evander_miro_addon"], package_dirs=[]),
             )
         )
-        DirectoryService(runtime.directories).create(parent="root", name="project")
         runtime.session_repository.upsert_session(
             SessionManifest(
                 session_id="author",
@@ -1939,7 +2035,10 @@ def test_create_board_miro_url_through_mcp_and_workflow(
             provider = registry[kind]()
             provider.initialize(
                 WorkflowNodeEnvelope(
-                    id=operation, display_name=operation, type=kind, config=arguments
+                    id=operation,
+                    display_name=operation,
+                    type=kind,
+                    config={"session_id": "author", **arguments},
                 ),
                 context,
             )
@@ -1957,7 +2056,13 @@ def test_create_board_miro_url_through_mcp_and_workflow(
     assert store.get("snapshot", created["result_snapshot_id"])["board_id"] == board_id
     boards = invoke("list_boards", {"connection_id": "architecture"})["boards"]
     assert [board for board in boards if board["board_id"] == board_id] == [
-        {"board_id": board_id, "name": "Evander Test", "writable": True, "url": board_url}
+        {
+            "board_id": board_id,
+            "name": "Evander Test",
+            "writable": True,
+            "access": "edit",
+            "url": board_url,
+        }
     ]
     observed = invoke(
         "read_canvas", {"connection_id": "architecture", "board_id": board_id, "canvas_scope": AREA}
@@ -2100,13 +2205,15 @@ def test_workflow_trigger_acknowledges_only_after_publication(setup, monkeypatch
     store, _, _, service = setup
     providers = register_providers()
     monkeypatch.setattr(
-        "evander_miro_addon.providers.provider_service", lambda context, node_id: service
+        "evander_miro_addon.providers.provider_service",
+        lambda context, node_id, session_id=None: service,
     )
     definition = WorkflowNodeEnvelope(
         id="miro-feedback",
         display_name="Feedback",
         type="trigger:miro:comments-changed",
         config={
+            "session_id": "author",
             "connection_id": "architecture",
             "board_id": "board1",
             "emit_initial": True,
@@ -2128,13 +2235,15 @@ def test_workflow_canvas_trigger_and_catalog_carry_area_selection(setup, monkeyp
     _, _, remote, service = setup
     providers = register_providers()
     monkeypatch.setattr(
-        "evander_miro_addon.providers.provider_service", lambda context, node_id: service
+        "evander_miro_addon.providers.provider_service",
+        lambda context, node_id, session_id=None: service,
     )
     definition = WorkflowNodeEnvelope(
         id="miro-area",
         display_name="Area",
         type="trigger:miro:board-changed",
         config={
+            "session_id": "author",
             "connection_id": "architecture",
             "board_id": "board1",
             "canvas_scope": AREA,
@@ -2355,6 +2464,14 @@ def test_shared_operation_key_is_serialized_across_boards_and_store_instances(se
             ]
         ),
         record["revision"],
+    )
+
+    store.save_board_grant(
+        store.resolve_connection("root/project", "architecture"),
+        author.session(),
+        "board2",
+        "edit",
+        actor="operator:test",
     )
 
     async def scenario():

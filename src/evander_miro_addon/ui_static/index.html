@@ -20,10 +20,16 @@
 <label><input id="enabled" type="checkbox" checked> Enabled</label>
 <label><input id="workflows" type="checkbox"> Allow workflows in this directory and its descendants</label>
 <label><input id="create-boards" type="checkbox"> Allow new boards using Miro’s workspace sharing policy</label></div>
-<h3>Approved boards</h3><p>Grant each board explicitly. Agents with the Miro tools enabled in their session policy can use connections in their directory and inherited from parent directories.</p>
-<div id="boards"></div><button id="add-board" type="button">Add board</button>
 <div class="toolbar"><button type="submit">Save settings</button><button id="connect" type="button">Connect account</button><button id="health" type="button">Check connection</button><button id="disconnect" type="button">Disconnect</button></div>
 </form><p><a id="authorize" hidden rel="noopener noreferrer" target="_blank">Continue to Miro authorization</a></p>
+<h2>Session board permissions</h2>
+<p>Each agent session needs its own board approval. Sharing a connection or enabling Miro tools does not grant board access.</p>
+<form id="grant-form"><div class="grid">
+<label>Agent session<select id="grant-session" required></select></label>
+<label>Board ID or URL<input id="grant-board" required></label>
+<label>Access<select id="grant-access"><option value="read">Read</option><option value="edit">Read and edit</option></select></label>
+</div><button id="save-grant" type="submit" data-privileged-action>Grant access</button></form>
+<div id="grants"></div>
 <h2>Activity</h2><p>Polling starts when a workflow uses a Miro change trigger. Uncertain writes need readback before resolution.</p>
 <div id="activity"></div><pre id="details" tabindex="0"></pre>
 </section></div></main><script type="module" src="miro.js"></script></body></html>

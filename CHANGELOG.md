@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-20 - Scope Miro board approvals to agent sessions (0.106.0)
+
+- Require exact session board grants for agent tools and Miro workflow operations, invalidate former shared approvals, and grant newly created boards only to their creating session.
+- Add revision-checked session permission controls in Admin Web and workflow-only board access checks and authenticated chat approval effects.
+- Provide an opt-in Smart switch approval workflow with explicit user consent, pending-request isolation, durable replay protection, confirmations and task continuation.
+
 ## 2026-10-20 - Keep local browser sharing with the creating agent (0.105.4)
 
 - Let the agent that creates a local Chrome sharing session observe and interact with it using its existing conversation context and browser tool grants.

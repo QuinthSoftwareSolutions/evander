@@ -13,10 +13,11 @@ monitor, request a review, or wake an agent by composing normal Evander workflow
 2. Open **Miro**, select the owning directory, and unlock privileged operations in Evander.
    Create a named connection with the public Admin Web callback URL ending
    `/api/addons/miro-addon/oauth/callback`. HTTPS is required except on loopback in development.
-3. Add exact board IDs and grant reads or writes for each. Enable the required `miro_*` tools in
-   the agents' normal session policy; that policy authorizes use of connections in their directory
-   and inherited from parent directories. Permit workflow access separately. Creation of new boards
-   is separately opt-in; successfully created boards join this connection's read/write grants.
+3. Enable the required `miro_*` tools in each agent's normal session policy. Under **Session board
+   permissions**, select the exact agent session, enter a board ID or URL, and grant **Read** or
+   **Read and edit**. Connection inheritance makes the connection available; every session still
+   needs its own board grant. Permit workflow use separately. Board creation is separately opt-in;
+   a successfully created board receives read/edit access for its creating session only.
 4. Save, choose **Connect account**, and follow **Continue to Miro authorization**. Select the Miro
    account and team containing the intended boards. Refresh the page when authorization completes.
    Writes use that account; Evander separately records the responsible agent or workflow.
@@ -37,9 +38,17 @@ add-on-private storage with restrictive file permissions. Keep its
 key and database in protected host backups. Disconnect invalidates local authorization and pending
 callbacks; remove the app in Miro as well when provider-side consent must be revoked.
 
-Older per-connection `session_ids` lists are accepted for compatibility and ignored. Normal session
-tool permissions now control agent access. Saving existing settings removes the obsolete list
-without requiring a new OAuth connection; directory and board restrictions still apply.
+Grants are bound to the connection, exact board ID, session ID and session creation time. Wakes,
+renewals and service restarts retain grants; expiry blocks their use. Deleting and recreating a
+session, even under the same name, requires fresh grants. Edit access includes read access.
+Administrators can change or revoke a grant with revision checks, including through inherited
+connections in the selected session directory. Listing boards and connection board counts reveals
+only the current session's grants.
+
+On the first upgraded startup, legacy connection-wide board approvals are invalidated atomically
+and retained as private migration evidence. They are never copied to sessions. OAuth credentials,
+snapshots and operation history remain stored; retaining history does not grant access. Legacy
+`boards` and `session_ids` configuration inputs do not authorize sessions or workflows.
 
 Miro's official server is fixed at `https://mcp.miro.com/`. OAuth discovery and token destinations
 must share that exact origin. Guests do not receive credentials or a new internet/firewall route.
@@ -60,26 +69,28 @@ metadata access; this does not grant board reads or writes.
 
 Every other operation takes `connection_id`. Use an ID returned by discovery with
 `miro_list_boards(connection_id="...")` to find approved boards and their write grants. An empty
-board list means no boards are registered in that connection; connecting a Miro account does not
-automatically approve or enumerate its upstream boards. Creating a board requires both the
+board list means this session has no board grants on that connection; connecting a Miro account
+does not automatically approve or enumerate its upstream boards. Creating a board requires both the
 `miro_create_board` tool and the connection's board-creation setting.
 
-Agent identity and directory come from the authenticated session; workflows use their execution
-directory, not a directory supplied in the operation input. All tools appear in the **Miro** tool
+Agent identity and directory come from the authenticated transport session. Every Miro workflow
+query, effect and polling trigger requires a `session_id` and checks that session's grants, tool
+policy, lifetime and directory. Workflow directory scope and the connection's `allow_workflows`
+setting are additional requirements. There is no session-free workflow board permission fallback. All tools appear in the **Miro** tool
 catalog. Discovery is agent-only; matching workflow query/effect names for the other tools replace
 underscores with hyphens, for example `miro_read_canvas` → `query:miro:read-canvas`.
 
 | Agent tool | Workflow kind | Purpose and additional inputs |
 |---|---|---|
 | `miro_list_connections` | Agent only | No inputs; discover enabled connections and their public configuration. |
-| `miro_list_boards` | Query | List only configured boards and their write grants. |
+| `miro_list_boards` | Query | List only this session's approved boards and their read/edit grants. |
 | `miro_get_canvas_format` | Query | Follow the composer using `step`; optional `format_name`, `notation`, and `is_repository` load the current diagram guidance. Diagram guidance defaults to `notation="free_form"` when supported, for individually editable items. Returns provider instructions plus `authoring_checks`. |
 | `miro_search_canvas` | Query | `board_id`, `result_mode` (`overview`, `areas`, or `matches`); optional `patterns`, `target_id`, `cursor`. Find areas and item IDs before reading. |
 | `miro_read_canvas` | Query | `board_id` and `canvas_scope` or `frame_id`/`item_ids`; returns editable SVG, stable item IDs, exact selection, URL and `snapshot_id`. |
 | `miro_read_comments` | Query | Same selection; reads bounded complete pagination and returns a comment snapshot. |
 | `miro_get_snapshot` | Query | `snapshot_id`; read a retained source with advisory `layout_review`. The agent tool accepts `include_preview=true` to return a reconstructed PNG alongside the snapshot. |
 | `miro_get_operation` | Query | `operation_id`; inspect the durable outcome, attribution and snapshot references. |
-| `miro_create_board` | Effect | `title`, `operation_key`; creates and binds a board when explicitly granted. Sharing follows Miro's workspace policy. |
+| `miro_create_board` | Effect | `title`, `operation_key`; creates a board and grants read/edit access only to the creating session. Sharing follows Miro's workspace policy. |
 | `miro_create_canvas` | Effect | `board_id`, `svg`, `operation_key`; `frame_id` or `canvas_scope` covering the new content, and optional `source_refs`. Creates editable content, including a separate revision frame. |
 | `miro_update_canvas` | Effect | Same selection as a prior read, `svg`, `snapshot_id`, `operation_key`; optional `source_refs`/`allow_delete`. |
 | `miro_reply_comment` | Effect | Board/selection, `comment_id`, `text`, `snapshot_id`, `operation_key`; replies to an existing thread. |
@@ -212,7 +223,7 @@ entities, and is never rendered as trusted HTML in Admin Web.
 Writes to the same board are serialized across host processes, even through different connections.
 A durable `operation_key` identifies the caller's exact operation and arguments across all boards
 in a connection. Concurrent requests sharing a key are serialized. Reusing it returns
-the existing outcome, including board creation after reaching the connection's board limit;
+the existing outcome, including board creation after reaching the session's board limit;
 changing the payload or caller with the same key is a conflict. A write
 acknowledged by Miro is followed by a fresh readback snapshot. This is observation, not an atomic
 compare-and-swap guarantee: a human can still edit during the remote operation.
@@ -224,7 +235,8 @@ Repeating the operation key does not resend it. In **Miro → Activity**, use **
 observed snapshot and live board, then record evidence and the outcome. **Mark not applied** does
 not automatically retry; schedule a fresh operation key only after verifying absence of the write.
 For an uncertain board creation without a returned ID, inspect the selected Miro team manually and
-include the identified board in the resolution evidence; bind it explicitly in connection settings.
+include the identified board in the resolution evidence; grant that board to the intended session
+under **Session board permissions** before resuming agent work.
 If Miro acknowledged creation and returned a board ID, an operator may **Mark applied** with
 explicit evidence even when a later deletion or sharing change prevents readback. This confirms
 the original creation; it does not restore board access or replay the operation. Canvas and comment
@@ -232,9 +244,73 @@ writes still require readback before resolution, as does marking an identified c
 Operators may inspect and recover operations in their selected directory and its descendants.
 An inherited connection does not permit recovery of operations owned by an ancestor or sibling.
 
+## Approving a session through chat
+
+The optional workflow-only `query:miro:board-access` query checks local grants. Give it a
+`connection_id`, `session_id`, and board ID/URL. For personal-assistant conversations, bind
+`message_cursor` to the original Teams trigger cursor and `approver_user_id` to the operator's fixed
+user-to-assistant mapping. It resolves one exact board from the stored message or a matching pending
+request. It returns current access, a scoped pending-state key, pending read/edit requests and
+approval question text. These queries never contact Miro.
+
+`effect:miro:grant-board-access` takes the same connection, session, exact board reference and source
+message fields, plus `access` (`read` or `edit`) and a stable `operation_key`. It checks the original
+inbox author and direct chat, the live session instance, source freshness and the exact board. An
+old message predating the session cannot approve a recreated session. Confirmation without a board
+URL must match an unexpired pending request for that user, conversation, session instance and access
+level, after the question has been delivered. The add-on retains approval provenance and deduplicates by the source message and session;
+redelivery cannot restore a revoked grant. Agent MCP tools cannot grant their own board access.
+
+Use `evander_miro_addon.approval_workflow.approval_fragment` to build the opt-in workflow branch.
+It uses the existing Smart switch with a 0.98 approval cutoff and the configured Decisions provider.
+Only explicit permission selects a grant branch. An ordinary request to read or edit an unapproved
+board asks a short approval question, stores pending consent using the existing workflow-state
+nodes, and activates that request only after the question is sent. Pending consent uses the
+configured approval TTL (one hour by default). Quoted, forwarded, hypothetical, negated and
+ambiguous statements never count as approval. Only the current message and minimal pending-board
+metadata are sent to classification, not general conversation history.
+
+A successful grant is confirmed before an accompanying or pending task continues. Permission-only
+messages finish after confirmation. State conflicts, failed delivery and grant errors do not start
+an unapproved edit. Keep the mapped user and target session bindings operator-controlled; never
+bind them to classifier output or user-supplied identity fields. Update workflow-generated AGENTS.md
+with the included `assistant_guidance` helper so assistants explain chat approval and offer the
+Miro settings page as a manual fallback.
+
+The [session approval example](examples/miro-session-approval.v1.json) shows the complete branch with
+synthetic placeholders. To prepare a change to an existing operator-owned pack, export its current
+editor document and pack, keep a backup outside the repository, and run:
+
+```bash
+python -m evander_miro_addon.approval_workflow baseline.json candidate.json --bindings bindings.json
+```
+
+`bindings.json` supplies the keyword arguments documented by `add_approval_fragment`, including the
+graph, insertion edge, enqueue node, fixed user/session/message bindings and public Admin Web URL.
+When model or reasoning routing has several enqueue branches, list every additional branch in
+`additional_enqueue_node_ids` so approved task continuation reaches each existing route.
+The command writes a separate candidate and never saves live configuration. Review it, validate the
+baseline and candidate, then import/save through Admin Web or the revision-gated workflow service.
+Keep customer-specific packs and bindings in operator-owned storage outside this repository.
+
+## Upgrading existing installations
+
+Drain Miro work and stop Admin Web, gateway, trigger orchestrator and effect orchestrator together
+before upgrading. Back up protected add-on state and the OAuth key. Deploy the new code, then start
+all four services; do not mix old and new authorization implementations. The first upgraded store
+initialization invalidates the legacy approvals once. No live workflow currently lacking a
+`session_id` can use Miro until it is updated. Grant existing boards to individual sessions as
+needed, or enable the reviewed chat-approval workflow.
+
+Verify the new grant API, both orchestrator revisions, and denial from a second session with the
+same connection and tools. Old operation records remain available to appropriately scoped operator
+recovery; session operation receipts require their owning session instance. If rolling code back,
+keep Miro disabled until authorization state is reviewed: restoring a pre-upgrade database would
+also restore its former shared approvals.
+
 ## Workflow-owned monitoring and examples
 
-`trigger:miro:board-changed` and `trigger:miro:comments-changed` take `connection_id`, `board_id`,
+`trigger:miro:board-changed` and `trigger:miro:comments-changed` take `connection_id`, `session_id`, `board_id`,
 optional `frame_id`/`item_ids`, `poll_interval_seconds` (default 900, minimum 60), `include_self`
 (default false), and `emit_initial` (default false). Canvas monitoring also accepts `canvas_scope`
 instead of frame/item IDs. It watches that selection, including when a previously empty board
