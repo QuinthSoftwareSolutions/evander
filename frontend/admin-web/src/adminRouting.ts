@@ -166,6 +166,19 @@ export function nextPathFromHash(hash: string): string | null {
   return `/${normalizedHash.startsWith("#") ? normalizedHash : `#${normalizedHash}`}`;
 }
 
+export function adminLoginReturnPath(search: string): string | null {
+  const target = new URLSearchParams(search).get("next")?.trim();
+  if (!target || !target.startsWith("/") || target.startsWith("//")) return null;
+  let decoded = target;
+  try {
+    for (let index = 0; index < 3; index += 1) decoded = decodeURIComponent(decoded);
+  } catch {
+    return null;
+  }
+  if (decoded.startsWith("//") || /[\\\u0000-\u001f\u007f]/.test(decoded)) return null;
+  return target;
+}
+
 export function adminHash(tab: AdminTab, params: Record<string, AdminHashParamValue> = {}): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

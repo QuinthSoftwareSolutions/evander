@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-19 - Share hosted previews and local Chrome sessions (0.104.0)
+
+- Add an optional Browser Sessions add-on for hosted demonstrations, live development previews and explicitly shared user-hosted Chrome tabs.
+- Require Admin UI sign-in and directory permissions for hosted viewers; add single-use local invitations, browser-only support agents and fenced input handover.
+- Keep chat transcripts distinct while resuming the authoring task; enforce preview leases, approved profiles, isolated worker resources and cleanup before checkout deletion.
+- Include opt-in deployment assets, extension packaging and focused Python/Chrome validation.
+
 ## 2026-10-19 - Configure Cyber access programs for agents and scanner runtimes (0.103.0)
 
 - Add Cyber access program selectors to agent creation, existing agent usage settings, and session model settings. Persist per-session choices and apply them to subsequent VM, metered container, subscription, and scanner turns.

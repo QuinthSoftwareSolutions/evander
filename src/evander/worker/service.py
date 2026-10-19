@@ -2832,6 +2832,9 @@ class WorkerDaemon(GitWorkspaceOperations):
             WorkerSessionPaths.resolve_session_root(self.worker_root, session_id)
         )
 
+        from evander.session_dependencies import SessionDependencies
+
+        SessionDependencies(self.worker_root).release(normalized_session_id)
         mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
         session_records = self.store.list_by_session(normalized_session_id)

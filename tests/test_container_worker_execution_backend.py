@@ -1219,3 +1219,15 @@ def test_worker_failure_keeps_assignment_and_never_falls_back_to_new_default(tmp
         restarted.prepare_session(session_id="existing")
     assert requested == [old.base_url]
     assert not new.prepared_sessions
+
+
+def test_delete_session_preserves_worker_data_when_dependent_cleanup_fails(tmp_path, monkeypatch):
+    from evander.session_dependencies import SessionDependencies
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    def fail_release(self, owner):
+        raise ValueError("Dependent resource cleanup failed; session data was preserved")
+    monkeypatch.setattr(SessionDependencies, "release", fail_release)
+    with pytest.raises(ValueError, match="preserved"):
+        backend.delete_session("session-1")
+    assert client.deleted_sessions == []

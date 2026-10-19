@@ -980,6 +980,29 @@ class AdminWebUserStore:
             )
         return payload
 
+    def revoke_session(self, session_id: str, expires_at: float) -> None:
+        """Revoke a signed login across Admin Web and streaming processes."""
+        if not session_id:
+            return
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM admin_web_revoked_sessions WHERE expires_at <= ?",
+                (utc_now().timestamp(),),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO admin_web_revoked_sessions(sid, expires_at) VALUES (?, ?)",
+                (session_id, float(expires_at)),
+            )
+
+    def session_is_revoked(self, session_id: str) -> bool:
+        self._ensure_ready()
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT 1 FROM admin_web_revoked_sessions WHERE sid = ? AND expires_at > ?",
+                (session_id, utc_now().timestamp()),
+            ).fetchone() is not None
+
     def ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(
@@ -990,6 +1013,11 @@ class AdminWebUserStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_login_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS admin_web_revoked_sessions (
+                    sid TEXT PRIMARY KEY,
+                    expires_at REAL NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS admin_web_user_preferences (

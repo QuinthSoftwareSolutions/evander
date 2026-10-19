@@ -1,0 +1,38 @@
+{
+  "description": "Node fragments; supply a trusted preview_request event node and wire normal Teams/Discord delivery to the viewer URL.",
+  "nodes": [
+    {
+      "id": "preview",
+      "display_name": "Start shared preview",
+      "type": "effect:browser-session:ensure",
+      "config": {
+        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
+        "request": {
+          "mode": "hosted_development",
+          "request_id": "${{preview_request.event_id}}",
+          "profile_id": "web",
+          "workspace_ref": "${{preview_request.payload.workspace_ref}}",
+          "launch_manifest_path": ".evander/preview.json"
+        }
+      }
+    },
+    {
+      "id": "preview_status",
+      "display_name": "Preview status",
+      "type": "query:browser-session:status",
+      "config": {
+        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
+        "browser_session_id": "${{preview.id}}"
+      }
+    },
+    {
+      "id": "close_preview",
+      "display_name": "Close preview",
+      "type": "effect:browser-session:close",
+      "config": {
+        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
+        "browser_session_id": "${{preview.id}}"
+      }
+    }
+  ]
+}

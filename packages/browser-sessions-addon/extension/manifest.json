@@ -1,0 +1,13 @@
+{
+  "manifest_version":3,
+  "name":"Evander Browser Assistance",
+  "version":"0.1.0",
+  "description":"Share one approved Chrome tab with your Truman agent.",
+  "minimum_chrome_version":"125",
+  "permissions":["activeTab","debugger","scripting","sidePanel","storage"],
+  "optional_host_permissions":["https://*/*","http://localhost/*","http://127.0.0.1/*"],
+  "background":{"service_worker":"background.js","type":"module"},
+  "action":{"default_title":"Share this tab with Truman"},
+  "side_panel":{"default_path":"panel.html"},
+  "content_security_policy":{"extension_pages":"script-src 'self'; object-src 'none'"}
+}

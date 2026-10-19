@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.admin.services.agent_capabilities import AgentCapabilityRestriction
 from evander.admin.services.session_helpers import normalize_http_targets_metadata
 from evander.admin.services.vm_agent.common import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
@@ -87,13 +88,18 @@ class VmAgentCreateRequestMixin:
     def _create_vm_for_admin_agent(self, **kwargs: Any) -> VmActionResult:
         return self._vm_lifecycle_port().create_vm(**kwargs)
 
-    def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_admin_agent(
+        self, payload: Mapping[str, Any], *,
+        capability_restriction: AgentCapabilityRestriction | None = None,
+    ) -> dict[str, Any]:
         worker_id = self._agent_optional_string(payload, "worker_id")
         selected_backend = self._normalize_agent_backend(
             self._agent_optional_string(payload, "backend")
             or self._agent_optional_string(payload, "execution_backend")
         )
         if selected_backend == "libvirt_vm":
+            if capability_restriction is not None:
+                raise ValueError("Restricted support agents require container_worker_vm")
             if worker_id:
                 raise ValueError("worker_id is supported only for container_worker_vm agents")
             vm_name = self._agent_optional_string(payload, "vm_name")
@@ -499,6 +505,8 @@ class VmAgentCreateRequestMixin:
                 "metadata": metadata,
             }
         )
+        if capability_restriction is not None:
+            manifest = capability_restriction.apply(manifest)
         validate_openrouter_session(backend.config, manifest)
         validate_session_reasoning_effort(manifest, backend.config)
         validate_session_fast_mode(manifest, backend.config)

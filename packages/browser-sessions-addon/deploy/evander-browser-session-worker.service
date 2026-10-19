@@ -1,0 +1,19 @@
+[Unit]
+Description=Evander private browser supervisor
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/evander
+EnvironmentFile=/etc/evander/browser-worker.env
+ExecStart=/opt/evander/.venv/bin/evander-browser-session-worker --config /etc/evander/browser-worker.json --host 127.0.0.1 --port 11891
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
