@@ -695,3 +695,18 @@ class Supervisor:
                 self.save(lease)
             elif lease["state"] == "accepted":
                 self.start(lease)
+            current = self.get(lease["id"])
+            if current["state"] == "running":
+                for suffix in ("app", "browser"):
+                    container = self.inspect(current["name"] + "-" + suffix)
+                    if container and container.get("State", {}).get("Running") is True:
+                        continue
+                    with self.lock:
+                        current = self.get(lease["id"])
+                        if current["state"] == "running":
+                            current["state"], current["error"] = (
+                                "failed",
+                                "Preview process exited; close to release resources",
+                            )
+                            self.save(current)
+                    break

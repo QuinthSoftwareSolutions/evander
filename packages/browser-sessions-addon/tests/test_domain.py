@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -117,7 +116,7 @@ def test_guest_control_is_host_only_and_original_agent_cannot_operate(domain, lo
 
 def test_takeover_fences_in_flight_actions_and_only_one_human_controls(domain, hosted):
     service, _, peers = domain
-    result = service.control(hosted.id, "user:alice", "claim", revision=hosted.revision)
+    service.control(hosted.id, "user:alice", "claim", revision=hosted.revision)
     with pytest.raises(BrowserError, match="Another participant"):
         service.control(hosted.id, "user:bob", "claim")
     before = len(peers.calls)
@@ -281,3 +280,68 @@ def test_remote_typing_preserves_spaces_and_line_breaks():
             id="typing", generation=0, action="type", observation_id="current", text=text
         )
         assert command.text == text
+
+
+@pytest.mark.parametrize("blocked", ["closed", "expired", "leased", "retry"])
+def test_old_requests_cannot_starve_another_browser_session(domain, hosted, blocked):
+    service, bindings, _ = domain
+    for index in range(20):
+        service.enqueue_message(
+            hosted.id, "user:alice",
+            MessageRequest(request_id=f"old-{index}", body="Earlier question"),
+        )
+    if blocked == "closed":
+        service.close(hosted.id)
+    elif blocked == "expired":
+        service.store.mutate(
+            hosted.id, "test", lambda value: setattr(value, "expires_at", time.time() - 1)
+        )
+    elif blocked == "leased":
+        with service.store.connect(write=True) as db:
+            db.executemany(
+                "INSERT INTO dispatches VALUES(?,?,?)",
+                [(f"browser-msg-old-{index}", "dispatching", time.time() + 60) for index in range(20)],
+            )
+    else:
+        original = bindings.enqueue
+
+        def enqueue(session, message):
+            if session.id == hosted.id:
+                raise BrowserError("Agent temporarily unavailable")
+            return original(session, message)
+
+        bindings.enqueue = enqueue
+
+    fresh = service.create(
+        "agent-b", CreateRequest(mode="user_hosted", request_id="fresh")
+    )
+    message = service.enqueue_message(
+        fresh["id"], "guest:bob", MessageRequest(request_id="fresh-question", body="New question")
+    )
+    for _ in range(3):
+        service.dispatch_messages()
+    assert [(session_id, request["id"]) for session_id, request in bindings.prompts] == [
+        (fresh["id"], message["id"])
+    ]
+    if blocked in {"closed", "expired"}:
+        assert {row["status"] for row in service.store.messages(hosted.id)} == {"cancelled"}
+
+
+@pytest.mark.parametrize("state", ["starting", "ready", "paused", "disconnected"])
+def test_worker_process_failure_reaches_the_viewer_after_startup(domain, hosted, state):
+    service, _, peers = domain
+    service.store.mutate(hosted.id, "test", lambda value: setattr(value, "state", state))
+    original = peers.call
+
+    def peer_call(base, token, method, path, payload):
+        if method == "GET" and path.startswith("/v1/sessions/"):
+            return {"state": "failed", "error": "private diagnostic"}
+        return original(base, token, method, path, payload)
+
+    peers.call = peer_call
+    service.reconcile()
+    failed = service.store.get(hosted.id)
+    assert failed.state == "failed" and failed.controller is None
+    assert failed.control_generation > hosted.control_generation
+    assert "private diagnostic" not in failed.error
+    assert service.close(hosted.id)["state"] == "closed"

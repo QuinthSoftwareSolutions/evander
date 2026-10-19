@@ -1,11 +1,9 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
-import time
 
 import pytest
 
-from evander_browser_sessions_addon.models import BrowserError, CreateRequest
+from evander_browser_sessions_addon.models import BrowserError
 from evander_browser_sessions_addon.worker import Supervisor, WorkerSettings
 
 
@@ -28,6 +26,7 @@ class Docker:
         elif cmd[0] == "run":
             name = cmd[cmd.index("--name") + 1]
             self.resources[name] = {
+                "State": {"Running": True},
                 "Config": {
                     "Labels": {"evander.browser": cmd[cmd.index("--label") + 1].split("=")[1]}
                 }
@@ -186,3 +185,20 @@ def test_unconfigured_sql_is_rejected_before_allocating_resources(worker):
     with pytest.raises(BrowserError, match="database service"):
         supervisor.create(payload)
     assert not supervisor.leases() and not docker.calls
+
+
+@pytest.mark.parametrize("suffix", ["app", "browser"])
+@pytest.mark.parametrize("startup", [False, True])
+def test_stopped_preview_process_is_detected_and_can_be_released(worker, monkeypatch, suffix, startup):
+    supervisor, docker, payload, _ = worker
+    monkeypatch.setattr("socket.gethostbyname", lambda name: "192.0.2.10")
+    result = supervisor.create(payload)
+    supervisor.reconcile()
+    lease = supervisor.get(result["id"])
+    assert lease["state"] == "running"
+    docker.resources[lease["name"] + "-" + suffix]["State"] = {"Running": False}
+    recovered = Supervisor(supervisor.settings, command=docker, probe=lambda url: True)
+    recovered.reconcile(startup=startup)
+    assert recovered.get(result["id"])["state"] == "failed"
+    assert recovered.close(result["id"]) == {"released": True}
+    assert not docker.resources

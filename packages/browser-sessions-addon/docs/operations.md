@@ -25,7 +25,7 @@ Disabling sharing rejects new actions and closes resources during reconciliation
 
 - Worker unavailable: compare persisted assignment, worker ID, parent_worker_url and supervisor.
 - Profile mismatch: update both operator-owned copies, then create another preview.
-- Startup failed: inspect the worker record and bounded Docker logs labelled evander.browser=<session ID>. Close before retrying with a new request ID.
+- Startup/process failure: stopped application and browser containers are detected during startup and periodic reconciliation. Close the failed preview to release its reservation, then inspect the worker record and bounded Docker logs labelled evander.browser=<session ID>. Close before retrying with a new request ID.
 - Missing dependencies: seed the image/cache through approved provisioning.
 - Local input denied: the host must grant. DevTools or enterprise/DLP policy may prevent attachment.
 - Changed origin: the local host approves it; hosted origins derive from declared ports.

@@ -720,7 +720,11 @@ class Service:
                 self.bindings.parent(session.agent_session_id)
             except Exception:
                 expired = True
-            if not expired and session.worker_id and session.state == "starting":
+            if (
+                not expired
+                and session.worker_id
+                and session.state in {"starting", "ready", "paused", "disconnected"}
+            ):
                 private = self.store.private(session.id)
                 connection = private.get("connection", {})
                 try:
@@ -728,18 +732,15 @@ class Service:
                         connection["base_url"], connection["token_env"]
                     ).call("GET", "/v1/sessions/" + session.id)
                     if result.get("state") == "failed":
+                        def process_failed(value):
+                            if value.state not in {"starting", "ready", "paused", "disconnected"}:
+                                return
+                            value.state, value.controller = "failed", None
+                            value.control_generation += 1
+                            value.error = "Preview process failed; close to release resources"
+
                         self.store.mutate(
-                            session.id,
-                            "system",
-                            lambda value: (
-                                setattr(value, "state", "failed"),
-                                setattr(
-                                    value,
-                                    "error",
-                                    "Preview startup failed; close to release resources",
-                                ),
-                            ),
-                            kind="startup_failed",
+                            session.id, "system", process_failed, kind="process_failed"
                         )
                 except (BrowserError, KeyError):
                     pass
@@ -749,20 +750,43 @@ class Service:
 
     def dispatch_messages(self):
         with self.store.connect() as db:
+            # Apply retry/claim leases before the batch limit so unavailable
+            # agents cannot occupy every slot and starve other sessions.
             rows = db.execute(
-                "SELECT * FROM messages WHERE reply_to IS NULL AND status='queued' ORDER BY seq LIMIT 20"
+                """SELECT m.* FROM messages m
+                   LEFT JOIN dispatches d ON d.message_id=m.id
+                   WHERE m.reply_to IS NULL AND m.status='queued'
+                     AND (d.lease_until IS NULL OR d.lease_until<=?)
+                   ORDER BY m.seq LIMIT 20""",
+                (self.now(),),
             ).fetchall()
         for row in rows:
             message = dict(row)
-            session = self.store.get(message["session_id"])
             try:
+                session = self.store.get(message["session_id"])
                 self.store.active(session)
+            except BrowserError as exc:
+                if exc.status not in {404, 410}:
+                    continue
+                with self.store.connect(write=True) as db:
+                    db.execute(
+                        "UPDATE messages SET status='cancelled' WHERE id=? AND status='queued'",
+                        (message["id"],),
+                    )
+                    db.execute("DELETE FROM dispatches WHERE message_id=?", (message["id"],))
+                continue
+            try:
                 # Durable claim; duplicate dispatch IDs are idempotent in the core prompt queue.
                 with self.store.connect(write=True) as db:
-                    claim = db.execute(
-                        "SELECT * FROM dispatches WHERE message_id=?", (message["id"],)
+                    current = db.execute(
+                        """SELECT m.status,d.lease_until FROM messages m
+                           LEFT JOIN dispatches d ON d.message_id=m.id WHERE m.id=?""",
+                        (message["id"],),
                     ).fetchone()
-                    if claim and claim["lease_until"] > self.now():
+                    if not current or current["status"] != "queued" or (
+                        current["lease_until"] is not None
+                        and current["lease_until"] > self.now()
+                    ):
                         continue
                     db.execute(
                         "INSERT OR REPLACE INTO dispatches VALUES(?,?,?)",
@@ -771,7 +795,8 @@ class Service:
                 self.bindings.enqueue(session, message)
                 with self.store.connect(write=True) as db:
                     db.execute(
-                        "UPDATE messages SET status='dispatched' WHERE id=?", (message["id"],)
+                        "UPDATE messages SET status='dispatched' WHERE id=? AND status='queued'",
+                        (message["id"],),
                     )
                     db.execute(
                         "UPDATE dispatches SET state='dispatched' WHERE message_id=?",

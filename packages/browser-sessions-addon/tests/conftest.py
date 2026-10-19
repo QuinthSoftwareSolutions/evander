@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander_browser_sessions_addon.models import Session, Settings
+from evander_browser_sessions_addon.models import Settings
 from evander_browser_sessions_addon.service import Parent, Service
 from evander_browser_sessions_addon.state import Store
 

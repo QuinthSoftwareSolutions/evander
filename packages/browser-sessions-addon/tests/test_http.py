@@ -13,7 +13,6 @@ from evander.admin.web.app import AuthMiddleware
 from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.user_store import AdminWebUserStore
 from evander_browser_sessions_addon import web
-from evander_browser_sessions_addon.models import MessageRequest
 from evander_browser_sessions_addon.relay import create_app as relay_app
 
 

@@ -158,3 +158,32 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
     assert.equal((await f.api(path+"/state")).state,"closed");
   } finally {await context?.close();await second?.stop();await f.stop();}
 });
+
+test("guided launch-profile setup saves through the production settings API", async () => {
+  const f = await fixture();
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+    const page = await browser.newPage();
+    await page.request.post(f.base + "/api/auth/login");
+    await page.goto(f.base + "/addons/browser-sessions-addon/?directory=root/demo",
+      { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.getByRole("button", { name: "Add profile", exact: true }).click();
+    await page.getByLabel("Application image", { exact: true }).fill("seeded-preview:2");
+    const saved = page.waitForResponse(response =>
+      response.request().method() === "PUT" &&
+      response.url().includes("/api/addons/browser-sessions-addon/settings"));
+    await page.getByRole("button", { name: "Save settings", exact: true }).click();
+    const response = await saved;
+    assert.equal(response.status(), 200, await response.text());
+    await page.getByRole("status").getByText("Saved", { exact: true }).waitFor();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    assert.equal(await page.getByLabel("Application image", { exact: true }).inputValue(),
+      "seeded-preview:2");
+  } finally {
+    await browser?.close();
+    await f.stop();
+  }
+});

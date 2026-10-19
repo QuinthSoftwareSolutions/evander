@@ -292,7 +292,6 @@ $("add-profile").addEventListener("click", () => {
     cpus: 2,
     memory_mib: 4096,
     browser_memory_mib: 1536,
-    network_name: "evander-preview",
     public_environment: {},
     readonly_mounts: {},
     egress_allowlist: [],

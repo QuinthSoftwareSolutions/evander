@@ -11,6 +11,7 @@ let streaming = false;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 let expiry: ReturnType<typeof setTimeout> | undefined;
 let deniedOrigin: string | undefined;
+let mainFrameId: string | undefined;
 
 chrome.action.onClicked.addListener(async (tab: any) => {
   if (!connection) tabId = tab.id;
@@ -28,6 +29,16 @@ function update(state: any) {
   connection.session = { ...state, allowed_origins: [connection.approvedOrigin] };
   if (!granted) connection.session.controller = null;
   engine?.update(connection.session);
+}
+function pauseForOrigin(url: string) {
+  if (!connection) return;
+  let currentOrigin: string;
+  try { currentOrigin = new URL(url).origin; } catch { currentOrigin = "null"; }
+  if (currentOrigin === connection.approvedOrigin) return;
+  granted = false;
+  update({ ...connection.session, controller: null });
+  if (!deniedOrigin) send({ kind: "paused" });
+  deniedOrigin = currentOrigin;
 }
 async function api(action: string, body?: any) {
   if (!connection) throw new Error("Share a tab first");
@@ -108,6 +119,7 @@ async function attach() {
     send(message); void overlay(message).catch(() => {});
   });
   await cdp("Page.enable");
+  mainFrameId = (await cdp("Page.getFrameTree")).frameTree.frame.id;
   await cdp("Accessibility.enable");
   await connectEndpoint();
 }
@@ -135,25 +147,31 @@ chrome.debugger.onDetach.addListener((source: any) => {
 chrome.tabs.onRemoved.addListener((id: number) => { if (id === tabId) void disconnect(); });
 chrome.debugger.onEvent.addListener(async (source: any, method: string, params: any) => {
   if (source.tabId !== tabId || !connection || !engine) return;
-  if (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") engine.navigate();
+  if (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") {
+    engine.navigate();
+    if (method === "Page.frameNavigated" && !params.frame.parentId) {
+      mainFrameId = params.frame.id;
+      pauseForOrigin(params.frame.url);
+    } else if (method === "Page.navigatedWithinDocument" && params.frameId === mainFrameId) {
+      pauseForOrigin(params.url);
+    }
+  }
   if (method !== "Page.screencastFrame") return;
   try {
     const tree = await cdp("Page.getFrameTree");
     const url = tree.frameTree.frame.url;
     if (new URL(url).origin !== connection.approvedOrigin) {
-      if (!deniedOrigin) {
-        deniedOrigin = new URL(url).origin;
-        granted = false;
-        update({ ...connection.session, controller: null });
-        send({ kind: "paused" });
-      }
+      pauseForOrigin(url);
       return;
     }
     const metrics = await cdp("Page.getLayoutMetrics");
     const viewport = metrics.cssVisualViewport;
     send({ kind: "frame", image: params.data, width: Math.round(viewport.clientWidth),
       height: Math.round(viewport.clientHeight), page_epoch: String(params.sessionId), url });
-  } catch { granted = false; send({ kind: "paused" });
+  } catch {
+    granted = false;
+    if (connection) update({ ...connection.session, controller: null });
+    send({ kind: "paused" });
   } finally { await cdp("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {}); }
 });
 chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) => {
