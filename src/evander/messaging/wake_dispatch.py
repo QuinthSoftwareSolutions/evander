@@ -44,6 +44,7 @@ from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
 from evander.fast_mode import FastModeValue, resolve_fast_mode
+from evander.cyber_access import session_cyber_access_program
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -637,6 +638,7 @@ class HostWakeDispatcher:
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
             "AGENT_FAST_MODE": speed.env_value,
+            "AGENT_CYBER_ACCESS_PROGRAM": session_cyber_access_program(session, worker_config) or "",
         }
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider

@@ -13,6 +13,7 @@ from evander.effects.providers.agent_session import (
 from evander.events.internal import validate_internal_event_type
 from evander.events.models import ConfigValue, EffectDefinition
 from evander.fast_mode import normalize_fast_mode
+from evander.cyber_access import normalize_cyber_access_program
 from evander.reasoning_effort import LEVELS, normalize_reasoning_effort
 
 
@@ -268,6 +269,11 @@ class AgentCreateEffectDefinition(EffectDefinition):
     existing_agent_behavior: ConfigValue | None = None
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
+    cyber_access_program: ConfigValue | None = Field(
+        default=None,
+        description="Cyber access program for subsequent Codex turns. Omit to preserve an existing session choice.",
+        json_schema_extra={"examples": ["standard", "daybreak_blue", "daybreak_red"]},
+    )
     cost_category: ConfigValue | None = Field(
         default=None,
         description="Default inference cost category for the session. Blank means Uncategorized.",
@@ -341,6 +347,13 @@ class AgentCreateEffectDefinition(EffectDefinition):
         if isinstance(value, str) and "${{" in value:
             return value
         return normalize_optional_http_url(value, field_name="npm_registry_url")
+
+    @field_validator("cyber_access_program")
+    @classmethod
+    def validate_cyber_access_program_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, dict) or isinstance(value, str) and "${{" in value:
+            return value
+        return normalize_cyber_access_program(value)
 
     @field_validator("fast_mode")
     @classmethod

@@ -2542,6 +2542,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _reasoning_effort_field(),
             _fast_mode_field(),
             _field(
+                "cyber_access_program", "Cyber access program", "enum", bindable=True,
+                description="Program requested for subsequent public OpenAI Codex turns. Daybreak requires account and model approval. Omission preserves an existing session choice; null resets it.",
+                options=[
+                    _field_option("standard", "Standard"),
+                    _field_option("daybreak_blue", "Daybreak Blue"),
+                    _field_option("daybreak_red", "Daybreak Red"),
+                ],
+                metadata={"nullable": True, "unset_label": "Automatic / existing session default"},
+            ),
+            _field(
                 "model_provider_mode",
                 "Model relay",
                 "enum",

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.fast_mode import FastModeValue, FAST_MODE_UNSET, normalize_fast_mode, validate_session_fast_mode
+from evander.cyber_access import CYBER_ACCESS_PROGRAM_UNSET, normalize_cyber_access_program, session_cyber_access_program
 from evander.host_directories.grants import host_directory_tool_names_for_grants
 from evander.managed_sections import normalize_managed_section_id
 from evander.models import SessionManifest, VmActionResult, VmSummary
@@ -895,6 +896,7 @@ class _LibvirtVmCreationRequest:
     cost_category: str | None
     reasoning_effort: str | None
     fast_mode: FastModeValue | None | object
+    cyber_access_program: str | None | object
     vm_user: str
     ttl_seconds: int | None
     ttl_hours: int | None
@@ -1149,6 +1151,12 @@ class _LibvirtVmCreation:
             )
         if self.request.fast_mode is not FAST_MODE_UNSET:
             self.manifest.fast_mode = normalize_fast_mode(self.request.fast_mode)
+        if self.request.cyber_access_program is not CYBER_ACCESS_PROGRAM_UNSET:
+            self.manifest.cyber_access_program = normalize_cyber_access_program(self.request.cyber_access_program)
+        session_cyber_access_program(
+            self.manifest,
+            self.deps.runtime.provider_config.resolve_for_directory(self.manifest.directory_path),
+        )
         validate_session_reasoning_effort(
             self.manifest,
             self.deps.runtime.provider_config.resolve_for_directory(self.manifest.directory_path),
@@ -1325,6 +1333,7 @@ def _libvirt_create_vm(
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
     fast_mode: FastModeValue | None | object = FAST_MODE_UNSET,
+    cyber_access_program: str | None | object = CYBER_ACCESS_PROGRAM_UNSET,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
@@ -1367,6 +1376,7 @@ def _libvirt_create_vm(
         cost_category=cost_category,
         reasoning_effort=reasoning_effort,
         fast_mode=fast_mode,
+        cyber_access_program=cyber_access_program,
         vm_user=vm_user,
         ttl_seconds=ttl_seconds,
         ttl_hours=ttl_hours,

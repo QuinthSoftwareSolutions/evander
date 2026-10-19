@@ -39,6 +39,7 @@ test("sessions structured policy round-trips allowed tools, contacts, metadata, 
 
   const policyBodies = [];
   const allowedToolBodies = [];
+  const modelBodies = [];
   const sessionRecord = {
     session_id: "session-1",
     vm_id: "vm-1",
@@ -259,6 +260,14 @@ test("sessions structured policy round-trips allowed tools, contacts, metadata, 
       return;
     }
 
+    if (pathname === "/api/admin/sessions/session-1/model") {
+      const body = JSON.parse(route.request().postData() ?? "{}");
+      modelBodies.push(body);
+      Object.assign(sessionRecord, body);
+      await route.fulfill(jsonResponse({ action: "updated", message: "Updated model settings.", session: sessionRecord }));
+      return;
+    }
+
     if (pathname === "/api/admin/sessions/session-1/allowed-tools") {
       const body = JSON.parse(route.request().postData() ?? "{}");
       allowedToolBodies.push(body);
@@ -292,6 +301,19 @@ test("sessions structured policy round-trips allowed tools, contacts, metadata, 
     await page.getByText(section, { exact: true }).click();
   }
   const saveButton = page.getByRole("button", { name: "Save changes" });
+  const cyber = page.getByRole("combobox", { name: "Cyber access program" });
+  assert.equal(await cyber.inputValue(), "");
+  await cyber.selectOption("daybreak_blue");
+  const modelSaved = page.waitForResponse((response) => response.url().includes("/sessions/session-1/model"));
+  await saveButton.click();
+  await modelSaved;
+  await page.getByText("Model saved.", { exact: true }).waitFor();
+  assert.equal(modelBodies[0].cyber_access_program, "daybreak_blue");
+  await cyber.selectOption("");
+  const resetSaved = page.waitForResponse((response) => response.url().includes("/sessions/session-1/model"));
+  await saveButton.click();
+  await resetSaved;
+  assert.equal(modelBodies[1].cyber_access_program, null);
   const contactsSection = page.getByText("Contacts", { exact: true }).first().locator("..");
   const contactAccessMode = contactsSection.getByRole("radiogroup", { name: "Contact access" });
   const allDirectoryContacts = contactAccessMode.getByRole("radio", { name: "All directory contacts" });

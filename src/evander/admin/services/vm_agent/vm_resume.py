@@ -15,6 +15,7 @@ from evander.admin.services.vm_agent.common import (
 )
 from evander.cost_categories import dispatch_with_cost_context
 from evander.fast_mode import FastModeValue, resolve_fast_mode
+from evander.cyber_access import session_cyber_access_program
 from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 
 
@@ -120,6 +121,7 @@ class VmAgentResumeMixin:
                 manifest.directory_path
             )
             agent_provider = session_agent_harness(manifest, effective_config)
+            cyber_program = session_cyber_access_program(manifest, effective_config)
             reasoning = resolve_reasoning_effort(
                 {
                     "reasoning_effort": reasoning_effort,
@@ -201,6 +203,7 @@ class VmAgentResumeMixin:
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
             "AGENT_FAST_MODE": speed.env_value,
+            "AGENT_CYBER_ACCESS_PROGRAM": cyber_program or "",
             "AGENT_WEB_SEARCH_MODE": web_search_mode,
         }
         if agent_provider:

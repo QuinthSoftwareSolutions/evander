@@ -16,9 +16,10 @@ import subprocess
 import threading
 import time
 import tomllib
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from evander.cyber_access import CyberAccessProgram, CYBER_ACCESS_PROGRAM_RPC
 
 from .codex_app_server import CodexAppServerProcess
 from .codex_runtime_http import CodexRuntimeHttpRelay, placeholder_tokens
@@ -26,19 +27,12 @@ from .codex_runtime_policy import RUNTIME_PROVIDER_ID, verify_runtime_requiremen
 from .unix_socket import bind_unix_socket
 
 
-_CYBER_ACCESS_PROGRAM_RPC = {
-    "standard": "standard",
-    "daybreak_blue": "daybreakBlue",
-    "daybreak_red": "daybreakRed",
-}
-
-
 class CodexRuntimeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_prefix: list[str] = Field(min_length=1)
     codex_path: str = "/usr/local/bin/codex"
     max_processes: int = Field(default=12, ge=1, le=64)
-    default_cyber_access_program: Literal["standard", "daybreak_blue", "daybreak_red"] | None = None
+    default_cyber_access_program: CyberAccessProgram | None = None
 
 
 def load_runtime_profiles(path: str | None) -> dict[str, CodexRuntimeProfile]:
@@ -149,7 +143,7 @@ def parse_arguments(argv, cwd):
             elif arg == "--thread-source":
                 config["_thread_source"] = value
             elif arg == "--cyber-access-program":
-                if value not in _CYBER_ACCESS_PROGRAM_RPC:
+                if value not in CYBER_ACCESS_PROGRAM_RPC:
                     raise ValueError("Unsupported Cyber access program")
                 config["_cyber_access_program"] = value
         elif arg == "resume":
@@ -589,7 +583,7 @@ class CodexRuntimeBridge:
                         "approvalPolicy": "never",
                         "input": [{"type": "text", "text": prompt}],
                         **(
-                            {"cyberAccessProgram": _CYBER_ACCESS_PROGRAM_RPC[cyber_access_program]}
+                            {"cyberAccessProgram": CYBER_ACCESS_PROGRAM_RPC[cyber_access_program]}
                             if cyber_access_program
                             else {}
                         ),

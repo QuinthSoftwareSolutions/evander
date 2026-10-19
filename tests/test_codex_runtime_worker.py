@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -121,12 +122,39 @@ def test_runtime_rejects_unregistered_profiles_and_wrong_executables(worker):
     assert runtime.started == []
 
 
+@pytest.mark.parametrize("worker", ["daybreak_blue"], indirect=True)
+def test_session_program_override_takes_precedence_over_worker_default(worker):
+    instance, _, _ = worker
+    request = job()
+    request.codex_runtime.cyber_access_program = "standard"
+    record = instance.start_job(request)
+    bridge = instance._codex_runtime_bridges[record.job_id]
+    assert bridge.kwargs["default_cyber_access_program"] == "standard"
+
+
 def test_runtime_identity_cannot_be_reused_for_different_work(worker):
     instance, runtime, _ = worker
     instance.start_job(job())
     with pytest.raises(ValueError, match="different inputs"):
         instance.start_job(job().model_copy(update={"command": ["scanner", "different"]}))
     assert len(runtime.started) == 1
+
+
+def test_unset_program_preserves_preexisting_job_replay_identity(worker):
+    instance, runtime, _ = worker
+    request = job()
+    record = instance.start_job(request)
+    legacy_payload = request.model_dump(mode="json")
+    legacy_payload["codex_runtime"].pop("cyber_access_program")
+    record.metadata["request_fingerprint"] = hashlib.sha256(
+        json.dumps(legacy_payload, sort_keys=True).encode()
+    ).hexdigest()
+    instance.store.put(record)
+    assert instance.start_job(request).job_id == record.job_id
+    assert len(runtime.started) == 1
+    request.codex_runtime.cyber_access_program = "standard"
+    with pytest.raises(ValueError, match="different inputs"):
+        instance.start_job(request)
 
 
 def test_shutdown_releases_runtime_broker(worker):

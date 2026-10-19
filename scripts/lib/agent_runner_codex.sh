@@ -280,6 +280,10 @@ for raw_line in sys.stdin:
 }
 
 agent_runner_codex_validate_web_search_mode() {
+  case "${AGENT_CYBER_ACCESS_PROGRAM:-}" in
+    ""|standard|daybreak_blue|daybreak_red) ;;
+    *) echo "Unsupported AGENT_CYBER_ACCESS_PROGRAM '${AGENT_CYBER_ACCESS_PROGRAM}'." >&2; return 1 ;;
+  esac
   case "${AGENT_FAST_MODE:-}" in
     ""|true|false|ultrafast) ;;
     *) echo "Unsupported AGENT_FAST_MODE '${AGENT_FAST_MODE}'." >&2; return 1 ;;
@@ -306,6 +310,9 @@ agent_runner_codex_supports_feature() {
 
 agent_runner_codex_config_args() {
   agent_runner_codex_validate_web_search_mode || return 1
+  if [[ -n "${AGENT_CYBER_ACCESS_PROGRAM:-}" ]]; then
+    printf '%s\0%s\0' "--cyber-access-program" "${AGENT_CYBER_ACCESS_PROGRAM}"
+  fi
   case "${AGENT_FAST_MODE:-false}" in
     ultrafast)
       printf '%s\0%s\0' "-c" 'service_tier="ultrafast"' "-c" 'features.fast_mode=true'

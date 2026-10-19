@@ -11,6 +11,7 @@ from evander.admin.services.vm_agent.common import (
     validate_allowed_contact_ids_for_directory,
 )
 from evander.fast_mode import FastModeValue, FAST_MODE_UNSET
+from evander.cyber_access import CYBER_ACCESS_PROGRAM_UNSET
 
 
 class VmAgentCreateOptionsMixin:
@@ -110,6 +111,7 @@ class VmAgentCreateOptionsMixin:
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
         fast_mode: FastModeValue | None | object = FAST_MODE_UNSET,
+        cyber_access_program: str | None | object = CYBER_ACCESS_PROGRAM_UNSET,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_seconds: int | None = None,
@@ -181,6 +183,10 @@ class VmAgentCreateOptionsMixin:
                 cost_category=cost_category,
                 reasoning_effort=reasoning_effort,
                 fast_mode=fast_mode,
+                **(
+                    {"cyber_access_program": cyber_access_program}
+                    if cyber_access_program is not CYBER_ACCESS_PROGRAM_UNSET else {}
+                ),
                 vm_user=vm_user,
                 ttl_seconds=ttl_seconds,
                 ttl_hours=ttl_hours,

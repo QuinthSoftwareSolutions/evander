@@ -28,6 +28,7 @@ from evander.execution import (
     build_execution_backend,
 )
 from evander.fast_mode import FastModeValue, resolve_fast_mode, validate_session_fast_mode
+from evander.cyber_access import session_cyber_access_program
 from evander.host_directories.models import normalize_host_directory_grants
 from evander.models import (
     EmailMailboxAccess,
@@ -538,6 +539,7 @@ def build_container_session_manifest(
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
     fast_mode: FastModeValue | None = None,
+    cyber_access_program: str | None = None,
     codex_auth_mode: CodexAuthMode | None = None,
     subscription_profile_id: str | None = None,
     ttl_hours: int | None,
@@ -657,6 +659,7 @@ def build_container_session_manifest(
         cost_category=cost_category,
         reasoning_effort=reasoning_effort,
         fast_mode=fast_mode,
+        cyber_access_program=cyber_access_program,
         codex_auth_mode=codex_auth_mode,
         subscription_profile_id=subscription_profile_id,
         directory_path=directory_path,
@@ -710,6 +713,7 @@ def build_container_session_manifest(
 
     validate_session_reasoning_effort(manifest, config)
     validate_session_fast_mode(manifest, config)
+    session_cyber_access_program(manifest, config)
     return manifest
 
 
@@ -1182,6 +1186,9 @@ def container_prompt_command(
         if reasoning.source != "default":
             common_args.extend(["-c", "model_supports_reasoning_summaries=true"])
     # Always select a tier so a resumed Fast turn cannot change later defaults.
+    cyber_program = session_cyber_access_program(session)
+    if cyber_program is not None:
+        common_args.extend(["--cyber-access-program", cyber_program])
     common_args.extend(["-c", f"service_tier={_toml_string(speed.service_tier)}"])
     if speed.value:
         common_args.extend(["-c", "features.fast_mode=true"])
@@ -1237,6 +1244,7 @@ def container_codex_turn_spec(
 ) -> CodexTurnSpec | None:
     prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
+    cyber_program = session_cyber_access_program(session, config)
     speed = resolve_fast_mode(
         {"fast_mode": fast_mode, "fast_mode_source": fast_mode_source},
         session=session,
@@ -1284,6 +1292,7 @@ def container_codex_turn_spec(
         ),
         prompt=prompt,
         model=model,
+        cyber_access_program=cyber_program,
         **reasoning.fields(),
         **speed.fields(),
         resume_thread_id=_container_resume_thread_id(resume_thread_id),

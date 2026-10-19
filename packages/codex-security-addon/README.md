@@ -85,6 +85,13 @@ changing its profile file. Confirm a bounded scan in the selected runtime before
 starting a full repository scan. Private `runtime.started` diagnostics record the
 requested program; this records the request, not an entitlement check.
 
+Operators can also select the session's **Cyber access program** through agent
+creation, an existing container agent's **Edit Codex usage**, or **Sessions →
+Model and access**. An explicit session choice overrides the worker profile
+default for that session's scans. Automatic defers to the runtime default.
+Saving a session choice affects subsequent turns and scans without interrupting
+an active turn. See [agent Cyber access configuration](../../docs/configuration-reference.md#agent-cyber-access-program).
+
 API scans use the session's existing model relay. Subscription scans use a
 job-scoped Unix socket and the selected worker profile; neither access nor refresh
 tokens enter the container or native Codex process. A worker-owned HTTP relay

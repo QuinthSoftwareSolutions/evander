@@ -99,11 +99,17 @@ test("shared agent creation selects a worker and clears worker-specific choices"
   assert.equal(await effort.isDisabled(), true);
   await model.fill("custom-deployment");
   await effort.selectOption("low");
+  const cyber = page.getByRole("combobox", { name: "Cyber access program" });
+  await cyber.selectOption("daybreak_blue");
+  if (process.env.EVANDER_SCREENSHOT_PATH) {
+    await page.screenshot({ path: process.env.EVANDER_SCREENSHOT_PATH, fullPage: true });
+  }
   await page.getByRole("textbox", { name: /^Session(?! TTL)/ }).fill("chosen");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForFunction(() => window.created.length === 1);
   const selected = await page.evaluate(() => window.created[0]);
   assert.equal(selected.reasoning_effort, "low");
+  assert.equal(selected.cyber_access_program, "daybreak_blue");
   assert.equal(selected.worker_id, "fast");
   assert.equal(selected.container_image, "fast-image");
   assert.equal(selected.subscription_profile_id, "fast-account");
@@ -116,8 +122,10 @@ test("shared agent creation selects a worker and clears worker-specific choices"
   await page.waitForFunction(() => window.created.length === 2);
   assert.equal(await page.evaluate(() => Object.hasOwn(window.created[1], "worker_id")), false);
   assert.equal(await page.evaluate(() => Object.hasOwn(window.created[1], "reasoning_effort")), false);
+  assert.equal(await page.evaluate(() => Object.hasOwn(window.created[1], "cyber_access_program")), false);
   await page.getByRole("combobox", { name: /^Agent provider/ }).selectOption("claude");
   await model.fill("claude-sonnet-4-6");
+  await cyber.locator('option[value="daybreak_blue"][disabled]').waitFor({ state: "attached" });
   assert.equal(await effort.locator('option[value="xhigh"]').count(), 0);
   await effort.selectOption("max");
   await page.setViewportSize({ width: 390, height: 844 });

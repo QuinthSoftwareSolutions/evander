@@ -619,8 +619,14 @@ class WorkerDaemon(GitWorkspaceOperations):
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         if request.job_id and request.metadata.get("idempotent_start") is True:
+            fingerprint_payload = request.model_dump(mode="json")
+            # Preserve replay receipts created before optional Cyber selection existed.
+            for field in ("codex_turn", "codex_runtime"):
+                spec = fingerprint_payload.get(field)
+                if isinstance(spec, dict) and spec.get("cyber_access_program") is None:
+                    spec.pop("cyber_access_program", None)
             fingerprint = hashlib.sha256(
-                json.dumps(request.model_dump(mode="json"), sort_keys=True).encode()
+                json.dumps(fingerprint_payload, sort_keys=True).encode()
             ).hexdigest()
             with self._job_record_update_lock:
                 existing = self.store.get(request.job_id)
@@ -783,7 +789,10 @@ class WorkerDaemon(GitWorkspaceOperations):
                     ),
                     http_client=http_client,
                     max_processes=runtime_profile.max_processes,
-                    default_cyber_access_program=runtime_profile.default_cyber_access_program,
+                    default_cyber_access_program=(
+                        request.codex_runtime.cyber_access_program
+                        or runtime_profile.default_cyber_access_program
+                    ),
                     diagnostics=diagnostics,
                     on_drained=lambda: self._codex_runtime_drained(job_id),
                     usage_recorder_factory=lambda model: self._usage_recorder(record, model=model),

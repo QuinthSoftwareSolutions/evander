@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evander.fast_mode import FastMode, FastModeSource
+from evander.cyber_access import CyberAccessProgram
 from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 DEFAULT_SUBSCRIPTION_PROFILE_ID = "default"
@@ -119,6 +120,7 @@ class CodexTurnSpec(BaseModel):
     model: str = Field(min_length=1)
     reasoning_effort: ReasoningEffort | None = None
     fast_mode: FastMode | None = None
+    cyber_access_program: CyberAccessProgram | None = None
     reasoning_effort_source: ReasoningEffortSource | None = None
     fast_mode_source: FastModeSource | None = None
     resume_thread_id: str | None = None
@@ -163,6 +165,7 @@ class CodexRuntimeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     profile_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     subscription_profile_id: str = DEFAULT_SUBSCRIPTION_PROFILE_ID
+    cyber_access_program: CyberAccessProgram | None = None
 
     @field_validator("subscription_profile_id", mode="before")
     @classmethod

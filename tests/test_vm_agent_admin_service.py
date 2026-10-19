@@ -1255,6 +1255,7 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
         vm_name="assistant-shared",
         session_id="assistant-shared",
         labels={"system": "chat_assistant"},
+        cyber_access_program="daybreak_blue" if provider_mode == "openai_public" else None,
         allow_existing_session=True,
     )
 
@@ -1265,6 +1266,7 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     assert updated.vm_id == "assistant-shared"
     assert updated.vm_provider == "libvirt"
     assert updated.metadata["assistant_scope"] == "admin_chat"
+    assert updated.cyber_access_program == ("daybreak_blue" if provider_mode == "openai_public" else None)
 
 
 @pytest.mark.parametrize("had_existing_session", [False, True])

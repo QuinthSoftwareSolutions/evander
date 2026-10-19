@@ -1,4 +1,5 @@
 import { FastModeSelect } from "../admin/FastModeSelect";
+import { CyberAccessProgramSelect } from "../admin/CyberAccessProgramSelect";
 import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -510,6 +511,10 @@ export function AgentCreateDialog({
               harness={createForm.agentProvider || (effectiveCreateModelProviderMode === "anthropic" ? "claude" : "codex")}
               route={effectiveCreateModelProviderMode} value={createForm.fastMode}
               onChange={(value) => setCreateForm((current) => ({ ...current, fastMode: value }))} />
+            <CyberAccessProgramSelect
+              harness={createForm.agentProvider || (effectiveCreateModelProviderMode === "anthropic" ? "claude" : "codex")}
+              route={effectiveCreateModelProviderMode} value={createForm.cyberAccessProgram}
+              onChange={(value) => setCreateForm((current) => ({ ...current, cyberAccessProgram: value }))} />
             {createForm.backend === "libvirt_vm" ? (
               <>
                 <label className="field-stack">
