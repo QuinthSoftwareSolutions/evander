@@ -1188,7 +1188,16 @@ def container_prompt_command(
     # Always select a tier so a resumed Fast turn cannot change later defaults.
     cyber_program = session_cyber_access_program(session)
     if cyber_program is not None:
-        common_args.extend(["--cyber-access-program", cyber_program])
+        common_args.extend(
+            [
+                "--cyber-access-program",
+                cyber_program,
+                "-c",
+                'model_provider="openai"',
+                "-c",
+                _CODEX_CYBER_RELAY_ARGS_MARKER,
+            ]
+        )
     common_args.extend(["-c", f"service_tier={_toml_string(speed.service_tier)}"])
     if speed.value:
         common_args.extend(["-c", "features.fast_mode=true"])
@@ -1221,6 +1230,7 @@ def container_prompt_command(
         + "cd /home/agent\n"
         + _codex_json_log_filter_shell()
         + _codex_optional_feature_args_shell()
+        + (_codex_cyber_relay_shell() if cyber_program is not None else "")
         + _shell_join_with_codex_optional_feature_args(args)
         + " | evander_codex_json_to_log\n"
     )
@@ -2074,14 +2084,41 @@ def _codex_optional_feature_args_shell() -> str:
     )
 
 
+_CODEX_CYBER_RELAY_ARGS_MARKER = "__EVANDER_CODEX_CYBER_RELAY_ARGS__"
+
+
+def _codex_cyber_relay_shell() -> str:
+    # Native Codex only sends access_programs for the built-in OpenAI provider.
+    # Pin that provider to the existing tokenized relay, including on older agents.
+    return """cyber_relay_base_url="$(python3 - <<'PY_EVANDER_CYBER_RELAY'
+import json
+import os
+from pathlib import Path
+import sys
+import tomllib
+from urllib.parse import urlsplit
+
+try:
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    config = tomllib.loads((home / "config.toml").read_text())
+    base = config["model_providers"]["evander_openai_relay"]["base_url"]
+    if not isinstance(base, str) or urlsplit(base).scheme not in {"http", "https"} or not urlsplit(base).netloc:
+        raise ValueError("Missing session relay")
+except (OSError, KeyError, TypeError, ValueError):
+    sys.exit("Cyber access requires a configured session relay URL")
+print(json.dumps(base))
+PY_EVANDER_CYBER_RELAY
+)"
+export CODEX_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
+"""
+
+
 def _shell_join_with_codex_optional_feature_args(args: Sequence[str]) -> str:
-    parts = [
-        '"${codex_feature_args[@]}"'
-        if arg == _CODEX_OPTIONAL_FEATURE_ARGS_MARKER
-        else shlex.quote(arg)
-        for arg in args
-    ]
-    return " ".join(parts)
+    expansions = {
+        _CODEX_OPTIONAL_FEATURE_ARGS_MARKER: '"${codex_feature_args[@]}"',
+        _CODEX_CYBER_RELAY_ARGS_MARKER: '"openai_base_url=${cyber_relay_base_url}"',
+    }
+    return " ".join(expansions.get(arg, shlex.quote(arg)) for arg in args)
 
 
 def _claude_settings_content(

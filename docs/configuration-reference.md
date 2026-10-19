@@ -1273,6 +1273,12 @@ runtime default, or to native/provider behavior if no runtime default is set.
 Deploy the updated control plane and worker before selecting a program; normal
 VM agents also need a Codex version supporting `--cyber-access-program`.
 Changing a saved session choice through the UI does not require a worker restart.
+Metered turns with an explicit program use the native OpenAI provider, pinned to
+the session relay URL already stored in the agent's Codex configuration. The
+relay token is supplied as the native API key; real upstream credentials stay on
+the host. This also works with existing VM configurations without rebootstrap.
+Guest Python 3.11 or later is required to read that configuration. If the relay
+URL is missing or invalid, dispatch fails before starting the model turn.
 
 Workflow **Create agent** nodes expose the same optional, bindable
 `cyber_access_program` selection. When an existing session is reused, omitting

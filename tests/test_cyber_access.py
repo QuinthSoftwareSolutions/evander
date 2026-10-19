@@ -162,31 +162,53 @@ def test_subscription_turn_requests_selected_program_without_changing_credential
     assert "access-secret" not in (tmp_path / "run.log").read_text()
 
 
-def test_vm_resumes_select_program_and_clear_it_without_stale_flags(tmp_path):
+@pytest.mark.parametrize(
+    "action",
+    [
+        ["agent_runner_codex_exec"],
+        ["agent_runner_codex_resume_last"],
+        ["agent_runner_codex_resume_thread", "existing-thread"],
+    ],
+)
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "not valid toml",
+        '[model_providers.evander_openai_relay]\nbase_url="file:///private"\n',
+    ],
+)
+def test_vm_program_requires_valid_relay_before_launching_codex(tmp_path, action, config):
     runner = Path(__file__).resolve().parents[1] / "scripts/lib/agent_runner_codex.sh"
+    if config is not None:
+        (tmp_path / "config.toml").write_text(config)
+    binary = tmp_path / "codex"
+    marker = tmp_path / "called"
+    binary.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+    binary.chmod(0o755)
     result = subprocess.run(
         [
             "bash",
             "-c",
-            """set -e
-source "$1"
-for choice in daybreak_blue standard ''; do
-  AGENT_CYBER_ACCESS_PROGRAM="$choice" agent_runner_codex_config_args
-  printf '\\n'
-done
-""",
+            'source "$1"; shift; "$@"',
             "test",
             str(runner),
+            *action,
+            "Reply briefly.",
         ],
-        env={**os.environ, "AGENT_WEB_SEARCH_MODE": "disabled"},
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "AGENT_CYBER_ACCESS_PROGRAM": "daybreak_blue",
+            "CODEX_HOME": str(tmp_path),
+        },
         capture_output=True,
+        text=True,
         timeout=10,
     )
-    assert result.returncode == 0, result.stderr.decode()
-    rows = [row.split(b"\0") for row in result.stdout.splitlines()]
-    assert rows[0][:2] == [b"--cyber-access-program", b"daybreak_blue"]
-    assert rows[1][:2] == [b"--cyber-access-program", b"standard"]
-    assert b"--cyber-access-program" not in rows[2]
+    assert result.returncode != 0
+    assert "Cyber access requires a configured session relay URL" in result.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("program", [None, "standard", "daybreak_blue", "daybreak_red"])

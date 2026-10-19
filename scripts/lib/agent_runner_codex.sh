@@ -309,53 +309,80 @@ agent_runner_codex_supports_feature() {
 }
 
 agent_runner_codex_config_args() {
+  local -n codex_config_args="$1"
+  codex_config_args=()
   agent_runner_codex_validate_web_search_mode || return 1
   if [[ -n "${AGENT_CYBER_ACCESS_PROGRAM:-}" ]]; then
-    printf '%s\0%s\0' "--cyber-access-program" "${AGENT_CYBER_ACCESS_PROGRAM}"
+    local relay_base_url
+    # Preserve the configured session relay while selecting the native provider.
+    # Read older VM configs too, so changing the program needs no rebootstrap.
+    relay_base_url="$(python3 - <<'PY_EVANDER_CYBER_RELAY'
+import json
+import os
+from pathlib import Path
+import sys
+import tomllib
+from urllib.parse import urlsplit
+
+try:
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    config = tomllib.loads((home / "config.toml").read_text())
+    base = config["model_providers"]["evander_openai_relay"]["base_url"]
+    if not isinstance(base, str) or urlsplit(base).scheme not in {"http", "https"} or not urlsplit(base).netloc:
+        raise ValueError("Missing session relay")
+except (OSError, KeyError, TypeError, ValueError):
+    sys.exit("Cyber access requires a configured session relay URL")
+print(json.dumps(base))
+PY_EVANDER_CYBER_RELAY
+)" || return 1
+    codex_config_args+=(
+      --cyber-access-program "${AGENT_CYBER_ACCESS_PROGRAM}"
+      -c 'model_provider="openai"' -c "openai_base_url=${relay_base_url}"
+    )
   fi
   case "${AGENT_FAST_MODE:-false}" in
     ultrafast)
-      printf '%s\0%s\0' "-c" 'service_tier="ultrafast"' "-c" 'features.fast_mode=true'
+      codex_config_args+=(-c 'service_tier="ultrafast"' -c 'features.fast_mode=true')
       ;;
     true)
-      printf '%s\0%s\0' "-c" 'service_tier="fast"' "-c" 'features.fast_mode=true'
+      codex_config_args+=(-c 'service_tier="fast"' -c 'features.fast_mode=true')
       ;;
     *)
-      printf '%s\0%s\0' "-c" 'service_tier="default"'
+      codex_config_args+=(-c 'service_tier="default"')
       ;;
   esac
-  printf '%s\0%s\0' "-c" "model_reasoning_effort=\"${AGENT_REASONING_EFFORT:-high}\""
+  codex_config_args+=(-c "model_reasoning_effort=\"${AGENT_REASONING_EFFORT:-high}\"")
   if [[ -n "${AGENT_REASONING_EFFORT:-}" && "${AGENT_REASONING_EFFORT_SOURCE:-}" != "default" ]]; then
-    printf '%s\0%s\0' "-c" "model_supports_reasoning_summaries=true"
+    codex_config_args+=(-c "model_supports_reasoning_summaries=true")
   fi
   if [[ -n "${AGENT_WEB_SEARCH_MODE:-}" ]]; then
-    printf '%s\0%s\0' \
-      "-c" \
-      "web_search=\"${AGENT_WEB_SEARCH_MODE}\""
+    codex_config_args+=(-c "web_search=\"${AGENT_WEB_SEARCH_MODE}\"")
   fi
   if [[ -n "${EVANDER_MCP_GATEWAY_URL:-}" ]]; then
-    printf '%s\0%s\0' \
-      "-c" \
-      "mcp_servers.evander.url=\"${EVANDER_MCP_GATEWAY_URL}\""
+    codex_config_args+=(-c "mcp_servers.evander.url=\"${EVANDER_MCP_GATEWAY_URL}\"")
     if agent_runner_codex_supports_feature "non_prefixed_mcp_tool_names"; then
-      printf '%s\0%s\0' \
-        "--enable" \
-        "non_prefixed_mcp_tool_names"
+      codex_config_args+=(--enable non_prefixed_mcp_tool_names)
     fi
   fi
 }
 
 agent_runner_codex_exec() {
   local config_args=()
-  agent_runner_codex_validate_web_search_mode || return 1
-  mapfile -d '' -t config_args < <(agent_runner_codex_config_args)
+  local CODEX_API_KEY="${CODEX_API_KEY:-}"
+  if [[ -n "${AGENT_CYBER_ACCESS_PROGRAM:-}" ]]; then
+    export CODEX_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
+  fi
+  agent_runner_codex_config_args config_args || return 1
   codex exec "${config_args[@]}" --json "$@" | _agent_runner_codex_json_to_log
 }
 
 agent_runner_codex_resume_last() {
   local config_args=()
-  agent_runner_codex_validate_web_search_mode || return 1
-  mapfile -d '' -t config_args < <(agent_runner_codex_config_args)
+  local CODEX_API_KEY="${CODEX_API_KEY:-}"
+  if [[ -n "${AGENT_CYBER_ACCESS_PROGRAM:-}" ]]; then
+    export CODEX_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
+  fi
+  agent_runner_codex_config_args config_args || return 1
   codex exec resume --last "${config_args[@]}" --json "$@" | _agent_runner_codex_json_to_log
 }
 
@@ -363,8 +390,11 @@ agent_runner_codex_resume_thread() {
   local thread_id="$1"
   shift
   local config_args=()
-  agent_runner_codex_validate_web_search_mode || return 1
-  mapfile -d '' -t config_args < <(agent_runner_codex_config_args)
+  local CODEX_API_KEY="${CODEX_API_KEY:-}"
+  if [[ -n "${AGENT_CYBER_ACCESS_PROGRAM:-}" ]]; then
+    export CODEX_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
+  fi
+  agent_runner_codex_config_args config_args || return 1
   codex exec resume "${config_args[@]}" --json "${thread_id}" "$@" | _agent_runner_codex_json_to_log
 }
 

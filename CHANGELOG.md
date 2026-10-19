@@ -7,6 +7,7 @@
 - Allow worker-owned Codex runtime profiles to select a default Cyber access program for scanner turns, including resumed and SDK child executions; preserve explicit per-turn selections and leave program selection unspecified when no default is configured.
 - Translate CLI Cyber program names into the native App Server protocol so explicit Daybreak requests are accepted instead of rejected as unknown values.
 - Retain the native OpenAI provider identity so Codex includes the selected program on upstream requests, with worker-owned loopback routing and subscription authentication still enforced.
+- Apply explicit Cyber programs to metered VM and container turns using the native provider and existing scoped relay URL/token, including resumed legacy sessions; fail before model execution when that relay configuration is unavailable.
 - Record the requested program in private job diagnostics while retaining worker-owned subscription credentials, permission boundaries, and server-side access checks. Selecting a program does not grant enrollment or change the model.
 
 ## 2026-10-19 - Edit session-owned Teams messages (0.102.0)
