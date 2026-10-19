@@ -82,6 +82,12 @@ def _worker_factory(kind):
     return create
 
 
+def register_workflow_providers():
+    from .workflow import register_providers
+
+    return register_providers()
+
+
 def register_addon():
     schema = GatewayConfig.model_json_schema()
     settings = {
@@ -96,6 +102,7 @@ def register_addon():
         addon_id="teams-graph",
         display_name="Microsoft Teams and Graph",
         requires_gateway_restart=True,
+        workflow_providers=register_workflow_providers,
         required_restart_services=(
             "evander-teams-ingest", "evander-teams-notifications", "evander-teams-meeting-ingest",
         ),

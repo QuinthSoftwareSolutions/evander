@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-19 - Edit session-owned Teams messages (0.102.0)
+
+- Add the optional Teams/Graph `teams_update_message` tool and deterministic `effect:teams:update-message` workflow effect for channel posts, replies, and existing chats.
+- Record durable, session-owned send receipts separately from inbox refreshes; preserve rich content while replacing the recorded text region, and reject unowned or externally changed messages.
+- Add guarded revisions, per-message process locks, pending-write reconciliation, audit events, guided workflow fields, and local stub post/edit behavior. Existing session grants and Microsoft scopes remain unchanged.
+
 ## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
 
 - Accept complete approved public identifiers in managed website browser storage and JWT claims when they contain a private password substring.

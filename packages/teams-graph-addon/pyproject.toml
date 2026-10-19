@@ -9,7 +9,7 @@ description = "Optional Microsoft Teams, Graph mail, and meeting integration for
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "evander>=0.89.0",
+  "evander>=0.102.0",
   "cryptography>=43.0.0",
   "httpx>=0.28.1",
   "pydantic>=2.8.0",

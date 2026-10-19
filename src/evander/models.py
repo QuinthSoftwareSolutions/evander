@@ -111,6 +111,7 @@ class ToolName(str, Enum):
     DISCORD_POST_FILE = "discord_post_file"
     TEAMS_GET_MESSAGES = "teams_get_messages"
     TEAMS_POST_STATUS = "teams_post_status"
+    TEAMS_UPDATE_MESSAGE = "teams_update_message"
     TEAMS_POST_FILE = "teams_post_file"
     TEAMS_MEETING_GET_EVENTS = "teams_meeting_get_events"
     TEAMS_MEETING_SPEAK = "teams_meeting_speak"
