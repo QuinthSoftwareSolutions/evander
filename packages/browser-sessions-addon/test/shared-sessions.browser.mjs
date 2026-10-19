@@ -187,3 +187,177 @@ test("guided launch-profile setup saves through the production settings API", as
     await f.stop();
   }
 });
+
+
+async function trackVoice(context) {
+  await context.addInitScript(() => {
+    window.__voiceStreams = [];
+    window.__voicePlayCount = 0;
+    if (navigator.mediaDevices?.getUserMedia) {
+      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async options => {
+        const stream = await capture(options);
+        window.__voiceStreams.push(stream);
+        return stream;
+      };
+    }
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      return play.call(this).then(() => { window.__voicePlayCount += 1; });
+    };
+  });
+}
+
+async function exerciseVoice(page, f, id) {
+  const status = page.locator("[data-voice-status]");
+  await page.getByRole("checkbox", {name:"Speak new replies"}).check();
+  await page.getByRole("button", {name:"Enable microphone",exact:true}).click();
+  const talk = page.getByRole("button", {name:"Hold Talk",exact:true});
+  await talk.waitFor();
+  await talk.focus();
+  await page.keyboard.down("Space");
+  await until(async()=>/Recording\./.test(await status.textContent()),"microphone recording");
+  await page.waitForTimeout(400);
+  await page.keyboard.up("Space");
+  await page.getByRole("log").getByText(/Move the button to the left\./).waitFor();
+  assert.ok(await page.evaluate(() => window.__voiceStreams.length >= 2 &&
+    window.__voiceStreams.every(stream => stream.getTracks().every(track => track.readyState === "ended"))));
+  const messages = (await f.api("/test/"+id+"/messages")).messages;
+  const question = messages.find(message=>message.body==="Move the button to the left.");
+  assert.ok(question);
+  await f.api("/test/"+id+"/reply",{message_id:question.id,body:"The button has moved."});
+  await until(async()=>await page.evaluate(()=>window.__voicePlayCount>0),"spoken reply playback");
+  await page.getByRole("button",{name:"Stop audio",exact:true}).click();
+  assert.equal(await page.getByRole("button",{name:"Stop audio",exact:true}).isDisabled(),true);
+  assert.match(await status.textContent(),/Audio stopped/);
+  const events = (await f.api("/test/voice/events")).events;
+  assert.equal(events.filter(event=>event.action==="transcribe").length,1);
+  assert.ok(events.find(event=>event.action==="transcribe").wav);
+  assert.equal(events.find(event=>event.action==="speech").text,"The button has moved.");
+  return question;
+}
+
+test("hosted voice captures a bounded phrase, captions the task and plays an interruptible reply", async () => {
+  const f=await fixture(); let browser;
+  try {
+    browser=await chromium.launch({headless:true,args:["--no-sandbox",
+      "--use-fake-device-for-media-stream","--use-fake-ui-for-media-stream"]});
+    const context=await browser.newContext({viewport:{width:1600,height:1000}});
+    await trackVoice(context);
+    const config=await f.api("/test/setup",{voice_seconds:5});
+    const page=await context.newPage();
+    await page.request.post(f.base+"/api/auth/login");
+    const earlier=await (await page.request.post(f.base+"/api/addons/browser-sessions-addon/sessions/"+config.session.id+"/messages",
+      {data:{request_id:"history",body:"Earlier question"}})).json();
+    await f.api("/test/"+config.session.id+"/reply",{message_id:earlier.id,body:"Earlier reply."});
+    let releaseHistory;
+    const historyReady=new Promise(resolve=>releaseHistory=resolve);
+    await page.route("**/sessions/"+config.session.id+"/messages?after=0",async route=>{
+      await historyReady;await route.continue();
+    });
+    await page.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,
+      {waitUntil:"domcontentloaded"});
+    await page.getByRole("checkbox",{name:"Speak new replies"}).check();
+    releaseHistory();
+    await page.getByRole("log").getByText("Earlier reply.",{exact:false}).waitFor();
+    await exerciseVoice(page,f,config.session.id);
+    assert.equal((await f.api("/test/"+config.session.id+"/state")).controller,"agent:agent-a");
+    assert.ok(!(await page.content()).includes("fixture-speech-secret"));
+    const talk=page.getByRole("button",{name:"Hold Talk",exact:true});
+    await talk.focus(); await page.keyboard.down("Space");
+    await until(async()=>/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"second recording");
+    const elsewhere=await context.newPage();
+    await elsewhere.goto(f.base+"/_browser/guest/join",{waitUntil:"domcontentloaded"});
+    await elsewhere.bringToFront(); await elsewhere.keyboard.up("Space");
+    // Playwright headless pages emulate focus. Exercise the browser blur-event
+    // boundary explicitly, then verify that the real microphone tracks end.
+    await page.evaluate(()=>window.dispatchEvent(new FocusEvent("blur")));
+    await until(async()=>await page.evaluate(()=>window.__voiceStreams.every(stream =>
+      stream.getTracks().every(track=>track.readyState==="ended"))),"microphone cancelled on focus loss");
+    await page.bringToFront();
+    // Each Playwright page keeps its own keyboard state; clear the key held
+    // before switching pages so the next keydown is a new press.
+    await page.keyboard.up("Space");
+    assert.match(await page.locator("[data-voice-status]").textContent(),/Recording cancelled/);
+    assert.equal((await f.api("/test/voice/events")).events.filter(event=>event.action==="transcribe").length,1);
+    await talk.focus(); await page.keyboard.down("Space");
+    await until(async()=>/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"keyboard recording");
+    await page.keyboard.press("Tab"); await page.keyboard.up("Space");
+    await until(async()=>await page.evaluate(()=>window.__voiceStreams.every(stream =>
+      stream.getTracks().every(track=>track.readyState==="ended"))),"microphone cancelled when Talk loses focus");
+    await page.waitForTimeout(5200);
+    assert.equal((await f.api("/test/voice/events")).events.filter(event=>event.action==="transcribe").length,1,
+      "Moving keyboard focus must discard the recording instead of submitting at its deadline");
+    await page.screenshot({path:"test-output/hosted-voice.png",fullPage:true});
+    await f.api("/test/"+config.session.id+"/close",{});
+    await until(async()=>/Voice session ended/.test(await page.locator("[data-voice-status]").textContent()),"hosted voice cleanup");
+  } finally {await browser?.close();await f.stop();}
+});
+
+test("long hosted transcriptions leave typed chat controls reachable", async () => {
+  const f=await fixture(); let browser;
+  const transcript="Please move the primary action button and explain how the updated layout behaves for every station operator. ".repeat(9).trim();
+  try {
+    browser=await chromium.launch({headless:true,args:["--no-sandbox",
+      "--use-fake-device-for-media-stream","--use-fake-ui-for-media-stream"]});
+    const page=await browser.newPage({viewport:{width:1366,height:768}});
+    const config=await f.api("/test/setup",{voice_transcript:transcript});
+    await page.request.post(f.base+"/api/auth/login");
+    await page.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,
+      {waitUntil:"domcontentloaded"});
+    await page.getByRole("button",{name:"Enable microphone",exact:true}).click();
+    const talk=page.getByRole("button",{name:"Hold Talk",exact:true});
+    await talk.focus(); await page.keyboard.down("Space");
+    await until(async()=>/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"long recording");
+    await page.waitForTimeout(400); await page.keyboard.up("Space");
+    await page.getByRole("log").getByText(transcript,{exact:false}).waitFor();
+    await until(()=>talk.isEnabled(),"long transcription sent");
+    const send=page.getByRole("button",{name:"Send",exact:true});
+    const bounds=await send.boundingBox();
+    assert.ok(bounds && bounds.y>=0 && bounds.y+bounds.height<=page.viewportSize().height,
+      "Send must remain inside the viewport after a long transcription");
+    const followup="Please keep the button beside the material field.";
+    await page.getByRole("textbox",{name:"Message Truman",exact:true}).fill(followup);
+    await send.click();
+    await page.getByRole("log").getByText(followup,{exact:false}).waitFor();
+    const messages=(await f.api("/test/"+config.session.id+"/messages")).messages;
+    assert.ok(messages.some(message=>message.body===transcript),"The full transcript remains in chat");
+    assert.ok(messages.some(message=>message.body===followup),"Typed feedback still sends after voice");
+    await page.screenshot({path:"test-output/hosted-long-transcript.png",fullPage:true});
+  } finally {await browser?.close();await f.stop();}
+});
+
+test("Chrome extension opens scoped local voice without an Admin login or an input grant", async () => {
+  const f=await fixture(); let context;
+  try {
+    const extension=join(f.folder,"extension");await cp("dist/extension",extension,{recursive:true});
+    const manifest=JSON.parse(await readFile(join(extension,"manifest.json"),"utf8"));
+    manifest.host_permissions=["http://127.0.0.1/*"];
+    await writeFile(join(extension,"manifest.json"),JSON.stringify(manifest));
+    context=await chromium.launchPersistentContext(join(f.folder,"chrome"),{channel:"chromium",headless:true,
+      args:["--no-sandbox","--disable-extensions-except="+extension,"--load-extension="+extension,
+        "--use-fake-device-for-media-stream","--use-fake-ui-for-media-stream"]});
+    await trackVoice(context);
+    await context.addCookies([{name:"demo_session",value:"fixture",url:f.base}]);
+    const app=await context.newPage();await app.goto(f.base+"/application",{waitUntil:"domcontentloaded"});
+    const sw=context.serviceWorkers()[0]??await context.waitForEvent("serviceworker",{timeout:10000});
+    const extensionId=new URL(sw.url()).host;
+    const panel=await context.newPage();await panel.goto("chrome-extension://"+extensionId+"/panel.html");
+    await app.bringToFront();
+    const setup=await f.api("/test/setup",{local:true});
+    const result=await panel.evaluate(invitation=>chrome.runtime.sendMessage({kind:"pair",invitation}),setup.invitation_url);
+    assert.equal(result.ok,true,result.error);
+    const opened=context.waitForEvent("page",{timeout:10000});
+    await panel.getByRole("button",{name:"Open voice chat",exact:true}).click();
+    const page=await opened;
+    await page.waitForLoadState("domcontentloaded");
+    await page.getByRole("heading",{name:"Talk with Truman",exact:true}).waitFor();
+    await exerciseVoice(page,f,setup.session.id);
+    assert.equal((await f.api("/test/"+setup.session.id+"/state")).controller,null);
+    assert.equal(new URL(page.url()).hash,"","Voice capability must leave browser history after admission");
+    assert.ok(!(await context.cookies()).some(cookie=>cookie.name==="evander_admin_session"));
+    await page.screenshot({path:"test-output/local-voice.png",fullPage:true});
+    await f.api("/test/"+setup.session.id+"/close",{});
+    await until(async()=>/Voice session ended/.test(await page.locator("[data-voice-status]").textContent()),"local voice cleanup");
+  } finally {await context?.close();await f.stop();}
+});

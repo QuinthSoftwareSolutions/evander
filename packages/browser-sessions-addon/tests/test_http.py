@@ -227,3 +227,82 @@ def test_failed_preview_cannot_be_resurrected_by_disconnect_or_reconnect(domain,
         endpoint.send_json({"kind": "authenticate", "version": 1, "token": token})
         assert endpoint.receive()["type"] == "websocket.close"
     assert service.store.get(hosted.id).state == "failed"
+
+
+def test_hosted_voice_requires_login_control_and_same_origin(admin, hosted, speech_provider):
+    app, auth = admin
+    path = "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/voice/"
+    with TestClient(app, base_url="https://control.test") as client:
+        assert client.get(path + "info").status_code == 401
+        client.post("/api/auth/login")
+        assert client.get(path + "info").json()["enabled"] is True
+        headers = {"Content-Type": "audio/wav", "X-Voice-Request-ID": "clip-a",
+                   "Origin": "https://evil.test"}
+        assert client.post(path + "transcribe", content=speech_provider["audio"], headers=headers).status_code == 403
+        headers["Origin"] = "https://control.test"
+        response = client.post(path + "transcribe", content=speech_provider["audio"], headers=headers)
+        assert response.status_code == 200 and response.json()["text"] == "Move the button to the left."
+        assert client.post(
+            path + "transcribe", content=b"x" * 2_000_001,
+            headers={**headers, "X-Voice-Request-ID": "large"},
+        ).status_code == 413
+        users = auth.user_store
+        users.upsert_user(login="reader", display_name="Reader")
+        users.set_local_password(login="reader", password="reader-test-password")
+        users.upsert_group(group_id="readers", display_name="Readers")
+        users.set_group_permissions("readers", ["browser_sessions.view"])
+        users.assign_user_group(login="reader", group_id="readers", directory_path="root/demo")
+        client.cookies.set(auth.config.cookie_name, auth.login("reader", "reader-test-password"))
+        assert client.get(path + "info").status_code == 200
+        assert client.post(path + "transcribe", content=speech_provider["audio"], headers=headers).status_code == 403
+        assert len(speech_provider["calls"]) == 1
+
+
+def test_logout_during_transcription_does_not_return_private_text(admin, hosted, speech_provider):
+    app, auth = admin
+    with TestClient(app, base_url="https://control.test") as client:
+        client.post("/api/auth/login")
+        token = client.cookies.get(auth.config.cookie_name)
+        def revoke():
+            auth.logout(Request({"type": "http", "headers": [
+                (b"cookie", (auth.config.cookie_name + "=" + token).encode())]}))
+        speech_provider["after"] = revoke
+        response = client.post(
+            "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/voice/transcribe",
+            content=speech_provider["audio"], headers={"Origin": "https://control.test", "Content-Type": "audio/wav",
+                                     "X-Voice-Request-ID": "revoked"},
+        )
+        assert response.status_code == 401 and "Move the button" not in response.text
+
+
+def test_local_voice_capability_cannot_control_or_reach_another_session(domain, local, speech_provider):
+    service, _, _ = domain
+    invitation = service.invite(local.id, "agent:agent-a")["invitation_url"].split("invite=")[1]
+    paired = service.pair(invitation, "http://localhost:4200/")
+    principal = paired["session"]["host_principal"]
+    voice_url = service.voice_invite(local.id, principal)["voice_url"]
+    token = voice_url.split("#token=")[1]
+    client = TestClient(relay_app(service.runtime_dir, service=service, internal_token="private"),
+                        base_url="https://control.test")
+    headers = {"Authorization": "Bearer " + token}
+    assert client.get("/_browser/guest/voice").status_code == 200
+    assert client.get("/_browser/guest/voice/info", headers=headers).json()["enabled"] is True
+    assert client.get("/_browser/guest/state", headers=headers).status_code == 401
+    assert client.post(
+        "/_browser/guest/control", headers=headers, json={"action": "grant"}
+    ).status_code == 401
+    assert client.post(
+        "/_browser/guest/voice/control",
+        headers={**headers, "Origin": "https://control.test"}, json={"action": "grant"}
+    ).status_code == 404
+    assert client.get(
+        "/_browser/guest/voice/info",
+        headers={"Authorization": "Bearer " + paired["host_token"]},
+    ).status_code == 401
+    response = client.post("/_browser/guest/voice/transcribe", content=speech_provider["audio"], headers={
+        **headers, "Origin": "https://control.test", "Content-Type": "audio/wav",
+        "X-Voice-Request-ID": "local-clip"})
+    assert response.status_code == 200
+    assert service.store.get(local.id).controller is None
+    service.close(local.id)
+    assert client.get("/_browser/guest/voice/info", headers=headers).status_code == 401

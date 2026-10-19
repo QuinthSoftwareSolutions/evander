@@ -132,12 +132,39 @@ class LaunchProfile(Contract):
         return value
 
 
+class VoiceSettings(Contract):
+    enabled: bool = False
+    api_base_url: str = "https://api.openai.com/v1"
+    api_key_env: str = Field(
+        default="EVANDER_BROWSER_VOICE_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
+    )
+    transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
+    speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
+    voice: str = Field(default="coral", min_length=1, max_length=128)
+    max_recording_seconds: int = Field(default=45, ge=5, le=120)
+    max_audio_bytes: int = Field(default=2_000_000, ge=65536, le=5_000_000)
+    max_speech_characters: int = Field(default=2000, ge=100, le=4096)
+    requests_per_minute: int = Field(default=20, ge=2, le=60)
+
+    @field_validator("api_base_url")
+    @classmethod
+    def endpoint(cls, value):
+        origin(value)
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("Speech providers require HTTPS outside loopback")
+        if parsed.query or parsed.fragment:
+            raise ValueError("Speech provider URLs cannot contain query parameters or fragments")
+        return value.rstrip("/")
+
+
 class Settings(Contract):
     enabled: bool = False
     public_base_url: str = ""
     relay_url: str = "http://127.0.0.1:11890"
     relay_token_env: str = "EVANDER_BROWSER_RELAY_TOKEN"
     guest_enabled: bool = True
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
     lifetime_seconds: int = Field(default=14400, ge=300, le=86400)
     idle_seconds: int = Field(default=1800, ge=60, le=14400)
     invitation_seconds: int = Field(default=600, ge=60, le=1800)

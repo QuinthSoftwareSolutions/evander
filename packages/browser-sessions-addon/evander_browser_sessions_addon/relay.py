@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
@@ -20,6 +20,7 @@ import uvicorn
 from .models import BrowserCommand, BrowserError, Frame, MessageRequest, TERMINAL, origin
 from .protocol import authorize_command
 from .service import Service
+from .voice import Voice, read_audio, require_voice_origin
 
 
 def bearer(headers):
@@ -292,6 +293,7 @@ class Broker:
 def create_app(runtime_dir, *, service=None, internal_token=None):
     service = service or Service(runtime_dir)
     broker = Broker(service)
+    speech = Voice(service)
     internal_token = internal_token or os.environ.get("EVANDER_BROWSER_RELAY_TOKEN", "")
 
     async def tick(stop):
@@ -360,6 +362,8 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             elif request.method == "POST" and action == "message":
                 payload = MessageRequest.model_validate(await read_json(request))
                 result = service.enqueue_message(session.id, capability["principal"], payload)
+            elif request.method == "POST" and action == "voice":
+                result = service.voice_invite(session.id, capability["principal"])
             elif request.method == "POST" and action == "origin":
                 payload = await read_json(request)
                 allowed = origin(payload["url"])
@@ -386,6 +390,72 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except (BrowserError, ValueError, KeyError, ValidationError) as exc:
             return error(exc)
+
+    async def voice_guest(request):
+        token = bearer(request.headers)
+        try:
+            capability = service.store.authenticate(token, "guest_voice")
+            session = service.store.get(capability["session_id"])
+            if session.mode != "user_hosted" or capability["principal"] != session.host_principal:
+                raise BrowserError("Voice host changed", "forbidden", 403)
+            actor, action = capability["principal"], request.path_params["action"]
+            if request.method == "GET" and action == "info":
+                result = speech.info(session.id)
+            elif request.method == "GET" and action == "state":
+                result = {
+                    "session": service.receipt(session),
+                    "messages": service.store.messages(
+                        session.id, "viewer", int(request.query_params.get("after", 0))
+                    ),
+                }
+            elif request.method == "POST":
+                require_voice_origin(request, service.store.settings(session.directory)[1])
+                if action == "transcribe":
+                    limits = speech.configured(session.id)
+                    audio, mime = await read_audio(request, limits.max_audio_bytes)
+                    result = await speech.transcribe(
+                        session.id, actor, request.headers.get("x-voice-request-id", ""), audio, mime
+                    )
+                elif action in {"speech", "message"}:
+                    if request.headers.get("content-type", "").split(";")[0] != "application/json":
+                        raise BrowserError("JSON content type is required", "forbidden", 403)
+                    payload = await read_json(request)
+                    if action == "message":
+                        result = service.enqueue_message(
+                            session.id, actor, MessageRequest.model_validate(payload)
+                        )
+                    else:
+                        content = await speech.speech(
+                            session.id, actor, str(payload["request_id"]), str(payload["message_id"])
+                        )
+                        service.store.authenticate(token, "guest_voice")
+                        return Response(content, media_type="audio/wav",
+                                        headers={"Cache-Control": "no-store"})
+                else:
+                    raise BrowserError("Unknown voice operation", "not_found", 404)
+                service.store.authenticate(token, "guest_voice")
+            else:
+                raise BrowserError("Unknown voice operation", "not_found", 404)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+        except (BrowserError, ValueError, KeyError, ValidationError) as exc:
+            return error(exc)
+
+    async def voice_page(request):
+        return FileResponse(
+            Path(__file__).parent / "ui_static" / "voice.html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": "default-src 'self'; media-src blob:; connect-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "microphone=(self)",
+            },
+        )
+
+    async def voice_asset(request):
+        name = request.path_params["name"]
+        if name not in {"voice.js", "voice.css"}:
+            raise BrowserError("Unknown voice asset", "not_found", 404)
+        return FileResponse(Path(__file__).parent / "ui_static" / name)
 
     async def internal(request):
         try:
@@ -439,6 +509,9 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
         routes=[
             Route("/healthz", health),
             Route("/_browser/guest/join", join),
+            Route("/_browser/guest/voice", voice_page),
+            Route("/_browser/voice-assets/{name}", voice_asset),
+            Route("/_browser/guest/voice/{action}", voice_guest, methods=["GET", "POST"]),
             Route("/_browser/extension.zip", extension_zip),
             Route("/_browser/guest/pair", pair, methods=["POST"]),
             Route("/_browser/guest/{action}", guest, methods=["GET", "POST"]),

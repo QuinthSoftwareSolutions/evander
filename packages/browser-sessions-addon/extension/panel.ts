@@ -35,6 +35,7 @@ $("pair").addEventListener("click", async () => {
 });
 for (const [button, action] of [["grant", "grant"], ["pause", "pause"]])
   $(button).addEventListener("click", () => void call({ kind: "control", action }).then(refresh).catch(failure));
+$("voice").addEventListener("click", () => void call({ kind: "voice" }).catch(failure));
 $("origin").addEventListener("click", () => void call({ kind: "origin" }).then(refresh).catch(failure));
 $("disconnect").addEventListener("click", () => void call({ kind: "disconnect" }).then(() => {
   after = 0; $("messages").replaceChildren(); return refresh();

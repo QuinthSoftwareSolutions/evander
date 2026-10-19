@@ -101,3 +101,44 @@ def local(domain):
     return service.store.get(
         service.create("agent-a", CreateRequest(mode="user_hosted", request_id="local"))["id"]
     )
+
+
+@pytest.fixture
+def speech_provider(domain, monkeypatch):
+    import io
+    import wave
+    import httpx
+    from evander_browser_sessions_addon.models import VoiceSettings
+    from evander_browser_sessions_addon.voice import Voice
+
+    service, _, _ = domain
+    revision, settings = service.store.settings("root")
+    settings.voice = VoiceSettings(enabled=True, api_base_url="https://speech.test/v1")
+    service.store.save_settings("root", revision, settings)
+    monkeypatch.setenv("EVANDER_BROWSER_VOICE_API_KEY", "fixture-speech-secret")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\0\0" * 2400)
+    state = {"calls": [], "status": 200, "after": None, "audio": output.getvalue()}
+
+    async def respond(request):
+        state["calls"].append(request)
+        assert request.headers["authorization"] == "Bearer fixture-speech-secret"
+        if state["after"]:
+            state["after"]()
+        if state["status"] != 200:
+            return httpx.Response(state["status"], text="provider failure fixture-speech-secret")
+        if request.url.path.endswith("/transcriptions"):
+            return httpx.Response(200, json={"text": "Move the button to the left."})
+        return httpx.Response(200, content=output.getvalue(), headers={"Content-Type": "audio/wav"})
+
+    original = Voice.provider
+    async def provider(self, *args, **kwargs):
+        self.transport = httpx.MockTransport(respond)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Voice, "provider", provider)
+    return state
