@@ -507,6 +507,16 @@ def test_workflow_catalog_effect_notification_send(catalog_payload) -> None:
     )
 
 
+def test_workflow_catalog_agent_creation_exposes_cyber_program_choices(catalog_payload) -> None:
+    create = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create")
+    program = next(field for field in create["fields"] if field["key"] == "cyber_access_program")
+    assert program["kind"] == "enum" and program["bindable"] and not program["required"]
+    assert {item["value"]: item["label"] for item in program["options"]} == {
+        "standard": "Standard", "daybreak_blue": "Daybreak Blue", "daybreak_red": "Daybreak Red",
+    }
+    assert program["metadata"]["nullable"] is True
+
+
 def test_workflow_catalog_effect_agent_prompt(catalog_payload) -> None:
     agent_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt"
@@ -1560,6 +1570,7 @@ def test_workflow_catalog_effect_agent_create(catalog_payload) -> None:
         "reasoning_effort",
         "fast_mode",
         "model_provider_mode",
+        "cyber_access_program",
         "codex_auth_mode",
         "subscription_profile_id",
         "vm_user",

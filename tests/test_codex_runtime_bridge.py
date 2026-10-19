@@ -13,6 +13,7 @@ from evander.codex_auth import CodexRuntimeSpec
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.codex_runtime_bridge import (
     CodexRuntimeBridge,
+    load_runtime_profiles,
     parse_arguments,
     preflight_request,
     validate_request,
@@ -81,6 +82,7 @@ def test_private_diagnostics_keep_child_tools_and_failure_details_out_of_exec_fr
         http_client=unused_http_client(),
         process_factory=DiagnosticProcess,
         diagnostics=capture,
+        default_cyber_access_program="daybreak_blue",
     )
     bridge.start()
     try:
@@ -92,6 +94,12 @@ def test_private_diagnostics_keep_child_tools_and_failure_details_out_of_exec_fr
         private = (capture.directory / "events.jsonl").read_text()
         assert "private tool output" in private and "private native warning" in private
         assert "private terminal detail" in private and "modelContextWindow" in private
+        started = next(
+            event
+            for line in private.splitlines()
+            if (event := json.loads(line))["event"] == "runtime.started"
+        )
+        assert started["data"]["requested_cyber_access_program"] == "daybreak_blue"
         assert tokens.access_token not in private
     finally:
         bridge.close()
@@ -565,6 +573,66 @@ def broker(tmp_path):
         yield bridge, processes
     finally:
         bridge.close()
+
+
+@pytest.mark.parametrize(
+    "program", [None, "standard", "daybreak_blue", "daybreak_red", "unknown_program"]
+)
+def test_operator_runtime_profile_validates_cyber_access_program(tmp_path, program):
+    path = tmp_path / "profiles.json"
+    profile = {"command_prefix": ["scanner"]}
+    if program is not None:
+        profile["default_cyber_access_program"] = program
+    path.write_text(json.dumps({"scan": profile}))
+    path.chmod(0o600)
+    if program == "unknown_program":
+        with pytest.raises(ValueError, match="default_cyber_access_program"):
+            load_runtime_profiles(str(path))
+    else:
+        assert load_runtime_profiles(str(path))["scan"].default_cyber_access_program == program
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize(
+    "default,explicit,expected",
+    [
+        (None, None, None),
+        (None, "daybreak_blue", "daybreakBlue"),
+        ("daybreak_blue", None, "daybreakBlue"),
+        ("daybreak_red", None, "daybreakRed"),
+        ("daybreak_blue", "standard", "standard"),
+    ],
+)
+def test_runtime_applies_operator_program_default_to_each_exec_turn(
+    broker, resumed, default, explicit, expected
+):
+    bridge, processes = broker
+    bridge.default_cyber_access_program = default
+    argv = ["exec"]
+    if explicit:
+        argv += ["--cyber-access-program", explicit]
+    if resumed:
+        argv += ["resume", "existing-thread"]
+    frames = exchange(bridge, {"argv": [*argv, "scan"], "cwd": "/home/agent"})
+    assert frames[-1] == {"exit_code": 0}
+    turn = next(params for method, params in processes[0].calls if method == "turn/start")
+    if expected is None:
+        assert "cyberAccessProgram" not in turn
+    else:
+        assert turn["cyberAccessProgram"] == expected
+
+
+def test_runtime_rejects_unrecognized_cyber_program_before_starting_native(broker):
+    bridge, processes = broker
+    frames = exchange(
+        bridge,
+        {
+            "argv": ["exec", "--cyber-access-program", "unknown_program", "scan"],
+            "cwd": "/home/agent",
+        },
+    )
+    assert frames[-1] == {"exit_code": 1}
+    assert processes == []
 
 
 @pytest.mark.parametrize(

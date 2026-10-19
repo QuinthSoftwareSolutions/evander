@@ -12,7 +12,8 @@ import httpx
 from evander.models import (
     TeamsMessageEnvelope,
 )
-from evander.repositories.records import TeamsRecordsRepository
+from evander.repositories.records import TeamsRecordsRepository, teams_records_with_outbound
+from .message_editing import record_outbound, update_message
 
 from evander.integration_services.common import (
     _LOGGER,
@@ -81,7 +82,7 @@ class GraphTeamsService(ManagedTeamsService):
         defer_retry_after: bool = False,
         defer_timeout_retry: bool = False,
     ) -> None:
-        self.message_store = message_store
+        self.message_store = teams_records_with_outbound(message_store)
         self.token = str(token or "").strip()
         self.token_provider = token_provider or (lambda: self.token)
         self.tenant_id_provider = tenant_id_provider
@@ -1355,6 +1356,7 @@ class GraphTeamsService(ManagedTeamsService):
             reply_to_id=normalized_thread_id,
         )
         self.message_store.put(envelope.cursor, envelope)
+        record_outbound(self, payload=payload, target=target, envelope=envelope, message=message)
         result = {
             "status": "posted",
             "channel_target": target.normalized,
@@ -1364,6 +1366,7 @@ class GraphTeamsService(ManagedTeamsService):
             "message_id": envelope.message_id,
             "web_url": envelope.metadata.get("web_url"),
             "artifact_count": len(artifacts),
+            "message_revision": 1,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -1420,6 +1423,7 @@ class GraphTeamsService(ManagedTeamsService):
             reply_to_id=normalized_thread_id,
         )
         self.message_store.put(envelope.cursor, envelope)
+        record_outbound(self, payload=payload, target=target, envelope=envelope, message=message)
         result = {
             "status": "posted",
             "channel_target": target.normalized,
@@ -1428,6 +1432,7 @@ class GraphTeamsService(ManagedTeamsService):
             "session_id": session_id,
             "message_id": envelope.message_id,
             "web_url": envelope.metadata.get("web_url"),
+            "message_revision": 1,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -1435,6 +1440,25 @@ class GraphTeamsService(ManagedTeamsService):
             result["team_id"] = target.team_id
             result["channel_id"] = target.channel_id
         return result
+
+    def update_message(
+        self,
+        session_id: str,
+        channel_target: str,
+        message_id: str,
+        message: str,
+        thread_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        return update_message(
+            self,
+            session_id=session_id,
+            channel_target=channel_target,
+            message_id=message_id,
+            message=message,
+            thread_id=thread_id,
+            expected_revision=expected_revision,
+        )
 
     def add_reaction(
         self,

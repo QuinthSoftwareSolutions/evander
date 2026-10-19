@@ -14830,6 +14830,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
             "directory_path": team_path,
             "container_image": "dotnet-playwright",
             "model": "gpt-5.2-codex",
+            "cyber_access_program": "daybreak_blue",
             "labels": {"role": "demo"},
             "allowed_script_names": ["seed-demo"],
             "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
@@ -14870,6 +14871,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     assert manifest.vm_provider == "container_worker_vm"
     assert manifest.vm_id is None
     assert manifest.model == "gpt-5.2-codex"
+    assert manifest.cyber_access_program == "daybreak_blue"
     assert manifest.allowed_script_names == ["seed-demo"]
     assert manifest.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert manifest.communication_file_receive_enabled is True

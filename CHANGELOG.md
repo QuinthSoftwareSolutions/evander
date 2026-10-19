@@ -1,11 +1,27 @@
 # Changelog
 
-## 2026-10-19 - Share hosted previews and local Chrome sessions (0.102.0)
+## 2026-10-19 - Share hosted previews and local Chrome sessions (0.104.0)
 
 - Add an optional Browser Sessions add-on for hosted demonstrations, live development previews and explicitly shared user-hosted Chrome tabs.
 - Require Admin UI sign-in and directory permissions for hosted viewers; add single-use local invitations, browser-only support agents and fenced input handover.
 - Keep chat transcripts distinct while resuming the authoring task; enforce preview leases, approved profiles, isolated worker resources and cleanup before checkout deletion.
 - Include opt-in deployment assets, extension packaging and focused Python/Chrome validation.
+
+## 2026-10-19 - Configure Cyber access programs for agents and scanner runtimes (0.103.0)
+
+- Add Cyber access program selectors to agent creation, existing agent usage settings, and session model settings. Persist per-session choices and apply them to subsequent VM, metered container, subscription, and scanner turns.
+- Expose the same optional selection on workflow Create agent nodes, preserving existing session choices when omitted and supporting explicit reset to Automatic.
+- Allow worker-owned Codex runtime profiles to select a default Cyber access program for scanner turns, including resumed and SDK child executions; preserve explicit per-turn selections and leave program selection unspecified when no default is configured.
+- Translate CLI Cyber program names into the native App Server protocol so explicit Daybreak requests are accepted instead of rejected as unknown values.
+- Retain the native OpenAI provider identity so Codex includes the selected program on upstream requests, with worker-owned loopback routing and subscription authentication still enforced.
+- Apply explicit Cyber programs to metered VM and container turns using the native provider and existing scoped relay URL/token, including resumed legacy sessions; fail before model execution when that relay configuration is unavailable.
+- Record the requested program in private job diagnostics while retaining worker-owned subscription credentials, permission boundaries, and server-side access checks. Selecting a program does not grant enrollment or change the model.
+
+## 2026-10-19 - Edit session-owned Teams messages (0.102.0)
+
+- Add the optional Teams/Graph `teams_update_message` tool and deterministic `effect:teams:update-message` workflow effect for channel posts, replies, and existing chats.
+- Record durable, session-owned send receipts separately from inbox refreshes; preserve rich content while replacing the recorded text region, and reject unowned or externally changed messages.
+- Add guarded revisions, per-message process locks, pending-write reconciliation, audit events, guided workflow fields, and local stub post/edit behavior. Existing session grants and Microsoft scopes remain unchanged.
 
 ## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
 

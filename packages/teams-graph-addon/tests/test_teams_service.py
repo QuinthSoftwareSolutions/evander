@@ -1086,6 +1086,7 @@ def test_graph_teams_service_posts_status_and_thread_reply(
     )
 
     assert post_result == {
+        "message_revision": 1,
         "status": "posted",
         "channel_target": "team-a/channel-1",
         "team_id": "team-a",
@@ -1097,6 +1098,7 @@ def test_graph_teams_service_posts_status_and_thread_reply(
         "web_url": "https://teams.example/root",
     }
     assert reply_result == {
+        "message_revision": 1,
         "status": "posted",
         "channel_target": "team-a/channel-1",
         "team_id": "team-a",

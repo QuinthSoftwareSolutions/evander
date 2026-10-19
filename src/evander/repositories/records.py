@@ -5,10 +5,16 @@ import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, ContextManager, Protocol
 
 from evander.models import DiscordCommandEnvelope, EmailMessage, TeamsMessageEnvelope
 from evander.storage import JsonStore
+from evander.teams_outbound import (
+    JsonTeamsOutboundStore,
+    TeamsOutboundReceipt,
+    TeamsOutboundEditState,
+    outbound_message_lock,
+)
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 
@@ -41,6 +47,33 @@ class TeamsRecordsRepository(Protocol):
     def put(self, cursor: str, envelope: TeamsMessageEnvelope) -> None: ...
 
     def read_all(self) -> dict[str, TeamsMessageEnvelope]: ...
+
+    def create_outbound_receipt(
+        self, receipt: TeamsOutboundReceipt, state: TeamsOutboundEditState
+    ) -> None: ...
+
+    def get_outbound_receipt(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundReceipt | None: ...
+
+    def get_outbound_edit_state(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundEditState | None: ...
+
+    def save_outbound_edit_state(
+        self, channel_target: str, message_id: str, state: TeamsOutboundEditState
+    ) -> None: ...
+
+    def lock_outbound_message(
+        self, channel_target: str, message_id: str
+    ) -> ContextManager[None]: ...
+
+
+def teams_records_with_outbound(store: TeamsRecordsRepository) -> TeamsRecordsRepository:
+    """Retain compatibility with callers using the historical raw JSON store."""
+    if isinstance(store, JsonStore):
+        return JsonTeamsRecordsRepository(store.path)
+    return store
 
 
 class JsonEmailRecordsRepository:
@@ -95,6 +128,30 @@ class JsonDiscordRecordsRepository:
 class JsonTeamsRecordsRepository:
     def __init__(self, path: Path) -> None:
         self._store = JsonStore(path, TeamsMessageEnvelope)
+        self._outbound = JsonTeamsOutboundStore(path)
+
+    def create_outbound_receipt(
+        self, receipt: TeamsOutboundReceipt, state: TeamsOutboundEditState
+    ) -> None:
+        self._outbound.create(receipt, state)
+
+    def get_outbound_receipt(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundReceipt | None:
+        return self._outbound.receipt(channel_target, message_id)
+
+    def get_outbound_edit_state(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundEditState | None:
+        return self._outbound.state(channel_target, message_id)
+
+    def save_outbound_edit_state(
+        self, channel_target: str, message_id: str, state: TeamsOutboundEditState
+    ) -> None:
+        self._outbound.save_state(channel_target, message_id, state)
+
+    def lock_outbound_message(self, channel_target: str, message_id: str):
+        return self._outbound.lock(channel_target, message_id)
 
     @property
     def model(self) -> type[TeamsMessageEnvelope]:
@@ -152,8 +209,65 @@ class SqliteTeamsRecordsRepository:
                         ON teams_message_records(message_id);
                     CREATE INDEX IF NOT EXISTS idx_teams_message_records_created_at
                         ON teams_message_records(created_at, cursor);
+                    CREATE TABLE IF NOT EXISTS teams_outbound_receipts (
+                        channel_target TEXT NOT NULL,
+                        message_id TEXT NOT NULL,
+                        receipt_json TEXT NOT NULL,
+                        edit_json TEXT NOT NULL,
+                        PRIMARY KEY (channel_target, message_id)
+                    );
                     """
                 )
+
+    def create_outbound_receipt(
+        self, receipt: TeamsOutboundReceipt, state: TeamsOutboundEditState
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO teams_outbound_receipts VALUES (?, ?, ?, ?)",
+                (
+                    receipt.channel_target,
+                    receipt.message_id,
+                    receipt.model_dump_json(),
+                    state.model_dump_json(),
+                ),
+            )
+
+    def get_outbound_receipt(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundReceipt | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT receipt_json FROM teams_outbound_receipts WHERE channel_target=? AND message_id=?",
+                (channel_target, message_id),
+            ).fetchone()
+        return TeamsOutboundReceipt.model_validate_json(row[0]) if row else None
+
+    def get_outbound_edit_state(
+        self, channel_target: str, message_id: str
+    ) -> TeamsOutboundEditState | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT edit_json FROM teams_outbound_receipts WHERE channel_target=? AND message_id=?",
+                (channel_target, message_id),
+            ).fetchone()
+        return TeamsOutboundEditState.model_validate_json(row[0]) if row else None
+
+    def save_outbound_edit_state(
+        self, channel_target: str, message_id: str, state: TeamsOutboundEditState
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE teams_outbound_receipts SET edit_json=? WHERE channel_target=? AND message_id=?",
+                (state.model_dump_json(), channel_target, message_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("No Teams outbound ownership receipt")
+
+    def lock_outbound_message(self, channel_target: str, message_id: str):
+        return outbound_message_lock(
+            self.path.with_name(self.path.name + ".edit-locks"), channel_target, message_id
+        )
 
     def get(self, cursor: str) -> TeamsMessageEnvelope | None:
         with self._lock:

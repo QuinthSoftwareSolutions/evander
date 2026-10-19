@@ -1,4 +1,5 @@
 import { FastModeSelect } from "../admin/FastModeSelect";
+import { CyberAccessProgramSelect, type CyberAccessProgram } from "../admin/CyberAccessProgramSelect";
 import { fastModeLabel, fastModeSelection, fastModeValue, type FastMode } from "../admin/fastMode";
 import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
@@ -63,6 +64,7 @@ type EffectiveToolPolicy = SessionEffectiveToolPolicy & {
 };
 
 type SessionRecord = {
+  cyber_access_program?: CyberAccessProgram | null;
   session_id: string;
   vm_id: string | null;
   vm_provider?: string | null;
@@ -823,6 +825,7 @@ export function SessionsScreen() {
   const [modelDraft, setModelDraft] = useState("");
   const [reasoningEffortDraft, setReasoningEffortDraft] = useState("");
   const [fastModeDraft, setFastModeDraft] = useState("");
+  const [cyberAccessProgramDraft, setCyberAccessProgramDraft] = useState("");
   const [modelDirty, setModelDirty] = useState(false);
   const [modelBoundSessionId, setModelBoundSessionId] = useState("");
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
@@ -1024,12 +1027,14 @@ export function SessionsScreen() {
           setModelDraft(payload.session.model ?? "");
           setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
           setFastModeDraft(fastModeSelection(payload.session.fast_mode));
+          setCyberAccessProgramDraft(payload.session.cyber_access_program ?? "");
           setModelDirty(false);
           setModelBoundSessionId(sessionId);
         } else if (!modelDirty) {
           setModelDraft(payload.session.model ?? "");
           setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
           setFastModeDraft(fastModeSelection(payload.session.fast_mode));
+          setCyberAccessProgramDraft(payload.session.cyber_access_program ?? "");
         }
         if (toolsBoundSessionId !== sessionId) {
           setToolsDraft(sortTools(payload.session.allowed_tools ?? []));
@@ -1622,6 +1627,7 @@ export function SessionsScreen() {
               ...(modelDraft.trim() ? { model: modelDraft.trim() } : {}),
               reasoning_effort: reasoningEffortDraft || null,
               fast_mode: fastModeValue(fastModeDraft),
+              cyber_access_program: cyberAccessProgramDraft || null,
             }),
           },
         );
@@ -2300,6 +2306,10 @@ export function SessionsScreen() {
                         route={selectedSession.effective_model_provider_mode}
                         value={fastModeDraft} disabled={mutationLocked}
                         onChange={(value) => { setFastModeDraft(value); setModelDirty(true); setStatus(null); }} />
+                      <CyberAccessProgramSelect harness={selectedSession.agent_harness || "codex"}
+                        route={selectedSession.effective_model_provider_mode}
+                        value={cyberAccessProgramDraft} disabled={mutationLocked}
+                        onChange={(value) => { setCyberAccessProgramDraft(value); setModelDirty(true); setStatus(null); }} />
                       <label className="field-stack">
                         <span>Model relay</span>
                         <p className="field-description">

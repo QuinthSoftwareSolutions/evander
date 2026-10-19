@@ -57,6 +57,7 @@ def register_communication_tools(
         "submit_voice_query_response",
         "get_voice_query_visual_context",
         "teams_post_status",
+        "teams_update_message",
         "teams_meeting_get_events",
         "teams_meeting_speak",
         "teams_meeting_stop",

@@ -16,7 +16,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("agents edit dialog only round-trips agent-specific Codex usage", async (t) => {
+test("agents edit dialog round-trips Codex usage and Cyber choices", { timeout: 45000 }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -259,9 +259,11 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         patchBodies.push(body);
+        agentRecord.host.session_policy.cyber_access_program = body.cyber_access_program;
         if (patchBodies.length === 1) {
           assert.deepEqual(body, {
             codex_auth_mode: "chatgpt_subscription",
+            cyber_access_program: "daybreak_blue",
             subscription_profile_id: "team-a",
           });
           agentRecord.host.codex_usage.effective_codex_auth_mode = "chatgpt_subscription";
@@ -272,12 +274,13 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
         } else if (patchBodies.length === 2) {
           assert.deepEqual(body, {
             codex_auth_mode: "chatgpt_subscription",
+            cyber_access_program: "daybreak_red",
             subscription_profile_id: "team-b",
           });
           agentRecord.host.session_policy.subscription_profile_id = "team-b";
           agentRecord.host.session_policy.effective_subscription_profile_id = "team-b";
         } else {
-          assert.deepEqual(body, { codex_auth_mode: "metered_api" });
+          assert.deepEqual(body, { codex_auth_mode: "metered_api", cyber_access_program: null });
           agentRecord.host.codex_usage.effective_codex_auth_mode = "metered_api";
           agentRecord.host.session_policy.codex_auth_mode = "metered_api";
           agentRecord.host.session_policy.effective_codex_auth_mode = "metered_api";
@@ -331,6 +334,9 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
 
   const usageSelect = editDialog.getByRole("combobox", { name: "Codex usage" });
   assert.equal(await usageSelect.inputValue(), "metered_api");
+  const cyber = editDialog.getByRole("combobox", { name: "Cyber access program" });
+  assert.equal(await cyber.inputValue(), "");
+  await cyber.selectOption("daybreak_blue");
   await usageSelect.selectOption("chatgpt_subscription");
   const profileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
   await profileSelect.selectOption("team-a");
@@ -344,6 +350,8 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   const replacementProfileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
   await replacementProfileSelect.locator('option[value="team-a"]').waitFor({ state: "attached" });
   assert.equal(await replacementProfileSelect.inputValue(), "team-a");
+  assert.equal(await cyber.inputValue(), "daybreak_blue");
+  await cyber.selectOption("daybreak_red");
   await replacementProfileSelect.selectOption("team-b");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await editDialog.waitFor({ state: "hidden" });
@@ -352,6 +360,8 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await editButton.click();
   await editDialog.waitFor({ state: "visible" });
   await editDialog.getByRole("combobox", { name: "Codex usage" }).selectOption("metered_api");
+  assert.equal(await cyber.inputValue(), "daybreak_red");
+  await cyber.selectOption("");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await editDialog.waitFor({ state: "hidden" });
   assert.equal(patchBodies.length, 3);

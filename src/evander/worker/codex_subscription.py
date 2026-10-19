@@ -19,6 +19,7 @@ from evander.codex_auth import (
     CodexTurnSpec,
 )
 from evander.fast_mode import fast_mode_service_tier
+from evander.cyber_access import CYBER_ACCESS_PROGRAM_RPC
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
@@ -153,6 +154,10 @@ class CodexSubscriptionTurnRunner:
                         "model": self.turn.model,
                         "effort": self.turn.reasoning_effort or "high",
                         "serviceTier": fast_mode_service_tier(self.turn.fast_mode),
+                        **(
+                            {"cyberAccessProgram": CYBER_ACCESS_PROGRAM_RPC[self.turn.cyber_access_program]}
+                            if self.turn.cyber_access_program is not None else {}
+                        ),
                         "approvalPolicy": "never",
                     },
                 )

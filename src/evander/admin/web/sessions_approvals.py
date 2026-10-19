@@ -186,6 +186,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.TEAMS_POST_FILE: (
         "Post staged communication file artifacts to an allowlisted Microsoft Teams target."
     ),
+    ToolName.TEAMS_UPDATE_MESSAGE: (
+        "Replace text in a Teams message sent by this session, preserving its rich content."
+    ),
     ToolName.TEAMS_MEETING_GET_EVENTS: (
         "Read Teams meeting transcript and status events captured for this session."
     ),
@@ -1297,11 +1300,11 @@ def session_approval_routes(
             return json_error("Model is required.")
         settings = {
             key: payload[key]
-            for key in ("model", "reasoning_effort", "fast_mode")
+            for key in ("model", "reasoning_effort", "fast_mode", "cyber_access_program")
             if key in payload
         }
         if not settings:
-            return json_error("Provide model, reasoning_effort, and/or fast_mode.")
+            return json_error("Provide model, reasoning_effort, fast_mode, and/or cyber_access_program.")
         try:
             result = service.operations_admin.update_session_model_settings(session_id, settings)
             summary = _get_session_summary(session_id)

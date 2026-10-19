@@ -763,6 +763,26 @@ The response contains `outcome` (`reset`, `alreadyRedeemed`, `nothingToReset`, o
 and the refreshed `profile`. Provider selection applies when `credit_id` is omitted. This requires
 a worker Codex App Server version supporting `account/rateLimitResetCredit/consume`.
 
+### Codex runtime access programs
+
+Worker-owned Codex runtime profiles may set `default_cyber_access_program` to
+`standard`, `daybreak_blue`, or `daybreak_red`. The broker supplies this default
+to each new or resumed exec turn, including separate SDK child executions;
+an explicit `--cyber-access-program` selection takes precedence. Omitting the
+field preserves the native default. The setting does not change the model or
+grant account enrollment. The upstream service still validates whether the
+selected account and model may use that program.
+
+Brokered runtimes retain the native `openai` provider identity, which Codex
+requires for Cyber selection. Worker-owned requirements pin that provider,
+ChatGPT sign-in, and ephemeral credential storage. The container adapter
+overrides its endpoints to the job's local relay; real subscription credentials
+and approved upstream routing remain exclusively on the worker.
+
+Restart the worker after updating the profile file. Check a bounded request in
+the selected runtime before starting a large scan. Private `runtime.started`
+diagnostics record the requested program, which is not proof of entitlement.
+
 ### Subscription token reporting
 
 Updated worker daemons record new subscription inference counters from live Codex

@@ -44,6 +44,13 @@ def test_missing_integration_keeps_runtime_and_persisted_sessions_available(tmp_
     with pytest.raises(OptionalIntegrationUnavailable, match="evander-teams-graph-addon"):
         restored.teams_service.get_messages()
     with pytest.raises(OptionalIntegrationUnavailable, match="evander-teams-graph-addon"):
+        restored.teams_service.update_message("existing-session", "team/channel", "message", "Next")
+    from evander.gateway import create_server
+
+    assert "teams_update_message" not in {
+        tool.name for tool in create_server(restored)._tool_manager.list_tools()
+    }
+    with pytest.raises(OptionalIntegrationUnavailable, match="evander-teams-graph-addon"):
         restored.email_service.provider.list_unread("graph", "inbox", 10)
 
 

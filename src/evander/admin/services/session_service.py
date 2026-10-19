@@ -21,6 +21,7 @@ from evander.email.grants import (
     validate_email_mailbox_grants,
 )
 from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.cyber_access import normalize_cyber_access_program, session_cyber_access_program
 from evander.host_directories.grants import (
     host_directory_tool_names_for_grants,
     resolve_and_validate_host_directory_grants,
@@ -336,6 +337,10 @@ class SessionAdminService:
         if update:
             previous_manifest = manifest
             manifest = manifest.model_copy(update=update)
+            session_cyber_access_program(
+                manifest,
+                self._deps.runtime.provider_config.resolve_for_directory(manifest.directory_path),
+            )
             validate_session_fast_mode(
                 manifest,
                 self._deps.runtime.provider_config.resolve_for_directory(manifest.directory_path),
@@ -359,8 +364,8 @@ class SessionAdminService:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
-        if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode"}:
-            raise ValueError("Provide model, reasoning_effort, and/or fast_mode")
+        if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode", "cyber_access_program"}:
+            raise ValueError("Provide model, reasoning_effort, fast_mode, and/or cyber_access_program")
         update: dict[str, Any] = {}
         if "model" in settings:
             model = settings["model"]
@@ -371,6 +376,8 @@ class SessionAdminService:
             update["reasoning_effort"] = normalize_reasoning_effort(settings["reasoning_effort"])
         if "fast_mode" in settings:
             update["fast_mode"] = normalize_fast_mode(settings["fast_mode"])
+        if "cyber_access_program" in settings:
+            update["cyber_access_program"] = normalize_cyber_access_program(settings["cyber_access_program"])
         updated = manifest.model_copy(update=update)
         resolver = getattr(self._deps.runtime, "provider_config", None)
         config = (
@@ -380,6 +387,7 @@ class SessionAdminService:
         )
         validate_session_reasoning_effort(updated, config)
         validate_session_fast_mode(updated, config)
+        session_cyber_access_program(updated, config)
         self._session_repository().upsert_session(updated)
         return SessionActionResult(
             success=True,

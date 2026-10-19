@@ -27,6 +27,7 @@ from evander.codex_auth import (
 )
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.cyber_access import normalize_cyber_access_program, session_cyber_access_program
 from evander.host_directories.grants import (
     host_directory_tool_names_for_grants,
     resolve_and_validate_host_directory_grants,
@@ -48,6 +49,7 @@ class VmAgentMutationMixin:
             "model",
             "reasoning_effort",
             "fast_mode",
+            "cyber_access_program",
             "ttl_hours",
             "allowed_tools",
             "connector_grants",
@@ -95,6 +97,8 @@ class VmAgentMutationMixin:
             update["reasoning_effort"] = normalize_reasoning_effort(body["reasoning_effort"])
         if "fast_mode" in body:
             update["fast_mode"] = normalize_fast_mode(body["fast_mode"])
+        if "cyber_access_program" in body:
+            update["cyber_access_program"] = normalize_cyber_access_program(body["cyber_access_program"])
         if "model" in body:
             update["model"] = self._agent_optional_string(body, "model")
         if "ttl_hours" in body:
@@ -323,6 +327,9 @@ class VmAgentMutationMixin:
         validate_session_fast_mode(
             updated,
             self.runtime.provider_config.resolve_for_directory(updated.directory_path),
+        )
+        session_cyber_access_program(
+            updated, self.runtime.provider_config.resolve_for_directory(updated.directory_path)
         )
         self.runtime.session_repository.upsert_session(updated)
         if "codex_auth_mode" in body or "subscription_profile_id" in body:

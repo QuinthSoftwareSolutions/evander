@@ -74,6 +74,7 @@ class VmAgentContainerSessionPolicyMixin:
             "model": session.model,
             "reasoning_effort": session.reasoning_effort,
             "fast_mode": session.fast_mode,
+            "cyber_access_program": session.cyber_access_program,
             "expires_at": session.expires_at,
             "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "connector_grants": {

@@ -1,4 +1,5 @@
 import type { FastMode } from "./fastMode";
+import type { CyberAccessProgram } from "./CyberAccessProgramSelect";
 import type { ReasoningEffortCatalog } from "./reasoningEffort";
 export type AdminView =
   | "workflow"
@@ -250,6 +251,7 @@ export type AgentExecutionHistoryResponse = {
 };
 
 export type AgentCreateRequest = {
+  cyber_access_program?: CyberAccessProgram | null;
   cost_category?: string | null;
   backend: AgentBackend;
   session_id?: string | null;
@@ -407,6 +409,7 @@ export type AgentCreateOptionsResponse = {
 };
 
 export type AgentPolicyUpdateRequest = {
+  cyber_access_program?: CyberAccessProgram | null;
   model?: string | null;
   reasoning_effort?: string | null;
   fast_mode?: FastMode | null;
@@ -446,6 +449,7 @@ export type HttpTargetsPayload = {
 };
 
 export type AgentSessionPolicy = {
+  cyber_access_program?: CyberAccessProgram | null;
   agent_harness?: string;
   effective_model_provider_mode?: string;
   reasoning_effort?: string | null;

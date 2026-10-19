@@ -30,6 +30,7 @@ from evander.codex_auth import (
     normalize_subscription_profile_id,
 )
 from evander.fast_mode import FastMode, FastModeSource
+from evander.cyber_access import CyberAccessProgram
 from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
@@ -111,6 +112,7 @@ class ToolName(str, Enum):
     DISCORD_POST_FILE = "discord_post_file"
     TEAMS_GET_MESSAGES = "teams_get_messages"
     TEAMS_POST_STATUS = "teams_post_status"
+    TEAMS_UPDATE_MESSAGE = "teams_update_message"
     TEAMS_POST_FILE = "teams_post_file"
     TEAMS_MEETING_GET_EVENTS = "teams_meeting_get_events"
     TEAMS_MEETING_SPEAK = "teams_meeting_speak"
@@ -609,6 +611,7 @@ class SessionManifest(BaseModel):
     cost_category: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     fast_mode: FastMode | None = None
+    cyber_access_program: CyberAccessProgram | None = None
     codex_auth_mode: CodexAuthMode | None = None
     subscription_profile_id: str | None = None
     directory_path: str = "root"
