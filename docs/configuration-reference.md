@@ -1027,7 +1027,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `cyber_access_program`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
 | `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `effect:teams:update-message` (Teams/Graph add-on) | `session_id`, `channel_target`, `message_id`, `message` | `thread_id`, `expected_revision`, `outputs` |
@@ -1250,6 +1250,41 @@ requires it together with the loaded revision. Refresh existing VMs with
 `bootstrap_codex_vm.sh`; new bootstraps start with the standard tier and the host
 sets the requested tier for each run. No live workflow pack is migrated or enabled
 automatically.
+
+### Agent Cyber access program
+
+Choose **Cyber access program** when creating an agent, in an existing container
+agent's **Edit Codex usage** dialog, or under **Sessions → Model and access**.
+The choices are Automatic, Standard, Daybreak Blue, and Daybreak Red. Explicit
+programs are supported for Codex using public OpenAI; Daybreak still requires
+approval for the selected account, model, and product surface.
+
+The session field `cyber_access_program` accepts `standard`, `daybreak_blue`,
+`daybreak_red`, or null. Omission preserves an existing selection during updates;
+null resets it to Automatic. The existing agent PATCH and session model-settings
+PUT endpoints accept this field. Saved changes apply to subsequent VM, metered
+container, and subscription turns, including resumes, without interrupting a
+running turn or changing its dispatch snapshot. The model and subscription
+remain separately configurable. Sessions without this field keep Automatic.
+
+For subscription security scans, the session selection overrides the worker
+runtime profile's `default_cyber_access_program`. Automatic defers to that
+runtime default, or to native/provider behavior if no runtime default is set.
+Deploy the updated control plane and worker before selecting a program; normal
+VM agents also need a Codex version supporting `--cyber-access-program`.
+Changing a saved session choice through the UI does not require a worker restart.
+Metered turns with an explicit program use the native OpenAI provider, pinned to
+the session relay URL already stored in the agent's Codex configuration. The
+relay token is supplied as the native API key; real upstream credentials stay on
+the host. This also works with existing VM configurations without rebootstrap.
+Guest Python 3.11 or later is required to read that configuration. If the relay
+URL is missing or invalid, dispatch fails before starting the model turn.
+
+Workflow **Create agent** nodes expose the same optional, bindable
+`cyber_access_program` selection. When an existing session is reused, omitting
+the field preserves its choice; an explicit null resets it. Invalid literals
+are rejected during workflow validation, and unsupported harness/route choices
+are rejected before provisioning the container session.
 
 ### Agent reasoning effort
 

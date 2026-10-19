@@ -30,6 +30,7 @@ from evander.codex_auth import (
     normalize_subscription_profile_id,
 )
 from evander.fast_mode import FastMode, FastModeSource
+from evander.cyber_access import CyberAccessProgram
 from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
@@ -610,6 +611,7 @@ class SessionManifest(BaseModel):
     cost_category: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     fast_mode: FastMode | None = None
+    cyber_access_program: CyberAccessProgram | None = None
     codex_auth_mode: CodexAuthMode | None = None
     subscription_profile_id: str | None = None
     directory_path: str = "root"

@@ -113,6 +113,7 @@ class CodexSecurityScanProvider:
             runtime_spec = CodexRuntimeSpec(
                 profile_id="codex-security",
                 subscription_profile_id=effective_subscription_profile_id(session=session),
+                cyber_access_program=getattr(session, "cyber_access_program", None),
             )
         prepared = backend.prepare(
             ExecutionSpec(

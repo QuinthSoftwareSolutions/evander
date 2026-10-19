@@ -28,6 +28,7 @@ from evander.codex_auth import (
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.cost_categories import normalize_cost_category
 from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.cyber_access import normalize_cyber_access_program, session_cyber_access_program
 from evander.host_directories.grants import (
     resolve_and_validate_host_directory_grants,
 )
@@ -175,6 +176,10 @@ class VmAgentCreateRequestMixin:
                 model=self._agent_optional_string(payload, "model"),
                 cost_category=normalize_cost_category(payload.get("cost_category")),
                 reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
+                **(
+                    {"cyber_access_program": normalize_cyber_access_program(payload["cyber_access_program"])}
+                    if "cyber_access_program" in payload else {}
+                ),
                 **(
                     {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
                     if "fast_mode" in payload
@@ -488,6 +493,7 @@ class VmAgentCreateRequestMixin:
                 "cost_category": normalize_cost_category(payload.get("cost_category")),
                 "reasoning_effort": normalize_reasoning_effort(payload.get("reasoning_effort")),
                 "fast_mode": normalize_fast_mode(payload.get("fast_mode")),
+                "cyber_access_program": normalize_cyber_access_program(payload.get("cyber_access_program")),
                 "codex_auth_mode": codex_auth_mode,
                 "subscription_profile_id": subscription_profile_id,
                 "metadata": metadata,
@@ -496,6 +502,7 @@ class VmAgentCreateRequestMixin:
         validate_openrouter_session(backend.config, manifest)
         validate_session_reasoning_effort(manifest, backend.config)
         validate_session_fast_mode(manifest, backend.config)
+        session_cyber_access_program(manifest, backend.config)
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,

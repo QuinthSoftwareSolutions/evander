@@ -49,13 +49,16 @@ def launch(provider):
 
 
 @pytest.mark.parametrize("route", ["openai_public", "azure", "local"])
-def test_only_public_openai_route_uses_selected_subscription(launching, route):
-    provider, config, _, _, prepared = launching
+@pytest.mark.parametrize("program", [None, "standard", "daybreak_blue"])
+def test_only_public_openai_route_uses_selected_subscription(launching, route, program):
+    provider, config, session, _, prepared = launching
+    session.cyber_access_program = program
     config.model_provider_mode = route
     launch(provider)
     runtime = prepared[0].codex_runtime
     if route == "openai_public":
         assert runtime.subscription_profile_id == "review"
+        assert runtime.cyber_access_program == program
     else:
         assert runtime is None
 

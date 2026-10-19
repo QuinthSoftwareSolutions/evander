@@ -1,4 +1,5 @@
 import { FastModeSelect } from "../admin/FastModeSelect";
+import { CyberAccessProgramSelect, type CyberAccessProgram } from "../admin/CyberAccessProgramSelect";
 import { fastModeLabel, fastModeValue } from "../admin/fastMode";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -125,6 +126,7 @@ type BackendFilter = "all" | AgentBackend;
 type StatusFilter = "active" | "inactive" | "all";
 
 type AgentPolicyFormState = {
+  cyberAccessProgram: string;
   codexAuthMode: string;
   subscriptionProfileId: string;
 };
@@ -194,6 +196,7 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
 
 function emptyPolicyForm(): AgentPolicyFormState {
   return {
+    cyberAccessProgram: "",
     codexAuthMode: "",
     subscriptionProfileId: "",
   };
@@ -704,6 +707,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     reasoning_effort: hostString(rawPolicy, "reasoning_effort"),
     fast_mode: typeof rawPolicy.fast_mode === "boolean" || rawPolicy.fast_mode === "ultrafast" ? rawPolicy.fast_mode : null,
+    cyber_access_program: hostString(rawPolicy, "cyber_access_program") as CyberAccessProgram | null,
     agent_harness: hostString(rawPolicy, "agent_harness") || undefined,
     effective_model_provider_mode: hostString(rawPolicy, "effective_model_provider_mode") || undefined,
     expires_at: hostString(rawPolicy, "expires_at"),
@@ -824,6 +828,7 @@ function codexUsageForAgent(agent: AgentRecord | null): AgentCodexUsage | null {
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
   return {
+    cyberAccessProgram: policy?.cyber_access_program ?? "",
     codexAuthMode: policy?.codex_auth_mode ?? "",
     subscriptionProfileId: policy?.subscription_profile_id ?? "",
   };
@@ -835,6 +840,7 @@ function formUsesSubscription(form: AgentPolicyFormState): boolean {
 
 function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
+    cyber_access_program: (form.cyberAccessProgram || null) as CyberAccessProgram | null,
     codex_auth_mode:
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
@@ -2562,6 +2568,10 @@ export function AgentsPage() {
                           </span>
                         </label>
                       ) : null}
+                      <CyberAccessProgramSelect harness={selectedAgentPolicy?.agent_harness || "codex"}
+                        route={selectedAgentPolicy?.effective_model_provider_mode}
+                        value={editForm.cyberAccessProgram}
+                        onChange={(value) => setEditForm((current) => ({ ...current, cyberAccessProgram: value }))} />
                     </div>
                     <div className="inline-actions compact-actions">
                       <button

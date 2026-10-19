@@ -1,4 +1,5 @@
 import { fastModeValue } from "../admin/fastMode";
+import type { CyberAccessProgram } from "../admin/CyberAccessProgramSelect";
 import { fetchJson } from "../admin/api";
 import type {
   AgentBackend,
@@ -23,6 +24,7 @@ export type AgentCreateFormState = {
   model: string;
   reasoningEffort: string;
   fastMode: string;
+  cyberAccessProgram: string;
   costCategory: string;
   provider: string;
   vmUser: string;
@@ -68,6 +70,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     model: "",
     reasoningEffort: "",
     fastMode: "",
+    cyberAccessProgram: "",
     costCategory: "",
     provider: "",
     vmUser: "agent",
@@ -172,6 +175,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (model) payload.model = model;
   if (form.reasoningEffort) payload.reasoning_effort = form.reasoningEffort;
   if (form.fastMode) payload.fast_mode = fastModeValue(form.fastMode);
+  if (form.cyberAccessProgram) {
+    payload.cyber_access_program = form.cyberAccessProgram as CyberAccessProgram;
+  }
   if (form.costCategory.trim()) payload.cost_category = form.costCategory.trim();
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;

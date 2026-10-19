@@ -8,13 +8,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-RUNTIME_PROVIDER_ID = "evander_subscription"
+# Native Cyber selection is supported only by the OpenAI provider. Its endpoint
+# is still replaced by the worker-owned loopback adapter, never guest config.
+RUNTIME_PROVIDER_ID = "openai"
 
 # Mounted read-only at /etc/codex for the lifetime of the job. Unlike ordinary
 # config flags, native requirements also constrain resumed and child threads.
 RUNTIME_REQUIREMENTS_TOML = """allowed_login_methods = ["chatgpt"]
 cli_auth_credentials_store = "ephemeral"
-model_provider = "evander_subscription"
+model_provider = "openai"
 """
 
 RUNTIME_REQUIRED_VALUES = {

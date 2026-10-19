@@ -1,6 +1,7 @@
 """Opt-in native checks: isolated network/filesystem and synthetic upstream SSE.
 
-Set EVANDER_TEST_NATIVE_CODEX and install bwrap. No live model requests are made.
+Set EVANDER_TEST_NATIVE_CODEX and install bwrap. The program check also needs
+zstd to inspect compressed requests. No live model requests are made.
 """
 
 import json
@@ -27,7 +28,7 @@ ACCOUNT = "synthetic-account"
 
 
 @pytest.fixture
-def native_runtime(tmp_path, socket_tmp_path, monkeypatch):
+def native_runtime(tmp_path, socket_tmp_path, monkeypatch, request):
     binary = os.environ.get("EVANDER_TEST_NATIVE_CODEX")
     if not binary or not shutil.which("bwrap"):
         pytest.skip("Set EVANDER_TEST_NATIVE_CODEX and install bwrap for local native checks")
@@ -81,7 +82,7 @@ trust_level = "trusted"
             catalog = {
                 "models": [
                     {
-                        "slug": "gpt-5.6-sol",
+                        "slug": slug,
                         "display_name": "Synthetic model",
                         "base_instructions": "Reply briefly for this local integration check.",
                         "default_reasoning_level": "medium",
@@ -91,11 +92,13 @@ trust_level = "trusted"
                         "shell_type": "unified_exec",
                         "visibility": "list",
                         "supported_in_api": True,
+                        "available_access_programs": {"cyber": ["standard", "daybreak_blue"]},
                         "priority": 1,
                         "support_verbosity": False,
                         "truncation_policy": {"mode": "tokens", "limit": 10000},
                         "experimental_supported_tools": [],
                     }
+                    for slug in ("gpt-5.6-sol", "gpt-6-sol")
                 ]
             }
             return httpx.Response(
@@ -200,6 +203,7 @@ trust_level = "trusted"
         refresh_tokens=lambda **kwargs: pytest.fail("Unexpected upstream refresh"),
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         process_factory=process_factory,
+        default_cyber_access_program=getattr(request, "param", None),
     )
     bridge.start()
     try:
@@ -256,10 +260,48 @@ def test_native_preflight_preserves_account_permissions_and_worker_owned_routing
     assert replies[1]["workspaceRouting"]["backendOrigin"].startswith("https://127.0.0.1:")
     assert "scanner" in json.dumps(replies[2])
     assert replies[3]["config"]["chatgpt_base_url"].startswith("https://127.0.0.1:")
+    assert replies[3]["config"]["model_provider"] == "openai"
     assert replies[3]["config"]["cli_auth_credentials_store"] == "ephemeral"
     assert SECRET not in json.dumps(calls) + json.dumps(frames) + "\n".join(errors)
     assert not (home / "auth.json").exists()
     assert upstream
+
+
+@pytest.mark.parametrize(
+    "native_runtime,explicit,expected",
+    [("daybreak_blue", None, "daybreak_blue"), ("daybreak_blue", "standard", "standard")],
+    indirect=["native_runtime"],
+)
+@pytest.mark.skipif(not shutil.which("zstd"), reason="zstd is required to inspect native requests")
+def test_native_turn_and_resume_send_operator_program_to_subscription_upstream(
+    native_runtime, explicit, expected
+):
+    bridge, upstream, calls, home, errors = native_runtime
+    argv = ["exec", "--model", "gpt-6-sol"]
+    if explicit:
+        argv += ["--cyber-access-program", explicit]
+    frames = execute(bridge, [*argv, "Reply briefly."])
+    assert frames[-1] == {"exit_code": 0}, json.dumps(frames) + "\n" + "\n".join(errors)
+    events = [json.loads(frame["text"]) for frame in frames if frame.get("stream") == "stdout"]
+    resumed = execute(
+        bridge, [*argv, "resume", events[0]["thread_id"], "Continue briefly."]
+    )
+    assert resumed[-1] == {"exit_code": 0}, json.dumps(resumed) + "\n" + "\n".join(errors)
+    bodies = []
+    for req in upstream:
+        if req.method != "POST" or req.url.path != "/backend-api/codex/responses":
+            continue
+        content = req.content
+        if req.headers.get("content-encoding") == "zstd":
+            content = subprocess.run(
+                ["zstd", "-dq"], input=content, capture_output=True, check=True, timeout=5
+            ).stdout
+        bodies.append(json.loads(content))
+    assert len(bodies) == 2
+    assert all(body["model"] == "gpt-6-sol" for body in bodies)
+    assert [body.get("access_programs", {}).get("cyber") for body in bodies] == [expected, expected]
+    assert SECRET not in json.dumps(calls) + json.dumps(frames) + json.dumps(resumed) + "\n".join(errors)
+    assert not (home / "auth.json").exists()
 
 
 def test_native_exec_and_resume_use_synthetic_sse_without_receiving_real_credentials(

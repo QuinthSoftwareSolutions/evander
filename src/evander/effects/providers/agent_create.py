@@ -20,6 +20,7 @@ from evander.email.grants import (
 )
 from evander.events.provider_models import AgentCreateEffectDefinition
 from evander.fast_mode import normalize_fast_mode
+from evander.cyber_access import normalize_cyber_access_program
 from evander.host_directories.grants import resolve_and_validate_host_directory_grants
 from evander.messaging.targets import load_communication_targets_config
 from evander.models import EmailMailboxGrant
@@ -120,6 +121,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             payload["reasoning_effort"] = effect.reasoning_effort
         if "fast_mode" in effect_fields_set:
             payload["fast_mode"] = effect.fast_mode
+        if "cyber_access_program" in effect_fields_set:
+            payload["cyber_access_program"] = effect.cyber_access_program
         if codex_auth_mode_provided:
             payload["codex_auth_mode"] = effect.codex_auth_mode
         if subscription_profile_id_provided:
@@ -290,6 +293,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
             model=normalize_optional_string(payload.get("model")),
             cost_category=normalize_cost_category(payload.get("cost_category")),
             reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
+            **(
+                {"cyber_access_program": normalize_cyber_access_program(payload["cyber_access_program"])}
+                if "cyber_access_program" in payload else {}
+            ),
             **(
                 {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
                 if "fast_mode" in payload
@@ -607,6 +614,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ),
             fast_mode=normalize_fast_mode(
                 payload.get("fast_mode", getattr(existing_session, "fast_mode", None))
+            ),
+            cyber_access_program=normalize_cyber_access_program(
+                payload.get("cyber_access_program", getattr(existing_session, "cyber_access_program", None))
             ),
             codex_auth_mode=codex_auth_mode,
             subscription_profile_id=subscription_profile_id,
