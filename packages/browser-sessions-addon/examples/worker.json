@@ -5,6 +5,7 @@
   "token_env": "EVANDER_BROWSER_WORKER_TOKEN",
   "allocations_enabled": false,
   "max_sessions": 1,
+  "container_user": "1000:1000",
   "profiles": {
     "web": {
       "image": "approved-web:1",

@@ -1109,3 +1109,45 @@ def test_ansible_verification_checks_nexus_package_cache() -> None:
     assert "evander-nexus.service" in verification
     assert "evander_nexus_port" in verification
     assert "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/status" in verification
+
+
+def test_optional_browser_proxy_follows_provisioned_relay_and_explicit_override():
+    from jinja2 import Environment, StrictUndefined
+    template_path = Path(__file__).resolve().parents[1] / "ansible/roles/admin_web_caddy/templates/Caddyfile.j2"
+    environment = Environment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    template = environment.from_string(template_path.read_text())
+    base = {
+        "evander_admin_web_caddy_hostname": "admin.example.test",
+        "evander_teams_notifications_public_base_url": "",
+        "evander_admin_web_caddy_upstream_host": "127.0.0.1",
+        "evander_admin_web_caddy_upstream_port": 8100,
+        "evander_admin_web_frontend_dist_dir": "/srv/evander/frontend",
+        "evander_admin_web_browser_relay_upstream_host": "127.0.0.1",
+        "evander_admin_web_browser_relay_upstream_port": 11890,
+    }
+    for provisioned, override, expected in ((False, None, False), (True, None, True), (True, False, False), (False, True, True)):
+        context = {**base, "evander_admin_web_browser_relay_env": {"stat": {"exists": provisioned}}}
+        if override is not None:
+            context["evander_admin_web_browser_relay_enabled"] = override
+        rendered = template.render(context)
+        assert ("handle /_browser/*" in rendered) is expected
+        assert ("reverse_proxy 127.0.0.1:11890" in rendered) is expected
+        assert "handle /api/*" in rendered and "reverse_proxy 127.0.0.1:8100" in rendered
+        assert "handle /internal/*" not in rendered
+
+
+def test_optional_browser_install_requires_provisioning_or_explicit_enablement():
+    from jinja2 import Environment, StrictUndefined
+    import yaml
+    tasks_path = Path(__file__).resolve().parents[1] / "ansible/roles/python_env/tasks/main.yml"
+    tasks = yaml.safe_load(tasks_path.read_text())
+    install = next(task for task in tasks if "./packages/browser-sessions-addon" in task.get("ansible.builtin.command", {}).get("cmd", ""))
+    environment = Environment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    enabled = environment.compile_expression(install["when"])
+    for provisioned, override, expected in ((False, None, False), (True, None, True), (True, False, False), (False, True, True)):
+        context = {"evander_browser_sessions_environment": {"results": [{"stat": {"exists": provisioned}}, {"stat": {"exists": False}}]}}
+        if override is not None:
+            context["evander_browser_sessions_addon_enabled"] = override
+        assert enabled(**context) is expected

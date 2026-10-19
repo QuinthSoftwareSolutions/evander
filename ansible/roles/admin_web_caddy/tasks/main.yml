@@ -42,6 +42,12 @@
           enabling Caddy static serving.
         success_msg: "Admin Web frontend assets are present."
 
+    - name: Check optional browser relay configuration
+      ansible.builtin.stat:
+        path: "{{ evander_admin_web_browser_relay_environment_file }}"
+      register: evander_admin_web_browser_relay_env
+      when: evander_admin_web_caddy_manage_config | bool
+
     - name: Render Admin Web Caddyfile
       ansible.builtin.template:
         src: Caddyfile.j2
