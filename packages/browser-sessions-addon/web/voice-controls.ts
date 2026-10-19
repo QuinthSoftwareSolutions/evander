@@ -1,4 +1,4 @@
-export type VoiceInfo = { enabled: boolean; max_recording_seconds: number; max_audio_bytes: number; latest_message_seq?: number };
+export type VoiceInfo = { enabled: boolean; microphone_available?: boolean; max_recording_seconds: number; max_audio_bytes: number; latest_message_seq?: number };
 export type VoiceTransport = {
   info: () => Promise<VoiceInfo>;
   transcribe: (audio: Blob, id: string, signal: AbortSignal) => Promise<{ text: string; request_id: string }>;
@@ -39,11 +39,12 @@ export class VoiceControls {
     this.status = root.querySelector<HTMLElement>("[data-voice-status]")!;
     this.talk.addEventListener("pointerdown", event => {
       if (!this.microphoneReady || event.button !== 0) return;
-      event.preventDefault(); this.talk.setPointerCapture(event.pointerId);
+      event.preventDefault(); this.talk.focus({ preventScroll: true }); this.talk.setPointerCapture(event.pointerId);
       void this.start();
     });
     this.talk.addEventListener("pointerup", () => this.finish());
     this.talk.addEventListener("pointercancel", () => this.finish(true));
+    this.talk.addEventListener("blur", () => this.finish(true));
     this.talk.addEventListener("keydown", event => {
       if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
       event.preventDefault(); if (!event.repeat) void this.start();
@@ -76,6 +77,9 @@ export class VoiceControls {
       this.speakAfter = this.config.latest_message_seq ?? 0;
       if (!this.config.enabled) { this.say("Voice is not configured for this directory."); return; }
       this.replies.disabled = false;
+      if (this.config.microphone_available === false) {
+        this.say("Microphone transcription is unavailable. Text and spoken replies remain available."); return;
+      }
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
         this.say("Microphone recording needs Chrome over HTTPS."); return;
       }
@@ -163,7 +167,7 @@ export class VoiceControls {
       const result = await this.transport.transcribe(audio, id, abort.signal);
       if (this.disposed || abort.signal.aborted) return;
       await this.transport.send(result.text, "voice-" + id, context);
-      this.say("Sent: " + result.text);
+      this.say("Voice message sent.");
     } catch (error: any) { if (!this.disposed) this.say(error.message || "Voice request failed."); }
     finally {
       this.transcribing = false;

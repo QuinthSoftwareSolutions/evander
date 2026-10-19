@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
+import shutil
+import wave
 
 import httpx
 from starlette.requests import ClientDisconnect
@@ -14,11 +17,14 @@ from .models import BrowserError, identifier, origin
 
 
 AUDIO_TYPES = {
-    "audio/webm": ("speech.webm", "audio/webm"),
-    "audio/ogg": ("speech.ogg", "audio/ogg"),
-    "audio/mp4": ("speech.mp4", "audio/mp4"),
-    "audio/wav": ("speech.wav", "audio/wav"),
+    "audio/webm": "matroska",
+    "audio/ogg": "ogg",
+    "audio/mp4": "mov",
+    "audio/wav": "wav",
 }
+
+DECODE_TIMEOUT_SECONDS = 10
+PROVIDER_TIMEOUT_SECONDS = 40
 
 
 async def read_audio(request, maximum):
@@ -39,6 +45,52 @@ async def read_audio(request, maximum):
     if not content:
         raise BrowserError("The voice recording is empty", "audio_empty", 422)
     return bytes(content), mime
+
+
+async def normalize_recording(audio, mime, seconds):
+    """Measure decoded samples and send only the validated audio to the provider."""
+    decoder = shutil.which("ffmpeg")
+    if decoder is None:
+        raise BrowserError(
+            "Voice transcription requires FFmpeg on this host", "voice_unavailable", 409
+        )
+    process = None
+    try:
+        async with asyncio.timeout(DECODE_TIMEOUT_SECONDS):
+            process = await asyncio.create_subprocess_exec(
+                decoder, "-v", "error", "-nostdin", "-max_alloc", "16777216",
+                "-protocol_whitelist", "pipe", "-f", AUDIO_TYPES[mime],
+                "-threads", "1", "-i", "pipe:0", "-map", "0:a:0", "-vn", "-sn", "-dn",
+                # Fixed-size sample frames bound output independently of uploaded timestamps.
+                "-af", "aresample=16000,asetnsamples=n=16000:p=0,asetpts=N/SR/TB",
+                "-frames:a", str(seconds + 1), "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            pcm, _ = await process.communicate(audio)
+        if process.returncode or not pcm:
+            raise BrowserError("The recording could not be decoded", "audio_invalid", 422)
+        if len(pcm) > seconds * 16000 * 2:
+            raise BrowserError(
+                "The recording exceeds the duration limit; try a shorter phrase",
+                "audio_duration", 413,
+            )
+    except TimeoutError:
+        raise BrowserError("Audio decoding timed out", "audio_timeout", 422) from None
+    except OSError:
+        raise BrowserError("Voice audio decoder is unavailable", "voice_unavailable", 409) from None
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.communicate()
+    output = io.BytesIO()
+    with wave.open(output, "wb") as normalized:
+        normalized.setnchannels(1)
+        normalized.setsampwidth(2)
+        normalized.setframerate(16000)
+        normalized.writeframes(pcm)
+    return output.getvalue()
 
 
 class Voice:
@@ -69,6 +121,7 @@ class Voice:
         return {
             "latest_message_seq": latest,
             "enabled": config.enabled and bool(os.environ.get(config.api_key_env)),
+            "microphone_available": shutil.which("ffmpeg") is not None,
             "max_recording_seconds": config.max_recording_seconds,
             "max_audio_bytes": config.max_audio_bytes,
             "ai_generated": True,
@@ -108,7 +161,8 @@ class Voice:
                 raise BrowserError("Voice is busy; wait before trying again", "voice_limit", 429)
             db.execute(
                 "INSERT INTO voice_requests VALUES(?,?,?,?,?,'processing',?,?,NULL)",
-                (session_id, actor, request_id, kind, fingerprint, now, now + 45),
+                (session_id, actor, request_id, kind, fingerprint, now,
+                 now + DECODE_TIMEOUT_SECONDS + PROVIDER_TIMEOUT_SECONDS + 5),
             )
         return None
 
@@ -122,7 +176,7 @@ class Voice:
 
     async def provider(self, config, path, *, maximum, **kwargs):
         try:
-            async with asyncio.timeout(40):
+            async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS):
                 async with httpx.AsyncClient(
                     timeout=30, trust_env=False, follow_redirects=False, transport=self.transport
                 ) as client:
@@ -159,12 +213,13 @@ class Voice:
             return previous
         completed = False
         try:
-            filename, content_type = AUDIO_TYPES[mime]
+            normalized = await normalize_recording(audio, mime, config.max_recording_seconds)
+            self.configured(session_id)
             content = await self.provider(
                 config,
                 "/audio/transcriptions",
                 maximum=65536,
-                files={"file": (filename, audio, content_type)},
+                files={"file": ("speech.wav", normalized, "audio/wav")},
                 data={"model": config.transcription_model, "response_format": "json"},
             )
             try:

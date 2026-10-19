@@ -122,7 +122,7 @@ def speech_provider(domain, monkeypatch):
         audio.setsampwidth(2)
         audio.setframerate(24000)
         audio.writeframes(b"\0\0" * 2400)
-    state = {"calls": [], "status": 200, "after": None}
+    state = {"calls": [], "status": 200, "after": None, "audio": output.getvalue()}
 
     async def respond(request):
         state["calls"].append(request)

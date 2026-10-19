@@ -6,6 +6,7 @@
 - Open local voice chat from Chrome using a narrow expiring companion-page capability; preserve session transcripts, page annotations and browser control grants.
 - Keep speech credentials on the host, bound provider requests and retain text outcomes without saving audio.
 - Include guided voice settings, packaged extension/UI assets and synthetic speech validation in real Chrome.
+- Cancel recordings when Talk loses keyboard focus, keep long transcripts in the scrollable chat and enforce clip duration through bounded host audio decoding before transcription.
 
 ## 2026-10-19 - Share hosted previews and local Chrome sessions (0.104.0)
 

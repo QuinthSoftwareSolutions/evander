@@ -236,11 +236,11 @@ def test_hosted_voice_requires_login_control_and_same_origin(admin, hosted, spee
         assert client.get(path + "info").status_code == 401
         client.post("/api/auth/login")
         assert client.get(path + "info").json()["enabled"] is True
-        headers = {"Content-Type": "audio/webm", "X-Voice-Request-ID": "clip-a",
+        headers = {"Content-Type": "audio/wav", "X-Voice-Request-ID": "clip-a",
                    "Origin": "https://evil.test"}
-        assert client.post(path + "transcribe", content=b"clip", headers=headers).status_code == 403
+        assert client.post(path + "transcribe", content=speech_provider["audio"], headers=headers).status_code == 403
         headers["Origin"] = "https://control.test"
-        response = client.post(path + "transcribe", content=b"clip", headers=headers)
+        response = client.post(path + "transcribe", content=speech_provider["audio"], headers=headers)
         assert response.status_code == 200 and response.json()["text"] == "Move the button to the left."
         assert client.post(
             path + "transcribe", content=b"x" * 2_000_001,
@@ -254,7 +254,7 @@ def test_hosted_voice_requires_login_control_and_same_origin(admin, hosted, spee
         users.assign_user_group(login="reader", group_id="readers", directory_path="root/demo")
         client.cookies.set(auth.config.cookie_name, auth.login("reader", "reader-test-password"))
         assert client.get(path + "info").status_code == 200
-        assert client.post(path + "transcribe", content=b"clip", headers=headers).status_code == 403
+        assert client.post(path + "transcribe", content=speech_provider["audio"], headers=headers).status_code == 403
         assert len(speech_provider["calls"]) == 1
 
 
@@ -269,7 +269,7 @@ def test_logout_during_transcription_does_not_return_private_text(admin, hosted,
         speech_provider["after"] = revoke
         response = client.post(
             "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/voice/transcribe",
-            content=b"clip", headers={"Origin": "https://control.test", "Content-Type": "audio/webm",
+            content=speech_provider["audio"], headers={"Origin": "https://control.test", "Content-Type": "audio/wav",
                                      "X-Voice-Request-ID": "revoked"},
         )
         assert response.status_code == 401 and "Move the button" not in response.text
@@ -299,8 +299,8 @@ def test_local_voice_capability_cannot_control_or_reach_another_session(domain, 
         "/_browser/guest/voice/info",
         headers={"Authorization": "Bearer " + paired["host_token"]},
     ).status_code == 401
-    response = client.post("/_browser/guest/voice/transcribe", content=b"clip", headers={
-        **headers, "Origin": "https://control.test", "Content-Type": "audio/webm",
+    response = client.post("/_browser/guest/voice/transcribe", content=speech_provider["audio"], headers={
+        **headers, "Origin": "https://control.test", "Content-Type": "audio/wav",
         "X-Voice-Request-ID": "local-clip"})
     assert response.status_code == 200
     assert service.store.get(local.id).controller is None

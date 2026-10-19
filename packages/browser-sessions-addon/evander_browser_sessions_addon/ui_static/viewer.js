@@ -10,11 +10,13 @@ var VoiceControls = class {
     this.talk.addEventListener("pointerdown", (event) => {
       if (!this.microphoneReady || event.button !== 0) return;
       event.preventDefault();
+      this.talk.focus({ preventScroll: true });
       this.talk.setPointerCapture(event.pointerId);
       void this.start();
     });
     this.talk.addEventListener("pointerup", () => this.finish());
     this.talk.addEventListener("pointercancel", () => this.finish(true));
+    this.talk.addEventListener("blur", () => this.finish(true));
     this.talk.addEventListener("keydown", (event) => {
       if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
       event.preventDefault();
@@ -82,6 +84,10 @@ var VoiceControls = class {
         return;
       }
       this.replies.disabled = false;
+      if (this.config.microphone_available === false) {
+        this.say("Microphone transcription is unavailable. Text and spoken replies remain available.");
+        return;
+      }
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
         this.say("Microphone recording needs Chrome over HTTPS.");
         return;
@@ -203,7 +209,7 @@ var VoiceControls = class {
       const result = await this.transport.transcribe(audio, id, abort.signal);
       if (this.disposed || abort.signal.aborted) return;
       await this.transport.send(result.text, "voice-" + id, context);
-      this.say("Sent: " + result.text);
+      this.say("Voice message sent.");
     } catch (error) {
       if (!this.disposed) this.say(error.message || "Voice request failed.");
     } finally {

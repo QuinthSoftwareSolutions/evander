@@ -38,4 +38,4 @@ Tests use real Chrome and simulated Docker operations. They do not qualify kerne
 
 Session and task-worktree cleanup also consult dependency records on the worker. Normal control-plane cleanup releases them first. To allow direct worker-daemon cleanup to invoke the supervisor, expose the worker token environment reference to that trusted daemon too; otherwise it safely rejects cleanup while a preview is active. Set callback_url if the private supervisor is not on 127.0.0.1:11891.
 
-For optional microphone transcription and spoken replies, see [voice setup and usage](voice.md). Provision the speech credential in Admin Web and relay environments before enabling the directory setting.
+For optional microphone transcription and spoken replies, see [voice setup and usage](voice.md). Provision the speech credential and FFmpeg executable in Admin Web and relay environments before enabling microphone transcription.

@@ -1,7 +1,5 @@
 """Loopback-only integration fixture; never installed or used by production."""
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 import json
 import io
 import wave
@@ -13,7 +11,6 @@ import time
 from types import SimpleNamespace
 
 from starlette.applications import Starlette
-from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route, Mount
 import uvicorn
@@ -56,7 +53,13 @@ context = SimpleNamespace(auth=auth, runtime_dir=folder, service=None)
 web.Service = lambda *args, **kwargs: service
 
 async def setup(request):
+    global voice_transcript
     payload = await request.json()
+    voice_transcript = payload.get("voice_transcript", "Move the button to the left.")
+    if "voice_seconds" in payload:
+        revision, settings = service.store.settings("root")
+        settings.voice.max_recording_seconds = payload["voice_seconds"]
+        service.store.save_settings("root", revision, settings)
     local = payload.get("local", False)
     session = Session(id="browser-" + os.urandom(12).hex(), directory="root/demo", agent_session_id="agent-a",
         support_agent_session_id="support-a" if local else None,
@@ -122,6 +125,7 @@ async def login(request):
     return response
 
 voice_events = []
+voice_transcript = "Move the button to the left."
 audio_output = io.BytesIO()
 with wave.open(audio_output, "wb") as audio:
     audio.setnchannels(1)
@@ -136,8 +140,8 @@ async def speech_provider(request):
     if request.path_params["action"] == "transcriptions":
         content = await request.body()
         voice_events.append({"action": "transcribe", "bytes": len(content),
-                             "webm": b'filename="speech.webm"' in content})
-        return JSONResponse({"text": "Move the button to the left."})
+                             "wav": b'filename="speech.wav"' in content})
+        return JSONResponse({"text": voice_transcript})
     payload = await request.json()
     voice_events.append({"action": "speech", "text": payload["input"]})
     return Response(voice_audio, media_type="audio/wav")

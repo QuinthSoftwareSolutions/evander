@@ -34,7 +34,7 @@ Workflow nodes effect:browser-session:ensure, query:browser-session:status and e
 
 ## Voice
 
-Enable optional speech in directory settings. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts open a scoped companion voice page from the Chrome extension. See [voice setup and usage](docs/voice.md).
+Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts open a scoped companion voice page from the Chrome extension. See [voice setup and usage](docs/voice.md).
 
 ## Boundaries
 
