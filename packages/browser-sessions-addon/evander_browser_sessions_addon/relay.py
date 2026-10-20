@@ -409,7 +409,9 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
                     ),
                 }
             elif request.method == "POST":
-                require_voice_origin(request, service.store.settings(session.directory)[1])
+                require_voice_origin(
+                    request, service.store.settings(session.directory)[1], allow_extension=True
+                )
                 if action == "transcribe":
                     limits = speech.configured(session.id)
                     audio, mime = await read_audio(request, limits.max_audio_bytes)

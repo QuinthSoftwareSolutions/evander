@@ -98,7 +98,8 @@ def test_built_extension_and_python_assets_are_complete():
     with ZipFile(archive) as bundle:
         manifest = json.loads(bundle.read("manifest.json"))
         assert manifest["manifest_version"] == 3 and manifest["minimum_chrome_version"] == "125"
-        assert "debugger" in manifest["permissions"]
+        assert {"debugger", "tabCapture", "offscreen"} <= set(manifest["permissions"])
+        assert {"microphone.html", "microphone.js", "capture.html", "capture.js"} <= set(bundle.namelist())
         assert not manifest.get("externally_connectable")
         assert manifest["background"]["service_worker"] in bundle.namelist()
         assert manifest["side_panel"]["default_path"] in bundle.namelist()

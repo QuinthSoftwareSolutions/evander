@@ -176,6 +176,10 @@ class Bindings:
 # Only endpoint-defined codes cross the private relay boundary. Never relay raw
 # peer messages, URLs or exception details into the agent's conversation.
 ACTION_CONFLICTS = {
+    "unsupported_target": "This target is inside a protected frame or cannot be edited in compatibility mode; choose an application element",
+    "compatibility_unsupported": "This action needs native browser input; complete it locally or use normal sharing mode",
+    "capture_unavailable": "Shared tab video is unavailable; reconnect the sharing session",
+
     "invalid_coordinates": "The target is outside the visible page; scroll it into view and observe again",
     "stale_observation": "The page changed; observe it again before interacting",
     "stale_control": "Browser control changed; read session status and observe again",

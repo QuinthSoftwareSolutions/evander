@@ -1,4 +1,5 @@
 import { BrowserEngine } from "../shared/engine.js";
+import { CompatibleTab, extensionConflict } from "./compatible-tab.js";
 declare const chrome: any;
 let connection: any;
 let socket: WebSocket | undefined;
@@ -12,6 +13,9 @@ let heartbeat: ReturnType<typeof setInterval> | undefined;
 let expiry: ReturnType<typeof setTimeout> | undefined;
 let deniedOrigin: string | undefined;
 let mainFrameId: string | undefined;
+let compatible: CompatibleTab | undefined;
+let frameTimer: ReturnType<typeof setInterval> | undefined;
+let upgrading: Promise<void> | undefined;
 
 chrome.action.onClicked.addListener(async (tab: any) => {
   if (!connection) tabId = tab.id;
@@ -22,7 +26,15 @@ function send(message: any) {
 }
 async function cdp(method: string, params: any = {}) {
   if (!tabId) throw new Error("tab_closed");
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  if (compatible) return compatible.send(method, params);
+  try { return await chrome.debugger.sendCommand({ tabId }, method, params); }
+  catch (error) {
+    if (connection && extensionConflict(error)) {
+      await useCompatibility(true);
+      throw new Error("stale_control"); // Never replay an action whose outcome is unknown.
+    }
+    throw error;
+  }
 }
 function update(state: any) {
   if (!connection || state.id !== connection.session.id) return;
@@ -39,17 +51,23 @@ function pauseForOrigin(url: string) {
   update({ ...connection.session, controller: null });
   if (!deniedOrigin) send({ kind: "paused" });
   deniedOrigin = currentOrigin;
+  void compatible?.suspend();
 }
 async function api(action: string, body?: any) {
   if (!connection) throw new Error("Share a tab first");
-  const response = await fetch(connection.base + "/_browser/guest/" + action, {
+  const current = connection;
+  const response = await fetch(current.base + "/_browser/guest/" + action, {
     method: body ? "POST" : "GET",
-    headers: { "Authorization": "Bearer " + connection.host_token, ...(body ? { "Content-Type": "application/json" } : {}) },
+    headers: { "Authorization": "Bearer " + current.host_token, ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     credentials: "omit", redirect: "error",
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "Support session unavailable");
+  if (connection !== current) throw new Error("The sharing session changed. Try again.");
+  if (!response.ok) {
+    const error = new Error(result.error ?? "Support session unavailable") as Error & { status: number };
+    error.status = response.status; throw error;
+  }
   return result;
 }
 async function overlay(message: any) {
@@ -74,15 +92,27 @@ async function connectEndpoint() {
   if (!connection || !tabId || !engine) return;
   streaming = false;
   const current = connection;
-  socket = new WebSocket(connection.base.replace(/^http/, "ws") + "/_browser/extension");
-  socket.addEventListener("open", () => send({ kind: "authenticate", version: 1, token: current.endpoint_token }));
-  socket.addEventListener("error", () => socket?.close());
-  socket.addEventListener("message", (event) => {
+  socket?.close();
+  const endpointSocket = new WebSocket(connection.base.replace(/^http/, "ws") + "/_browser/extension");
+  socket = endpointSocket;
+  endpointSocket.addEventListener("open", () => {
+    if (connection === current && socket === endpointSocket)
+      endpointSocket.send(JSON.stringify({ kind: "authenticate", version: 1, token: current.endpoint_token }));
+  });
+  endpointSocket.addEventListener("error", () => endpointSocket.close());
+  endpointSocket.addEventListener("message", (event) => {
+    if (connection !== current || socket !== endpointSocket) return;
     let message: any;
     try { message = JSON.parse(String(event.data)); } catch { socket?.close(); return; }
     if (message.kind === "state") {
+      if (connection !== current) return;
       update(message.session);
-      if (!streaming) {
+      if (compatible && !streaming) {
+        streaming = true;
+        void cdp("Page.getFrameTree").then((tree) => {
+          if (connection === current) send({ kind: "ready", url: tree.frameTree.frame.url });
+        }).catch(() => {});
+      } else if (!streaming) {
         streaming = true;
         void cdp("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1920, maxHeight: 1080 });
         void cdp("Page.getFrameTree").then((tree) => send({ kind: "ready", url: tree.frameTree.frame.url }));
@@ -91,19 +121,23 @@ async function connectEndpoint() {
       granted = false;
       update({ ...connection.session, controller: null });
     } else if (message.kind === "command") {
+      const endpoint = engine;
       chain = chain.then(async () => {
         try {
-          const result = await engine!.execute(message.command, message.actor);
+          if (connection !== current || engine !== endpoint) throw new Error("disconnected");
+          const result = await endpoint!.execute(message.command, message.actor);
+          if (connection !== current) return;
           send({ kind: "result", id: message.command.id, result });
         } catch (error: any) {
+          if (connection !== current) return;
           send({ kind: "result", id: message.command.id, error: true,
             code: /^[a-z_]+$/.test(error.message) ? error.message : "browser_error" });
         }
       });
     }
   });
-  socket.addEventListener("close", (event) => {
-    if (connection !== current) return;
+  endpointSocket.addEventListener("close", (event) => {
+    if (connection !== current || socket !== endpointSocket) return;
     if (event.code === 1008) { void disconnect(false); return; }
     granted = false;
     if (connection) update({ ...connection.session, controller: null });
@@ -112,15 +146,69 @@ async function connectEndpoint() {
   clearInterval(heartbeat);
   heartbeat = setInterval(() => send({ kind: "heartbeat" }), 20000);
 }
+function createEngine(current: any) {
+  return new BrowserEngine(async (method, params) => {
+    if (connection !== current) throw new Error("disconnected");
+    const result = await cdp(method, params);
+    if (connection !== current) throw new Error("disconnected");
+    return result;
+  }, current.session, message => {
+    if (connection !== current) return;
+    send(message); void overlay(message).catch(() => {});
+  });
+}
+async function useCompatibility(pause = false) {
+  if (upgrading) return upgrading;
+  const current = connection, selected = tabId;
+  if (!current || !selected) throw new Error("disconnected");
+  upgrading = (async () => {
+    if (pause) {
+      granted = false; update({ ...current.session, controller: null }); send({ kind: "paused" });
+    }
+    compatible = new CompatibleTab(selected, () => current.approvedOrigin, () => connection === current,
+      () => engine?.navigate());
+    // Detach only our own debugger; leave every other extension and frame intact.
+    try { await chrome.debugger.detach({ tabId: selected }); } catch {}
+    engine = createEngine(current);
+    await compatible.start();
+    if (connection !== current) throw new Error("disconnected");
+    current.mode = "compatibility";
+    await chrome.storage.session.set({ connection: current });
+    clearInterval(frameTimer);
+    let busy = false;
+    frameTimer = setInterval(() => {
+      if (busy || connection !== current || socket?.readyState !== WebSocket.OPEN || deniedOrigin) return;
+      busy = true;
+      void (async () => {
+        const tree = await cdp("Page.getFrameTree");
+        const image = await cdp("Page.captureScreenshot");
+        const metrics = await cdp("Page.getLayoutMetrics");
+        if (connection !== current || deniedOrigin) return;
+        send({ kind: "frame", image: image.data, width: Math.round(metrics.cssVisualViewport.clientWidth),
+          height: Math.round(metrics.cssVisualViewport.clientHeight), page_epoch: "compatible", url: tree.frameTree.frame.url });
+      })().catch(() => {
+        // No pixel or input access when the tab leaves the approved origin.
+        if (connection === current) {
+          granted = false; update({ ...current.session, controller: null }); send({ kind: "paused" });
+        }
+      }).finally(() => { busy = false; });
+    }, 1000);
+  })();
+  try { await upgrading; } finally { upgrading = undefined; }
+}
 async function attach() {
   if (!connection || !tabId) throw new Error("Select the application tab");
   let step = "attaching Chrome to the tab";
   try {
-    await chrome.debugger.attach({ tabId }, "1.3");
+    try { await chrome.debugger.attach({ tabId }, "1.3"); }
+    catch (error) {
+      if (!extensionConflict(error)) throw error;
+      step = "starting extension-compatible sharing";
+      await useCompatibility();
+      await connectEndpoint(); return;
+    }
     step = "preparing the shared browser";
-    engine = new BrowserEngine(cdp, connection.session, (message) => {
-      send(message); void overlay(message).catch(() => {});
-    });
+    engine = createEngine(connection);
     step = "enabling page access";
     await cdp("Page.enable");
     step = "reading the page frame";
@@ -138,8 +226,10 @@ async function disconnect(close = true) {
   const previous = connection;
   if (connection) engine?.update({ ...connection.session, controller: null, control_generation: connection.session.control_generation + 1 });
   connection = undefined; granted = false;
-  clearTimeout(retry); clearTimeout(expiry); clearInterval(heartbeat);
+  clearTimeout(retry); clearTimeout(expiry); clearInterval(heartbeat); clearInterval(frameTimer);
   socket?.close(); engine = undefined;
+  const capture = compatible; compatible = undefined;
+  await capture?.stop();
   if (tabId) { try { await chrome.debugger.detach({ tabId }); } catch {} }
   await chrome.storage.session.remove("connection");
   if (close && previous) {
@@ -148,16 +238,30 @@ async function disconnect(close = true) {
       body: "{}", credentials: "omit", redirect: "error" }).catch(() => {});
   }
 }
-chrome.debugger.onDetach.addListener((source: any) => {
-  if (source.tabId !== tabId || !connection) return;
-  granted = false; send({ kind: "paused" });
-  connection = undefined; socket?.close(); engine = undefined;
-  clearTimeout(retry); clearInterval(heartbeat);
-  void chrome.storage.session.remove("connection");
+chrome.debugger.onDetach.addListener((source: any, reason: string) => {
+  if (source.tabId !== tabId || !connection || compatible) return;
+  const current = connection;
+  granted = false; update({ ...current.session, controller: null }); send({ kind: "paused" });
+  engine?.navigate();
+  void (async () => {
+    // Chrome also reports target_closed when a protected extension frame appears.
+    // Only that automatic detach can attempt reattachment; user cancellation stops sharing.
+    const tab = reason === "target_closed" ? await chrome.tabs.get(source.tabId).catch(() => null) : null;
+    if (connection !== current) return;
+    if (tab?.url && new URL(tab.url).origin === current.approvedOrigin) {
+      try { await attach(); return; } catch {}
+    }
+    if (connection === current) await disconnect();
+  })();
 });
 chrome.tabs.onRemoved.addListener((id: number) => { if (id === tabId) void disconnect(); });
+chrome.tabs.onUpdated.addListener((id: number, change: any, tab: any) => {
+  if (id !== tabId || !connection || !compatible) return;
+  if (change.status === "loading" || change.url) compatible.navigate();
+  if (change.url || change.status === "loading") pauseForOrigin(tab.url ?? "about:blank");
+});
 chrome.debugger.onEvent.addListener(async (source: any, method: string, params: any) => {
-  if (source.tabId !== tabId || !connection || !engine) return;
+  if (source.tabId !== tabId || !connection || !engine || compatible) return;
   if (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") {
     engine.navigate();
     if (method === "Page.frameNavigated" && !params.frame.parentId) {
@@ -186,6 +290,7 @@ chrome.debugger.onEvent.addListener(async (source: any, method: string, params: 
   } finally { await cdp("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {}); }
 });
 chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) => {
+  if (message.kind === "microphone_permission_result" || message.target === "tab-capture") return false;
   // Extension pages only. Web pages have no externally-connectable transport.
   void (async () => {
     if (message.kind === "pair") {
@@ -223,9 +328,11 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
     }
     if (message.kind === "state") {
       if (!connection) return { session: null };
-      const result = await api("state?after=" + Number(message.after ?? 0));
+      const after = "browser_session_id" in message && message.browser_session_id !== connection.session.id
+        ? 0 : Number(message.after ?? 0);
+      const result = await api("state?after=" + after);
       update(result.session);
-      return { ...result, granted, connected: socket?.readyState === WebSocket.OPEN };
+      return { ...result, granted, mode: connection.mode ?? "native", connected: socket?.readyState === WebSocket.OPEN };
     }
     if (message.kind === "control") {
       granted = message.action === "grant";
@@ -238,21 +345,35 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
     }
     if (message.kind === "message") return api("message", { request_id: crypto.randomUUID(), body: message.body });
     if (message.kind === "voice") {
+      if (_sender.id !== chrome.runtime.id ||
+          _sender.url?.split(/[?#]/)[0] !== chrome.runtime.getURL("panel.html"))
+        throw new Error("Open voice controls from the sharing sidebar.");
+      if (!connection || message.browser_session_id !== connection.session.id)
+        throw new Error("The sharing session changed. Reopen voice controls.");
+      const current = connection;
       const result = await api("voice", {});
-      await chrome.tabs.create({ url: result.voice_url });
-      return { opened: true };
+      if (connection !== current) throw new Error("The sharing session changed. Reopen voice controls.");
+      const url = new URL(result.voice_url);
+      if (url.origin !== new URL(current.base).origin || url.pathname !== "/_browser/guest/voice")
+        throw new Error("The voice endpoint is unavailable.");
+      const token = new URLSearchParams(url.hash.slice(1)).get("token");
+      if (!token) throw new Error("The voice endpoint is unavailable.");
+      return { base: current.base, voice_token: token, session_id: current.session.id };
     }
     if (message.kind === "origin") {
-      const tree = await cdp("Page.getFrameTree");
-      const url = tree.frameTree.frame.url;
+      // activeTab is renewed when the host clicks our toolbar icon on the new page.
+      const url = compatible ? (await chrome.tabs.get(tabId)).url : (await cdp("Page.getFrameTree")).frameTree.frame.url;
+      if (!url || !/^https?:/.test(url)) throw new Error("Select the application tab and click the Evander toolbar icon before approving it.");
       const approvedOrigin = new URL(url).origin;
       granted = false;
       const result = await api("origin", { url });
       connection.approvedOrigin = approvedOrigin; deniedOrigin = undefined;
-      update(result); return { session: result };
+      update(result);
+      if (compatible) { compatible.navigate(); await compatible.start(); }
+      return { session: result };
     }
     if (message.kind === "disconnect") { await disconnect(); return { session: null }; }
     throw new Error("Unknown extension operation");
-  })().then((result) => respond({ ok: true, ...result }), (error) => respond({ ok: false, error: error.message }));
+  })().then((result) => respond({ ok: true, ...result }), (error) => respond({ ok: false, error: error.message, status: error.status }));
   return true;
 });

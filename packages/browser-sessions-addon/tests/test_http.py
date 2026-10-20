@@ -275,7 +275,10 @@ def test_logout_during_transcription_does_not_return_private_text(admin, hosted,
         assert response.status_code == 401 and "Move the button" not in response.text
 
 
-def test_local_voice_capability_cannot_control_or_reach_another_session(domain, local, speech_provider):
+@pytest.mark.parametrize("voice_origin", ["https://control.test", "chrome-extension://" + "a" * 32])
+def test_local_voice_capability_cannot_control_or_reach_another_session(
+    domain, local, hosted, speech_provider, voice_origin
+):
     service, _, _ = domain
     invitation = service.invite(local.id, "agent:agent-a")["invitation_url"].split("invite=")[1]
     paired = service.pair(invitation, "http://localhost:4200/")
@@ -300,9 +303,51 @@ def test_local_voice_capability_cannot_control_or_reach_another_session(domain, 
         headers={"Authorization": "Bearer " + paired["host_token"]},
     ).status_code == 401
     response = client.post("/_browser/guest/voice/transcribe", content=speech_provider["audio"], headers={
-        **headers, "Origin": "https://control.test", "Content-Type": "audio/wav",
+        **headers, "Origin": voice_origin, "Content-Type": "audio/wav",
         "X-Voice-Request-ID": "local-clip"})
     assert response.status_code == 200
     assert service.store.get(local.id).controller is None
+    question = service.enqueue_message(
+        hosted.id, "user:operator", web.MessageRequest(request_id="other-chat", body="Other session")
+    )
+    reply = service.reply("agent-a", hosted.id, question["id"], "Other session reply")
+    assert client.post(
+        "/_browser/guest/voice/speech", headers={**headers, "Origin": voice_origin},
+        json={"request_id": "cross-session-speech", "message_id": reply["id"]},
+    ).status_code == 404
     service.close(local.id)
     assert client.get("/_browser/guest/voice/info", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("voice_origin", [
+    None, "https://other.test", "chrome-extension://invalid",
+    "chrome-extension://" + "a" * 32 + ".other.test", "chrome-extension://" + "a" * 32 + "/",
+])
+def test_local_voice_rejects_unapproved_web_or_malformed_extension_origins(
+    domain, local, speech_provider, voice_origin
+):
+    service, _, _ = domain
+    invitation = service.invite(local.id, "agent:agent-a")["invitation_url"].split("invite=")[1]
+    paired = service.pair(invitation, "http://localhost:4200/")
+    token = service.voice_invite(local.id, paired["session"]["host_principal"])["voice_url"].split("#token=")[1]
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "audio/wav", "X-Voice-Request-ID": "bad-origin"}
+    if voice_origin is not None:
+        headers["Origin"] = voice_origin
+    with TestClient(relay_app(service.runtime_dir, service=service, internal_token="private"),
+                    base_url="https://control.test") as client:
+        response = client.post("/_browser/guest/voice/transcribe", content=speech_provider["audio"], headers=headers)
+    assert response.status_code == 403
+
+
+def test_hosted_voice_never_accepts_extension_origin(admin, hosted, speech_provider):
+    app, _ = admin
+    with TestClient(app, base_url="https://control.test") as client:
+        client.post("/api/auth/login")
+        response = client.post(
+            "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/voice/transcribe",
+            content=speech_provider["audio"], headers={
+                "Origin": "chrome-extension://" + "a" * 32, "Content-Type": "audio/wav",
+                "X-Voice-Request-ID": "extension-hosted",
+            },
+        )
+    assert response.status_code == 403

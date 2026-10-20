@@ -1,5 +1,6 @@
 export type VoiceInfo = { enabled: boolean; microphone_available?: boolean; max_recording_seconds: number; max_audio_bytes: number; latest_message_seq?: number };
 export type VoiceTransport = {
+  prepareMicrophone?: (signal: AbortSignal) => Promise<void>;
   info: () => Promise<VoiceInfo>;
   transcribe: (audio: Blob, id: string, signal: AbortSignal) => Promise<{ text: string; request_id: string }>;
   speech: (message: string, id: string, signal: AbortSignal) => Promise<Blob>;
@@ -11,6 +12,8 @@ export class VoiceControls {
   private stop: HTMLButtonElement;
   private status: HTMLElement;
   private config?: VoiceInfo;
+  private events = new AbortController();
+  private microphoneSetupAbort?: AbortController;
   private microphoneReady = false;
   private opening = false;
   private recording = false;
@@ -37,39 +40,42 @@ export class VoiceControls {
     this.replies = root.querySelector<HTMLInputElement>("[data-voice-replies]")!;
     this.stop = root.querySelector<HTMLButtonElement>("[data-voice-stop]")!;
     this.status = root.querySelector<HTMLElement>("[data-voice-status]")!;
-    this.talk.addEventListener("pointerdown", event => {
+    const watch = <K extends keyof HTMLElementEventMap>(target: HTMLElement, name: K,
+      listener: (event: HTMLElementEventMap[K]) => void) =>
+      target.addEventListener(name, listener, { signal: this.events.signal });
+    watch(this.talk, "pointerdown", event => {
       if (!this.microphoneReady || event.button !== 0) return;
       event.preventDefault(); this.talk.focus({ preventScroll: true }); this.talk.setPointerCapture(event.pointerId);
       void this.start();
     });
-    this.talk.addEventListener("pointerup", () => this.finish());
-    this.talk.addEventListener("pointercancel", () => this.finish(true));
-    this.talk.addEventListener("blur", () => this.finish(true));
-    this.talk.addEventListener("keydown", event => {
+    watch(this.talk, "pointerup", () => this.finish());
+    watch(this.talk, "pointercancel", () => this.finish(true));
+    watch(this.talk, "blur", () => this.finish(true));
+    watch(this.talk, "keydown", event => {
       if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
       event.preventDefault(); if (!event.repeat) void this.start();
     });
-    this.talk.addEventListener("keyup", event => {
+    watch(this.talk, "keyup", event => {
       if (this.microphoneReady && [" ", "Enter"].includes(event.key)) {
         event.preventDefault(); this.finish();
       }
     });
-    this.talk.addEventListener("click", event => {
+    watch(this.talk, "click", event => {
       if (!this.microphoneReady) void this.enable();
       else if (event.detail === 0) {
         if (this.recording || this.opening) this.finish(); else void this.start();
       }
     });
-    this.replies.addEventListener("change", () => {
+    watch(this.replies, "change", () => {
       if (!this.replies.checked) this.stopAudio();
     });
-    this.stop.addEventListener("click", () => this.stopAudio());
-    window.addEventListener("blur", () => this.finish(true));
-    document.addEventListener("visibilitychange", () => { if (document.hidden) this.finish(true); });
-    window.addEventListener("pagehide", () => this.dispose(), { once: true });
+    watch(this.stop, "click", () => this.stopAudio());
+    window.addEventListener("blur", () => this.finish(true), { signal: this.events.signal });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) this.finish(true); }, { signal: this.events.signal });
+    window.addEventListener("pagehide", () => this.dispose(), { once: true, signal: this.events.signal });
     void this.initialize();
   }
-  private say(text: string) { this.status.textContent = text; }
+  private say(text: string) { if (!this.disposed) this.status.textContent = text; }
   private async initialize() {
     try {
       this.config = await this.transport.info();
@@ -90,7 +96,10 @@ export class VoiceControls {
   private async enable() {
     if (this.opening || this.disposed) return;
     this.opening = true; this.talk.disabled = true;
+    const setup = new AbortController(); this.microphoneSetupAbort = setup;
     try {
+      await this.transport.prepareMicrophone?.(setup.signal);
+      if (this.disposed || setup.signal.aborted) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       stream.getTracks().forEach(track => track.stop());
@@ -98,8 +107,12 @@ export class VoiceControls {
       this.microphoneReady = true;
       this.talk.textContent = "Hold Talk";
       this.say("Ready. Release Talk to send your words to Truman.");
-    } catch { if (!this.disposed) this.say("Microphone access was denied or unavailable."); }
-    finally { this.opening = false; this.talk.disabled = this.disposed; }
+    } catch (error: any) {
+      if (!this.disposed) this.say(error.message || "Microphone access was denied or unavailable.");
+    } finally {
+      this.microphoneSetupAbort = undefined;
+      this.opening = false; if (!this.disposed) this.talk.disabled = false;
+    }
   }
   private async start() {
     if (!this.config?.enabled || this.opening || this.recording || this.transcribing || this.disposed) return;
@@ -132,7 +145,7 @@ export class VoiceControls {
         clearTimeout(this.timer);
         stream.getTracks().forEach(track => track.stop());
         this.stream = undefined; this.recorder = undefined; this.recording = false;
-        this.talk.setAttribute("aria-pressed", "false");
+        if (!this.disposed) this.talk.setAttribute("aria-pressed", "false");
         if (this.discard || this.disposed || capture !== this.capture) return;
         const audio = new Blob(chunks, { type });
         if (!audio.size) { this.say("No audio recorded. Hold Talk while speaking."); return; }
@@ -147,8 +160,13 @@ export class VoiceControls {
     } catch (error: any) {
       this.stream?.getTracks().forEach(track => track.stop()); this.stream = undefined;
       this.recording = false; this.recorder = undefined;
-      this.talk.setAttribute("aria-pressed", "false");
-      this.say(error.message || "Microphone recording failed.");
+      if (!this.disposed) {
+        this.talk.setAttribute("aria-pressed", "false");
+        if (error.name === "NotAllowedError") {
+          this.microphoneReady = false; this.talk.textContent = "Enable microphone";
+        }
+        this.say(error.message || "Microphone recording failed.");
+      }
     } finally { this.opening = false; }
   }
   private finish(discard = false) {
@@ -171,7 +189,7 @@ export class VoiceControls {
     } catch (error: any) { if (!this.disposed) this.say(error.message || "Voice request failed."); }
     finally {
       this.transcribing = false;
-      this.talk.disabled = this.disposed;
+      if (!this.disposed) this.talk.disabled = false;
       this.transcriptionAbort = undefined;
       void this.play();
     }
@@ -214,7 +232,7 @@ export class VoiceControls {
         }
       }
     } finally {
-      this.playing = false; this.stop.disabled = true; this.audioAbort = undefined;
+      this.playing = false; if (!this.disposed) this.stop.disabled = true; this.audioAbort = undefined;
     }
   }
   stopAudio() {
@@ -226,9 +244,10 @@ export class VoiceControls {
   dispose() {
     if (this.disposed) return;
     this.disposed = true; this.capture += 1;
+    this.events.abort(); this.microphoneSetupAbort?.abort();
     this.finish(true); this.transcriptionAbort?.abort(); this.stopAudio();
     this.talk.disabled = true; this.replies.disabled = true;
-    this.say("Voice session ended.");
+    this.status.textContent = "Voice session ended.";
   }
 }
 
