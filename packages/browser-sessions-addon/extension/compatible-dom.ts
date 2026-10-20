@@ -24,7 +24,8 @@ export function applicationDOM(method: string, params: any, origin: string): any
     return value;
   };
   const activate = (target: Element, options: MouseEventInit = {}) => {
-    if (target.closest(":disabled")) return;
+    const control = target.closest("button,input,select,textarea,option,optgroup");
+    if (control?.matches(":disabled")) return;
     if (target instanceof HTMLElement) target.click();
     else target.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true, cancelable: true, view: window, detail: 1, ...options }));
   };

@@ -747,5 +747,15 @@ test("compatibility clicks SVG button icons and preserves form activation", asyn
     await host.application.getByRole("button", { name: "Save material" }).evaluate(button => button.disabled = true);
     await f.api(host.path + "/command", command(state, "click", { observation_id: observed.observation_id, ref: button.ref }));
     assert.equal(await host.application.evaluate(() => window.saved), 1, "Disabled icon buttons remain disabled");
+    await host.application.evaluate(() => {
+      const fieldset = document.createElement("fieldset"); fieldset.disabled = true;
+      fieldset.innerHTML = '<legend><label><input type="checkbox" aria-label="Enable advanced settings">Enable advanced settings</label></legend><input aria-label="Disabled setting">';
+      document.body.prepend(fieldset);
+    });
+    const controls = await f.api(host.path + "/command", command(state, "observe"));
+    const checkbox = controls.elements.find(value => value.name === "Enable advanced settings"); assert.ok(checkbox);
+    await f.api(host.path + "/command", command(state, "click", { observation_id: controls.observation_id, ref: checkbox.ref }));
+    assert.equal(await host.application.getByRole("checkbox", { name: "Enable advanced settings" }).isChecked(), true,
+      "Controls in a disabled fieldset's first legend remain enabled under HTML rules");
   } finally { await host?.context.close(); await f.stop(); }
 });
