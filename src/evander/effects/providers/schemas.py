@@ -57,7 +57,10 @@ class SecurityScanEffectDefinition(EffectDefinition):
     mode: ConfigValue = "standard"
     from_commit: ConfigValue | None = None
     to_commit: ConfigValue | None = None
-    timeout_seconds: ConfigValue = 3600
+    coverage_policy: ConfigValue = "provider"
+    managed_repo_id: ConfigValue | None = None
+    resume_from_scan_id: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_static_inputs(self):

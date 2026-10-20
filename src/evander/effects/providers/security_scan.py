@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+import time
 
 from evander.security_scans import SCAN_EFFECT_TYPE, SecurityScanRequest, TERMINAL_SCAN_STATUSES
 from evander.effects.providers.schemas import SecurityScanEffectDefinition
@@ -85,6 +86,10 @@ class SecurityScanEffectProvider(EffectProviderBase):
                 record.outputs["scan_id"], directory_path=scope, runtime=runtime
             )
             if not scan.result or scan.result.status not in TERMINAL_SCAN_STATUSES:
+                outputs = scan.outputs()
+                if outputs != record.outputs:
+                    record.outputs = outputs
+                    worker.execution_store.put(record)
                 continue
             outputs = scan.outputs()
             success = scan.result.success
@@ -159,4 +164,20 @@ class SecurityScanCleanupHook(EffectLifecycleHookBase):
                 scan.scan_id, directory_path=scan.directory_path, runtime=provider.runtime_context
             )
             changed += 1
+        if time.monotonic() >= getattr(worker, "_security_scan_maintenance_at", 0):
+            worker._security_scan_maintenance_at = time.monotonic() + 300
+            for provider in service.providers.values():
+                candidates = getattr(provider, "maintenance_candidates", None)
+                if not callable(candidates):
+                    continue
+                for scan_id, directory in candidates(service.store.path.parent):
+                    scan = service.store.get(scan_id, directory)
+                    definition = SecurityScanEffectDefinition(
+                        id="scan-retention",
+                        display_name="Security scan retention",
+                        type=SCAN_EFFECT_TYPE,
+                        **scan.request.model_dump(),
+                    )
+                    instance = worker.provider_factory.build(definition, directory_path=directory)
+                    changed += provider.maintain(instance.runtime_context)
         return changed

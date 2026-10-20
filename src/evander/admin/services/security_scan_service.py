@@ -65,6 +65,9 @@ class SecurityScanService:
             raise ValueError(
                 f"Security scan provider {request.provider!r} is not installed and enabled"
             )
+        policies = getattr(self.providers[request.provider], "coverage_policies", {"provider"})
+        if request.coverage_policy not in policies:
+            raise ValueError("The selected provider does not support this coverage policy")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(
@@ -82,12 +85,117 @@ class SecurityScanService:
         with self._locked(scan_id):
             return self._advance(self.store.get(scan_id, directory_path), runtime)
 
+    def read_metadata(self, scan_id: str, *, directory_path: str) -> dict[str, Any]:
+        """Read scoped operator metadata without polling, launching, or disclosing logs."""
+        if not re.fullmatch(r"[a-f0-9]{32}", scan_id):
+            raise ValueError("Invalid security scan identity")
+        record = self.store.get(scan_id, directory_path)
+        output = record.outputs()
+        result = {
+            key: output.get(key)
+            for key in (
+                "scan_id",
+                "directory_path",
+                "managed_repo_id",
+                "mode",
+                "status",
+                "coverage",
+                "coverage_policy",
+                "resume_from_scan_id",
+                "to_commit",
+                "coverage_progress",
+                "cleanup_confirmed",
+            )
+        }
+        describe = getattr(self.providers.get(record.request.provider), "describe", None)
+        result["resumable"] = False
+        if callable(describe):
+            extra = describe(record=record, runtime_dir=self.store.path.parent)
+            result.update(
+                {
+                    key: value
+                    for key, value in extra.items()
+                    if key
+                    in {
+                        "resumable",
+                        "resumable_until",
+                        "pinned_ref",
+                        "to_commit",
+                        "coverage_progress",
+                        "cleanup_confirmed",
+                        "lineage",
+                        "inventory_digest",
+                        "execution_configuration",
+                    }
+                }
+            )
+        result["coverage_progress"] = {
+            key: value
+            for key, value in (result.get("coverage_progress") or {}).items()
+            if key
+            in {
+                "phase",
+                "files_total",
+                "files_reviewed",
+                "files_not_applicable",
+                "files_blocked",
+                "files_pending",
+                "active_reviews",
+                "completed_reviews",
+                "attempts",
+                "deadline_at",
+                "last_progress_at",
+                "cleanup_condition",
+            }
+        }
+        if "execution_configuration" in result:
+            result["execution_configuration"] = {
+                key: value
+                for key, value in (result["execution_configuration"] or {}).items()
+                if key
+                in {
+                    "model",
+                    "reasoning_effort",
+                    "auth_mode",
+                    "subscription_profile_id",
+                    "cyber_access_program",
+                    "model_provider_mode",
+                    "image",
+                    "image_alias",
+                }
+            }
+        return result
+
     def _advance(self, record: SecurityScanRecord, runtime: Any) -> SecurityScanRecord:
-        if record.result and record.result.status in TERMINAL_SCAN_STATUSES:
+        if (
+            record.result
+            and record.result.status in TERMINAL_SCAN_STATUSES
+            and record.result.cleanup_confirmed
+        ):
             return record
         provider = self.providers.get(record.request.provider)
         if provider is None:
             raise ValueError(f"Security scan provider {record.request.provider!r} is not enabled")
+        if record.result and record.result.status in TERMINAL_SCAN_STATUSES:
+            try:
+                updated = (
+                    provider.poll(handle=record.handle, runtime=runtime)
+                    if record.handle
+                    else provider.cancel(
+                        scan_id=record.scan_id, request=record.request, handle=None, runtime=runtime
+                    )
+                )
+            except (ValueError, RuntimeError, OSError):
+                return record
+            if isinstance(updated, SecurityScanResult):
+                record.result = record.result.model_copy(
+                    update={
+                        "cleanup_confirmed": updated.cleanup_confirmed,
+                        "coverage_progress": updated.coverage_progress,
+                    }
+                )
+                self.store.save(record)
+            return record
         try:
             self._session(record.request, record.directory_path)
             elapsed = (datetime.now(UTC) - record.created_at).total_seconds()
@@ -105,13 +213,44 @@ class SecurityScanService:
                 )
             except SecurityScanRetryableError:
                 return record
+            except (ValueError, RuntimeError, LookupError, OSError):
+                if record.request.coverage_policy != "all_tracked_files":
+                    raise
+                return self._cancel(
+                    record,
+                    provider,
+                    runtime,
+                    "failed",
+                    "Tracked scan could not start; inspect the scanner configuration and private operator diagnostics",
+                )
             self.store.save(record)
         try:
             result = provider.poll(handle=record.handle, runtime=runtime)
         except SecurityScanRetryableError:
             return record
         except ValueError as exc:
-            result = SecurityScanResult(status="failed", error=str(exc))
+            if record.request.coverage_policy == "all_tracked_files":
+                result = record.result or SecurityScanResult(
+                    status="failed", coverage="partial", cleanup_confirmed=False
+                )
+                try:
+                    provider.cancel(
+                        scan_id=record.scan_id,
+                        request=record.request,
+                        handle=record.handle,
+                        runtime=runtime,
+                    )
+                    result = provider.poll(handle=record.handle, runtime=runtime)
+                except (ValueError, RuntimeError, OSError):
+                    result = result.model_copy(update={"cleanup_confirmed": False})
+                result = result.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": "Coverage state could not be verified; inspect operator diagnostics",
+                    }
+                )
+            else:
+                result = SecurityScanResult(status="failed", error=str(exc))
         if result.status == "completed" and result.coverage != "complete":
             result = result.model_copy(
                 update={"status": "failed", "error": "Security scan coverage is incomplete"}
@@ -121,17 +260,23 @@ class SecurityScanService:
         return record
 
     def _cancel(self, record, provider, runtime, status, reason):
-        provider.cancel(
-            scan_id=record.scan_id, request=record.request, handle=record.handle, runtime=runtime
-        )
-        if record.handle:
-            try:
+        result = record.result or SecurityScanResult(status=status, cleanup_confirmed=False)
+        try:
+            cancelled = provider.cancel(
+                scan_id=record.scan_id,
+                request=record.request,
+                handle=record.handle,
+                runtime=runtime,
+            )
+            if isinstance(cancelled, SecurityScanResult):
+                result = cancelled
+            elif record.handle:
                 result = provider.poll(handle=record.handle, runtime=runtime)
-            except (ValueError, RuntimeError):
-                # A stopped/expired session may no longer permit artifact collection.
-                result = record.result or SecurityScanResult(status=status)
-        else:
-            result = SecurityScanResult(status=status)
+            else:
+                result = result.model_copy(update={"cleanup_confirmed": True})
+        except (ValueError, RuntimeError, OSError):
+            # Preserve the reservation while a lost launch/stop is uncertain.
+            result = result.model_copy(update={"cleanup_confirmed": False})
         record.result = result.model_copy(update={"status": status, "error": reason})
         self.store.save(record)
         return record
@@ -140,7 +285,7 @@ class SecurityScanService:
         with self._locked(scan_id):
             record = self.store.get(scan_id, directory_path)
             if record.result and record.result.status in TERMINAL_SCAN_STATUSES:
-                return record
+                return self._advance(record, runtime)
             provider = self.providers[record.request.provider]
             return self._cancel(
                 record, provider, runtime, "cancelled", "Workflow execution cancelled"

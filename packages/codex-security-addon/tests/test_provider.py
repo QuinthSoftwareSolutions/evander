@@ -109,8 +109,25 @@ def test_archive_publication_filters_raw_diagnostics_even_from_older_images(
         prefix + "launcher.log",
         prefix + "execution.json",
         prefix + "diagnostics/native/sessions/rollout.jsonl",
+        prefix + "reports/scan/diagnostics/report.md",
     ]
     files += [prefix + "reports"] if legacy else report_paths
+    writeups = (
+        []
+        if legacy
+        else [
+            prefix + f"reports/scan/findings/{slug}/{slug}.md"
+            for slug in (
+                "auth_bypass",
+                "auth.bypass",
+                "auth-bypass",
+                "diagnostics",
+                "sessions",
+                "log",
+            )
+        ]
+    )
+    files += writeups
     monkeypatch.setattr(provider, "_command", lambda *args: {"paths": files})
     published = []
 
@@ -141,6 +158,7 @@ def test_archive_publication_filters_raw_diagnostics_even_from_older_images(
     )
     assert set(published[0].source_paths) == {
         *report_paths,
+        *writeups,
         prefix + "result.json",
         prefix + "target.json",
     }
@@ -255,3 +273,54 @@ def test_cancel_lost_launch_only_reads_and_stops_existing_job(launching, monkeyp
         runtime=None,
     )
     assert calls == [(action, "scan-" + "1" * 32) for action in ("get", "stop", "delete")]
+
+
+def test_staged_coverage_input_keeps_existing_worker_profile_command_prefix(launching):
+    import json
+    from pathlib import Path
+
+    provider, _, _, _, prepared = launching
+    destination = "/home/agent/.evander/security-scan-inputs/" + "a" * 32 + ".json"
+    provider._start_raw(
+        scan_id="a" * 32,
+        request=SecurityScanRequest(session_id="session-1", repo_path="/home/agent/repo"),
+        runtime=None,
+        payload={"_request_file": destination},
+    )
+    profile = json.loads(
+        (Path(__file__).parents[1] / "examples/codex-runtime-profiles.json").read_text()
+    )["codex-security"]
+    assert prepared[0].command[:3] == profile["command_prefix"]
+    assert json.loads(prepared[0].command[3]) == {"_request_file": destination}
+    assert prepared[0].codex_runtime.subscription_profile_id == "review"
+
+
+def test_frozen_subscription_route_cannot_fall_back_during_configuration_race(
+    launching, tmp_path, monkeypatch
+):
+    from evander_codex_security_addon.coverage_provider import CoverageController
+
+    provider, config, _, _, prepared = launching
+    config.model_provider_mode = "azure"
+    monkeypatch.setattr(
+        implementation, "effective_codex_auth_mode", lambda **_: CodexAuthMode.METERED_API
+    )
+    frozen = {
+        "model_provider_mode": "openai_public",
+        "auth_mode": "chatgpt_subscription",
+        "subscription_profile_id": "frozen-profile",
+        "cyber_access_program": "daybreak_blue",
+        "image": "frozen-scanner",
+    }
+    monkeypatch.setattr(CoverageController, "route", lambda *_: frozen)
+    provider._start_raw(
+        scan_id="a" * 32,
+        request=SecurityScanRequest(session_id="session-1", repo_path="/home/agent/repo"),
+        runtime=SimpleNamespace(config_path=lambda _: tmp_path),
+        payload={"_request_file": "/home/agent/request.json"},
+        frozen_route=frozen,
+    )
+    spec = prepared[0]
+    assert spec.codex_runtime.subscription_profile_id == "frozen-profile"
+    assert spec.codex_runtime.cyber_access_program == "daybreak_blue"
+    assert spec.image == "frozen-scanner"

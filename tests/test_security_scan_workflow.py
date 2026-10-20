@@ -92,6 +92,23 @@ def test_workflow_waits_and_recovers_scan_completion_after_worker_restart(tmp_pa
             time.sleep(0.01)
         assert rows[0].status == "waiting"
         assert len(starts) == 1
+        terminal.append(
+            SecurityScanResult(
+                status="running",
+                coverage="partial",
+                coverage_progress={"phase": "reviewing", "files_total": 3, "files_reviewed": 1},
+            )
+        )
+        for _ in range(30):
+            worker._recovery_schedule.next_due = 0
+            worker.run_once()
+            rows = list(worker.execution_store.read_all().values())
+            if rows[0].outputs.get("coverage_progress", {}).get("files_reviewed") == 1:
+                break
+            time.sleep(0.01)
+        assert rows[0].status == "waiting"
+        assert rows[0].outputs["coverage_progress"]["files_reviewed"] == 1
+        terminal.clear()
     finally:
         worker.close()
 

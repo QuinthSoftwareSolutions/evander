@@ -7,6 +7,14 @@ broker profiles, private reports, and bounded smoke checks. Connect the node's
 `completed` and `error` ports explicitly; completed findings are data for gates,
 while incomplete coverage is an error.
 
+The opt-in [tracked coverage controller](../packages/codex-security-addon/docs/tracked-coverage.md)
+retains the original inventory and accepted component reviews for explicit
+continuation. Provision seven-hour scanner/notification sessions for its six-hour
+budget. Deliver partial artifacts before agent summaries, and hold repository
+reservations until `cleanup_confirmed` is true. Deploy worker code and the rebuilt
+scanner image, then qualify interruption/resume on a bounded synthetic repository
+before enabling it in operator workflows.
+
 For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
 Its setup verifies recovery before enabling writes, and its directory-scoped workflow
 resumes publication, live checks and conditional restore after a worker restart.

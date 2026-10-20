@@ -25,7 +25,22 @@ class SecurityScanRequest(BaseModel):
     mode: Literal["standard", "deep"] = "standard"
     from_commit: str | None = None
     to_commit: str | None = None
+    coverage_policy: Literal["provider", "all_tracked_files"] = "provider"
+    managed_repo_id: str | None = None
+    resume_from_scan_id: str | None = None
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_budget(cls, value):
+        if isinstance(value, dict) and value.get("timeout_seconds") is None:
+            value = {
+                **value,
+                "timeout_seconds": 21600
+                if value.get("coverage_policy") == "all_tracked_files"
+                else 3600,
+            }
+        return value
 
     @field_validator("session_id", "provider", mode="before")
     @classmethod
@@ -57,6 +72,18 @@ class SecurityScanRequest(BaseModel):
     def compatible_mode(self) -> SecurityScanRequest:
         if self.mode == "deep" and (self.from_commit or self.to_commit):
             raise ValueError("deep scans require the whole repository; omit commit bounds")
+        if self.coverage_policy == "all_tracked_files":
+            if self.mode != "standard" or self.from_commit or self.to_commit:
+                raise ValueError("tracked coverage requires a Standard full snapshot")
+            if not self.managed_repo_id or not self.managed_repo_id.strip():
+                raise ValueError("tracked coverage requires managed_repo_id")
+            if self.timeout_seconds > 21600:
+                raise ValueError("tracked coverage has a maximum six-hour run budget")
+        if self.resume_from_scan_id is not None:
+            if self.coverage_policy != "all_tracked_files":
+                raise ValueError("resume requires all_tracked_files coverage")
+            if not re.fullmatch(r"[a-f0-9]{32}", self.resume_from_scan_id):
+                raise ValueError("Invalid source scan identity")
         return self
 
 
@@ -77,6 +104,8 @@ class SecurityScanResult(BaseModel):
     severity_counts: dict[str, int] = Field(default_factory=dict)
     artifacts: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    coverage_progress: dict[str, Any] = Field(default_factory=dict)
+    cleanup_confirmed: bool = True
 
     @property
     def success(self) -> bool:
@@ -144,6 +173,9 @@ class SecurityScanRecord(BaseModel):
             "provider": self.request.provider,
             "repo_path": self.request.repo_path,
             "mode": self.request.mode,
+            "coverage_policy": self.request.coverage_policy,
+            "managed_repo_id": self.request.managed_repo_id,
+            "resume_from_scan_id": self.request.resume_from_scan_id,
             "success": result.success if result else False,
             "status": result.status if result else "running",
             **(result.model_dump(mode="json", exclude={"status"}) if result else {}),
@@ -204,5 +236,7 @@ class SecurityScanStore:
 
     def active(self) -> list[SecurityScanRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT payload FROM scans WHERE terminal=0").fetchall()
+            rows = connection.execute(
+                "SELECT payload FROM scans WHERE terminal=0 OR json_extract(payload,'$.result.cleanup_confirmed')=0"
+            ).fetchall()
         return [SecurityScanRecord.model_validate_json(row[0]) for row in rows]

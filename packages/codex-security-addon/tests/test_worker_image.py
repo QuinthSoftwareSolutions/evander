@@ -27,6 +27,8 @@ def image_builder(tmp_path):
         "evander_codex_security_addon/runner.py",
         "evander_codex_security_addon/codex_bridge.py",
         "evander_codex_security_addon/configure.mjs",
+        "evander_codex_security_addon/coverage_runner.py",
+        "evander_codex_security_addon/coverage_sdk.mjs",
     ]:
         target = package / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +143,7 @@ def test_unchanged_scan_image_reuses_archive_without_install_or_docker(image_bui
 
 
 @pytest.mark.parametrize(
-    "changed", ["base", "node", "runner", "bridge", "configure", "lock", "builder", "dockerfile"]
+    "changed", ["base", "node", "runner", "bridge", "configure", "coverage_runner", "coverage_sdk", "lock", "builder", "dockerfile"]
 )
 def test_changed_runtime_or_base_rebuilds(image_builder, changed):
     assert run_builder(image_builder).returncode == 0
@@ -152,6 +154,8 @@ def test_changed_runtime_or_base_rebuilds(image_builder, changed):
         "runner": package / "evander_codex_security_addon/runner.py",
         "bridge": package / "evander_codex_security_addon/codex_bridge.py",
         "configure": package / "evander_codex_security_addon/configure.mjs",
+        "coverage_runner": package / "evander_codex_security_addon/coverage_runner.py",
+        "coverage_sdk": package / "evander_codex_security_addon/coverage_sdk.mjs",
         "lock": package / "package-lock.json",
         "builder": package / "scripts/build-runtime.sh",
         "dockerfile": package / "examples/Dockerfile",

@@ -20,6 +20,7 @@ from evander.queries.providers.schemas import (
     ArtifactSpaceListQueryDefinition,
     CommunicationMessagesQueryDefinition,
     CodexSubscriptionQuotaQueryDefinition,
+    SecurityScanQueryDefinition,
     GitMergeBaseQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
@@ -47,6 +48,7 @@ from evander.workflow.contracts import (
 )
 
 _QUERY_MODEL_BY_TYPE = {
+    "query:security:scan": SecurityScanQueryDefinition,
     "query:classification:evaluate": ClassificationEvaluateQueryDefinition,
     "query:ado:builds": AdoBuildsQueryDefinition,
     "query:text:regex": TextRegexQueryDefinition,

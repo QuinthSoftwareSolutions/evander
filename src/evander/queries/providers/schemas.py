@@ -122,6 +122,11 @@ class SessionListQueryDefinition(QueryDefinition):
         raise ValueError("query:session:list metadata_exists must be a string, array, or object")
 
 
+class SecurityScanQueryDefinition(QueryDefinition):
+    type: Literal["query:security:scan"]
+    scan_id: ConfigValue
+
+
 class CodexSubscriptionQuotaQueryDefinition(QueryDefinition):
     type: Literal["query:codex:subscription-quota"]
     profile_id: ConfigValue

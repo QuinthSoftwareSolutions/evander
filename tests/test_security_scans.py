@@ -266,3 +266,116 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     )
     assert {field.key for field in node.fields if field.required} == {"session_id", "repo_path"}
     assert {port.key for port in node.output_ports} == {"completed", "error"}
+
+
+def test_tracked_coverage_defaults_and_unsupported_modes():
+    tracked = request(coverage_policy="all_tracked_files", managed_repo_id="managed-example")
+    assert tracked.timeout_seconds == 21600
+    for invalid in (
+        {"managed_repo_id": None},
+        {"from_commit": "a" * 40},
+        {"to_commit": "a" * 40},
+        {"mode": "deep"},
+    ):
+        values = {
+            "coverage_policy": "all_tracked_files",
+            "managed_repo_id": "managed-example",
+            **invalid,
+        }
+        with pytest.raises(ValidationError):
+            request(**values)
+    with pytest.raises(ValidationError, match="resume requires"):
+        request(resume_from_scan_id="a" * 32)
+
+
+def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
+    from evander.queries.providers.base import QueryRuntimeContext
+    from evander.queries.providers.security_scan import SecurityScanQueryProvider
+    from evander.queries.providers.schemas import SecurityScanQueryDefinition
+
+    service, scanner, _ = scanning
+    record = start(service)
+    scanner.result = SecurityScanResult(
+        status="running",
+        error="private diagnostic data",
+        artifacts={"private": "hidden"},
+        findings=[{"raw": "hidden"}],
+        coverage_progress={"files_total": 3},
+    )
+    service.poll(record.scan_id, directory_path="root/project", runtime=None)
+    provider = SecurityScanQueryProvider()
+    provider.initialize(
+        SecurityScanQueryDefinition(
+            id="lookup", display_name="Lookup", type="query:security:scan", scan_id=record.scan_id
+        ),
+        QueryRuntimeContext(
+            provider_config={},
+            metadata={"directory_path": "root/project"},
+            admin_service=SimpleNamespace(security_scan_service=service),
+        ),
+    )
+    before = list(scanner.starts)
+    result = provider.execute()
+    assert result["coverage_progress"] == {"files_total": 3}
+    assert result["resumable"] is False
+    assert not ({"error", "artifacts", "findings", "repo_path"} & result.keys())
+    assert scanner.starts == before
+    scanner.describe = lambda **_: {
+        "coverage_progress": {"files_total": 4, "raw_diagnostics": "private"},
+        "execution_configuration": {"model": "synthetic", "api_key": "private"},
+        "raw_diagnostics": "private",
+    }
+    result = provider.execute()
+    assert result["coverage_progress"] == {"files_total": 4}
+    assert result["execution_configuration"] == {"model": "synthetic"}
+    assert "raw_diagnostics" not in result
+    scanner.describe = lambda **_: {"execution_configuration": None}
+    assert provider.execute()["execution_configuration"] == {}
+    provider.runtime_context = QueryRuntimeContext(
+        provider_config={},
+        metadata={"directory_path": "root/other"},
+        admin_service=SimpleNamespace(security_scan_service=service),
+    )
+    assert provider.execute() == {"found": False, "scan_id": record.scan_id, "resumable": False}
+
+
+def test_provider_must_explicitly_support_tracked_policy(scanning):
+    service, scanner, _ = scanning
+    with pytest.raises(ValueError, match="does not support"):
+        start(service, coverage_policy="all_tracked_files", managed_repo_id="managed-example")
+    assert scanner.starts == []
+
+
+def test_uncertain_cancellation_retains_active_record_until_cleanup(scanning):
+    service, scanner, _ = scanning
+    record = start(service)
+    scanner.cancel = lambda **_: (_ for _ in ()).throw(RuntimeError("Worker unreachable"))
+    cancelled = service.cancel(record.scan_id, directory_path="root/project", runtime=None)
+    assert cancelled.result.status == "cancelled"
+    assert not cancelled.result.cleanup_confirmed
+    assert [x.scan_id for x in service.store.active()] == [record.scan_id]
+    scanner.result = SecurityScanResult(
+        status="failed",
+        coverage="partial",
+        cleanup_confirmed=True,
+        findings=[{"late": "do not replace the published result"}],
+    )
+    cleaned = service.poll(record.scan_id, directory_path="root/project", runtime=None)
+    assert cleaned.result.status == "cancelled"
+    assert cleaned.result.cleanup_confirmed
+    assert cleaned.result.findings == cancelled.result.findings
+    assert list(service.store.active()) == []
+
+
+def test_tracked_start_failure_preserves_scan_identity_and_safe_status(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    scanner.start = lambda **_: (_ for _ in ()).throw(
+        ValueError("Private runtime configuration detail")
+    )
+    record = start(service, coverage_policy="all_tracked_files", managed_repo_id="managed-example")
+    assert record.scan_id
+    assert record.result.status == "failed"
+    assert record.result.cleanup_confirmed
+    assert "Private runtime" not in record.result.error
+    assert list(service.store.active()) == []
