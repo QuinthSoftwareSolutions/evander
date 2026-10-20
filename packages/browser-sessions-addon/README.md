@@ -32,7 +32,7 @@ For local support, create mode user_hosted and call browser_session_invite. The 
 
 After upgrading, existing local sessions can be observed by their creating agent. Use **Allow Truman to interact** again to grant that agent input; legacy support agents are removed when their session closes.
 
-For scanner-style keyboard input, update and reload Chrome extension **0.2.4** or later. The type action sends character keystrokes; use fill to replace a specific text field and key with Enter to submit. Hosted browser controllers also need the updated package before starting a new preview.
+For scanner-style keyboard input and clicks inside scrollable containers, update and reload Chrome extension **0.2.4** or later. The type action sends character keystrokes; use fill to replace a specific text field and key with Enter to submit. Hosted browser controllers also need the updated package before starting a new preview.
 
 Browser feedback is pinned to the creating conversation. If its native thread is still being recorded, messages wait for that run rather than resume another recent chat. For an older session without a recorded conversation, create a new sharing session from the intended assistant conversation.
 

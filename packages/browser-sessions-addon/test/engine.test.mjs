@@ -90,28 +90,33 @@ test("observation rejects a changed origin before returning page contents", asyn
 });
 
 for (const interruption of ["pause", "origin"]) {
-  test("typing stops between character events after " + interruption, async () => {
-    let state = {id:"b", controller:"agent:a", control_generation:1,
-      allowed_origins:["https://application.test"], expires_at:Date.now()/1000+60};
-    let engine, url = "https://application.test/";
-    const inputs = [];
-    const send = async (method, params) => {
-      if (method === "Page.getFrameTree") return {frameTree:{frame:{url}}};
-      if (method === "Accessibility.getFullAXTree") return {nodes:[]};
-      if (method === "Page.captureScreenshot") return {data:"jpeg"};
-      if (method === "Page.getLayoutMetrics") return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
-      if (method.startsWith("Input.")) {
-        inputs.push({method, type:params.type, key:params.key});
-        if (interruption === "pause") {
-          state = {...state, controller:null, control_generation:2}; engine.update(state);
-        } else { url = "https://unapproved.test/"; }
-      }
-      return {};
-    };
-    engine = new BrowserEngine(send, state, () => {});
-    const observation = await engine.execute({action:"observe",generation:1},"agent:a");
-    await assert.rejects(engine.execute({action:"type",generation:1,
-      observation_id:observation.observation_id,text:"AB"},"agent:a"), /stale_control|origin_denied/);
-    assert.deepEqual(inputs, [{method:"Input.dispatchKeyEvent",type:"keyDown",key:"A"}]);
-  });
+  for (const action of ["type", "click"]) {
+    test(action + " stops after " + interruption + " interrupts an input primitive", async () => {
+      let state = {id:"b", controller:"agent:a", control_generation:1,
+        allowed_origins:["https://application.test"], expires_at:Date.now()/1000+60};
+      let engine, url = "https://application.test/";
+      const inputs = [];
+      const send = async (method, params) => {
+        if (method === "Page.getFrameTree") return {frameTree:{frame:{url}}};
+        if (method === "Accessibility.getFullAXTree") return {nodes:[
+          {backendDOMNodeId:10,role:{value:"button"},name:{value:"Select"}}]};
+        if (method === "Page.captureScreenshot") return {data:"jpeg"};
+        if (method === "Page.getLayoutMetrics") return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
+        if (method.startsWith("Input.") || method === "DOM.scrollIntoViewIfNeeded") {
+          inputs.push({method, type:params.type, key:params.key});
+          if (interruption === "pause") {
+            state = {...state, controller:null, control_generation:2}; engine.update(state);
+          } else { url = "https://unapproved.test/"; }
+        }
+        return {};
+      };
+      engine = new BrowserEngine(send, state, () => {});
+      const observation = await engine.execute({action:"observe",generation:1},"agent:a");
+      await assert.rejects(engine.execute({action,generation:1,ref:"node-10",
+        observation_id:observation.observation_id,text:"AB"},"agent:a"), /stale_control|origin_denied/);
+      assert.deepEqual(inputs, action === "type"
+        ? [{method:"Input.dispatchKeyEvent",type:"keyDown",key:"A"}]
+        : [{method:"DOM.scrollIntoViewIfNeeded",type:undefined,key:undefined}]);
+    });
+  }
 }

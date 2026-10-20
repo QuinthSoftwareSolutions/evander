@@ -90,6 +90,10 @@ export class BrowserEngine {
     if (command.ref && ["click", "hover", "highlight"].includes(command.action)) {
       const backendNodeId = this.refs.get(command.ref);
       if (!backendNodeId) throw new Error("stale_observation");
+      if (command.action !== "highlight") {
+        await input("DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        await fence();
+      }
       const { model } = await this.send("DOM.getBoxModel", { backendNodeId });
       x = (model.content[0] + model.content[4]) / 2;
       y = (model.content[1] + model.content[5]) / 2;
