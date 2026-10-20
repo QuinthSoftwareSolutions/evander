@@ -91,6 +91,7 @@ async function refresh() {
     $("status").textContent = !result.connected ? "Disconnected — agent control is paused" :
       result.granted ? "Truman may interact with this tab" : "Observe only — you control this tab";
     $("compatibility").hidden = result.mode !== "compatibility";
+    if (result.mode === "helper") $("status").textContent += " · Local helper";
     $("compatibility").textContent = "Compatibility mode keeps your other extensions active. Native browser dialogs and pages requiring trusted input need normal mode.";
     const ended = ["closing", "closed", "expired", "failed", "cleanup_failed"].includes(result.session.state);
     if (ended) stopVoice(); else startVoice();
@@ -110,9 +111,11 @@ $("pair").addEventListener("click", async () => {
     $("error").textContent = "";
     const invitation = ($("invitation") as HTMLInputElement).value;
     const url = new URL(invitation);
-    const granted = await chrome.permissions.request({ origins: [url.origin + "/*"] });
+    const mode = ($("connection-mode") as HTMLSelectElement).value;
+    const granted = await chrome.permissions.request({ origins: [url.origin + "/*"],
+      ...(mode === "helper" ? { permissions: ["nativeMessaging"] } : {}) });
     if (!granted) throw new Error("Connection permission was not granted");
-    await call({ kind: "pair", invitation }); await refresh();
+    await call({ kind: "pair", invitation, mode }); await refresh();
   } catch (error) { failure(error); }
 });
 for (const [button, action] of [["grant", "grant"], ["pause", "pause"]])
@@ -141,3 +144,15 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", stopVoice, { once: true });
 setInterval(() => void refresh().catch(failure), 2000);
 void refresh().catch(failure);
+
+($("extension-id") as HTMLInputElement).value = chrome.runtime.id;
+$("invitation").addEventListener("input", () => {
+  const link = $("helper-download") as HTMLAnchorElement;
+  link.hidden = true; $("helper-link-hint").hidden = false;
+  try {
+    const url = new URL(($("invitation") as HTMLInputElement).value);
+    if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname)) return;
+    if (url.pathname !== "/_browser/guest/join") return;
+    link.href = url.origin + "/_browser/helper"; link.hidden = false; $("helper-link-hint").hidden = true;
+  } catch {}
+});

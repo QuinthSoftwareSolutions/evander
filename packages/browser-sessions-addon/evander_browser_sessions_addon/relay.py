@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
@@ -507,6 +507,37 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             headers={"Cache-Control": "no-store"},
         )
 
+    helper_packages = {
+        "win-x64": "Windows x64", "win-arm64": "Windows ARM64",
+        "linux-x64": "Linux x64", "linux-arm64": "Linux ARM64",
+        "osx-x64": "macOS Intel", "osx-arm64": "macOS Apple Silicon",
+    }
+
+    async def helper_download(request):
+        root = Path(__file__).parent / "ui_static"
+        runtime = request.path_params.get("runtime")
+        if runtime is not None:
+            if runtime not in helper_packages:
+                return JSONResponse({"error": "Not found"}, status_code=404)
+            path = root / ("helper-" + runtime + ".zip")
+            if not path.is_file():
+                return JSONResponse({"error": "This helper package has not been published by the operator"}, status_code=404)
+            return FileResponse(path, filename="evander-browser-helper-" + runtime + ".zip", headers={"Cache-Control": "no-store"})
+        links = "".join(
+            '<li><a href="/_browser/helper/' + name + '.zip">' + label + '</a></li>'
+            for name, label in helper_packages.items() if (root / ("helper-" + name + ".zip")).is_file()
+        )
+        return HTMLResponse(
+            '<!doctype html><meta charset="utf-8"><title>Evander Browser Helper</title>'
+            '<h1>Evander Browser Helper</h1><p>Install the optional helper to use native browser control with the Chrome sharing sidebar.</p>'
+            + ('<ul>' + links + '</ul>' if links else '<p>The operator has not published helper packages yet.</p>')
+            + '<p>Extract the package and follow README.txt. Windows users can run Install.cmd. '
+              'Use the extension ID displayed in the sidebar. Enable remote debugging at chrome://inspect/#remote-debugging '
+              'and approve Chrome’s connection prompt. Sharing still starts with observation.</p>',
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                     "Content-Security-Policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"},
+        )
+
     app = Starlette(
         routes=[
             Route("/healthz", health),
@@ -515,6 +546,8 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             Route("/_browser/voice-assets/{name}", voice_asset),
             Route("/_browser/guest/voice/{action}", voice_guest, methods=["GET", "POST"]),
             Route("/_browser/extension.zip", extension_zip),
+            Route("/_browser/helper", helper_download),
+            Route("/_browser/helper/{runtime}.zip", helper_download),
             Route("/_browser/guest/pair", pair, methods=["POST"]),
             Route("/_browser/guest/{action}", guest, methods=["GET", "POST"]),
             WebSocketRoute("/_browser/endpoint", endpoint),

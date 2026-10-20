@@ -5,6 +5,7 @@
   "description":"Share one approved Chrome tab with your Truman agent.",
   "minimum_chrome_version":"125",
   "permissions":["activeTab","debugger","tabCapture","offscreen","scripting","sidePanel","storage"],
+  "optional_permissions":["nativeMessaging"],
   "optional_host_permissions":["https://*/*","http://localhost/*","http://127.0.0.1/*"],
   "background":{"service_worker":"background.js","type":"module"},
   "action":{"default_title":"Share this tab with Truman"},

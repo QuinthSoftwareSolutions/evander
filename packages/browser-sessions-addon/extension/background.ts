@@ -1,5 +1,6 @@
 import { BrowserEngine } from "../shared/engine.js";
 import { CompatibleTab, extensionConflict } from "./compatible-tab.js";
+import { NativeTab } from "./native-tab.js";
 declare const chrome: any;
 let connection: any;
 let socket: WebSocket | undefined;
@@ -14,6 +15,7 @@ let expiry: ReturnType<typeof setTimeout> | undefined;
 let deniedOrigin: string | undefined;
 let mainFrameId: string | undefined;
 let compatible: CompatibleTab | undefined;
+let native: NativeTab | undefined;
 let frameTimer: ReturnType<typeof setInterval> | undefined;
 let upgrading: Promise<void> | undefined;
 
@@ -26,6 +28,7 @@ function send(message: any) {
 }
 async function cdp(method: string, params: any = {}) {
   if (!tabId) throw new Error("tab_closed");
+  if (native) return native.send(method, params);
   if (compatible) return compatible.send(method, params);
   try { return await chrome.debugger.sendCommand({ tabId }, method, params); }
   catch (error) {
@@ -37,10 +40,12 @@ async function cdp(method: string, params: any = {}) {
   }
 }
 function update(state: any) {
-  if (!connection || state.id !== connection.session.id) return;
+  if (!connection || state.id !== connection.session.id ||
+      state.control_generation < connection.session.control_generation) return;
   connection.session = { ...state, allowed_origins: [connection.approvedOrigin] };
   if (!granted) connection.session.controller = null;
   engine?.update(connection.session);
+  native?.update(connection.session);
 }
 function pauseForOrigin(url: string) {
   if (!connection) return;
@@ -200,7 +205,18 @@ async function attach() {
   if (!connection || !tabId) throw new Error("Select the application tab");
   let step = "attaching Chrome to the tab";
   try {
-    try { await chrome.debugger.attach({ tabId }, "1.3"); }
+    if (connection.mode === "helper") {
+      step = "connecting the local helper to Chrome";
+      const current = connection, selected = tabId;
+      const target = (await chrome.debugger.getTargets()).find((value: any) => value.tabId === selected && value.type === "page");
+      if (!target) throw new Error("Chrome could not locate the selected application tab.");
+      native = new NativeTab(current.session,
+        (method, params) => void browserEvent({ tabId: selected }, method, params),
+        () => engine?.navigate(),
+        () => { if (connection === current) void disconnect(); });
+      engine = createEngine(current);
+      await native.open(target.id);
+    } else try { await chrome.debugger.attach({ tabId }, "1.3"); }
     catch (error) {
       if (!extensionConflict(error)) throw error;
       step = "starting extension-compatible sharing";
@@ -228,6 +244,7 @@ async function disconnect(close = true) {
   connection = undefined; granted = false;
   clearTimeout(retry); clearTimeout(expiry); clearInterval(heartbeat); clearInterval(frameTimer);
   socket?.close(); engine = undefined;
+  const local = native; native = undefined; local?.close();
   const capture = compatible; compatible = undefined;
   await capture?.stop();
   if (tabId) { try { await chrome.debugger.detach({ tabId }); } catch {} }
@@ -239,7 +256,7 @@ async function disconnect(close = true) {
   }
 }
 chrome.debugger.onDetach.addListener((source: any, reason: string) => {
-  if (source.tabId !== tabId || !connection || compatible) return;
+  if (source.tabId !== tabId || !connection || compatible || native) return;
   const current = connection;
   granted = false; update({ ...current.session, controller: null }); send({ kind: "paused" });
   engine?.navigate();
@@ -260,7 +277,10 @@ chrome.tabs.onUpdated.addListener((id: number, change: any, tab: any) => {
   if (change.status === "loading" || change.url) compatible.navigate();
   if (change.url || change.status === "loading") pauseForOrigin(tab.url ?? "about:blank");
 });
-chrome.debugger.onEvent.addListener(async (source: any, method: string, params: any) => {
+chrome.debugger.onEvent.addListener((source: any, method: string, params: any) => {
+  if (!native) void browserEvent(source, method, params);
+});
+async function browserEvent(source: any, method: string, params: any) {
   if (source.tabId !== tabId || !connection || !engine || compatible) return;
   if (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") {
     engine.navigate();
@@ -288,7 +308,7 @@ chrome.debugger.onEvent.addListener(async (source: any, method: string, params: 
     if (connection) update({ ...connection.session, controller: null });
     send({ kind: "paused" });
   } finally { await cdp("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {}); }
-});
+}
 chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) => {
   if (message.kind === "microphone_permission_result" || message.target === "tab-capture") return false;
   // Extension pages only. Web pages have no externally-connectable transport.
@@ -314,7 +334,8 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
       if (!response.ok) throw new Error(result.error ?? "Invitation is unavailable");
       await disconnect(false);
       tabId = tab.id;
-      connection = { ...result, base: invite.origin, tabId, approvedOrigin: new URL(tab.url).origin };
+      connection = { ...result, base: invite.origin, tabId, approvedOrigin: new URL(tab.url).origin,
+        mode: message.mode === "helper" ? "helper" : "native" };
       granted = false; deniedOrigin = undefined;
       clearTimeout(expiry);
       expiry = setTimeout(() => void disconnect(false),
@@ -362,7 +383,7 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
     }
     if (message.kind === "origin") {
       // activeTab is renewed when the host clicks our toolbar icon on the new page.
-      const url = compatible ? (await chrome.tabs.get(tabId)).url : (await cdp("Page.getFrameTree")).frameTree.frame.url;
+      const url = (compatible || native) ? (await chrome.tabs.get(tabId)).url : (await cdp("Page.getFrameTree")).frameTree.frame.url;
       if (!url || !/^https?:/.test(url)) throw new Error("Select the application tab and click the Evander toolbar icon before approving it.");
       const approvedOrigin = new URL(url).origin;
       granted = false;

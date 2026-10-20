@@ -351,3 +351,27 @@ def test_hosted_voice_never_accepts_extension_origin(admin, hosted, speech_provi
             },
         )
     assert response.status_code == 403
+
+
+def test_helper_downloads_only_serve_published_known_packages(domain, tmp_path, monkeypatch):
+    from evander_browser_sessions_addon import relay
+
+    service, _, _ = domain
+    monkeypatch.setattr(relay, "__file__", str(tmp_path / "relay.py"))
+    assets = tmp_path / "ui_static"
+    assets.mkdir()
+    package = b"PK\x03\x04synthetic-helper-package"
+    (assets / "helper-win-x64.zip").write_bytes(package)
+    (assets / "private.txt").write_text("not-downloadable")
+    with TestClient(relay_app(tmp_path, service=service, internal_token="test-relay-token")) as client:
+        index = client.get("/_browser/helper")
+        assert index.status_code == 200
+        assert 'href="/_browser/helper/win-x64.zip"' in index.text
+        assert 'href="/_browser/helper/linux-x64.zip"' not in index.text
+        download = client.get("/_browser/helper/win-x64.zip")
+        assert download.status_code == 200 and download.content == package
+        assert "attachment" in download.headers["content-disposition"]
+        assert download.headers["cache-control"] == "no-store"
+        assert client.get("/_browser/helper/linux-x64.zip").status_code == 404
+        assert client.get("/_browser/helper/private.txt.zip").status_code == 404
+        assert client.get("/_browser/helper/..%2Fprivate.txt.zip").status_code == 404

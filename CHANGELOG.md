@@ -3,6 +3,7 @@
 ## 2026-10-20 - Add sidebar voice and Chrome extension coexistence (0.109.0)
 
 - Add optional push-to-talk recording and interruptible spoken replies beside typed chat in the Chrome sharing sidebar, without opening a separate voice tab.
+- Add an optional standalone native-messaging helper for full Chrome input, accessibility and screencasting while retaining the extension sidebar and other extensions. Include per-user installation, release packaging and helper downloads.
 - Fall back to tab-specific video capture and isolated application DOM actions when another extension prevents debugger access; leave protected extension frames intact and keep local input grants and origin checks.
 - Use a one-time microphone permission window when needed; keep recordings, playback and the shared transcript in the sidebar.
 - Bind voice requests to the current sharing session and stop recording, playback and pending transcription when the sidebar or sharing session closes or changes.
