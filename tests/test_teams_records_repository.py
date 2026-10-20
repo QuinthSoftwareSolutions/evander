@@ -13,6 +13,48 @@ from evander.repositories.records import JsonTeamsRecordsRepository, SqliteTeams
 from evander.teams_outbound import TeamsOutboundReceipt, TeamsOutboundEditState, TeamsPendingEdit
 
 
+@pytest.mark.parametrize("repository", [JsonTeamsRecordsRepository, SqliteTeamsRecordsRepository])
+def test_image_authority_and_pending_source_survive_restart_without_inbox_authority(
+    tmp_path, repository
+):
+    from datetime import timedelta
+    from evander.teams_outbound import TeamsImageSlot, TeamsImageVersion
+
+    path = tmp_path / "records"
+    repo = repository(path)
+    now = datetime.now(UTC)
+    image = TeamsImageVersion(
+        artifact_id="comm_" + "a" * 32,
+        sha256="b" * 64,
+        source_url="https://media.example/image?token=synthetic",
+        expires_at=now + timedelta(hours=1),
+        renew_at=now + timedelta(minutes=30),
+    )
+    receipt = TeamsOutboundReceipt(
+        channel_target="team-a/channel-1",
+        message_id="same-id",
+        session_id="session-a",
+        author={"id": "sender"},
+        image_slot=TeamsImageSlot(before="", after=""),
+    )
+    state = TeamsOutboundEditState(
+        text_html="<p>First</p>",
+        body_html="<p>First</p>",
+        image=image,
+        pending=TeamsPendingEdit(text_html="<p>Next</p>", body_html="<p>Next</p>", image=image),
+    )
+    repo.create_outbound_receipt(receipt, state)
+    repo.put("team-a/channel-1/same-id", _message("team-a/channel-1/same-id"))
+    restarted = repository(path)
+    assert restarted.get_outbound_edit_state("team-a/channel-1", "same-id") == state
+    assert (
+        restarted.get_outbound_receipt("team-a/channel-1", "same-id").image_slot
+        == receipt.image_slot
+    )
+    assert restarted.get_outbound_receipt("team-b/channel-2", "same-id") is None
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def _message(cursor: str, *, message_id: str | None = None) -> TeamsMessageEnvelope:
     return TeamsMessageEnvelope(
         cursor=cursor,

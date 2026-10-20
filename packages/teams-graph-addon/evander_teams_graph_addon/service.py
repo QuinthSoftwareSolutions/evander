@@ -1209,7 +1209,7 @@ class GraphTeamsService(ManagedTeamsService):
         )
 
     def _teams_file_message_payload(
-        self, message: str, artifacts: list[dict[str, Any]]
+        self, message: str, artifacts: list[dict[str, Any]], image_version=None
     ) -> dict[str, Any]:
         hosted_contents: list[dict[str, Any]] = []
         attachments: list[dict[str, Any]] = []
@@ -1220,6 +1220,12 @@ class GraphTeamsService(ManagedTeamsService):
             temporary_id = str(index + 1)
             filename = _artifact_filename(artifact, index=index)
             content_type = _artifact_content_type(artifact, filename)
+            if (
+                image_version is not None
+                and artifact.get("artifact_id") == image_version.artifact_id
+            ):
+                inline_images.append((image_version.alt_text, image_version.source_url))
+                continue
             if _artifact_is_inline_teams_image(content_type):
                 hosted_content_url = f"../hostedContents/{temporary_id}/$value"
                 hosted_contents.append(
@@ -1335,17 +1341,22 @@ class GraphTeamsService(ManagedTeamsService):
         session_id: str,
         artifacts: list[dict[str, Any]],
         thread_id: str | None = None,
+        *,
+        image_version=None,
+        post_once=False,
     ) -> dict[str, Any]:
         target = self._require_allowed_target(channel_target)
         normalized_thread_id = str(thread_id or "").strip() or None
         url = self._post_file_url(target, normalized_thread_id)
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = self._request_with_retries(
-                client,
-                "POST",
-                url,
-                json=self._teams_file_message_payload(message, artifacts),
-            )
+            body = self._teams_file_message_payload(message, artifacts, image_version)
+            if post_once:
+                # The creation journal owns recovery. Retrying an uncertain POST
+                # could create a second progress message.
+                response = client.request("POST", url, headers=self._headers(), json=body)
+                response.raise_for_status()
+            else:
+                response = self._request_with_retries(client, "POST", url, json=body)
             payload = response.json()
 
         envelope = self._to_envelope(
@@ -1356,7 +1367,14 @@ class GraphTeamsService(ManagedTeamsService):
             reply_to_id=normalized_thread_id,
         )
         self.message_store.put(envelope.cursor, envelope)
-        record_outbound(self, payload=payload, target=target, envelope=envelope, message=message)
+        record_outbound(
+            self,
+            payload=payload,
+            target=target,
+            envelope=envelope,
+            message=message,
+            image_version=image_version,
+        )
         result = {
             "status": "posted",
             "channel_target": target.normalized,
@@ -1367,6 +1385,10 @@ class GraphTeamsService(ManagedTeamsService):
             "web_url": envelope.metadata.get("web_url"),
             "artifact_count": len(artifacts),
             "message_revision": 1,
+            "image_editable": self.message_store.get_outbound_receipt(
+                target.normalized, envelope.message_id
+            ).image_slot
+            is not None,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -1449,6 +1471,10 @@ class GraphTeamsService(ManagedTeamsService):
         message: str,
         thread_id: str | None = None,
         expected_revision: int | None = None,
+        *,
+        image_version=None,
+        clear_image=False,
+        verify_image_source=None,
     ) -> dict[str, Any]:
         return update_message(
             self,
@@ -1458,6 +1484,9 @@ class GraphTeamsService(ManagedTeamsService):
             message=message,
             thread_id=thread_id,
             expected_revision=expected_revision,
+            image_version=image_version,
+            clear_image=clear_image,
+            verify_image_source=verify_image_source,
         )
 
     def add_reaction(

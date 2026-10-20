@@ -21,7 +21,14 @@ from evander.inline_media import (
 )
 from evander.repositories.records import TeamsRecordsRepository, teams_records_with_outbound
 from evander.text_formatting import render_markdownish_text_to_html
-from evander.teams_outbound import TeamsOutboundReceipt, TeamsOutboundEditState
+from evander.teams_outbound import (
+    TeamsOutboundReceipt,
+    TeamsOutboundEditState,
+    TeamsImageSlot,
+    TeamsImageVersion,
+    compose_outbound_body,
+    outbound_edit_result,
+)
 
 from .common import (
     _sanitize_attachment_metadata,
@@ -264,6 +271,10 @@ class TeamsService(Protocol):
         message: str,
         thread_id: str | None = None,
         expected_revision: int | None = None,
+        *,
+        image_version: TeamsImageVersion | None = None,
+        clear_image: bool = False,
+        verify_image_source=None,
     ) -> dict[str, Any]: ...
 
     def list_attachments(
@@ -286,6 +297,9 @@ class TeamsService(Protocol):
         session_id: str,
         artifacts: list[dict[str, Any]],
         thread_id: str | None = None,
+        *,
+        image_version: TeamsImageVersion | None = None,
+        post_once: bool = False,
     ) -> dict[str, Any]: ...
 
     def add_reaction(
@@ -859,7 +873,14 @@ class StubTeamsService(ManagedTeamsService):
         return self._post_message(message, channel_target, session_id, thread_id, mentions)
 
     def _post_message(
-        self, message, channel_target, session_id, thread_id=None, mentions=None, artifacts=None
+        self,
+        message,
+        channel_target,
+        session_id,
+        thread_id=None,
+        mentions=None,
+        artifacts=None,
+        image_version=None,
     ):
         target = parse_teams_target(channel_target)
         if target.kind == "user":
@@ -886,6 +907,11 @@ class StubTeamsService(ManagedTeamsService):
         attachments = []
         suffix = ""
         for index, artifact in enumerate(artifacts or []):
+            if (
+                image_version is not None
+                and artifact.get("artifact_id") == image_version.artifact_id
+            ):
+                continue
             attachment = {
                 "id": f"stub-attachment-{index}",
                 "name": str(artifact.get("filename") or artifact.get("name") or "file"),
@@ -901,10 +927,12 @@ class StubTeamsService(ManagedTeamsService):
             body_prefix=prefix,
             body_suffix=suffix,
             protected={"mentions": normalized_mentions, "attachments": attachments},
+            image_slot=TeamsImageSlot(before=suffix, after="") if image_version else None,
         )
+        body_html = compose_outbound_body(receipt, text_html, image_version)
         self.message_store.create_outbound_receipt(
             receipt,
-            TeamsOutboundEditState(text_html=text_html, body_html=prefix + text_html + suffix),
+            TeamsOutboundEditState(text_html=text_html, body_html=body_html, image=image_version),
         )
         envelope = TeamsMessageEnvelope(
             cursor=f"{target.normalized}/{message_id}",
@@ -914,7 +942,7 @@ class StubTeamsService(ManagedTeamsService):
             channel_id=target.channel_id or "",
             chat_id=target.chat_id,
             thread_id=effective_thread,
-            content=prefix + text_html + suffix,
+            content=body_html,
             metadata={
                 "source": "teams_graph_api_status",
                 "backend": "stub",
@@ -934,6 +962,7 @@ class StubTeamsService(ManagedTeamsService):
             "message_id": message_id,
             "message_revision": 1,
             "web_url": None,
+            "image_editable": image_version is not None,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -950,6 +979,10 @@ class StubTeamsService(ManagedTeamsService):
         message: str,
         thread_id: str | None = None,
         expected_revision: int | None = None,
+        *,
+        image_version: TeamsImageVersion | None = None,
+        clear_image: bool = False,
+        verify_image_source=None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
         if target.kind == "user":
@@ -967,8 +1000,20 @@ class StubTeamsService(ManagedTeamsService):
             if state is None or not receipt.editable:
                 raise ValueError("Teams message is uneditable")
             text_html = _teams_message_to_html(message)
+            if image_version is not None and clear_image:
+                raise ValueError("Replacement image and clear_image are mutually exclusive")
+            if (image_version is not None or clear_image) and receipt.image_slot is None:
+                raise ValueError("No editable image slot was recorded for this message")
+            image = (
+                image_version if image_version is not None else None if clear_image else state.image
+            )
+            if image is not None and verify_image_source is not None:
+                verify_image_source(image)
             status = "unchanged"
-            if text_html != state.text_html:
+            if text_html != state.text_html or (
+                (image.artifact_id if image else None)
+                != (state.image.artifact_id if state.image else None)
+            ):
                 if expected_revision is not None and expected_revision != state.revision:
                     raise ValueError(
                         f"Stale Teams message revision; current revision is {state.revision}"
@@ -976,7 +1021,8 @@ class StubTeamsService(ManagedTeamsService):
                 state = TeamsOutboundEditState(
                     revision=state.revision + 1,
                     text_html=text_html,
-                    body_html=receipt.body_prefix + text_html + receipt.body_suffix,
+                    body_html=compose_outbound_body(receipt, text_html, image),
+                    image=image,
                 )
                 store.save_outbound_edit_state(target.normalized, message_id, state)
                 envelope = store.get(f"{target.normalized}/{message_id}")
@@ -985,16 +1031,7 @@ class StubTeamsService(ManagedTeamsService):
                         envelope.cursor, envelope.model_copy(update={"content": state.body_html})
                     )
                 status = "stubbed"
-            return {
-                "success": True,
-                "status": status,
-                "session_id": session_id,
-                "channel_target": target.normalized,
-                "message_id": message_id,
-                "thread_id": receipt.thread_id,
-                "message_revision": state.revision,
-                "web_url": receipt.web_url,
-            }
+            return outbound_edit_result(receipt, state, status)
 
     def list_attachments(
         self, message_id: str, *, channel_target: str | None = None
@@ -1048,10 +1085,18 @@ class StubTeamsService(ManagedTeamsService):
         session_id: str,
         artifacts: list[dict[str, Any]],
         thread_id: str | None = None,
+        *,
+        image_version: TeamsImageVersion | None = None,
+        post_once: bool = False,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
         result = self._post_message(
-            message, target.normalized, session_id, thread_id, artifacts=artifacts
+            message,
+            target.normalized,
+            session_id,
+            thread_id,
+            artifacts=artifacts,
+            image_version=image_version,
         )
         result["artifact_count"] = len(artifacts)
         return result
@@ -1081,7 +1126,6 @@ class StubTeamsService(ManagedTeamsService):
             result["team_id"] = target.team_id
             result["channel_id"] = target.channel_id
         return result
-
 
 
 def __getattr__(name: str):

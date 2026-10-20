@@ -7,8 +7,6 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 from evander.models import (
-    CommunicationSendMessageWithAttachmentsRequest,
-    CommunicationSendMessageWithAttachmentsResponse,
     ToolName,
 )
 from evander.policy import PolicyError
@@ -26,11 +24,8 @@ from .commands import TeamsMessageCommands
 def create_teams_tools(
     context: Any, helpers: CommunicationToolHelpers
 ) -> dict[str, Callable[..., Any]]:
-    _artifact_audit_summaries = helpers.artifact_audit_summaries
-    _artifact_payloads = helpers.artifact_payloads
     _communication_target_audit_fields = helpers.communication_target_audit_fields
     _filter_teams_messages_for_session = helpers.filter_teams_messages_for_session
-    _teams_artifacts_with_public_download_links = helpers.teams_artifacts_with_public_download_links
     _teams_cursor_for_target = helpers.teams_cursor_for_target
     audit_failure = helpers.audit_failure
     audit_success = helpers.audit_success
@@ -42,14 +37,23 @@ def create_teams_tools(
         message: str,
         thread_id: str | None = None,
         expected_revision: int | None = None,
+        *,
+        image_artifact_id: str | None = None,
+        clear_image: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """Replace text in a message sent by this session, preserving mentions and rich content.
 
         Use the post result's message_revision as expected_revision for guarded edits.
+        image_artifact_id replaces the opt-in PNG and requires file-send authority/approval.
+        clear_image removes only that PNG using edit authority; neither permits arbitrary HTML.
         User aliases and messages without an outbound ownership receipt cannot be edited.
         """
         return TeamsMessageCommands(
-            context, audit_success=audit_success, audit_failure=audit_failure
+            context,
+            audit_success=audit_success,
+            audit_failure=audit_failure,
+            artifact_helpers=helpers,
         ).update_message(
             session_id,
             channel_target,
@@ -57,6 +61,9 @@ def create_teams_tools(
             message,
             thread_id,
             expected_revision,
+            image_artifact_id=image_artifact_id,
+            clear_image=clear_image,
+            request_id=request_id,
         )
 
     def teams_get_messages(
@@ -502,96 +509,26 @@ def create_teams_tools(
         artifact_ids: list[str],
         thread_id: str | None = None,
         request_id: str | None = None,
+        *,
+        editable_image_artifact_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        request = CommunicationSendMessageWithAttachmentsRequest(
-            session_id=session_id,
-            provider="teams",
-            channel_target=channel_target,
-            message=message,
-            artifact_ids=artifact_ids,
-            thread_id=thread_id,
-            request_id=request_id,
+        """Post staged files; optionally designate one PNG for later guarded image edits."""
+        return TeamsMessageCommands(
+            context,
+            audit_success=audit_success,
+            audit_failure=audit_failure,
+            artifact_helpers=helpers,
+        ).post_file(
+            session_id,
+            channel_target,
+            message,
+            artifact_ids,
+            thread_id,
+            request_id,
+            editable_image_artifact_id=editable_image_artifact_id,
+            idempotency_key=idempotency_key,
         )
-        args = request.model_dump(mode="json")
-        try:
-            session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_FILE)
-            artifacts = _artifact_payloads(artifact_ids)
-            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
-            required_capability = "reply" if thread_id is not None else "write"
-            context.policy.require_communication_file_artifacts(
-                session,
-                artifacts,
-                provider="teams",
-                channel_target=channel_target,
-                allow_teams_user_target=True,
-                capability=required_capability,
-            )
-            target = context.policy.require_teams_send_target(
-                session,
-                channel_target,
-                capability=required_capability,
-            )
-            if parse_teams_target(target).kind == "user" and thread_id is not None:
-                raise PolicyError("Teams user targets do not support thread replies")
-            approval_payload = request.model_dump(
-                mode="json", exclude={"request_id"}, exclude_none=True
-            )
-            approval = context.policy.require_communication_file_send_approval(
-                session, request_id=request_id, payload=approval_payload
-            )
-            artifacts, published_links, published_link_audit = (
-                _teams_artifacts_with_public_download_links(session_id, artifacts)
-            )
-            service = context.teams_service_for_session(session_id)
-            if not hasattr(service, "post_file"):
-                raise ToolError("Configured Teams adapter does not support file posts")
-            send_target = resolve_teams_send_target(service, target)
-            result = service.post_file(
-                message, send_target, session_id, artifacts, thread_id=thread_id
-            )
-            if published_links:
-                result["published_links"] = published_links
-            response = CommunicationSendMessageWithAttachmentsResponse(
-                provider="teams",
-                status=str(result.get("status", "posted")),
-                message_id=result.get("message_id"),
-                artifact_ids=artifact_ids,
-                published_links=published_links,
-                result=result,
-            )
-            audit_success(
-                session_id,
-                ToolName.TEAMS_POST_FILE,
-                args,
-                {
-                    **_communication_target_audit_fields(
-                        provider="teams",
-                        channel_target=target,
-                        approval_request_id=request_id,
-                        approval_decision=None if approval is None else approval.status.value,
-                    ),
-                    "message_id": response.message_id,
-                    "artifacts": _artifact_audit_summaries(artifact_ids),
-                    "published_links": published_link_audit,
-                },
-            )
-            payload = response.model_dump(mode="json")
-            if "message_revision" in result:
-                payload["message_revision"] = result["message_revision"]
-            return payload
-        except PolicyError as exc:
-            audit_failure(session_id, ToolName.TEAMS_POST_FILE, args, str(exc))
-            raise
-        except Exception as exc:
-            audit_failure(
-                session_id,
-                ToolName.TEAMS_POST_FILE,
-                args,
-                str(exc),
-                decision="error",
-                error_class="unexpected_error",
-            )
-            raise
 
     return {
         "teams_get_messages": teams_get_messages,

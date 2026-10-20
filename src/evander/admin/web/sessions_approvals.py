@@ -187,7 +187,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Post staged communication file artifacts to an allowlisted Microsoft Teams target."
     ),
     ToolName.TEAMS_UPDATE_MESSAGE: (
-        "Replace text in a Teams message sent by this session, preserving its rich content."
+        "Edit session-owned Teams text and an explicitly designated progress PNG. "
+        "Publishing an image also requires file-send permission and any configured approval. "
+        "Other images, mentions, files and cards remain protected."
     ),
     ToolName.TEAMS_MEETING_GET_EVENTS: (
         "Read Teams meeting transcript and status events captured for this session."

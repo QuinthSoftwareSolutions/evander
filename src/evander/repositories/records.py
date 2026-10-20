@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
@@ -127,7 +128,7 @@ class JsonDiscordRecordsRepository:
 
 class JsonTeamsRecordsRepository:
     def __init__(self, path: Path) -> None:
-        self._store = JsonStore(path, TeamsMessageEnvelope)
+        self._store = JsonStore(path, TeamsMessageEnvelope, file_mode=0o600)
         self._outbound = JsonTeamsOutboundStore(path)
 
     def create_outbound_receipt(
@@ -184,6 +185,18 @@ class SqliteTeamsRecordsRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = RLock()
+        # Bodies and pending edits may contain image bearer URLs. Prepare mode
+        # before opening SQLite so new WAL files inherit the private DB mode.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
+        for candidate in (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm")):
+            if candidate.exists():
+                candidate.chmod(candidate.stat().st_mode & 0o600)
         self.ensure_schema()
 
     @property
