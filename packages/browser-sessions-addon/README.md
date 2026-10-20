@@ -16,7 +16,7 @@ Use Node 22+ and the repository's Python environment. Run npm ci --ignore-script
 
 Python package builds include the built viewer/controller and extension ZIP. Extract evander_browser_sessions_addon/ui_static/chrome-extension.zip and load its directory in Chrome developer mode, or distribute a signed extension through managed Chrome deployment.
 
-The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual MV3 debugger API, authenticated hosted state, frame streaming, control handover and source/style updates. It pregrants only its optional loopback host permission. Installation dialogs, enterprise policy, real worker networking and SQL require deployment qualification.
+The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual MV3 debugger API, authenticated hosted state, frame streaming, control handover and source/style updates. It pregrants only its optional loopback host permission. Installation dialogs, enterprise policy, real worker networking and SQL require deployment qualification. For the real SQL provisioning/isolation/cleanup check, set EVANDER_BROWSER_TEST_SQL_SERVER, EVANDER_BROWSER_TEST_SQL_PASSWORD and optionally EVANDER_BROWSER_TEST_SQLCMD for a dedicated test server, then run python -m unittest discover -s tests -p test_worker_sql.py. The check creates and drops only generated preview databases and logins; it is skipped when those settings are absent.
 
 ## Agent usage
 
