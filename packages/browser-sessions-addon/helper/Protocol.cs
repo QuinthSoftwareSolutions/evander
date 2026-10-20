@@ -23,16 +23,23 @@ static class Wire
         return JsonNode.Parse(body, documentOptions: new JsonDocumentOptions { MaxDepth = 24 }) as JsonObject
             ?? throw new Denied("invalid_request");
     }
-    public static async Task Write(object message, CancellationToken token)
+    public static async Task Write(object message, CancellationToken token, object? authorityLock = null, Action? validate = null)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(message);
         if (body.Length > 1000000) throw new Denied("image_too_large");
-        var header = new byte[4]; BinaryPrimitives.WriteInt32LittleEndian(header, body.Length);
+        var frame = new byte[body.Length + 4]; BinaryPrimitives.WriteInt32LittleEndian(frame, body.Length);
+        body.CopyTo(frame, 4);
         await Output.WaitAsync(token);
         try
         {
             var output = Console.OpenStandardOutput();
-            await output.WriteAsync(header, token); await output.WriteAsync(body, token); await output.FlushAsync(token);
+            ValueTask write;
+            lock (authorityLock ?? Output)
+            {
+                validate?.Invoke();
+                write = output.WriteAsync(frame.AsMemory(), token);
+            }
+            await write; await output.FlushAsync(token);
         }
         finally { Output.Release(); }
     }

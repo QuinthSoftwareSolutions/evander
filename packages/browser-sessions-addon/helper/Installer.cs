@@ -8,7 +8,16 @@ namespace Evander.BrowserHelper;
 static class Installer
 {
     const string Host = "com.evander.browser_helper";
-    public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Evander", "BrowserHelper");
+    static string LocalData
+    {
+        get
+        {
+            string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
+            if (!Path.IsPathFullyQualified(path)) throw new Denied("installation_failed");
+            return path;
+        }
+    }
+    public static string Root => Path.Combine(LocalData, "Evander", "BrowserHelper");
     static string ConfigRoot => Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
     static IEnumerable<string> Manifests()
     {
@@ -23,7 +32,7 @@ static class Installer
     }
     static string DefaultProfile()
     {
-        if (OperatingSystem.IsWindows()) return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data");
+        if (OperatingSystem.IsWindows()) return Path.Combine(LocalData, "Google", "Chrome", "User Data");
         if (OperatingSystem.IsMacOS()) return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", "Google", "Chrome");
         return Path.Combine(ConfigRoot, "google-chrome");
     }

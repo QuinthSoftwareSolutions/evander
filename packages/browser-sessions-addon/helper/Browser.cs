@@ -34,11 +34,25 @@ sealed class Browser : IAsyncDisposable
     double deadline = double.MaxValue;
     long generation = -1;
     long epoch;
-    readonly Channel<JsonObject> events = Channel.CreateBounded<JsonObject>(new BoundedChannelOptions(8) { FullMode = BoundedChannelFullMode.DropOldest });
+    int streamSize;
+    const int MaxImageCharacters = 800000; // Base64 plus JSON must fit Chrome's 1 MB native-message limit.
+    static readonly (int Width, int Height, int Quality)[] ImageSizes = [(1920, 1080, 65), (1280, 720, 50), (800, 450, 35), (400, 225, 25)];
+    static JsonObject StreamParameters(int index)
+    {
+        var size = ImageSizes[index];
+        return new() { ["format"] = "jpeg", ["quality"] = size.Quality, ["maxWidth"] = size.Width, ["maxHeight"] = size.Height };
+    }
+    readonly Channel<JsonObject> events;
     readonly CancellationTokenSource lifetime = new();
     readonly Task eventPump;
     readonly Task watchdog;
-    public Browser(string profile) { this.profile = profile; eventPump = Pump(); watchdog = Watch(); }
+    public Browser(string profile)
+    {
+        this.profile = profile;
+        events = Channel.CreateBounded<JsonObject>(new BoundedChannelOptions(8) { FullMode = BoundedChannelFullMode.DropOldest },
+            dropped => { if (dropped["method"]?.GetValue<string>() == "Page.screencastFrame") _ = Acknowledge(dropped); });
+        eventPump = Pump(); watchdog = Watch();
+    }
     async Task Watch()
     {
         try
@@ -144,29 +158,42 @@ sealed class Browser : IAsyncDisposable
     {
         if (!Methods.TryGetValue(method, out var allowed) || parameters.Any(item => !allowed.Contains(item.Key))) throw new Denied("unsupported_action");
         if (parameters.ToJsonString().Length > 65536) throw new Denied("invalid_request");
+        // Acknowledgement only releases the selected target's local frame buffer.
+        // It must remain possible after origin/control changes, without exposing pixels.
+        if (method == "Page.screencastFrameAck") { Guard(); return await cdp!.Call(method, parameters, session); }
         long document = Interlocked.Read(ref epoch); bool input = Inputs.Contains(method);
         if (expectedEpoch != document && method != "Page.screencastFrameAck") throw new Denied("stale_observation");
         await Fence(generation, input, document);
         if (method == "Page.navigate" && Origin(parameters["url"]!.GetValue<string>()) != state!.Origin) throw new Denied("origin_denied");
-        if (method == "Page.startScreencast") parameters = new() { ["format"] = "jpeg", ["quality"] = 65, ["maxWidth"] = 1920, ["maxHeight"] = 1080 };
+        double captureWidth = 0, captureHeight = 0;
+        if (method == "Page.startScreencast") parameters = StreamParameters(Volatile.Read(ref streamSize));
         if (method == "Page.captureScreenshot")
         {
             var metrics = await cdp!.Call("Page.getLayoutMetrics", session: session);
             var viewport = metrics["cssVisualViewport"]!;
-            double width = viewport["clientWidth"]!.GetValue<double>(), height = viewport["clientHeight"]!.GetValue<double>();
+            double width = captureWidth = viewport["clientWidth"]!.GetValue<double>(), height = captureHeight = viewport["clientHeight"]!.GetValue<double>();
             parameters = new() { ["format"] = "jpeg", ["quality"] = 65, ["captureBeyondViewport"] = false,
                 ["clip"] = new JsonObject { ["x"] = viewport["pageX"]?.GetValue<double>() ?? 0,
                     ["y"] = viewport["pageY"]?.GetValue<double>() ?? 0, ["width"] = width, ["height"] = height, ["scale"] = Math.Min(1, Math.Min(1920 / width, 1080 / height)) } };
             await Fence(generation, false, document);
         }
-        Guard(generation, input, document);
-        var result = await cdp!.Call(method, parameters, session, authorityLock, () =>
+        JsonObject result;
+        for (int attempt = 0; ; attempt++)
         {
             Guard(generation, input, document);
-            if (Origin(currentUrl) != state!.Origin) throw new Denied("origin_denied");
-        });
-        // After mutating navigation an unknown outcome is returned, never replayed.
-        if (method != "Page.screencastFrameAck") await Fence(generation, input, document);
+            result = await cdp!.Call(method, parameters, session, authorityLock, () =>
+            {
+                Guard(generation, input, document);
+                if (Origin(currentUrl) != state!.Origin) throw new Denied("origin_denied");
+            });
+            // Only read-only image captures are retried. Mutations with unknown outcomes never are.
+            if (method != "Page.screencastFrameAck") await Fence(generation, input, document);
+            if (method != "Page.captureScreenshot" || result["data"]!.GetValue<string>().Length <= MaxImageCharacters) break;
+            if (attempt + 1 == ImageSizes.Length) throw new Denied("image_too_large");
+            var size = ImageSizes[attempt + 1];
+            parameters["quality"] = size.Quality;
+            parameters["clip"]!["scale"] = Math.Min(1, Math.Min(size.Width / captureWidth, size.Height / captureHeight));
+        }
         if (method == "Page.getFrameTree") return new() { ["frameTree"] = new JsonObject { ["frame"] = result["frameTree"]!["frame"]!.DeepClone() } };
         return result;
     }
@@ -192,7 +219,18 @@ sealed class Browser : IAsyncDisposable
             lock (authorityLock) { currentUrl = parameters["url"]!.GetValue<string>(); Interlocked.Increment(ref epoch); }
         }
         else if (method != "Page.screencastFrame") return;
-        events.Writer.TryWrite(new JsonObject { ["method"] = method, ["params"] = parameters.DeepClone() });
+        lock (authorityLock)
+        {
+            events.Writer.TryWrite(new JsonObject { ["method"] = method, ["params"] = parameters.DeepClone(),
+                ["epoch"] = Epoch, ["url"] = currentUrl });
+        }
+    }
+    async Task Acknowledge(JsonObject message)
+    {
+        var browser = cdp; var selected = session;
+        if (browser is null || selected is null) return;
+        try { await browser.Call("Page.screencastFrameAck", new() { ["sessionId"] = message["params"]!["sessionId"]!.DeepClone() }, selected); }
+        catch (Exception error) when (error is Denied or ObjectDisposedException or System.Net.WebSockets.WebSocketException) { }
     }
     async Task Pump()
     {
@@ -203,24 +241,45 @@ sealed class Browser : IAsyncDisposable
                 var method = message["method"]!.GetValue<string>();
                 if (method == "Page.screencastFrame")
                 {
-                    long document = Interlocked.Read(ref epoch);
+                    long document = message["epoch"]!.GetValue<long>();
                     try
                     {
                         Guard(document: document);
-                        if (Origin(currentUrl) != state!.Origin || Origin(await Location()) != state!.Origin) throw new Denied("origin_denied");
+                        if (Origin(message["url"]!.GetValue<string>()) != state!.Origin || Origin(await Location()) != state!.Origin) throw new Denied("origin_denied");
                         Guard(document: document);
-                        await Wire.Write(new { kind = "event", method, epoch = Epoch, @params = message["params"] }, lifetime.Token);
+                        if (message["params"]!["data"]!.GetValue<string>().Length > MaxImageCharacters)
+                        {
+                            await Acknowledge(message);
+                            int previous = Volatile.Read(ref streamSize);
+                            if (previous + 1 < ImageSizes.Length && Interlocked.CompareExchange(ref streamSize, previous + 1, previous) == previous)
+                            {
+                                await cdp!.Call("Page.stopScreencast", session: session);
+                                await cdp.Call("Page.startScreencast", StreamParameters(previous + 1), session);
+                            }
+                            continue;
+                        }
+                        await Wire.Write(new { kind = "event", method, epoch = document, @params = message["params"] }, lifetime.Token,
+                            authorityLock, () =>
+                            {
+                                Guard(document: document);
+                                if (Origin(message["url"]!.GetValue<string>()) != state!.Origin || Origin(currentUrl) != state!.Origin)
+                                    throw new Denied("origin_denied");
+                            });
                     }
                     catch (Exception error) when (error is Denied or OperationCanceledException)
                     {
-                        await cdp!.Call("Page.screencastFrameAck", new() { ["sessionId"] = message["params"]!["sessionId"]!.DeepClone() }, session);
+                        await Acknowledge(message);
                     }
                 }
-                else await Wire.Write(new { kind = "event", method, epoch = Epoch, @params = message["params"] }, lifetime.Token);
+                else await Wire.Write(new { kind = "event", method, epoch = message["epoch"]!.GetValue<long>(), @params = message["params"] }, lifetime.Token);
             }
         }
         catch (OperationCanceledException) { }
-        catch (Denied) { lifetime.Cancel(); }
+        catch (Denied)
+        {
+            state = null; lifetime.Cancel();
+            await Wire.Write(new { kind = "disconnected" }, CancellationToken.None);
+        }
     }
     public async ValueTask DisposeAsync()
     {

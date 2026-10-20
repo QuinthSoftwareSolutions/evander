@@ -18,7 +18,12 @@ export class NativeTab {
     this.port = chrome.runtime.connectNative(HOST);
     this.port.onMessage.addListener((message: any) => {
       if (this.closed) return;
-      if (Number.isSafeInteger(message.epoch) && message.epoch !== this.epoch) {
+      if (message.kind === "event" && Number.isSafeInteger(message.epoch) && message.epoch < this.epoch) {
+        if (message.method === "Page.screencastFrame")
+          void this.send("Page.screencastFrameAck", { sessionId: message.params.sessionId }).catch(() => {});
+        return;
+      }
+      if (Number.isSafeInteger(message.epoch) && message.epoch > this.epoch) {
         this.epoch = message.epoch;
         if (!["Page.frameNavigated", "Page.navigatedWithinDocument"].includes(message.method)) this.navigated();
       }

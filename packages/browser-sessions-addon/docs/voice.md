@@ -4,7 +4,7 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.2 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.3 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
 In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and coral. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
 

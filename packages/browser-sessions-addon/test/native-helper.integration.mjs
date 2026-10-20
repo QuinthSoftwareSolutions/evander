@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, readFile, writeFile, mkdtemp, rm, access } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
@@ -156,4 +159,75 @@ test("helper independently rejects ungranted input, arbitrary CDP, stale generat
     assert.equal((await wire.request({ kind: "state", state })).ok, true);
     await until(() => wire.disconnected, "independent native expiry", 4000);
   } finally { await wire?.close(); await host?.context.close(); await f.stop(); }
+});
+
+
+test("helper installer creates per-user storage for a fresh desktop account and unregisters cleanly", { skip: process.platform !== "linux" }, async () => {
+  const folder = await mkdtemp(join(tmpdir(), "evander-helper-installer-"));
+  const binary = resolve("helper/bin/Debug/net10.0/evander-browser-helper");
+  const data = join(folder, "data"), home = join(folder, "home"), config = join(folder, "config");
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data };
+  const run = (...args) => promisify(execFile)(binary, args, { env, cwd: folder, timeout: 15000 });
+  try {
+    await mkdir(home);
+    const first = "a".repeat(32), second = "b".repeat(32);
+    await run("--install", first, "--browser-data-dir", join(folder, "chrome"));
+    const manifest = JSON.parse(await readFile(join(config, "google-chrome/NativeMessagingHosts/com.evander.browser_helper.json"), "utf8"));
+    assert.equal(manifest.path, join(data, "Evander/BrowserHelper/evander-browser-helper"));
+    await access(manifest.path);
+    assert.deepEqual(manifest.allowed_origins, ["chrome-extension://" + first + "/"]);
+    await run("--install", second);
+    const settings = JSON.parse(await readFile(join(data, "Evander/BrowserHelper/helper.json"), "utf8"));
+    assert.equal(settings.browser_data_dir, join(folder, "chrome"));
+    assert.deepEqual(new Set(settings.allowed_origins), new Set([first, second].map(id => "chrome-extension://" + id + "/")));
+    await run("--uninstall");
+    await assert.rejects(access(join(data, "Evander/BrowserHelper")), { code: "ENOENT" });
+    await assert.rejects(access(join(config, "google-chrome/NativeMessagingHosts/com.evander.browser_helper.json")), { code: "ENOENT" });
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+
+test("helper drops delayed pixels from an unapproved document after returning to the approved page", async () => {
+  await promisify(execFile)(process.env.EVANDER_TEST_PYTHON ?? "python3",
+    ["test/helper-frame-regression.py", resolve("helper/bin/Debug/net10.0")], { timeout: 15000 });
+});
+
+
+test("helper observations and streaming fit native messages on a detailed full-HD page", async () => {
+  const f = await fixture(); let host;
+  try {
+    host = await helperHost(f); assert.equal(host.paired.ok, true, host.paired.error);
+    const state = await until(async () => { const value = await f.api(host.path + "/state"); return value.state === "paused" && value; }, "helper ready");
+    await host.worker.evaluate(() => {
+      globalThis.__helperFrameSizes = [];
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) {
+        try { const message = JSON.parse(data); if (message.kind === "frame") globalThis.__helperFrameSizes.push(message.image.length); } catch {}
+        return send.call(this, data);
+      };
+    });
+    await host.application.setViewportSize({ width: 1920, height: 1080 });
+    await host.application.evaluate(() => {
+      const canvas = document.createElement("canvas"); canvas.width = 1920; canvas.height = 1080;
+      Object.assign(canvas.style, { position: "fixed", inset: "0", zIndex: "10000" }); document.body.append(canvas);
+      const paint = canvas.getContext("2d"), pixels = paint.createImageData(canvas.width, canvas.height);
+      let seed = 123456789;
+      for (let offset = 0; offset < pixels.data.length; offset += 4) {
+        seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+        pixels.data[offset] = seed & 255; pixels.data[offset + 1] = (seed >>> 8) & 255;
+        pixels.data[offset + 2] = (seed >>> 16) & 255; pixels.data[offset + 3] = 255;
+      }
+      paint.putImageData(pixels, 0, 0);
+    });
+    const debuggerSession = await host.context.newCDPSession(host.application);
+    const oversized = await debuggerSession.send("Page.captureScreenshot", { format: "jpeg", quality: 65 });
+    assert.ok(oversized.data.length > 1000000, "Fixture must exceed Chrome's native-message byte limit");
+    await debuggerSession.detach();
+    const observed = await f.api(host.path + "/command", command(state, "observe"));
+    assert.ok(observed.image.length > 100000 && observed.image.length <= 800000);
+    await until(() => host.worker.evaluate(() => globalThis.__helperFrameSizes.some(size => size > 100000)), "detailed helper stream");
+    const sizes = await host.worker.evaluate(() => globalThis.__helperFrameSizes);
+    assert.ok(sizes.every(size => size <= 800000));
+    assert.equal((await host.send({ kind: "state" })).connected, true);
+  } finally { await host?.context.close(); await f.stop(); }
 });
