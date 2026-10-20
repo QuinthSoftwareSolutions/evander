@@ -403,8 +403,10 @@ class Supervisor:
         password = lease.setdefault("database_password", secrets.token_urlsafe(32) + "Aa1!")
         lease["database_name"] = name
         self.save(lease)
+        # SQL Server resolves USE while compiling a batch, before CREATE
+        # DATABASE in that batch executes. Finish creation before selecting it.
+        self._sql(f"IF DB_ID('{name}') IS NULL CREATE DATABASE [{name}];")
         self._sql(
-            f"IF DB_ID('{name}') IS NULL CREATE DATABASE [{name}]; "
             f"IF SUSER_ID('{name}') IS NULL CREATE LOGIN [{name}] WITH PASSWORD='{password}'; "
             f"USE [{name}]; IF USER_ID('{name}') IS NULL CREATE USER [{name}] FOR LOGIN [{name}]; "
             f"ALTER ROLE db_owner ADD MEMBER [{name}];"

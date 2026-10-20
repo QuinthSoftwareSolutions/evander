@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-20 - Provision fresh browser-preview SQL databases (0.109.1)
+
+- Finish creating a disposable SQL Server database before compiling the batch that selects it, so first-time hosted previews can initialize their schema. Preserve scoped credentials and retryable cleanup.
+- Publish Browser Sessions server package 0.3.1; the Chrome extension remains 0.3.0. Add an opt-in real SQL regression check for provisioning, isolation and database/login cleanup.
+
 ## 2026-10-20 - Add sidebar voice and Chrome extension coexistence (0.109.0)
 
 - Add optional push-to-talk recording and interruptible spoken replies beside typed chat in the Chrome sharing sidebar, without opening a separate voice tab.
