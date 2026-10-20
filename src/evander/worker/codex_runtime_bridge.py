@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 import select
 import socket
@@ -72,6 +74,18 @@ def validate_request(header: dict[str, Any]):
         "CODEX_SECURITY_SURFACE",
         "CODEX_SECURITY_CONFIG_PATH",
         "CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH",
+        "CODEX_SECURITY_REPOSITORY",
+        "CODEX_SECURITY_SCAN_DIR",
+        "CODEX_SECURITY_PLUGIN_ROOT",
+        "CODEX_SECURITY_TARGET_PATHS_FILE",
+        "CODEX_SECURITY_KNOWLEDGE_BASE",
+        "CODEX_SECURITY_STARTED_AT",
+        "CODEX_SECURITY_SCAN_ID",
+        "CODEX_SECURITY_TARGET_ID",
+        "CODEX_SECURITY_TARGET_DISPLAY_NAME",
+        "CODEX_SECURITY_TARGET_KIND",
+        "CODEX_SECURITY_TARGET_REVISION",
+        "CODEX_SECURITY_TARGET_SNAPSHOT_DIGEST",
         "PYTHON",
     }
     if not isinstance(env, dict) or set(env) - allowed:
@@ -79,8 +93,33 @@ def validate_request(header: dict[str, Any]):
     for key, value in env.items():
         if not isinstance(value, str) or "\x00" in value:
             raise ValueError("Invalid runtime environment value")
-        if key != "CODEX_SECURITY_SURFACE":
-            allowed_path(value, executable=key in {"CODEX_CLI_PATH", "PYTHON"})
+        if key in {"CODEX_SECURITY_SURFACE", "CODEX_SECURITY_TARGET_DISPLAY_NAME"}:
+            if not value or len(value) > 255 or any(ord(c) < 32 for c in value):
+                raise ValueError("Invalid SDK display context")
+        elif key == "CODEX_SECURITY_STARTED_AT":
+            if datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None:
+                raise ValueError("SDK start time must include a timezone")
+        elif key in {
+            "CODEX_SECURITY_SCAN_ID",
+            "CODEX_SECURITY_TARGET_ID",
+            "CODEX_SECURITY_TARGET_REVISION",
+            "CODEX_SECURITY_TARGET_SNAPSHOT_DIGEST",
+        }:
+            patterns = {
+                "CODEX_SECURITY_SCAN_ID": r"(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})",
+                "CODEX_SECURITY_TARGET_ID": r"target_sha256_[a-f0-9]{64}",
+                "CODEX_SECURITY_TARGET_REVISION": r"(?:[a-f0-9]{40}|[a-f0-9]{64})",
+                "CODEX_SECURITY_TARGET_SNAPSHOT_DIGEST": r"codex-security-snapshot/v1:sha256:[a-f0-9]{64}",
+            }
+            if not re.fullmatch(patterns[key], value):
+                raise ValueError("Invalid SDK scan identity")
+        elif key == "CODEX_SECURITY_TARGET_KIND":
+            if value not in {"git_revision", "git_worktree", "git_diff", "directory_snapshot"}:
+                raise ValueError("Invalid SDK target kind")
+        else:
+            allowed_path(
+                value, executable=key in {"CODEX_CLI_PATH", "PYTHON", "CODEX_SECURITY_PLUGIN_ROOT"}
+            )
     return argv, cwd, env
 
 
@@ -198,9 +237,18 @@ def scan_config(config):
         "show_raw_agent_reasoning",
         "windows",
         "allow_login_shell",
+        "responses_api_metadata",
     }
     if set(config) - allowed:
         raise ValueError("Unsupported brokered Codex configuration")
+    if "responses_api_metadata" in config:
+        metadata = config["responses_api_metadata"]
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"codex_security_surface"}
+            or metadata["codex_security_surface"] not in {"cli", "sdk"}
+        ):
+            raise ValueError("Unsupported SDK request metadata")
     for key, fields in {
         "features": {"plugins", "goals", "multi_agent_v2", "enable_fanout"},
         "agents": {"max_threads"},
@@ -223,6 +271,18 @@ def toml_value(value):
     if isinstance(value, (str, bool, int)) or isinstance(value, float) and math.isfinite(value):
         return json.dumps(value)
     raise ValueError("Unsupported Codex configuration value")
+
+
+def public_runtime_failure(error):
+    """Expose a retry category while keeping native error details private."""
+    value = json.dumps(error, default=str)
+    if re.search(r"quota|usage.limit|rate.limit|\b429\b", value, re.I):
+        return "Managed Codex subscription quota is unavailable"
+    if re.search(r"unauthorized|authentication|\b401\b", value, re.I):
+        return "Managed Codex authentication failed"
+    if re.search(r"cyberPolicy|cybersecurity risk|forbidden|\b403\b", value, re.I):
+        return "Managed Codex policy denied the request"
+    return "Brokered Codex turn failed"
 
 
 def preflight_request(method, params):
@@ -408,6 +468,17 @@ class CodexRuntimeBridge:
                 raise ValueError("Codex request exceeds size limit")
             argv, cwd, env = validate_request(json.loads(line))
             client.settimeout(None)
+            if argv == ["login", "status"]:
+                # SDK authentication discovery may inspect status, but never
+                # log in, log out, import a token, or select another profile.
+                send(
+                    {
+                        "stream": "stdout",
+                        "text": "Logged in using ChatGPT (managed worker subscription)\n",
+                    }
+                )
+                exit_code = 0
+                return
             if argv == ["--version"]:
                 command = self.command_factory(env, [])
                 result = subprocess.run(
@@ -609,7 +680,10 @@ class CodexRuntimeBridge:
                         },
                     }
                     if ok
-                    else {"type": "turn.failed", "error": {"message": "Brokered Codex turn failed"}}
+                    else {
+                        "type": "turn.failed",
+                        "error": {"message": public_runtime_failure(terminal.get("error"))},
+                    }
                 )
                 send({"stream": "stdout", "text": json.dumps(event) + "\n"})
                 exit_code = 0 if ok else 1

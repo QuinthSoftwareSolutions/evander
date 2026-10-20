@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-20 - Track and continue repository security coverage (0.108.0)
+
+- Add opt-in tracked-file coverage to the optional Codex Security provider for managed, full-snapshot Standard scans on container workers. Persist the pinned inventory, bounded scopes, review receipts, retained findings and cleanup ownership in protected host storage.
+- Schedule at most two scoped SDK reviews with a six-hour deadline, restart recovery and bounded retries. Explicit continuation starts a linked run at the original retained snapshot, preserving accepted work and immutable earlier reports.
+- Add the directory-scoped scan metadata query, live workflow progress and deterministic Evander aggregate reports with the original native reports. Keep coverage retention independent of private diagnostics and preserve repository reservations during uncertain worker cleanup.
+- Package and fingerprint the new scanner runtime files. Existing provider-policy, commit-range and deep scans retain their behavior; existing agent sessions are unchanged.
+
 ## 2026-10-20 - Improve shared browser keyboard and pointer input (0.106.1)
 
 - Send character key events for shared-browser typing so scanner input and page keyboard listeners receive the same characters as editable fields.

@@ -43,6 +43,28 @@ RUNNER = "/opt/evander/codex-security/runner.py"
 
 
 class CodexSecurityScanProvider:
+    coverage_policies = frozenset({"provider", "all_tracked_files"})
+
+    @staticmethod
+    def describe(**kwargs):
+        from .coverage_provider import describe
+
+        return describe(**kwargs)
+
+    @staticmethod
+    def maintenance_candidates(runtime_dir):
+        from pathlib import Path
+        from .coverage import CoverageStore
+
+        if not (Path(runtime_dir) / "codex-security-coverage/journal.sqlite3").is_file():
+            return []
+        return [(s["scan_id"], s["directory_path"]) for s in CoverageStore(runtime_dir).expired()]
+
+    def maintain(self, runtime):
+        from .coverage_provider import CoverageController
+
+        return CoverageController(self, runtime).prune()
+
     def _config(self, runtime, session_id):
         config = effective_config_for_session(runtime, session_id)
         session = runtime_session_repository(runtime, config).get_session(session_id)
@@ -59,7 +81,7 @@ class CodexSecurityScanProvider:
                 type="effect:agent:exec",
                 session_id=session_id,
                 command=shlex.join(["/usr/bin/python3", RUNNER, *args]),
-                timeout_seconds=30,
+                timeout_seconds=180 if args[0] == "coverage-inventory" else 30,
                 check=False,
             ),
             runtime,
@@ -84,9 +106,25 @@ class CodexSecurityScanProvider:
             raise ValueError("Security scan runner did not return a JSON receipt") from exc
 
     def start(self, *, scan_id, request, runtime):
+        if request.coverage_policy == "all_tracked_files":
+            from .coverage_provider import CoverageController
+
+            return CoverageController(self, runtime).start(scan_id, request)
+        return self._start_raw(scan_id=scan_id, request=request, runtime=runtime)
+
+    def _start_raw(self, *, scan_id, request, runtime, payload=None, frozen_route=None):
         config, session = self._config(runtime, request.session_id)
-        payload = {**request.model_dump(), "scan_id": scan_id}
-        backend_kind = execution_backend_for_session(session, fallback_config=config)
+        if frozen_route is not None:
+            from .coverage_provider import CoverageController
+
+            if CoverageController(self, runtime).route(request) != frozen_route:
+                raise ValueError("Scanner access configuration changed before launch")
+        payload = payload or {**request.model_dump(), "scan_id": scan_id}
+        backend_kind = (
+            "container_worker_vm"
+            if frozen_route is not None
+            else execution_backend_for_session(session, fallback_config=config)
+        )
         if backend_kind == "libvirt_vm":
             self._command(runtime, request.session_id, ["launch", json.dumps(payload)])
             return SecurityScanHandle(
@@ -103,17 +141,25 @@ class CodexSecurityScanProvider:
         route = (
             metadata.get("model_provider_mode") if isinstance(metadata, Mapping) else None
         ) or config.model_provider_mode
-        if (
-            route == "openai_public"
-            and effective_codex_auth_mode(session=session, config=config)
-            == CodexAuthMode.CHATGPT_SUBSCRIPTION
-        ):
+        auth_mode = effective_codex_auth_mode(session=session, config=config)
+        if frozen_route is not None:
+            route = frozen_route["model_provider_mode"]
+            auth_mode = CodexAuthMode(frozen_route["auth_mode"])
+        if route == "openai_public" and auth_mode == CodexAuthMode.CHATGPT_SUBSCRIPTION:
             from evander.codex_auth import CodexRuntimeSpec
 
             runtime_spec = CodexRuntimeSpec(
                 profile_id="codex-security",
-                subscription_profile_id=effective_subscription_profile_id(session=session),
-                cyber_access_program=getattr(session, "cyber_access_program", None),
+                subscription_profile_id=(
+                    frozen_route["subscription_profile_id"]
+                    if frozen_route
+                    else effective_subscription_profile_id(session=session)
+                ),
+                cyber_access_program=(
+                    frozen_route["cyber_access_program"]
+                    if frozen_route
+                    else getattr(session, "cyber_access_program", None)
+                ),
             )
         prepared = backend.prepare(
             ExecutionSpec(
@@ -121,7 +167,9 @@ class CodexSecurityScanProvider:
                 target_name="scan-" + scan_id,
                 session_id=request.session_id,
                 directory_path=session.directory_path,
-                image=container_worker_image_for_session(session, config),
+                image=frozen_route["image"]
+                if frozen_route
+                else container_worker_image_for_session(session, config),
                 resource_limits=container_worker_resource_limits_for_session(session),
                 command=["/usr/bin/python3", RUNNER, "run", json.dumps(payload)],
                 codex_runtime=runtime_spec,
@@ -140,9 +188,13 @@ class CodexSecurityScanProvider:
                             "target.json",
                             "process.json",
                             "result.json",
+                            "snapshot-validation.json",
                             "codex-home/sessions",
                             "codex-home/archived_sessions",
                             "codex-home/log",
+                            "state/codex-home/sessions",
+                            "state/codex-home/archived_sessions",
+                            "state/codex-home/log",
                         )
                     ],
                 },
@@ -167,6 +219,10 @@ class CodexSecurityScanProvider:
 
     def poll(self, *, handle, runtime):
         data = handle.metadata
+        if data.get("coverage_policy") == "all_tracked_files":
+            from .coverage_provider import CoverageController
+
+            return CoverageController(self, runtime).poll(handle)
         backend = None
         stopped = False
         if data["backend"] == "container_worker_vm":
@@ -202,6 +258,19 @@ class CodexSecurityScanProvider:
         return result
 
     def cancel(self, *, scan_id, request, handle, runtime):
+        if request.coverage_policy == "all_tracked_files":
+            from .coverage_provider import CoverageController
+
+            controller = CoverageController(self, runtime)
+            if handle is None:
+                try:
+                    handle = controller.handle(controller.store.get(scan_id, controller.directory))
+                except ValueError:
+                    return
+            return controller.cancel(handle)
+        return self._cancel_raw(scan_id=scan_id, request=request, handle=handle, runtime=runtime)
+
+    def _cancel_raw(self, *, scan_id, request, handle, runtime):
         if handle is None:
             # Read the stable job identity; never submit a new job to cancel an uncertain launch.
             config, session = self._config(runtime, request.session_id)
@@ -220,14 +289,22 @@ class CodexSecurityScanProvider:
                 record = client.get(job_id)
             except ContainerWorkerClientError as exc:
                 if exc.status_code == 404:
-                    return
+                    return False
                 raise
             if record.session_id != request.session_id:
                 raise ValueError("Security scan job belongs to another session")
+            if request.coverage_policy == "all_tracked_files" and record.status == "starting":
+                raise SecurityScanRetryableError("Worker launch is still being prepared")
+            if (
+                request.coverage_policy == "all_tracked_files"
+                and record.status == "removed"
+                and not record.container_id
+            ):
+                return False
             if record.status in {"starting", "running"}:
                 client.stop(job_id)
             client.delete(job_id)
-            return
+            return True
         data = handle.metadata
         if data["backend"] == "container_worker_vm":
             config, _ = self._config(runtime, data["session_id"])
@@ -279,6 +356,10 @@ class CodexSecurityScanProvider:
                         relative.split("/")[-1] in canonical
                         or relative.endswith("/exports/results.sarif")
                         or re.fullmatch(r"reports/.+/checkpoints/[^/]+\.json", relative)
+                        or re.fullmatch(r"reports/.+/findings/([a-z0-9-]+)/\1\.md", relative)
+                        or re.fullmatch(
+                            r"reports/.+/hardening/(?:[a-z0-9_-]+/)*[a-z0-9_.-]+\.md", relative
+                        )
                     )
                 ):
                     allowed.append(value)

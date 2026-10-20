@@ -120,6 +120,38 @@ def test_runtime_request_does_not_allow_alternate_host_paths_or_environment():
             validate_request(header)
 
 
+def test_sdk_owned_scope_context_is_forwarded_without_opening_authentication_inputs():
+    context = {
+        "CODEX_SECURITY_SCAN_ID": "a" * 32,
+        "CODEX_SECURITY_TARGET_ID": "target_sha256_" + "b" * 64,
+        "CODEX_SECURITY_TARGET_KIND": "git_revision",
+        "CODEX_SECURITY_TARGET_REVISION": "c" * 40,
+        "CODEX_SECURITY_STARTED_AT": "2026-10-20T00:00:00Z",
+        "CODEX_SECURITY_TARGET_PATHS_FILE": "/artifacts/scan/scope.json",
+        "CODEX_SECURITY_PLUGIN_ROOT": "/opt/evander/codex-security/plugin",
+        "CODEX_SECURITY_REPOSITORY": "/artifacts/scan/checkout",
+        "CODEX_SECURITY_SCAN_DIR": "/artifacts/scan/reports/review",
+    }
+    _, _, env = validate_request(
+        {"argv": ["exec", "review"], "cwd": "/artifacts/scan", "environment": context}
+    )
+    assert env == context
+    for field, value in (
+        ("CODEX_SECURITY_SCAN_ID", "../other"),
+        ("CODEX_SECURITY_TARGET_PATHS_FILE", "/etc/passwd"),
+        ("CODEX_SECURITY_TARGET_KIND", "remote_url"),
+        ("OPENAI_API_KEY", "secret"),
+    ):
+        with pytest.raises(ValueError):
+            validate_request(
+                {
+                    "argv": ["exec", "review"],
+                    "cwd": "/artifacts/scan",
+                    "environment": {**context, field: value},
+                }
+            )
+
+
 def test_deep_scan_cli_arguments_preserve_permission_profiles():
     mode, cwd, config, model, prompt = parse_arguments(
         [
@@ -515,20 +547,35 @@ def test_broker_records_parent_and_child_usage_outside_private_diagnostics(broke
     bridge, _ = broker
     journal = WorkerUsageJournal(tmp_path / "usage.db")
     bridge.usage_recorder_factory = lambda model: SubscriptionUsageRecorder(
-        job_id="job", session_id="session", context={"model": model}, sink=journal.append,
+        job_id="job",
+        session_id="session",
+        context={"model": model},
+        sink=journal.append,
     )
 
     class UsageProcess(NativeProcess):
         def request(self, method, params):
             if method == "turn/start":
-                for thread, turn, total in [("thread-test", "parent-turn", 50), ("child-thread", "child-turn", 10)]:
+                for thread, turn, total in [
+                    ("thread-test", "parent-turn", 50),
+                    ("child-thread", "child-turn", 10),
+                ]:
                     self.notify_handler("turn/started", {"threadId": thread, "turn": {"id": turn}})
-                    self.notify_handler("thread/tokenUsage/updated", {
-                        "threadId": thread, "turnId": turn, "tokenUsage": {
-                            "total": {"totalTokens": total}, "last": {"totalTokens": total},
+                    self.notify_handler(
+                        "thread/tokenUsage/updated",
+                        {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "tokenUsage": {
+                                "total": {"totalTokens": total},
+                                "last": {"totalTokens": total},
+                            },
                         },
-                    })
-                    self.notify_handler("turn/completed", {"threadId": thread, "turn": {"id": turn, "status": "completed"}})
+                    )
+                    self.notify_handler(
+                        "turn/completed",
+                        {"threadId": thread, "turn": {"id": turn, "status": "completed"}},
+                    )
             return super().request(method, params)
 
     bridge.process_factory = UsageProcess
@@ -898,3 +945,39 @@ def test_runtime_sockets_work_in_long_private_session_paths(tmp_path):
         bridge.close()
         os.close(parent)
     assert not bridge.path.exists() and not bridge.http_relay.path.exists()
+
+
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("private token quota exceeded", "quota"),
+        ("private token authentication failed", "authentication"),
+        ("private token cyberPolicy403 denial", "policy"),
+    ],
+)
+def test_runtime_failure_categories_keep_private_details_out_of_public_errors(detail, expected):
+    from evander.worker.codex_runtime_bridge import public_runtime_failure
+
+    public = public_runtime_failure({"message": detail})
+    assert expected in public.lower()
+    assert "private token" not in public
+
+
+def test_sdk_login_status_uses_managed_profile_without_starting_a_model(tmp_path):
+    tokens = CodexExternalAuthTokens("private-subscription-token", "account-1", "test")
+    bridge = CodexRuntimeBridge(
+        path=tmp_path / "broker.sock",
+        tokens=tokens,
+        refresh_tokens=lambda **_: tokens,
+        http_client=unused_http_client(),
+        command_factory=lambda *_: pytest.fail("No native model process expected"),
+        process_factory=lambda *_args, **_kwargs: pytest.fail("No native model process expected"),
+    )
+    bridge.start()
+    try:
+        frames = exchange(bridge, {"argv": ["login", "status"], "cwd": "/home/agent"})
+        assert frames[-1] == {"exit_code": 0}
+        assert "ChatGPT" in json.dumps(frames)
+        assert tokens.access_token not in json.dumps(frames)
+    finally:
+        bridge.close()

@@ -4,6 +4,29 @@ from evander.workflow.contracts import register_node_output_schema
 
 _BOOTSTRAPPED = False
 
+_SECURITY_SCAN_PROGRESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **{
+            key: {"type": "integer"}
+            for key in (
+                "files_total",
+                "files_reviewed",
+                "files_not_applicable",
+                "files_blocked",
+                "files_pending",
+                "active_reviews",
+                "completed_reviews",
+                "attempts",
+            )
+        },
+        "phase": {"type": "string"},
+        "deadline_at": {"type": "string"},
+        "last_progress_at": {"type": "string"},
+        "cleanup_condition": {"type": ["string", "null"]},
+    },
+}
+
 _TICKET_OUTPUT_SCHEMA = {
     "ticket": {
         "type": "object",
@@ -699,11 +722,18 @@ _GATE_OUTPUT_SCHEMAS = {
         "event_type": {"type": "string"},
         "schema_revision": {"type": "string"},
         "schema_source": {"type": ["string", "null"]},
-        "failures": {"type": "array", "items": {
-            "type": "object", "properties": {
-                "code": {"type": "string"}, "path": {"type": "string"}, "message": {"type": "string"},
-            }, "required": ["code", "path", "message"],
-        }},
+        "failures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "path": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+                "required": ["code", "path", "message"],
+            },
+        },
     },
     "gate:while": {
         "iteration_index": {"type": "integer"},
@@ -720,6 +750,11 @@ _GATE_OUTPUT_SCHEMAS = {
 
 _EFFECT_OUTPUT_SCHEMAS = {
     "effect:security:scan-repo": {
+        "coverage_policy": {"type": "string"},
+        "managed_repo_id": {"type": ["string", "null"]},
+        "resume_from_scan_id": {"type": ["string", "null"]},
+        "coverage_progress": _SECURITY_SCAN_PROGRESS_SCHEMA,
+        "cleanup_confirmed": {"type": "boolean"},
         "scan_id": {"type": "string"},
         "directory_path": {"type": "string"},
         "session_id": {"type": "string"},
@@ -1520,6 +1555,26 @@ _EFFECT_OUTPUT_SCHEMAS = {
 }
 
 _QUERY_OUTPUT_SCHEMAS = {
+    "query:security:scan": {
+        "found": {"type": "boolean"},
+        "lineage": {"type": "array", "items": {"type": "string"}},
+        "inventory_digest": {"type": ["string", "null"]},
+        "execution_configuration": {"type": "object"},
+        "scan_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "managed_repo_id": {"type": ["string", "null"]},
+        "mode": {"type": "string"},
+        "status": {"type": "string"},
+        "coverage": {"type": ["string", "null"]},
+        "coverage_policy": {"type": "string"},
+        "resume_from_scan_id": {"type": ["string", "null"]},
+        "to_commit": {"type": ["string", "null"]},
+        "coverage_progress": _SECURITY_SCAN_PROGRESS_SCHEMA,
+        "cleanup_confirmed": {"type": ["boolean", "null"]},
+        "resumable": {"type": "boolean"},
+        "resumable_until": {"type": ["string", "null"]},
+        "pinned_ref": {"type": ["string", "null"]},
+    },
     "query:classification:evaluate": {
         "success": {"type": "boolean"},
         "answers": {"type": "object", "additionalProperties": {"type": "object"}},

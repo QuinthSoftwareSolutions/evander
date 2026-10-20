@@ -144,6 +144,7 @@ from evander.queries.providers.issue_get import IssueGetQueryProvider
 from evander.queries.providers.issue_list import IssueListQueryProvider
 from evander.queries.providers.model_usage_list import ModelUsageListQueryProvider
 from evander.queries.providers.codex_subscription_quota import CodexSubscriptionQuotaQueryProvider
+from evander.queries.providers.security_scan import SecurityScanQueryProvider
 from evander.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
@@ -354,6 +355,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:session:list": SessionListQueryProvider,
             "query:model-usage:list": ModelUsageListQueryProvider,
             "query:codex:subscription-quota": CodexSubscriptionQuotaQueryProvider,
+            "query:security:scan": SecurityScanQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:issue:list": IssueListQueryProvider,

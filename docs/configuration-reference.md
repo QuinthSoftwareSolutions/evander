@@ -8,6 +8,16 @@ Optional fields are `provider` (default `codex-security`), `mode` (`standard` or
 `deep`, default `standard`), `from_commit`, `to_commit`, and `timeout_seconds`
 (default 3600; positive, at most 345600). Commit hashes must resolve locally.
 
+`coverage_policy` defaults to `provider`. The optional Codex Security add-on also
+supports `all_tracked_files`, requiring `managed_repo_id`, Standard mode, no commit
+bounds and the container-worker backend. It defaults to 21,600 seconds, allows at
+most six hours per run, and reports structured `coverage_progress` and
+`cleanup_confirmed`. `resume_from_scan_id` starts a linked continuation at the
+source snapshot with a fresh budget and verified retained coverage.
+`query:security:scan` returns directory-scoped progress, lineage and resume
+metadata; unknown or inaccessible IDs return `found: false`. Raw diagnostics are
+never query outputs. See [tracked coverage](../packages/codex-security-addon/docs/tracked-coverage.md).
+
 Neither hash scans the complete clean HEAD snapshot; a start hash alone reviews
 through captured HEAD; an end hash alone reviews that commit against its first
 parent; both select a direct diff. An initial commit reviews its complete tree.

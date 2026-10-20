@@ -3,15 +3,29 @@
 
 import json
 import os
+from pathlib import Path
 import socket
 import sys
 import threading
 import time
 
 
+def local_plugin_setup(arguments, home):
+    """Only the SDK's two local install commands bypass the model broker."""
+    if not home:
+        return False
+    root = Path(home).resolve()
+    if not any(root.is_relative_to(base) for base in (Path("/artifacts"), Path("/home/agent"))):
+        return False
+    return (
+        arguments == ["plugin", "marketplace", "add", str(root / "sdk-marketplace")]
+        or arguments == ["plugin", "add", "--json", "codex-security@codex-security-sdk"]
+    )
+
+
 def main():
     endpoint = os.environ.get("EVANDER_CODEX_BROKER_SOCKET")
-    if not endpoint:
+    if not endpoint or local_plugin_setup(sys.argv[1:], os.environ.get("CODEX_HOME")):
         binary = os.environ.get("EVANDER_NATIVE_CODEX", "/usr/local/bin/codex")
         if not os.path.isfile(binary):
             binary = "/home/agent/bin/codex"
@@ -28,6 +42,18 @@ def main():
             "CODEX_SECURITY_SURFACE",
             "CODEX_SECURITY_CONFIG_PATH",
             "CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH",
+            "CODEX_SECURITY_REPOSITORY",
+            "CODEX_SECURITY_SCAN_DIR",
+            "CODEX_SECURITY_PLUGIN_ROOT",
+            "CODEX_SECURITY_TARGET_PATHS_FILE",
+            "CODEX_SECURITY_KNOWLEDGE_BASE",
+            "CODEX_SECURITY_STARTED_AT",
+            "CODEX_SECURITY_SCAN_ID",
+            "CODEX_SECURITY_TARGET_ID",
+            "CODEX_SECURITY_TARGET_DISPLAY_NAME",
+            "CODEX_SECURITY_TARGET_KIND",
+            "CODEX_SECURITY_TARGET_REVISION",
+            "CODEX_SECURITY_TARGET_SNAPSHOT_DIGEST",
             "PYTHON",
         }
     }

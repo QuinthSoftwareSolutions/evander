@@ -24,7 +24,7 @@ HOME = Path("/home/agent")
 SCAN_ROOT = Path("/artifacts/security-scans")
 
 
-def capture_native_diagnostics(root):
+def capture_native_diagnostics(root, *, home=None):
     """Stage bounded native history for the worker, before CODEX_HOME cleanup.
 
     This directory is deliberately absent from the public files operation.
@@ -34,7 +34,7 @@ def capture_native_diagnostics(root):
     remaining = 64 * 1024 * 1024
     deadline = time.monotonic() + 5
     count = 0
-    home = root / "codex-home"
+    home = home or root / "codex-home"
     if home.is_symlink() or not home.is_dir():
         return receipt
     for directory, dirs, files, parent_fd in os.fwalk(home, follow_symlinks=False):
@@ -96,6 +96,8 @@ def public_report_files(root):
         paths.extend((root / "reports").rglob(name))
     paths.extend((root / "reports").rglob("exports/results.sarif"))
     paths.extend((root / "reports").rglob("checkpoints/*.json"))
+    paths.extend((root / "reports").glob("**/findings/*/*.md"))
+    paths.extend((root / "reports").glob("**/hardening/**/*.md"))
     return sorted(
         {
             path.relative_to(SCAN_ROOT.parent).as_posix()
@@ -198,7 +200,7 @@ def snapshot(request, root):
         raise ValueError("Repository must be contained in the session workspace")
     if Path(git(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
         raise ValueError("repo_path must name the Git worktree root")
-    for key in ("from_commit", "to_commit"):
+    for key in ("from_commit", "to_commit", "snapshot_commit"):
         if request.get(key) and not re.fullmatch(r"[0-9a-fA-F]{7,64}", request[key]):
             raise ValueError("Invalid commit hash")
     head = git(
@@ -206,7 +208,7 @@ def snapshot(request, root):
         "rev-parse",
         "--verify",
         "--end-of-options",
-        (request.get("to_commit") or "HEAD") + "^{commit}",
+        (request.get("snapshot_commit") or request.get("to_commit") or "HEAD") + "^{commit}",
     )
     base = None
     if request.get("from_commit"):
@@ -325,6 +327,15 @@ def canonical_result(root, plugin_root, request):
 
 
 def run(request):
+    if request.get("_request_file"):
+        source = Path(request["_request_file"]).resolve(strict=True)
+        if not source.is_relative_to(HOME.resolve()):
+            raise ValueError("Scan request file escapes the session")
+        return run(read_json(source))
+    if request.get("coverage_task"):
+        from coverage_runner import run_task
+
+        return run_task(request)
     if os.getpgrp() != os.getpid():
         os.setsid()
     root = scan_directory(request["scan_id"])
@@ -607,6 +618,13 @@ def main():
         print(json.dumps({"paths": public_report_files(root)}))
     elif action == "cancel":
         print(json.dumps(cancel(value)))
+    elif action == "coverage-inventory":
+        from coverage_runner import inventory
+
+        print(json.dumps(inventory(json.loads(value))))
+    elif action == "coverage-recover":
+        from coverage_runner import recover
+        print(json.dumps(recover(value)))
     else:
         raise ValueError("Unknown runner operation")
 

@@ -202,6 +202,8 @@ def test_public_files_never_include_raw_history_logs_or_directory_sweeps(repo):
         "reports/scan/scan-manifest.json",
         "reports/scan/exports/results.sarif",
         "reports/scan/checkpoints/commit.json",
+        "reports/scan/findings/missing-check/missing-check.md",
+        "reports/scan/hardening/hardening.md",
     ]
     for name in [
         *expected,
@@ -528,3 +530,68 @@ def test_cancel_after_completion_preserves_the_result(repo, monkeypatch):
         runner, "terminate_group", lambda *args: pytest.fail("Completed scan was terminated")
     )
     assert runner.cancel("e" * 32) == result
+
+
+def test_staged_request_is_read_as_data_inside_session_and_dispatched(repo, monkeypatch):
+    from types import SimpleNamespace
+    import sys
+
+    source, _, _ = repo
+    captured = []
+    monkeypatch.setitem(
+        sys.modules,
+        "coverage_runner",
+        SimpleNamespace(run_task=lambda value: captured.append(value)),
+    )
+    request = {"scan_id": "a" * 32, "coverage_task": {"paths": ["space and\nnewline.py"]}}
+    staged = source.parent / "request.json"
+    staged.write_text(json.dumps(request))
+    runner.run({"_request_file": str(staged)})
+    assert captured == [request]
+    with pytest.raises(ValueError, match="escapes"):
+        runner.run({"_request_file": "/etc/hosts"})
+
+
+@pytest.mark.parametrize(
+    "interruption", ["before_validation", "after_validation", "changed_head", "dirty"]
+)
+def test_interrupted_scoped_sdk_result_recovers_only_with_unchanged_snapshot(
+    repo, monkeypatch, interruption
+):
+    import shutil
+    from evander_codex_security_addon import coverage_runner
+
+    monkeypatch.setattr(coverage_runner, "runner", runner)
+    source, first, second = repo
+    scan_id = "e" * 32
+    root = runner.scan_directory(scan_id)
+    request = {
+        "scan_id": scan_id,
+        "repo_path": str(source),
+        "snapshot_commit": second,
+        "coverage_task": {"paths": ["app.py"]},
+    }
+    runner.write_json(root / "request.json", request)
+    target, _, _ = runner.snapshot(request, root)
+    saved = {
+        "status": "completed",
+        "coverage": "complete",
+        "coverage_unit": {"kind": "files", "paths": ["app.py"], "revision": second},
+    }
+    runner.write_json(root / "sdk-result.json", saved)
+    if interruption == "after_validation":
+        coverage_runner.validate_snapshot(root, request)
+        shutil.rmtree(target)
+    elif interruption == "changed_head":
+        git(target, "checkout", "--detach", first)
+    elif interruption == "dirty":
+        (target / "untracked-change.txt").write_text("unexpected reviewer write")
+    result = coverage_runner.recover(scan_id)
+    if interruption in {"changed_head", "dirty"}:
+        assert result["status"] == "failed"
+        assert "coverage_unit" not in result
+    else:
+        assert result["status"] == "completed"
+        assert result["coverage_unit"] == saved["coverage_unit"]
+        assert result["recovered_from_saved_sdk_result"]
+        assert runner.read_json(root / "result.json") == result

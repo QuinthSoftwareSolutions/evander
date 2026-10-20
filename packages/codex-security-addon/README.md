@@ -136,6 +136,14 @@ Security's bounded independent scans; the node timeout and session expiry apply
 to the whole operation. Provision session TTL accordingly. The scanner's own deep
 time limit reserves thirty seconds within the node timeout for finalization.
 
+For durable file-by-file coverage, opt into `coverage_policy: all_tracked_files`
+and provide `managed_repo_id`. This requires a Standard full snapshot on a
+container worker. It runs at most two bounded public-SDK component reviews,
+preserves accepted work across restarts and supports explicit linked
+continuation with `resume_from_scan_id`. Read the
+[tracked coverage and continuation guide](docs/tracked-coverage.md) for evidence
+rules, progress/query fields, six-hour budgets, cleanup ownership and rollout.
+
 Connect `completed` to the success branch and `error` to recovery. Outputs include
 `scan_id`, `provider_scan_id`, `session_id`, `repo_path`, resolved `from_commit` and
 `to_commit`, `status`, `coverage`, `findings`, `severity_counts`, and `artifacts`.
@@ -194,8 +202,9 @@ VM scans stage the same native history locally; worker retention applies only
 to the container-worker backend. Raw diagnostic paths are not scan outputs.
 
 Duplicate execution delivery and an orchestrator restart rejoin the original scan.
-A worker restart interrupts brokered scans and reports failure; it never starts a
-new paid scan implicitly. No code fixes, issue publication, or PR creation are run.
+A worker restart interrupts brokered provider-policy scans and reports failure;
+tracked coverage instead recovers retained results and applies its bounded retry
+policy under the same run deadline. No code fixes, issue publication, or PR creation are run.
 Cancellation prevents subsequent startup and preserves the cancelled receipt
 even if scan cleanup finishes later.
 

@@ -908,6 +908,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "List Azure DevOps work items linked to a pull request, including normalized assignees."
     ),
     "query:session-context": "Read session context and metadata.",
+    "query:security:scan": "Read directory-scoped scan progress and resume metadata without launching work or exposing diagnostics.",
     "query:website-session:resolve-profile": (
         "Resolve one configured JSON website login by exact browser and login origins. "
         "Reports configuration readiness without authenticating or exposing credentials."
@@ -3510,6 +3511,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:security:scan-repo",
         label="Repository security scan",
         fields=[
+            _field("coverage_policy", "Coverage policy", "enum", bindable=True, default_value="provider", options=[_field_option("provider", "Provider coverage"), _field_option("all_tracked_files", "Every tracked file (Standard full snapshot)")]),
+            _field("managed_repo_id", "Managed repository ID", "string", bindable=True, description="Required for tracked coverage; must match the session checkout."),
+            _field("resume_from_scan_id", "Resume from scan ID", "string", bindable=True, description="Reuse accepted coverage at the earlier scan's original snapshot."),
             _field("session_id", "Session ID", "string", required=True, bindable=True),
             _field(
                 "repo_path", "Repository path", "string", required=True, bindable=True,
@@ -3534,7 +3538,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "to_commit", "To commit", "string", bindable=True,
                 description="Optional end hash. Alone, review this commit against its first parent.",
             ),
-            _field("timeout_seconds", "Timeout seconds", "number", bindable=True, default_value=3600),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True, description="Omit for 3,600 seconds with provider coverage or 21,600 seconds with tracked coverage. Tracked coverage permits at most six hours."),
         ],
         output_ports=[_port("completed", "Completed"), _port("error", "Error")],
     ),
@@ -4641,6 +4645,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("commit_sha", "Commit SHA", "string", required=True, bindable=True),
             _field("notes_ref", "Notes ref", "string", required=True, bindable=True),
         ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:security:scan",
+        label="Security scan status",
+        fields=[_field("scan_id", "Scan ID", "string", required=True, bindable=True)],
+        output_ports=[_port("completed", "Completed")],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="query",

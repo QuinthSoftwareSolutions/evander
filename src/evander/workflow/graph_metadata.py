@@ -8,7 +8,7 @@ from typing import Any
 from evander.workflow.packs import WorkflowPackGraph
 
 STATE_NODE_TYPES = frozenset({"effect:state:update", "query:state:get"})
-DIRECTORY_SCOPED_NODE_TYPES = STATE_NODE_TYPES | {"gate:event:validate"}
+DIRECTORY_SCOPED_NODE_TYPES = STATE_NODE_TYPES | {"gate:event:validate", "query:security:scan"}
 
 
 @dataclass(frozen=True)
