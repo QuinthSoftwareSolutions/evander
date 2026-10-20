@@ -14,10 +14,14 @@ import pytest
 
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.internal import InternalEvent
 from evander.events.models import WorkflowNodeEnvelope
+from evander.events.scheduled import ScheduledInternalEventStore
 from evander.models import SessionManifest, ToolName
 from evander.policy import PolicyError
 from evander.teams_outbound import TeamsImageVersion
+from evander.triggers.providers.event import event_trigger_payload
+from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.contracts import effective_node_output_schema
 from evander_teams_graph_addon.commands import TeamsMessageCommands
 from evander_teams_graph_addon.progress_images import ProgressSnapshot, render_progress_png
@@ -662,7 +666,7 @@ def test_bindable_providers_are_offline_scoped_and_typed(host):
             "display_name": "Render",
             "type": "effect:teams:render-progress-image",
             "config": {
-                "session_id": {"$ref": "state.session_id"},
+                "session_id": "${{prepare.session_id}}",
                 "snapshot": snapshot().model_dump(),
             },
         }
@@ -877,3 +881,203 @@ def test_failure_audit_redacts_bearer_source_urls(host, monkeypatch):
         post(host)
     audit = (host.runtime.config.runtime_dir / "audit.jsonl").read_text()
     assert "private-value" not in audit and "[redacted]" in audit
+
+
+def test_waiting_text_edit_verifies_image_intent_created_after_its_command_read(
+    host, tmp_path, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    graph, store, service = setup_graph(tmp_path, monkeypatch, target=TARGET)
+    host.runtime.teams_messages = store
+    monkeypatch.setattr(type(host.runtime), "teams_service_for_session", lambda self, sid: service)
+    sent = post(host)
+    replacement = host.stage(snapshot(2, phase="reviewing"))
+    path = host.store.get(replacement).blob_path
+    text_ready, image_finished = Event(), Event()
+    original = service.update_message
+
+    def wait_before_message_lock(**kwargs):
+        if kwargs.get("image_version") is None:
+            text_ready.set()
+            assert image_finished.wait(5), "Image edit did not finish"
+        return original(**kwargs)
+
+    monkeypatch.setattr(service, "update_message", wait_before_message_lock)
+
+    def corrupt(req, body):
+        graph.current["body"] = body["body"]
+        path.write_bytes(b"corrupted after publication")
+        return httpx.Response(204)
+
+    graph.patch_outcome = corrupt
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        waiting = pool.submit(
+            host.commands.update_message, "session-a", TARGET, sent["message_id"], "Next"
+        )
+        try:
+            assert text_ready.wait(5), "Text command did not reach the service boundary"
+            with pytest.raises(ValueError, match="checksum"):
+                host.commands.update_message(
+                    "session-a", TARGET, sent["message_id"], "Next", image_artifact_id=replacement
+                )
+        finally:
+            image_finished.set()
+        with pytest.raises(ValueError, match="checksum"):
+            waiting.result(timeout=5)
+    state = store.get_outbound_edit_state(TARGET, sent["message_id"])
+    assert state.revision == 1 and state.pending is not None
+    assert len(graph.patches) == 1
+
+
+def test_progress_effect_uses_configured_timer_store_and_trigger_wake(host, tmp_path, monkeypatch):
+    from evander.orchestration import internal_events
+    from evander.orchestration.host_polling import wake_socket_path_for_lock
+
+    database = tmp_path / "custom" / "workflow.db"
+    lock_path = tmp_path / "custom" / "trigger.lock"
+    wakes = []
+    monkeypatch.setattr(
+        internal_events,
+        "HostWakeNotifier",
+        lambda path: SimpleNamespace(notify=lambda: wakes.append(path)),
+    )
+    node = WorkflowNodeEnvelope.model_validate(
+        {
+            "id": "sync",
+            "display_name": "Progress",
+            "type": "effect:teams:sync-progress-message",
+            "config": {"session_id": "session-a", "channel_target": TARGET, "enabled": True},
+        }
+    )
+    effect = register_providers().effect_providers[node.type]()
+    effect.initialize(
+        materialize(node),
+        EffectRuntimeContext(
+            admin_service=SimpleNamespace(runtime=host.runtime),
+            metadata={
+                "directory_path": "root",
+                "orchestration_store_path": str(database),
+                "trigger_lock_path": str(lock_path),
+            },
+        ),
+    )
+    first = effect.execute(resolved_config={"snapshot": snapshot().model_dump()})
+    second = effect.execute(
+        resolved_config={"snapshot": snapshot(2, sections_completed=3).model_dump()}
+    )
+    assert first["status"] == "updated" and second["status"] == "coalesced"
+    assert database.exists(), "Progress timers missed the configured orchestration database"
+    timers = ScheduledInternalEventStore(database).list_due(host.clock[0] + timedelta(hours=1))
+    assert {timer.event_type for timer in timers} == {
+        "internal.teams.progress-image.renew",
+        "internal.teams.progress-image.flush",
+    }
+    assert wakes == [wake_socket_path_for_lock(lock_path)] * 2
+    default = host.runtime.config.runtime_dir / "orchestration.db"
+    if default.exists():
+        assert not ScheduledInternalEventStore(default).list_due(host.clock[0] + timedelta(hours=1))
+
+
+@pytest.mark.parametrize("mode", ["primitives", "coordinator"])
+def test_example_fragments_resolve_and_execute_one_message(host, tmp_path, monkeypatch, mode):
+    from pathlib import Path
+    from evander_teams_graph_addon import progress_messages
+
+    class ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return host.clock[0]
+
+    monkeypatch.setattr(progress_messages, "datetime", ClockDateTime)
+    example_target = "example-team/example-channel"
+    host.runtime.session_repository.upsert_session(
+        host.session.model_copy(update={"teams_channel_allowlist": [example_target]})
+    )
+    example = Path(__file__).resolve().parents[1] / "examples" / "progress-message" / "nodes.json"
+    nodes = {node["id"]: node for node in json.loads(example.read_text())}
+    assert nodes["sync"]["config"]["enabled"] is False
+    assert nodes["renew"]["config"]["enabled"] is False
+    prepare = {
+        "coordinator_session_id": "session-a",
+        "root_message_id": "root-a",
+        "progress_snapshot": snapshot().model_dump(),
+        "progress_creation_key": "example-creation",
+    }
+    upstream = {"prepare": prepare}
+    database = tmp_path / "configured" / "events.db"
+    registration = register_providers()
+
+    def execute(node_id, **overrides):
+        node = WorkflowNodeEnvelope.model_validate(nodes[node_id])
+        binding = resolve_workflow_bindings(
+            node.config, upstream, {key: set(value) for key, value in upstream.items()}
+        )
+        assert binding.trace.consumed_output_keys, "Example bindings were not resolved"
+        effect = registration.effect_providers[node.type]()
+        effect.initialize(
+            materialize(node),
+            EffectRuntimeContext(
+                admin_service=SimpleNamespace(runtime=host.runtime),
+                metadata={"directory_path": "root", "orchestration_store_path": str(database)},
+            ),
+        )
+        result = effect.execute(resolved_config={**binding.resolved_config, **overrides})
+        upstream[node_id] = result
+        return result
+
+    if mode == "primitives":
+        execute("render")
+        sent = execute("post")
+        assert execute("post")["message_id"] == sent["message_id"]
+        prepare.update(
+            progress_message_id=sent["message_id"],
+            progress_message_revision=sent["message_revision"],
+        )
+        prepare["progress_snapshot"] = snapshot(2, phase="reviewing").model_dump()
+        execute("render")
+        updated = execute("update")
+        assert updated["message_id"] == sent["message_id"] and updated["message_revision"] == 2
+    else:
+        first = execute("sync", enabled=True)
+        assert first["status"] == "updated" and first["message_revision"] == 1
+        prepare["progress_snapshot"] = snapshot(2, sections_completed=3).model_dump()
+        assert execute("sync", enabled=True)["status"] == "coalesced"
+
+        def fire_timer(action, source):
+            timers = ScheduledInternalEventStore(database).list_due(
+                host.clock[0] + timedelta(hours=1)
+            )
+            timer = next(
+                t
+                for t in timers
+                if t.payload["action"] == action and t.payload["source_version"] == source
+            )
+            upstream["timer"] = event_trigger_payload(
+                InternalEvent(
+                    event_id=timer.schedule_id, event_type=timer.event_type, payload=timer.payload
+                )
+            )
+            return execute("renew", enabled=True)
+
+        host.clock[0] += timedelta(seconds=31)
+        flushed = fire_timer("flush", first["source_version"])
+        assert flushed["message_revision"] == 2
+        state = host.runtime.teams_messages.get_outbound_edit_state(
+            example_target, first["message_id"]
+        )
+        host.clock[0] = state.image.renew_at + timedelta(seconds=1)
+        renewed = fire_timer("renew", flushed["source_version"])
+        assert renewed["message_revision"] == 3 and renewed["message_id"] == first["message_id"]
+        assert execute("renew", enabled=True)["status"] == "unchanged"
+        prepare["progress_snapshot"] = snapshot(3, phase="cancelled").model_dump()
+        final = execute("sync", enabled=True)
+        assert final["message_revision"] == 4 and final["source_version"] is None
+        assert (
+            host.runtime.teams_messages.get_outbound_edit_state(
+                example_target, first["message_id"]
+            ).image
+            is None
+        )
+    assert len(host.runtime.teams_messages.read_all()) == 1

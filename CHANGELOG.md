@@ -8,6 +8,7 @@
 - Add opt-in replacement and clearing of one session-owned PNG region, shared file publication/approval checks, and a real-session `effect:teams:post-file` with durable creation idempotency. Other images, mentions, files and cards stay protected.
 - Render deterministic progress PNGs with a bundled licensed Unicode font. Add optional render/sync effects with durable snapshots, coalescing, expiry renewal, notification-only recovery and verified Word/PDF delivery links; enablement defaults off.
 - Serve signed, generated progress PNGs inline with `nosniff`, retain ordinary attachment downloads, and protect Teams receipt/cache files containing image bearer references. Channel consent, authenticated client acceptance and operator rollout remain separate from local implementation.
+- Preserve source verification when text edits race image recovery, route timers through configured storage and trigger wake paths, and use executable workflow bindings in the progress examples.
 
 ## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
 

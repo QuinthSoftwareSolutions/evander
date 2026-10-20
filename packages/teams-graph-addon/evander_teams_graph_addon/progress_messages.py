@@ -8,7 +8,7 @@ from hashlib import sha256
 import re
 
 from evander.communication_artifacts import CommunicationArtifactStore
-from evander.events.scheduled import ScheduledInternalEventStore
+from evander.orchestration.internal_events import build_scheduled_internal_event_store_from_metadata
 from evander.models import ToolName
 from evander.integration_services.teams import _teams_message_to_html
 from evander.teams_outbound import outbound_edit_result
@@ -83,17 +83,27 @@ def delivery_links(evidence):
 
 
 class ProgressMessageCoordinator:
-    def __init__(self, runtime, *, commands=None, now=None, schedule=None, authorize_session=None):
+    def __init__(
+        self,
+        runtime,
+        *,
+        commands=None,
+        now=None,
+        schedule=None,
+        authorize_session=None,
+        runtime_metadata=None,
+    ):
         self.runtime = runtime
         self.commands = commands or TeamsMessageCommands(runtime)
         self.now = now or (lambda: datetime.now(UTC))
         self.journal = OperationJournal(runtime.config.runtime_dir, "progress")
         self.authorize_session = authorize_session
+        self.runtime_metadata = dict(runtime_metadata or {})
         self.schedule = schedule or self._schedule
 
     def _schedule(self, *, event_type, payload, run_at, idempotency_key):
-        record, _ = ScheduledInternalEventStore(
-            self.runtime.config.runtime_dir / "orchestration.db"
+        record, _ = build_scheduled_internal_event_store_from_metadata(
+            self.runtime_metadata, runtime_dir=self.runtime.config.runtime_dir
         ).schedule_event(
             event_type=event_type,
             payload=payload,

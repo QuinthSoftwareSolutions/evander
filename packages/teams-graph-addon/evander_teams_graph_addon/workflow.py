@@ -423,7 +423,10 @@ class TeamsSyncProgressMessageEffect(TeamsUpdateMessageEffect):
         runtime, values, commands, authorize = _host(self, resolved_config, execution_context)
         try:
             return ProgressMessageCoordinator(
-                runtime, commands=commands, authorize_session=authorize
+                runtime,
+                commands=commands,
+                authorize_session=authorize,
+                runtime_metadata=self.runtime_context.metadata,
             ).sync(**values)
         except Exception as exc:
             import re

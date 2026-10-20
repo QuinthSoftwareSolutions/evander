@@ -157,7 +157,6 @@ class TeamsMessageCommands:
             if image_artifact_id is not None and clear_image:
                 raise ValueError("Replacement image and clear_image are mutually exclusive")
             image_options = {}
-            state = self.runtime.teams_messages.get_outbound_edit_state(target, message_id)
             if image_artifact_id is not None or clear_image:
                 if receipt.image_slot is None:
                     raise PolicyError("No editable image slot was recorded for this message")
@@ -187,6 +186,7 @@ class TeamsMessageCommands:
                         "artifact_ids": [image_artifact_id],
                     },
                 )
+                state = self.runtime.teams_messages.get_outbound_edit_state(target, message_id)
                 existing = (
                     state.pending.image
                     if state and state.pending
@@ -202,15 +202,16 @@ class TeamsMessageCommands:
                     existing=existing,
                 )
 
-            if image_artifact_id is not None or (state and state.pending and state.pending.image):
-                store = self._artifact_store()
+            # The service decides whether a source needs verification from state
+            # read under its message lock. A text-only caller can encounter an
+            # image intent admitted after this command began, so always provide
+            # the verifier; load artifact storage only if it is actually called.
+            def verify_source(version):
+                info, _ = validated_png(self._artifact_store(), session_id, version.artifact_id)
+                if info.sha256 != version.sha256:
+                    raise ValueError("Published progress image checksum changed")
 
-                def verify_source(version):
-                    info, _ = validated_png(store, session_id, version.artifact_id)
-                    if info.sha256 != version.sha256:
-                        raise ValueError("Published progress image checksum changed")
-
-                image_options["verify_image_source"] = verify_source
+            image_options["verify_image_source"] = verify_source
             result = self.runtime.teams_service_for_session(session_id).update_message(
                 session_id=session_id,
                 channel_target=target,

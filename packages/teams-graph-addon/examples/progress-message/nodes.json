@@ -4,8 +4,8 @@
     "display_name": "Render progress",
     "type": "effect:teams:render-progress-image",
     "config": {
-      "session_id": {"$ref": "state.coordinator_session_id"},
-      "snapshot": {"$ref": "state.progress_snapshot"}
+      "session_id": "${{prepare.coordinator_session_id}}",
+      "snapshot": "${{prepare.progress_snapshot}}"
     }
   },
   {
@@ -13,13 +13,13 @@
     "display_name": "Post progress once",
     "type": "effect:teams:post-file",
     "config": {
-      "session_id": {"$ref": "state.coordinator_session_id"},
+      "session_id": "${{prepare.coordinator_session_id}}",
       "channel_target": "example-team/example-channel",
-      "thread_id": {"$ref": "state.root_message_id"},
-      "message": {"$ref": "nodes.render.status_text"},
-      "artifact_ids": [{"$ref": "nodes.render.artifact_id"}],
-      "editable_image_artifact_id": {"$ref": "nodes.render.artifact_id"},
-      "idempotency_key": {"$ref": "state.progress_creation_key"}
+      "thread_id": "${{prepare.root_message_id}}",
+      "message": "${{render.status_text}}",
+      "artifact_ids": ["${{render.artifact_id}}"],
+      "editable_image_artifact_id": "${{render.artifact_id}}",
+      "idempotency_key": "${{prepare.progress_creation_key}}"
     }
   },
   {
@@ -27,13 +27,13 @@
     "display_name": "Update existing progress",
     "type": "effect:teams:update-message",
     "config": {
-      "session_id": {"$ref": "state.coordinator_session_id"},
+      "session_id": "${{prepare.coordinator_session_id}}",
       "channel_target": "example-team/example-channel",
-      "thread_id": {"$ref": "state.root_message_id"},
-      "message_id": {"$ref": "state.progress_message_id"},
-      "expected_revision": {"$ref": "state.progress_message_revision"},
-      "message": {"$ref": "nodes.render.status_text"},
-      "image_artifact_id": {"$ref": "nodes.render.artifact_id"}
+      "thread_id": "${{prepare.root_message_id}}",
+      "message_id": "${{prepare.progress_message_id}}",
+      "expected_revision": "${{prepare.progress_message_revision}}",
+      "message": "${{render.status_text}}",
+      "image_artifact_id": "${{render.artifact_id}}"
     }
   },
   {
@@ -42,10 +42,10 @@
     "type": "effect:teams:sync-progress-message",
     "config": {
       "enabled": false,
-      "session_id": {"$ref": "state.coordinator_session_id"},
+      "session_id": "${{prepare.coordinator_session_id}}",
       "channel_target": "example-team/example-channel",
-      "thread_id": {"$ref": "state.root_message_id"},
-      "snapshot": {"$ref": "state.progress_snapshot"}
+      "thread_id": "${{prepare.root_message_id}}",
+      "snapshot": "${{prepare.progress_snapshot}}"
     }
   },
   {
@@ -54,13 +54,13 @@
     "type": "effect:teams:sync-progress-message",
     "config": {
       "enabled": false,
-      "session_id": {"$ref": "event.payload.session_id"},
-      "channel_target": {"$ref": "event.payload.channel_target"},
-      "thread_id": {"$ref": "event.payload.thread_id"},
-      "generation_id": {"$ref": "event.payload.generation_id"},
-      "outline_sha256": {"$ref": "event.payload.outline_sha256"},
-      "source_version": {"$ref": "event.payload.source_version"},
-      "action": {"$ref": "event.payload.action"}
+      "session_id": "${{timer.payload.session_id}}",
+      "channel_target": "${{timer.payload.channel_target}}",
+      "thread_id": "${{timer.payload.thread_id}}",
+      "generation_id": "${{timer.payload.generation_id}}",
+      "outline_sha256": "${{timer.payload.outline_sha256}}",
+      "source_version": "${{timer.payload.source_version}}",
+      "action": "${{timer.payload.action}}"
     }
   }
 ]

@@ -18,12 +18,20 @@ The final two fragments show the preferred durable coordinator; choose it instea
 composing the first three. It owns creation, staging, revisions, notification-only retries,
 30-second section-update coalescing and source renewal. Its `enabled` field defaults to false.
 
+Bindings use the runtime's `${{node_id.output}}` syntax. `prepare` denotes an operator-owned upstream
+node exposing `coordinator_session_id`, `root_message_id`, `progress_snapshot` and
+`progress_creation_key`; for low-level edits it also exposes the persisted `progress_message_id`
+and `progress_message_revision`. Connect that producer and the relevant upstream nodes before using
+these fragments. A nested snapshot binding resolves to the complete JSON object.
+
 For a later operator rollout, route `internal.teams.progress-image.renew` and
-`internal.teams.progress-image.flush` through existing `trigger:internal:event` subscriptions to
+`internal.teams.progress-image.flush` through existing `trigger:event` subscriptions to
 the `renew` fragment. Filter the event to the owning workflow's directory/session/generation;
-pass its identifiers through the bindings shown. The provider uses the same durable scheduled-event
-store as `effect:event:schedule`, schedules renewal at half the actual signed lifetime, and persists
-the resulting schedule ID. Old timers and old section events cannot overwrite newer progress.
+name that trigger `timer` or update the `timer.payload.*` bindings accordingly. Pass its identifiers
+through the bindings shown. The provider uses the configured orchestration database and trigger wake
+socket through the same scheduled-event store builder as the core scheduler. It schedules renewal at
+half the actual signed lifetime and persists the resulting schedule ID. Old timers and old section
+events cannot overwrite newer progress.
 There is no new timer service or model wakeup.
 
 Supply `ProgressSnapshot` counts from host completion records and the current approved outline.
