@@ -20,7 +20,7 @@ TOOLS = {
     "browser_session_invite": "Issue a short-lived single-use invitation for the local Chrome host. Hosted links always require Admin UI sign-in.",
     "browser_session_status": "Read shared browser state, control generation, expiry and viewer URL. Does not renew activity.",
     "browser_session_observe": "Observe the current approved page: screenshot and accessible element references. Does not save a recording.",
-    "browser_session_act": "Perform a bounded browser action using a fresh observation and control generation. Never replay an action whose outcome is unknown.",
+    "browser_session_act": "Perform a bounded browser action using a fresh observation and control generation. Use type for character keystrokes (including scanner input), fill to replace a referenced text field, and key for Enter or other supported keys. Never replay an action whose outcome is unknown.",
     "browser_session_highlight": "Show the agent's pointer at an observed element or point without taking control.",
     "browser_session_reply": "Reply to a browser-chat message in its original transcript. Use the supplied message_id.",
     "browser_session_save_screenshot": "Explicitly retain one current screenshot as a normal expiring artifact.",

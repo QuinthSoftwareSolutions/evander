@@ -35,6 +35,13 @@ export class BrowserEngine {
       this.guard(command, actor, epoch);
       return this.send(method, params);
     };
+    const press = async (key: string, text?: string, code?: string, keyCode?: number) => {
+      const identity = { key, ...(code ? { code } : {}),
+        ...(keyCode ? { windowsVirtualKeyCode: keyCode } : {}) };
+      await input("Input.dispatchKeyEvent", { type: "keyDown", ...identity,
+        ...(text !== undefined ? { text, unmodifiedText: text } : {}) });
+      await input("Input.dispatchKeyEvent", { type: "keyUp", ...identity });
+    };
     const url = await fence();
     if (command.action === "observe") {
       const before = this.epoch;
@@ -83,6 +90,10 @@ export class BrowserEngine {
     if (command.ref && ["click", "hover", "highlight"].includes(command.action)) {
       const backendNodeId = this.refs.get(command.ref);
       if (!backendNodeId) throw new Error("stale_observation");
+      if (command.action !== "highlight") {
+        await input("DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        await fence();
+      }
       const { model } = await this.send("DOM.getBoxModel", { backendNodeId });
       x = (model.content[0] + model.content[4]) / 2;
       y = (model.content[1] + model.content[5]) / 2;
@@ -112,16 +123,22 @@ export class BrowserEngine {
       this.guard(command, actor);
       await input("Input.insertText", { text: command.text ?? "" });
     } else if (command.action === "type") {
-      this.guard(command, actor);
-      await input("Input.insertText", { text: command.text ?? "" });
+      // Character key events also reach page-level shortcuts and scanner listeners.
+      // fill deliberately retains direct text insertion for editing a specific field.
+      for (const character of (command.text ?? "").replace(/\r\n/g, "\n")) {
+        const newline = character === "\n" || character === "\r";
+        await press(newline ? "Enter" : character, newline ? "\r" : character,
+          newline ? "Enter" : character === " " ? "Space" : undefined,
+          newline ? 13 : character === " " ? 32 : undefined);
+      }
     } else if (command.action === "key") {
       const keys: Record<string, number> = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8,
         Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Space: 32 };
       const key = command.text;
       if (!keys[key]) throw new Error("unsupported_key");
-      this.guard(command, actor);
-      await input("Input.dispatchKeyEvent", { type: "keyDown", key, windowsVirtualKeyCode: keys[key] });
-      await input("Input.dispatchKeyEvent", { type: "keyUp", key, windowsVirtualKeyCode: keys[key] });
+      await press(key === "Space" ? " " : key,
+        key === "Enter" ? "\r" : key === "Space" ? " " : undefined,
+        key, keys[key]);
     } else if (command.action === "scroll") {
       this.guard(command, actor);
       await input("Input.dispatchMouseEvent", { type: "mouseWheel", x: x ?? 10, y: y ?? 10,

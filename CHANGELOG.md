@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-20 - Improve shared browser keyboard and pointer input (0.106.1)
+
+- Send character key events for shared-browser typing so scanner input and page keyboard listeners receive the same characters as editable fields.
+- Generate Enter and Space text events so scanner submission and normal form submission work through the bounded key action.
+- Scroll referenced click/hover targets into view inside tables and other containers; return bounded recovery errors instead of hiding browser failures behind a generic conflict.
+- Preserve per-event control and origin checks, direct field filling, and Unicode input. Publish Browser Sessions server package 0.2.5 and Chrome extension 0.2.4.
+
 ## 2026-10-20 - Scope Miro board approvals to agent sessions (0.106.0)
 
 - Require exact session board grants for agent tools and Miro workflow operations, invalidate former shared approvals, and grant newly created boards only to their creating session.

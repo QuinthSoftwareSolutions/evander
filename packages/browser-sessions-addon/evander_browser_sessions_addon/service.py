@@ -173,6 +173,20 @@ class Bindings:
         return True
 
 
+# Only endpoint-defined codes cross the private relay boundary. Never relay raw
+# peer messages, URLs or exception details into the agent's conversation.
+ACTION_CONFLICTS = {
+    "invalid_coordinates": "The target is outside the visible page; scroll it into view and observe again",
+    "stale_observation": "The page changed; observe it again before interacting",
+    "stale_control": "Browser control changed; read session status and observe again",
+    "control_required": "Browser control has not been granted",
+    "origin_denied": "The page is outside the approved application; the local host must approve its origin",
+    "disconnected": "Browser is disconnected; reconnect and observe again",
+    "outcome_unknown": "Browser action outcome is unknown; observe before retrying",
+    "browser_error": "The browser could not operate the target; observe again and choose a visible element",
+}
+
+
 class HttpPeer:
     def __init__(self, base_url, token_env, *, transport=None):
         self.base_url, self.token_env, self.transport = base_url.rstrip("/"), token_env, transport
@@ -196,6 +210,13 @@ class HttpPeer:
                 if response.status_code >= 400:
                     # Peer errors are deliberately bounded; never echo URLs, credentials or logs.
                     if response.status_code == 409:
+                        try:
+                            failure = response.json()
+                        except ValueError:
+                            failure = {}
+                        code = failure.get("code") if isinstance(failure, dict) else None
+                        if isinstance(code, str) and code in ACTION_CONFLICTS:
+                            raise BrowserError(ACTION_CONFLICTS[code], code, 409)
                         raise BrowserError(
                             "Browser operation conflicts with current state", "peer_conflict", 409
                         )
