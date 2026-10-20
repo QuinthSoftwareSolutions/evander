@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-20 - Diagnose Chrome sharing attachment failures (0.105.3)
+
+- Show the original browser error and failing setup step when attaching a shared application tab.
+- Preserve session cleanup on attachment failure and publish the updated Chrome extension as version 0.2.3.
+
 ## 2026-10-20 - Clarify browser extension tab sharing (0.105.2)
 
 - Use application-neutral instructions throughout Chrome tab sharing.

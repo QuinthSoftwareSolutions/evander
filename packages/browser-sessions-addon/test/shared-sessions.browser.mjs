@@ -159,6 +159,60 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
   } finally {await context?.close();await second?.stop();await f.stop();}
 });
 
+for (const failure of [
+  { method: "attach", reason: "Host access is restricted by policy." },
+  { method: "Accessibility.enable", reason: "Synthetic accessibility initialization failure" },
+]) {
+  test("Chrome setup reports its original error and closes the session: " + failure.method, async () => {
+    const f = await fixture();
+    let context;
+    try {
+      const extension = join(f.folder, "extension");
+      await cp("dist/extension", extension, { recursive: true });
+      const manifest = JSON.parse(await readFile(join(extension, "manifest.json"), "utf8"));
+      manifest.host_permissions = ["http://127.0.0.1/*"];
+      await writeFile(join(extension, "manifest.json"), JSON.stringify(manifest));
+      context = await chromium.launchPersistentContext(join(f.folder, "chrome"), {
+        channel: "chromium", headless: true,
+        args: ["--no-sandbox", "--disable-extensions-except=" + extension, "--load-extension=" + extension],
+      });
+      const application = await context.newPage();
+      await application.goto(f.base + "/application", { waitUntil: "domcontentloaded" });
+      const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker", { timeout: 10000 });
+      await worker.evaluate(({ method, reason }) => {
+        if (method === "attach") {
+          chrome.debugger.attach = async () => { throw new Error(reason); };
+        } else {
+          const original = chrome.debugger.sendCommand;
+          chrome.debugger.sendCommand = async (target, command, params) => {
+            if (command === method) throw new Error(reason);
+            return original.call(chrome.debugger, target, command, params);
+          };
+        }
+      }, failure);
+      const panel = await context.newPage();
+      await panel.goto("chrome-extension://" + new URL(worker.url()).host + "/panel.html", { waitUntil: "domcontentloaded" });
+      await application.bringToFront();
+      const setup = await f.api("/test/setup", { local: true });
+      const result = await panel.evaluate(invitation => chrome.runtime.sendMessage({ kind: "pair", invitation }), setup.invitation_url);
+      assert.equal(result.ok, false);
+      assert.ok(result.error.includes(failure.reason), "The original Chrome error must reach the extension panel");
+      const state = await f.api("/test/" + setup.session.id + "/state");
+      assert.equal(state.state, "closed", "Failed setup must release the sharing session");
+      assert.equal(state.controller, null);
+      const token = new URL(setup.invitation_url).hash.slice("#invite=".length);
+      const replay = await fetch(f.base + "/_browser/guest/pair", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invitation: token, application_url: f.base + "/application" }),
+      });
+      assert.equal(replay.status, 401, "Closing failed setup must revoke its invitation");
+    } finally {
+      await context?.close();
+      await f.stop();
+    }
+  });
+}
+
 test("guided launch-profile setup saves through the production settings API", async () => {
   const f = await fixture();
   let browser;

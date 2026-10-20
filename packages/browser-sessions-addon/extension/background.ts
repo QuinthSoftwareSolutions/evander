@@ -114,14 +114,25 @@ async function connectEndpoint() {
 }
 async function attach() {
   if (!connection || !tabId) throw new Error("Select the application tab");
-  await chrome.debugger.attach({ tabId }, "1.3");
-  engine = new BrowserEngine(cdp, connection.session, (message) => {
-    send(message); void overlay(message).catch(() => {});
-  });
-  await cdp("Page.enable");
-  mainFrameId = (await cdp("Page.getFrameTree")).frameTree.frame.id;
-  await cdp("Accessibility.enable");
-  await connectEndpoint();
+  let step = "attaching Chrome to the tab";
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    step = "preparing the shared browser";
+    engine = new BrowserEngine(cdp, connection.session, (message) => {
+      send(message); void overlay(message).catch(() => {});
+    });
+    step = "enabling page access";
+    await cdp("Page.enable");
+    step = "reading the page frame";
+    mainFrameId = (await cdp("Page.getFrameTree")).frameTree.frame.id;
+    step = "enabling accessibility";
+    await cdp("Accessibility.enable");
+    step = "connecting to Truman";
+    await connectEndpoint();
+  } catch (error: any) {
+    const reason = String(error?.message ?? error ?? "Unknown browser error").replace(/\s+/g, " ").slice(0, 400);
+    throw new Error(`Browser setup failed while ${step}: ${reason}`);
+  }
 }
 async function disconnect(close = true) {
   const previous = connection;
@@ -204,9 +215,9 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
       expiry = setTimeout(() => void disconnect(false),
         Math.max(1, connection.session.expires_at * 1000 - Date.now()));
       await chrome.storage.session.set({ connection });
-      try { await attach(); } catch {
+      try { await attach(); } catch (error: any) {
         await disconnect();
-        throw new Error("Chrome could not attach to this tab. Close DevTools, check browser policy, and request a new invitation.");
+        throw new Error(`${error.message} Request a new invitation after resolving this error.`);
       }
       return { session: connection.session };
     }
