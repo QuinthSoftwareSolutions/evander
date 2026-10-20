@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-20 - Clarify browser extension tab sharing (0.105.2)
+
+- Use application-neutral instructions throughout Chrome tab sharing.
+- Distinguish missing tab access from an absent application tab or an unsupported page, with specific recovery guidance before consuming an invitation.
+- Publish the refreshed Chrome extension as version 0.2.2.
+
 ## 2026-10-20 - Preserve configured browser deployment (0.105.1)
 
 - Retain public browser relay routing, refresh the optional package on provisioned hosts, and restart running browser relay and supervisor services during managed deployments.
