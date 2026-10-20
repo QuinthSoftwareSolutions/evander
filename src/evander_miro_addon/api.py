@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -10,10 +11,12 @@ from starlette.routing import Route
 
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, WORKFLOWS_READ_PERMISSION
 from evander.admin.web.shared import request_has_privileged_operations
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 from .auth import MiroOAuth
 from .client import MiroClient
 from .models import Connection, MiroError, in_directory
+from .permissions import board_reference, session_instance
 from .runtime import directory
 from .service import Access, MiroService
 from .state import MiroStore
@@ -98,6 +101,98 @@ def admin_api_routes(context):
         record = repository.save_connection(config, int(payload["expected_revision"]))
         audit(request, "save_connection", record)
         return JSONResponse(public(record, repository))
+
+    def sessions():
+        runtime = context.service
+        repository = getattr(runtime, "session_repository", None)
+        if repository is None:
+            repository = getattr(getattr(runtime, "runtime", None), "session_repository", None)
+        return repository or JsonSessionManifestRepository(context.runtime_dir / "sessions.json")
+
+    def public_grant(grant):
+        return {k: v for k, v in grant.items() if k != "connection_key"}
+
+    def target_session(request, session_id):
+        session = sessions().get_session(session_id)
+        if (
+            session is None
+            or not in_directory(scope(request), session.directory_path)
+            or session.expires_at <= datetime.now(UTC)
+        ):
+            raise MiroError("forbidden", "Session is unavailable in this directory")
+        return session
+
+    async def grants(request):
+        repository = store()
+        record = repository.resolve_connection(scope(request), request.path_params["connection_id"])
+        if request.method == "POST":
+            payload = await body(request)
+            session = target_session(request, payload["session_id"])
+            if not payload.get("session_created_at"):
+                raise MiroError("invalid_input", "Select the exact session instance to approve")
+            if payload["session_created_at"] != session_instance(session):
+                raise MiroError("conflict", "Session was replaced; reload before granting access")
+            effective = repository.resolve_connection(
+                session.directory_path, record["config"]["id"]
+            )
+            if effective["key"] != record["key"] or not effective["config"]["enabled"]:
+                raise MiroError("forbidden", "Connection is unavailable to this session")
+            grant = repository.save_board_grant(
+                record,
+                session,
+                board_reference(payload["board_id"]),
+                payload["access"],
+                actor="operator:" + actor(request),
+                source={"provider": "admin"},
+                expected_revision=int(payload["expected_revision"]),
+            )
+            return JSONResponse(public_grant(grant))
+        available = []
+        for session in sessions().list_sessions():
+            if not in_directory(
+                scope(request), session.directory_path
+            ) or session.expires_at <= datetime.now(UTC):
+                continue
+            try:
+                effective = repository.resolve_connection(
+                    session.directory_path, record["config"]["id"]
+                )
+            except MiroError:
+                continue
+            if effective["key"] == record["key"] and effective["config"]["enabled"]:
+                available.append(
+                    {
+                        "session_id": session.session_id,
+                        "directory_path": session.directory_path,
+                        "created_at": session_instance(session),
+                    }
+                )
+        valid = {(s["session_id"], s["created_at"]) for s in available}
+        rows = [
+            public_grant(g) | {"session_valid": (g["session_id"], g["session_created_at"]) in valid}
+            for g in repository.list("board-grant")
+            if g["connection_key"] == record["key"]
+            and in_directory(scope(request), g["directory_path"])
+        ]
+        return JSONResponse({"grants": rows, "sessions": available})
+
+    async def revoke_grant(request):
+        repository = store()
+        record = repository.resolve_connection(scope(request), request.path_params["connection_id"])
+        grant = repository.get("board-grant", request.path_params["grant_id"])
+        if (
+            not grant
+            or grant["connection_key"] != record["key"]
+            or not in_directory(scope(request), grant["directory_path"])
+        ):
+            raise MiroError("forbidden", "Board grant is unavailable in this directory")
+        payload = await body(request)
+        revoked = repository.revoke_board_grant(
+            grant["grant_id"],
+            expected_revision=int(payload["expected_revision"]),
+            actor="operator:" + actor(request),
+        )
+        return JSONResponse(public_grant(revoked))
 
     async def connect(request):
         record = owned(request)
@@ -251,6 +346,14 @@ def admin_api_routes(context):
 
     return [
         Route("/connections", guarded(connections), methods=["GET", "POST"]),
+        Route(
+            "/connections/{connection_id}/session-grants", guarded(grants), methods=["GET", "POST"]
+        ),
+        Route(
+            "/connections/{connection_id}/session-grants/{grant_id}/revoke",
+            guarded(revoke_grant),
+            methods=["POST"],
+        ),
         Route("/oauth/callback", guarded(callback, oauth_callback=True), methods=["GET"]),
         Route("/connections/{connection_id}/connect", guarded(connect), methods=["POST"]),
         Route("/connections/{connection_id}/disconnect", guarded(disconnect), methods=["POST"]),

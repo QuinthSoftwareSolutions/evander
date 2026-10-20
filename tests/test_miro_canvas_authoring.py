@@ -60,6 +60,17 @@ def setup(tmp_path, monkeypatch):
         ),
         0,
     )
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from evander_miro_addon.mcp import MCP_TOOL_NAMES
+
+    session = SessionManifest(
+        session_id="author",
+        directory_path="root",
+        allowed_tools=list(MCP_TOOL_NAMES),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    JsonSessionManifestRepository(tmp_path / "sessions.json").upsert_session(session)
+    store.save_board_grant(record, session, "board", "edit", actor="operator:test")
     calls = []
     opens = []
     state = {"svg": '<svg><text data-miro-id="old">Existing</text></svg>'}
@@ -138,12 +149,7 @@ def setup(tmp_path, monkeypatch):
 
 def invoke(entry, setup, monkeypatch):
     if entry == "agent":
-        session = SessionManifest(
-            session_id="author",
-            directory_path="root",
-            allowed_tools=["miro_get_canvas_format", "miro_create_canvas", "miro_update_canvas"],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        )
+        session = setup.service.session()
 
         def require_tool(sid, name):
             assert sid == session.session_id and name in session.allowed_tools
@@ -156,7 +162,12 @@ def invoke(entry, setup, monkeypatch):
                 addon_id="miro-addon",
                 runtime_dir=setup.store.root.parents[1],
                 addon_runtime_dir=setup.store.root,
-                service=SimpleNamespace(policy=SimpleNamespace(require_tool=require_tool)),
+                service=SimpleNamespace(
+                    policy=SimpleNamespace(
+                        require_tool=require_tool,
+                        require_tool_arguments=lambda session, tool, arguments: None,
+                    )
+                ),
             ),
         )
 
@@ -187,7 +198,10 @@ def invoke(entry, setup, monkeypatch):
             provider = registry[kind]()
             provider.initialize(
                 WorkflowNodeEnvelope(
-                    id="authoring", display_name="Authoring", type=kind, config=arguments
+                    id="authoring",
+                    display_name="Authoring",
+                    type=kind,
+                    config={"session_id": "author", **arguments},
                 ),
                 SimpleNamespace(),
             )
@@ -436,6 +450,8 @@ def test_historical_malformed_write_retry_returns_saved_outcome(status, setup):
         {
             "operation_id": op_id,
             "operation": "create_canvas",
+            "session_id": "author",
+            "session_created_at": setup.service.session().created_at.isoformat(),
             "request": request,
             "fingerprint": digest(["create_canvas", request, "session:author"]),
             "status": status,
@@ -505,6 +521,7 @@ def test_workflow_guidance_fields_and_outputs_are_exposed():
             display_name="Format",
             type=kind,
             config={
+                "session_id": "author",
                 "connection_id": "test",
                 "step": "dsl",
                 "format_name": "diagramming",

@@ -66,7 +66,8 @@ def add_session(runtime, tools, **changes):
 
 def miro_connection(runtime, id="studio", directory="root", **changes):
     store = MiroStore(runtime.config.runtime_dir)
-    return store.save_connection(
+    requested_boards = changes.get("boards", [])
+    record = store.save_connection(
         Connection.model_validate(
             {
                 "id": id,
@@ -78,6 +79,17 @@ def miro_connection(runtime, id="studio", directory="root", **changes):
         ),
         0,
     )
+    session = runtime.session_repository.get_session("agent")
+    if session is not None:
+        for board in requested_boards:
+            store.save_board_grant(
+                record,
+                session,
+                board["board_id"],
+                "edit" if board.get("writable") else "read",
+                actor="operator:test",
+            )
+    return record
 
 
 def call(server, tool, **args):

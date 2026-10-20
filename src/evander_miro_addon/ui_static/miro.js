@@ -59,14 +59,6 @@ async function request(path, payload) {
   return result;
 }
 function button(label, handler, mutation = false) { const element = document.createElement("button"); element.type = "button"; element.textContent = label; if(mutation) element.dataset.privilegedAction=''; element.addEventListener("click", run(async event => { if(mutation && !privilegedUnlocked) throw new Error(lockedMessage); await handler(event); })); return element; }
-function addBoard(board = {}) {
-  const row = document.createElement("div"); row.className = "board";
-  const id = document.createElement("input"); id.type = "text"; id.placeholder = "Board ID"; id.setAttribute("aria-label", "Board ID"); id.value = board.board_id || ""; id.required = true;
-  const name = document.createElement("input"); name.type = "text"; name.placeholder = "Board name"; name.setAttribute("aria-label", "Board name"); name.value = board.name || "";
-  const write = document.createElement("input"); write.type = "checkbox"; write.checked = Boolean(board.writable);
-  const label = document.createElement("label"); label.append(write, "Allow writes");
-  row.append(id, name, label, button("Remove", () => row.remove(), true)); $("boards").append(row);
-}
 function edit(connection = null) {
   state.selected = connection;
   const config = connection?.config || {};
@@ -80,10 +72,11 @@ function edit(connection = null) {
   $("budget").value = config.daily_call_budget || 100;
   $("enabled").checked = config.enabled !== false; $("workflows").checked = Boolean(config.allow_workflows);
   $("create-boards").checked = Boolean(config.allow_create_boards);
-  $("boards").replaceChildren(); (config.boards || []).forEach(addBoard);
   $("authorize").hidden = true;
   for (const id of ["connect", "disconnect", "health"]) $(id).disabled = !connection || config.directory_path !== state.directory;
   $("activity").replaceChildren(); $("details").textContent = "";
+  $("grants").replaceChildren(); $("grant-session").replaceChildren();
+  $("grant-board").value = "";
   applyPrivileges();
 }
 async function refresh() {
@@ -107,6 +100,7 @@ async function refresh() {
 }
 function connectionPath() { if (!state.selected) throw new Error("Save or select a connection first"); return `/connections/${encodeURIComponent(state.selected.config.id)}`; }
 async function activity() {
+  await refreshGrants();
   const result = await request(`${connectionPath()}/activity`); $("activity").replaceChildren();
   for (const subscription of result.subscriptions) {
     const p = document.createElement("p");
@@ -145,12 +139,53 @@ async function activity() {
   if (!result.operations.length && !result.subscriptions.length) $("activity").textContent = "No operations or polling subscriptions yet.";
   applyPrivileges();
 }
+async function refreshGrants() {
+  const result = await request(`${connectionPath()}/session-grants`);
+  const previous = $("grant-session").value;
+  $("grant-session").replaceChildren();
+  for (const session of result.sessions) {
+    const option = document.createElement("option"); option.value = session.session_id;
+    option.dataset.createdAt = session.created_at;
+    option.textContent = `${session.session_id} · ${session.directory_path}`;
+    $("grant-session").append(option);
+  }
+  if ([...$("grant-session").options].some(option => option.value === previous)) $("grant-session").value = previous;
+  state.grants = result.grants;
+  $("grants").replaceChildren();
+  for (const grant of result.grants) {
+    const row = document.createElement("div"); row.className = "operation";
+    const label = document.createElement("p");
+    label.textContent = `${grant.session_id} · ${grant.board_id} · ${grant.access === 'edit' ? 'Read and edit' : 'Read'}${grant.active ? '' : ' · Revoked'}${grant.session_valid ? '' : ' · Session expired or replaced'}`;
+    row.append(label, button("Change access", () => {
+      if (!grant.session_valid) throw new Error("Select a current session to grant access again.");
+      $("grant-session").value = grant.session_id; $("grant-board").value = grant.board_id;
+      $("grant-access").value = grant.access; $("grant-form").scrollIntoView({block:'nearest'});
+    }, true), button("Revoke", async () => {
+      await request(`${connectionPath()}/session-grants/${encodeURIComponent(grant.grant_id)}/revoke`, {expected_revision:grant.revision});
+      await refreshGrants(); notice("Session board access revoked.");
+    }, true));
+    $("grants").append(row);
+  }
+  if (!result.grants.length) $("grants").textContent = "No board access has been granted to sessions in this directory.";
+  applyPrivileges();
+}
+$("grant-form").addEventListener("submit", run(async () => {
+  const session = $("grant-session").value;
+  const createdAt = $("grant-session").selectedOptions[0]?.dataset.createdAt;
+  if (!createdAt) throw new Error("Select a current session before granting access.");
+  const reference = $("grant-board").value.trim();
+  let boardId = reference;
+  if (reference.startsWith('https://miro.com/app/board/')) boardId = decodeURIComponent(new URL(reference).pathname.split('/')[3]);
+  const current = (state.grants || []).find(g => g.session_id === session && g.session_created_at === createdAt && g.board_id === boardId && g.session_valid);
+  await request(`${connectionPath()}/session-grants`, {session_id:session, session_created_at:createdAt, board_id:reference,
+    access:$("grant-access").value, expected_revision:current?.revision || 0});
+  await refreshGrants(); notice("Session board access saved.");
+}));
 $("settings").addEventListener("submit", run(async () => {
   if (state.selected && state.selected.config.directory_path !== state.directory) throw new Error(`Load ${state.selected.config.directory_path} to edit this inherited connection.`);
-  const boards = [...$("boards").children].map((row) => ({ board_id: row.querySelectorAll("input")[0].value.trim(), name: row.querySelectorAll("input")[1].value.trim(), writable: row.querySelector("input[type=checkbox]").checked }));
   const config = { id: $("connection-id").value.trim(), name: $("name").value.trim(), directory_path: state.directory,
     redirect_uri: $("callback").value.trim(), daily_call_budget: Number($("budget").value),
-    boards, enabled: $("enabled").checked,
+    enabled: $("enabled").checked,
     allow_workflows: $("workflows").checked, allow_create_boards: $("create-boards").checked };
   state.selected = await request("/connections", { config, expected_revision: state.selected?.revision || 0 });
   await refresh(); notice("Connection settings saved.");
@@ -164,7 +199,6 @@ $("connect").addEventListener("click", run(async () => {
 }));
 $("disconnect").addEventListener("click", run(async () => { await request(`${connectionPath()}/disconnect`, {}); await refresh(); notice("Host connection disconnected."); }));
 $("health").addEventListener("click", run(async () => { const result = await request(`${connectionPath()}/health`, {}); $("details").textContent = JSON.stringify(result, null, 2); notice("Miro connection checked."); }));
-$("add-board").addEventListener("click", () => { if(privilegedUnlocked) { addBoard(); applyPrivileges(); } });
 $("new").addEventListener("click", () => edit());
 $("refresh").addEventListener("click", run(refresh));
 $("load-directory").addEventListener("click", run(async () => { state.directory = $("directory").value.trim(); edit(); await refresh(); }));

@@ -37,7 +37,12 @@ class Connection(StrictModel):
     name: str = Field(min_length=1, max_length=200)
     directory_path: str = "root"
     redirect_uri: str
-    boards: list[BoardBinding] = Field(default_factory=list, max_length=200)
+    boards: list[BoardBinding] = Field(
+        default_factory=list,
+        max_length=200,
+        deprecated=True,
+        description="Legacy connection-wide approvals are ignored; grant boards to individual sessions.",
+    )
     allow_workflows: bool = False
     allow_create_boards: bool = False
     daily_call_budget: int = Field(default=100, ge=1, le=100000)

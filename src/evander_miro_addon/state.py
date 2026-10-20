@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, contextmanager
-from datetime import UTC, datetime
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import sqlite3
 import tempfile
 import time
+from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ from cryptography.fernet import Fernet
 from evander.addons import addon_runtime_dir
 
 from .models import ADDON_ID, Connection, MiroError, in_directory
+from .permissions import BoardGrantStore
 
 
 def encoded(value: Any) -> str:
@@ -31,9 +32,10 @@ def digest(value: Any) -> str:
     return hashlib.sha256(encoded(value).encode()).hexdigest()
 
 
-class MiroStore:
+class MiroStore(BoardGrantStore):
     def __init__(self, runtime_dir: str | Path):
-        self.root = addon_runtime_dir(Path(runtime_dir), ADDON_ID)
+        self.runtime_dir = Path(runtime_dir)
+        self.root = addon_runtime_dir(self.runtime_dir, ADDON_ID)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.database = self.root / "state.db"
         with self.db() as db:
@@ -45,6 +47,7 @@ class MiroStore:
                     connection_key TEXT NOT NULL, day TEXT NOT NULL, calls INTEGER NOT NULL,
                     PRIMARY KEY(connection_key, day));
             """)
+            self.migrate_board_grants(db)
 
     @contextmanager
     def db(self):
@@ -91,6 +94,8 @@ class MiroStore:
         return digest([directory, connection_id])
 
     def save_connection(self, connection: Connection, expected_revision: int) -> dict:
+        # Legacy connection-wide board lists never authorize session access.
+        connection = connection.model_copy(update={"boards": []})
         key = self.connection_key(connection.directory_path, connection.id)
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")

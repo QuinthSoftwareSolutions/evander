@@ -2,31 +2,37 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
-from copy import deepcopy
 import re
 import time
+import xml.etree.ElementTree as ET
+from collections import Counter
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
-import xml.etree.ElementTree as ET
 
-from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
+from evander.policy import PolicyError
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+
 from .canvas_authoring import AUTHORING_CHECKS, validate_connectors
+from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
 from .layout_review import review_layout
 from .models import (
+    MAX_CONTENT_BYTES,
+    OPERATIONS,
+    WRITE_OPERATIONS,
     CanvasScope,
     Connection,
-    MAX_CONTENT_BYTES,
     MiroError,
-    OPERATIONS,
     OperationInput,
-    WRITE_OPERATIONS,
     board_url,
     identifier,
     in_directory,
     require,
 )
+from .permissions import session_instance
 from .state import MiroStore, digest, encoded
 
 
@@ -164,53 +170,140 @@ class Access:
     session_id: str | None = None
     workflow: bool = False
     admin: bool = False
+    session_created_at: str | None = None
 
 
 class MiroService:
-    def __init__(self, store: MiroStore, access: Access, client_factory=MiroClient):
+    def __init__(
+        self,
+        store: MiroStore,
+        access: Access,
+        client_factory=MiroClient,
+        *,
+        session_repository=None,
+        policy=None,
+    ):
         self.store, self.access, self.client_factory = store, access, client_factory
+        self.sessions = session_repository or JsonSessionManifestRepository(
+            store.runtime_dir / "sessions.json"
+        )
+        self.policy = policy
+        self._operation_tool = None
+        self._operation_arguments = {}
+        self._session_instance = access.session_created_at
+
+    def session(self):
+        if not self.access.session_id:
+            raise MiroError("forbidden", "Miro board operations require an agent session")
+        session = self.sessions.get_session(self.access.session_id)
+        if session is None or session.expires_at <= datetime.now(UTC):
+            raise MiroError("forbidden", "Miro session is missing or expired")
+        if not in_directory(self.access.directory_path, session.directory_path) or (
+            not self.access.workflow and session.directory_path != self.access.directory_path
+        ):
+            raise MiroError("forbidden", "Session is outside this workflow directory")
+        instance = session_instance(session)
+        if self._session_instance is not None and self._session_instance != instance:
+            raise MiroError("forbidden", "Miro session was replaced; obtain a new board grant")
+        self._session_instance = instance
+        return session
+
+    def require_tool_arguments(self, tool, arguments):
+        if self.access.admin:
+            return
+        session = self.session()
+        if self.policy is not None:
+            session = self.policy.require_tool(session.session_id, tool)
+            if session_instance(session) != self._session_instance:
+                raise MiroError("forbidden", "Miro session was replaced; obtain a new board grant")
+            self.policy.require_tool_arguments(session, tool, arguments)
+        elif tool not in {str(getattr(t, "value", t)) for t in session.allowed_tools}:
+            raise MiroError("forbidden", "Miro tool is not allowed for this session")
+
+    @asynccontextmanager
+    async def open_client(self, record):
+        service = self
+        async with self.client_factory(self.store, record).open() as client:
+
+            class GuardedClient:
+                mutation_dispatched = False
+
+                def prepare(self, operation, **values):
+                    return client.prepare(operation, **values)
+
+                async def call(self, operation, **values):
+                    current = service.authorize(
+                        record["config"]["id"],
+                        values.get("board_id"),
+                        write=operation in WRITE_OPERATIONS,
+                    )
+                    if current["key"] != record["key"]:
+                        raise MiroError(
+                            "connection_changed", "Connection binding changed; retry the operation"
+                        )
+                    tool = service._operation_tool or "miro_" + (
+                        "get_canvas_format" if operation == "load_format" else operation
+                    )
+                    service.require_tool_arguments(tool, service._operation_arguments)
+                    # A failure before this point cannot have sent a mutation.
+                    # Keep this true through readback so a later denial remains uncertain.
+                    if operation in WRITE_OPERATIONS:
+                        self.mutation_dispatched = True
+                    return await client.call(operation, **values)
+
+            yield GuardedClient()
 
     def list_connections(self) -> dict:
+        session = None if self.access.admin else self.session()
+        scope = session.directory_path if session is not None else self.access.directory_path
         connections = []
-        for record in self.store.effective_connections(self.access.directory_path):
+        for record in self.store.effective_connections(scope):
             config = Connection.model_validate(record["config"])
-            if not config.enabled:
+            if not config.enabled or (self.access.workflow and not config.allow_workflows):
                 continue
-            if not self.access.admin and not self.access.session_id:
-                if not self.access.workflow or not config.allow_workflows:
-                    continue
+            grants = self.store.session_grants(record, session) if session is not None else []
             connections.append(
                 {
                     "connection_id": config.id,
                     "name": config.name,
                     "directory_path": config.directory_path,
-                    "inherited": config.directory_path != self.access.directory_path,
+                    "inherited": config.directory_path != scope,
                     "allow_create_boards": config.allow_create_boards,
-                    "approved_board_count": len(config.boards),
-                    "writable_board_count": sum(board.writable for board in config.boards),
+                    "approved_board_count": len(grants),
+                    "writable_board_count": sum(g["access"] == "edit" for g in grants),
                 }
             )
         return {"connections": connections}
 
     def authorize(self, connection_id: str, board_id: str | None = None, *, write=False) -> dict:
-        record = self.store.resolve_connection(self.access.directory_path, connection_id)
+        session = None if self.access.admin else self.session()
+        scope = session.directory_path if session is not None else self.access.directory_path
+        record = self.store.resolve_connection(scope, connection_id)
         config = Connection.model_validate(record["config"])
         if not config.enabled:
             raise MiroError("forbidden", "Miro connection is disabled")
-        # Agent calls arrive through the session's normal MCP tool policy.
-        if not self.access.admin and not self.access.session_id:
-            if not self.access.workflow or not config.allow_workflows:
-                raise MiroError("forbidden", "Workflow access to this Miro connection is disabled")
-        if board_id is not None:
-            binding = next((board for board in config.boards if board.board_id == board_id), None)
-            if binding is None or (write and not binding.writable):
-                raise MiroError("forbidden", "Board is outside the granted Miro access")
+        if self.access.workflow and not config.allow_workflows:
+            raise MiroError("forbidden", "Workflow access to this Miro connection is disabled")
+        if board_id is not None and not self.access.admin:
+            grant = self.store.board_grant(record, session, board_id)
+            if grant is None:
+                raise MiroError(
+                    "board_not_approved", "This board is not approved for this agent session"
+                )
+            if write and grant["access"] != "edit":
+                raise MiroError(
+                    "board_read_only",
+                    "This session has read-only access; edit access needs approval",
+                )
         return record
 
     async def execute(self, operation: str, arguments: dict) -> dict:
         if operation not in OPERATIONS:
             raise MiroError("invalid_input", "Unknown Miro operation")
         args = OperationInput.model_validate(arguments)
+        self._operation_tool = "miro_" + operation
+        self._operation_arguments = args.model_dump(mode="json")
+        self.require_tool_arguments(self._operation_tool, self._operation_arguments)
         if operation not in {
             "list_boards",
             "get_canvas_format",
@@ -225,7 +318,14 @@ class MiroService:
         if operation == "list_boards":
             return {
                 "boards": [
-                    {**b, "url": board_url(b["board_id"])} for b in record["config"]["boards"]
+                    {
+                        "board_id": g["board_id"],
+                        "name": g.get("name", ""),
+                        "access": g["access"],
+                        "writable": g["access"] == "edit",
+                        "url": board_url(g["board_id"]),
+                    }
+                    for g in self.store.session_grants(record, self.session())
                 ]
             }
         if operation == "get_snapshot":
@@ -234,7 +334,7 @@ class MiroService:
             return self.saved_operation(record, require(args.operation_id, "operation_id"))
         if operation in WRITE_OPERATIONS:
             return await self.write(record, operation, args)
-        async with self.client_factory(self.store, record).open() as client:
+        async with self.open_client(record) as client:
             if operation == "get_canvas_format":
                 composer = {"step": args.step, "is_repository": args.is_repository}
                 format_args = {
@@ -276,8 +376,14 @@ class MiroService:
             or not in_directory(self.access.directory_path, operation_directory)
         ):
             raise MiroError("forbidden", "Operation is outside this operator directory")
-        if operation.get("board_id") and not self.access.admin:
-            self.authorize(record["config"]["id"], operation["board_id"])
+        if not self.access.admin:
+            session = self.session()
+            if operation.get("session_id") != session.session_id or operation.get(
+                "session_created_at"
+            ) != session_instance(session):
+                raise MiroError("forbidden", "Operation belongs to a different session instance")
+            if operation.get("board_id"):
+                self.authorize(record["config"]["id"], operation["board_id"])
         return {
             key: value
             for key, value in operation.items()
@@ -465,9 +571,12 @@ class MiroService:
                     )
                     self.store.put("operation", op_id, previous)
                 return self.saved_operation(record, op_id)
-            if operation == "create_board" and len(record["config"]["boards"]) >= 200:
+            if (
+                operation == "create_board"
+                and len(self.store.session_grants(record, self.session())) >= 200
+            ):
                 raise MiroError(
-                    "invalid_input", "Connection board limit reached; remove unused bindings first"
+                    "invalid_input", "Session board limit reached; revoke unused grants first"
                 )
             unsettled = [
                 item
@@ -486,7 +595,7 @@ class MiroService:
             if operation in {"create_canvas", "update_canvas"}:
                 svg, ids = canvas(require(args.svg, "svg"))
                 validate_connectors(svg)
-            async with self.client_factory(self.store, record).open() as client:
+            async with self.open_client(record) as client:
                 baseline = None
                 values: dict[str, Any] = {"board_id": args.board_id, "frame_id": args.frame_id}
                 if operation in {"create_canvas", "update_canvas"}:
@@ -547,6 +656,10 @@ class MiroService:
                     "operation": operation,
                     "board_id": args.board_id,
                     "actor": self.access.actor,
+                    "session_id": self.access.session_id,
+                    "session_created_at": session_instance(self.session())
+                    if not self.access.admin
+                    else None,
                     "directory_path": self.access.directory_path,
                     "status": "running",
                     "fingerprint": fingerprint,
@@ -563,17 +676,17 @@ class MiroService:
                     entry["upstream_acknowledged"] = True
                     if operation == "create_board":
                         entry["board_id"] = self._created_board_id(result)
-                        current_config = Connection.model_validate(record["config"])
-                        from .models import BoardBinding
-
-                        if entry["board_id"] not in {b.board_id for b in current_config.boards}:
-                            current_config.boards.append(
-                                BoardBinding(
-                                    board_id=entry["board_id"], name=args.title, writable=True
-                                )
-                            )
-                            record = self.store.save_connection(current_config, record["revision"])
-                            client.record = record
+                        self.store.save_board_grant(
+                            record,
+                            self.session(),
+                            entry["board_id"],
+                            "edit",
+                            actor=self.access.actor,
+                            source={"kind": "board_creation", "operation_id": op_id},
+                            operation_key="created-board:" + op_id,
+                            merge=True,
+                            name=args.title,
+                        )
                         args = args.model_copy(update={"board_id": entry["board_id"]})
                     # Persist acknowledgement and any created board reference before
                     # readback, including if the process is interrupted during search.
@@ -601,7 +714,7 @@ class MiroService:
                         entry["layout_review"] = observed["layout_review"]
                 except Exception as exc:
                     # Even a remote tool error can follow a partial multi-item mutation.
-                    pre_send = (
+                    pre_send = not client.mutation_dispatched or (
                         isinstance(exc, MiroError)
                         and exc.code
                         in {
@@ -613,7 +726,11 @@ class MiroService:
                     )
                     entry.update(
                         status="not_applied" if pre_send else "uncertain",
-                        error=exc.code if isinstance(exc, MiroError) else "upstream_unavailable",
+                        error=exc.code
+                        if isinstance(exc, MiroError)
+                        else "forbidden"
+                        if isinstance(exc, PolicyError)
+                        else "upstream_unavailable",
                     )
                 self.store.put("operation", op_id, entry)
                 return self.saved_operation(record, op_id)
@@ -666,7 +783,7 @@ class MiroService:
             args = OperationInput.model_validate(
                 entry["request"] | {"board_id": entry["board_id"]} | entry.get("readback_scope", {})
             )
-            async with self.client_factory(self.store, record).open() as client:
+            async with self.open_client(record) as client:
                 observed = await self.read(client, record, read_op, args)
             if read_op == "read_canvas":
                 entry["readback_scope"] = observed["scope"]
@@ -775,12 +892,17 @@ class MiroService:
                 "Polling requires canvas/comments and an interval of at least 60 seconds",
             )
         args = OperationInput.model_validate(arguments)
+        self._operation_tool = "miro_read_" + kind
+        self._operation_arguments = args.model_dump(mode="json")
+        self.require_tool_arguments(self._operation_tool, self._operation_arguments)
         require(args.board_id, "board_id")
         self.authorize(args.connection_id, args.board_id)
         key = digest(
             [
                 self.access.directory_path,
                 subscription_id,
+                self.access.session_id,
+                session_instance(self.session()) if not self.access.admin else None,
                 arguments,
                 kind,
                 include_self,
@@ -796,8 +918,13 @@ class MiroService:
                 state = {
                     "key": key,
                     "subscription_id": subscription_id,
+                    "session_id": self.access.session_id,
+                    "session_created_at": session_instance(self.session())
+                    if not self.access.admin
+                    else None,
                     "directory_path": self.access.directory_path,
                     "connection_key": record["key"],
+                    "connection_id": args.connection_id,
                     "board_id": args.board_id,
                     "sequence": state["sequence"] if state else 0,
                     "snapshot_id": None,
@@ -823,7 +950,7 @@ class MiroService:
                         args = OperationInput.model_validate(
                             args.model_dump() | state["read_scope"]
                         )
-                    async with self.client_factory(self.store, record).open() as client:
+                    async with self.open_client(record) as client:
                         observed = await self.read(client, record, "read_" + kind, args)
                     if self.authorize(args.connection_id, args.board_id)["key"] != record["key"]:
                         raise MiroError(
@@ -871,6 +998,15 @@ class MiroService:
             state = self.store.get("subscription", subscription_key)
             if not state or state["directory_path"] != self.access.directory_path:
                 raise MiroError("forbidden", "Subscription is outside this workflow directory")
+            if not self.access.admin:
+                session = self.session()
+                if state.get("session_id") != session.session_id or state.get(
+                    "session_created_at"
+                ) != session_instance(session):
+                    raise MiroError(
+                        "forbidden", "Subscription belongs to a different session instance"
+                    )
+                self.authorize(state.get("connection_id", ""), state["board_id"])
             state["pending"] = [
                 event for event in state["pending"] if event["event_id"] != event_id
             ]

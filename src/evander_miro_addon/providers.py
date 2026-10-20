@@ -18,7 +18,6 @@ from .mcp import DESCRIPTIONS
 from .models import OPERATIONS, READ_OPERATIONS, CanvasScope, OperationInput
 from .runtime import provider_service
 
-
 # Required arguments and available optional inputs are shared by schema and editor.
 FIELDS = {
     "list_boards": ([], []),
@@ -48,6 +47,7 @@ FIELDS = {
 }
 FIELD_DESCRIPTIONS = {
     "connection_id": "Operator-configured Miro connection available to this workflow directory.",
+    "session_id": "Existing agent session whose board grants authorize this operation.",
     "board_id": "Exact approved Miro board ID.",
     "frame_id": "Optional frame to scope this operation.",
     "item_ids": "Optional list of item IDs within the approved board.",
@@ -86,6 +86,7 @@ class Definition(BaseModel):
     id: str
     type: str
     connection_id: ConfigValue
+    session_id: ConfigValue
     outputs: dict[str, Any] | None = None
 
 
@@ -111,6 +112,7 @@ for _operation in OPERATIONS:
 class ChangedDefinition(TriggerDefinition):
     type: Literal["trigger:miro:board-changed", "trigger:miro:comments-changed"]
     connection_id: str
+    session_id: str
     board_id: str
     frame_id: str | None = None
     item_ids: list[str] = Field(default_factory=list)
@@ -141,7 +143,10 @@ class OperationMixin:
         )
         payload = definition.model_dump(exclude={"id", "type", "outputs"})
         payload.update(resolved_config or {})
-        service = provider_service(self.runtime_context, node_id=definition.id)
+        session_id = payload.pop("session_id")
+        service = provider_service(
+            self.runtime_context, node_id=definition.id, session_id=session_id
+        )
         result = asyncio.run(service.execute(self.operation, payload))
         return {"result": result, **result}
 
@@ -153,7 +158,9 @@ class ChangedProvider(TriggerProviderBase):
 
     def poll(self) -> list[TriggerEvent]:
         definition = self.trigger_definition
-        service = provider_service(self.runtime_context, node_id=definition.id)
+        service = provider_service(
+            self.runtime_context, node_id=definition.id, session_id=definition.session_id
+        )
         arguments = {
             key: getattr(definition, key)
             for key in ("connection_id", "board_id", "frame_id", "item_ids")
@@ -182,7 +189,11 @@ class ChangedProvider(TriggerProviderBase):
         ]
 
     def acknowledge_published_event(self, event: TriggerEvent) -> None:
-        service = provider_service(self.runtime_context, node_id=self.trigger_definition.id)
+        service = provider_service(
+            self.runtime_context,
+            node_id=self.trigger_definition.id,
+            session_id=self.trigger_definition.session_id,
+        )
         asyncio.run(service.acknowledge(event.payload["subscription_key"], event.event_id))
 
 
@@ -227,7 +238,7 @@ def register_providers() -> ProviderPluginRegistration:
                 type=node,
                 label="Miro " + operation.replace("_", " "),
                 description=DESCRIPTIONS[operation],
-                fields=[field("connection_id", True)]
+                fields=[field("connection_id", True), field("session_id", True)]
                 + [field(key, True) for key in required]
                 + [field(key) for key in optional],
             )
@@ -270,6 +281,7 @@ def register_providers() -> ProviderPluginRegistration:
                 description="Poll an approved selection for observed changes; routing and agent wakes remain workflow-owned.",
                 fields=[
                     field("connection_id", True, bindable=False),
+                    field("session_id", True, bindable=False),
                     field("board_id", True, bindable=False),
                     field("frame_id", bindable=False),
                     field("item_ids", bindable=False),
@@ -318,6 +330,9 @@ def register_providers() -> ProviderPluginRegistration:
             }
             | {"scope": {"type": "object"}},
         )
+    from .access_workflow import register_access_nodes
+
+    register_access_nodes(queries, effects, catalog, resolvers)
     return ProviderPluginRegistration(
         query_providers=queries,
         effect_providers=effects,
