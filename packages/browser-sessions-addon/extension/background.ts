@@ -183,7 +183,11 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
           (invite.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(invite.hostname)))
         throw new Error("Use a valid invitation from your control plane");
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) throw new Error("Open the APP tab before sharing");
+      if (!tab?.id) throw new Error("Open the application tab before sharing");
+      if (!tab.url) throw new Error(
+        "Chrome could not read this tab's address. Select the application tab, click the Evander Browser Assistance toolbar icon to grant access, then try again.");
+      if (!/^https?:/.test(tab.url)) throw new Error(
+        "This page cannot be shared. Open an application page with an http:// or https:// address.");
       const response = await fetch(invite.origin + "/_browser/guest/pair", {
         method: "POST", headers: { "Content-Type": "application/json" },
         credentials: "omit", redirect: "error",
