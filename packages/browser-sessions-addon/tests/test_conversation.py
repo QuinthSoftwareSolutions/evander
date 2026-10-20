@@ -134,7 +134,9 @@ def test_extension_feedback_resumes_origin_even_after_another_conversation_runs(
     assert calls == ["thread/resume"]
 
 
-def test_feedback_waits_for_creating_dispatch_receipt_and_persists_its_thread(conversations):
+def test_feedback_waits_for_creating_dispatch_receipt_and_persists_its_thread(
+    conversations, monkeypatch
+):
     f = conversations
     f.record("dispatch-origin", None)
     f.activate("dispatch-origin")
@@ -148,10 +150,44 @@ def test_feedback_waits_for_creating_dispatch_receipt_and_persists_its_thread(co
     f.service.dispatch_messages()
     assert f.queued == []
     f.record("dispatch-origin", "thread-origin")
+    retry_at = f.service.now() + 61
+    monkeypatch.setattr(f.service, "now", lambda: retry_at)
+    monkeypatch.setattr(f.service.store, "now", lambda: retry_at)
     f.service.dispatch_messages()
     assert len(f.queued) == 1
     assert f.queued[0][1]["resume_thread_id"] == "thread-origin"
     assert f.service.store.get(session["id"]).native_thread_id == "thread-origin"
+
+
+def test_pending_conversation_receipts_do_not_starve_ready_sessions(conversations):
+    f = conversations
+    f.record("dispatch-origin", None)
+    f.activate("dispatch-origin")
+    pending = f.create()
+    for index in range(20):
+        f.service.enqueue_message(
+            pending["id"],
+            "guest:host",
+            MessageRequest(request_id=f"pending-{index}", body="Earlier question"),
+        )
+    f.record("dispatch-other", "thread-other")
+    f.activate("dispatch-other", 1)
+    ready = f.service.create("owner", CreateRequest(mode="user_hosted", request_id="ready"))
+    message = f.service.enqueue_message(
+        ready["id"],
+        "guest:host",
+        MessageRequest(request_id="ready-question", body="New question"),
+    )
+
+    for _ in range(3):
+        f.service.dispatch_messages()
+
+    assert len(f.queued) == 1
+    assert f.queued[0][1]["resume_thread_id"] == "thread-other"
+    assert [(row["id"], row["status"]) for row in f.service.store.messages(ready["id"])] == [
+        (message["id"], "dispatched")
+    ]
+    assert {row["status"] for row in f.service.store.messages(pending["id"])} == {"queued"}
 
 
 def test_ambiguous_legacy_context_never_resumes_the_latest_conversation(conversations):

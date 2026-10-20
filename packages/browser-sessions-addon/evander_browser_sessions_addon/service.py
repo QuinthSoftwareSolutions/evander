@@ -759,7 +759,6 @@ class Service:
             try:
                 session = self.store.get(message["session_id"])
                 self.store.active(session)
-                session = self.bind_conversation(session, required=True)
             except BrowserError as exc:
                 if exc.status not in {404, 410}:
                     continue
@@ -787,6 +786,7 @@ class Service:
                         "INSERT OR REPLACE INTO dispatches VALUES(?,?,?)",
                         (message["id"], "dispatching", self.now() + 60),
                     )
+                session = self.bind_conversation(session, required=True)
                 self.bindings.enqueue(session, message)
                 with self.store.connect(write=True) as db:
                     db.execute(
