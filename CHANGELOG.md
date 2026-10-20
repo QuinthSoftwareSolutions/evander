@@ -5,6 +5,7 @@
 - Retain public browser relay routing and refresh the optional package during managed deployments on provisioned hosts.
 - Allow host-approved preview container UIDs and GIDs, pin them per preview, and match output ownership to the selected identity.
 - Hand Docker a protected host bind mount of the checked checkout inode, and keep deletion guards active until that mount is released.
+- Create local browser support agents through the configured core worker selection, without treating browser supervisor labels as registered worker IDs.
 
 ## 2026-10-19 - Talk during shared browser sessions (0.105.0)
 
