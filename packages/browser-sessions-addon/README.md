@@ -32,6 +32,8 @@ For local support, create mode user_hosted and call browser_session_invite. The 
 
 After upgrading, existing local sessions can be observed by their creating agent. Use **Allow Truman to interact** again to grant that agent input; legacy support agents are removed when their session closes.
 
+Browser feedback is pinned to the creating conversation. If its native thread is still being recorded, messages wait for that run rather than resume another recent chat. For an older session without a recorded conversation, create a new sharing session from the intended assistant conversation.
+
 Workflow nodes effect:browser-session:ensure, query:browser-session:status and effect:browser-session:close use the same service and require the workflow and owner to share a directory. See [node examples](examples/workflow-nodes.json).
 
 ## Voice

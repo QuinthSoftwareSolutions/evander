@@ -1040,3 +1040,28 @@ def test_workflow_config_snapshot_repository_round_trips_snapshot(tmp_path: Path
 
     assert repository.get_snapshot("revision-1") == snapshot
     assert repository.list_snapshots() == [snapshot]
+
+
+@pytest.mark.parametrize("indexed", [True, False])
+def test_direct_prompt_receipt_is_opt_in_and_scoped_to_its_dispatch(tmp_path, indexed):
+    from evander.repositories.orchestration import read_latest_agent_prompt_lifecycle_receipt
+
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    record = _effect_record(execution_id="direct", idempotency_key="direct")
+    record.effect_type = "effect:agent:prompt"
+    record.status = "waiting"
+    record.outputs = {"session_id": "owner", "dispatch_id": "direct-run", "thread_id": "native"}
+    store.put(record)
+    if not indexed:
+        with connect_orchestration_db(store.path) as connection:
+            connection.execute("DELETE FROM workflow_execution_projections")
+    assert read_latest_agent_prompt_lifecycle_receipt(
+        store.path, session_id="owner", dispatch_id="direct-run"
+    ) is None
+    found = read_latest_agent_prompt_lifecycle_receipt(
+        store.path, session_id="owner", dispatch_id="direct-run", include_direct_prompts=True
+    )
+    assert found["outputs"]["thread_id"] == "native"
+    assert read_latest_agent_prompt_lifecycle_receipt(
+        store.path, session_id="other", dispatch_id="direct-run", include_direct_prompts=True
+    ) is None
