@@ -110,11 +110,19 @@ def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list
             )
         except (CommunicationArtifactLinkError, ValueError):
             return json_error("Invalid or expired artifact download link", status_code=403)
+        inline_png = (
+            artifact.metadata.mime_type == "image/png"
+            and artifact.metadata.metadata.get("purpose") == "teams_progress_image"
+        )
+        if inline_png:
+            with artifact.blob_path.open("rb") as image:
+                inline_png = image.read(8) == b"\x89PNG\r\n\x1a\n"
         return FileResponse(
             artifact.blob_path,
-            headers={"Cache-Control": "no-store"},
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
             media_type=artifact.metadata.mime_type or "application/octet-stream",
             filename=artifact.metadata.filename,
+            content_disposition_type="inline" if inline_png else "attachment",
         )
 
     async def download_communication_persona_avatar(

@@ -12,9 +12,6 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,
-    communication_artifact_link_secret_env,
-    communication_artifact_public_base_url,
-    issue_communication_artifact_download_link,
 )
 from evander.communication_artifacts import (
     CommunicationArtifactStore,
@@ -274,53 +271,12 @@ class CommunicationArtifactHelpers:
         session_id: str,
         artifacts: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        resolved_config = self.context.resolve_provider_config_for_session(session_id)
-        updated_artifacts: list[dict[str, Any]] = []
-        published_links: list[dict[str, Any]] = []
-        audit_links: list[dict[str, Any]] = []
-        for artifact in artifacts:
-            updated = dict(artifact)
-            if not self.artifact_is_inline_teams_image(
-                updated
-            ) and not self.artifact_has_teams_reference_url(updated):
-                try:
-                    link = issue_communication_artifact_download_link(
-                        artifact_id=str(updated.get("artifact_id") or ""),
-                        artifact_expires_at=self.artifact_expires_at(updated),
-                        public_base_url=communication_artifact_public_base_url(resolved_config),
-                        secret_env=communication_artifact_link_secret_env(resolved_config),
-                        ttl_seconds=resolved_config.communication_artifact_link_ttl_seconds,
-                    )
-                except CommunicationArtifactLinkError as exc:
-                    raise ToolError(str(exc)) from exc
-                updated["download_url"] = link.url
-                published_links.append(
-                    {
-                        "artifact_id": link.artifact_id,
-                        "filename": str(
-                            updated.get("normalized_safe_filename")
-                            or updated.get("filename")
-                            or link.artifact_id
-                        ),
-                        "url": link.url,
-                        "expires_at": link.expires_at.isoformat(),
-                    }
-                )
-                audit_links.append(
-                    {
-                        "artifact_id": link.artifact_id,
-                        "filename": str(
-                            updated.get("normalized_safe_filename")
-                            or updated.get("filename")
-                            or link.artifact_id
-                        ),
-                        "byte_count": int(updated.get("byte_count") or 0),
-                        "mime_type": updated.get("mime_type"),
-                        "expires_at": link.expires_at.isoformat(),
-                    }
-                )
-            updated_artifacts.append(updated)
-        return updated_artifacts, published_links, audit_links
+        from evander.communication_publication import publish_teams_file_links
+
+        try:
+            return publish_teams_file_links(self.context, self, session_id, artifacts)
+        except CommunicationArtifactLinkError as exc:
+            raise ToolError(str(exc)) from exc
 
     def require_ado_artifact_send(
         self, session: Any, artifact_payloads: list[dict[str, Any]]

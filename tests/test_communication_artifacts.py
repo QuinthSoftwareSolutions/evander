@@ -10,6 +10,74 @@ from evander.worker.models import WorkerFileWriteRequest, WorkerSessionPrepareRe
 from evander.worker.service import WorkerDaemon
 
 
+def test_only_signed_verified_progress_png_downloads_are_inline(tmp_path, monkeypatch):
+    import asyncio
+    from io import BytesIO
+    from PIL import Image
+    from types import SimpleNamespace
+    from starlette.requests import Request
+    from evander.admin.web.artifacts import artifact_routes
+    from evander.communication_artifact_links import issue_communication_artifact_download_link
+
+    monkeypatch.setenv("SYNTHETIC_IMAGE_SECRET", "local-test-secret")
+    config = SimpleNamespace(
+        runtime_dir=tmp_path, communication_artifact_link_secret_env="SYNTHETIC_IMAGE_SECRET"
+    )
+    service = SimpleNamespace(
+        config=config,
+        runtime=SimpleNamespace(
+            provider_config=SimpleNamespace(resolve_for_session_id=lambda sid: config)
+        ),
+    )
+    route = next(
+        r
+        for r in artifact_routes(service, None)
+        if r.path == "/public/communication-artifacts/{artifact_id:str}"
+    )
+    store = CommunicationArtifactStore(tmp_path)
+    buffer = BytesIO()
+    Image.new("RGB", (2, 2), "blue").save(buffer, format="PNG")
+    for mime, content, purpose, expected in (
+        ("image/png", buffer.getvalue(), "teams_progress_image", "inline"),
+        ("image/png", buffer.getvalue(), None, "attachment"),
+        ("image/svg+xml", b"<svg/>", "teams_progress_image", "attachment"),
+        ("image/png", b"not a PNG", "teams_progress_image", "attachment"),
+    ):
+        record = store.stage(
+            provider="teams",
+            session_id="session-a",
+            content=content,
+            original_filename="graphic",
+            mime_type=mime,
+            metadata={"purpose": purpose},
+        )
+        link = issue_communication_artifact_download_link(
+            artifact_id=record.artifact_id,
+            artifact_expires_at=record.expires_at,
+            public_base_url="https://media.example",
+            secret_env="SYNTHETIC_IMAGE_SECRET",
+            ttl_seconds=600,
+        )
+
+        def request(token):
+            return Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/",
+                    "headers": [],
+                    "path_params": {"artifact_id": record.artifact_id},
+                    "query_string": ("token=" + token).encode(),
+                }
+            )
+
+        response = asyncio.run(route.endpoint(request(link.token)))
+        assert response.headers["content-disposition"].startswith(expected)
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["cache-control"] == "no-store"
+        assert asyncio.run(route.endpoint(request("invalid"))).status_code == 403
+
+
 def test_store_stages_metadata_with_safe_filename_and_opaque_id(tmp_path):
     store = CommunicationArtifactStore(tmp_path)
 

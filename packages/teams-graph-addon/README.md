@@ -160,6 +160,71 @@ edit consent, the signed-in identity, channel/chat membership, and tenant messag
 After an approved scope change, complete a fresh consent/sign-in flow. Live confirmation of the
 narrow channel permission and tenant editing policy is separate from mocked local validation.
 
+## Opt-in progress images
+
+`teams_post_file` additionally accepts keyword-only `editable_image_artifact_id` and
+`idempotency_key`. The selected image must occur exactly once in `artifact_ids`, be a valid,
+session-owned PNG (at most 2048×1200 and 8 MiB), and pass existing file policy and approval.
+Creation also requires `teams_update_message`. Existing posts and receipts gain no image authority.
+An ambiguous acknowledged image layout still returns a successful post with `image_editable: false`.
+
+`teams_update_message` and its workflow effect additionally accept `image_artifact_id`,
+`clear_image` (default false), and file-approval `request_id`. Omission retains the latest image;
+replacement and clearing are mutually exclusive. Publishing a replacement requires both the edit
+and file-post grants plus the current target capability, artifact ownership, file policy and approval.
+Clearing needs edit authority alone. The tool cannot add a slot to an old message, replace arbitrary
+URLs/HTML or attachments, or change any other image, card, mention, file link or protected layout.
+
+The host issues an immutable signed URL for the selected PNG and preserves its exact source in
+pending intent. It PATCHes only the body, verifies readback and source bytes, and reconciles uncertain
+writes before another edit. Identical retries neither mint a new source nor increment the revision.
+Managed-image results include `image_sha256`, `image_expires_at` and `image_renew_at`, never the
+bearer URL. Creation keys are scoped by session, normalized target and thread; conflicting content
+fails, a known completed retry returns its receipt, and an uncertain POST requires operator
+reconciliation instead of another post. `request_id` remains the approval identifier.
+
+For image replacement, approval is bound to this payload (including the actual recorded parent):
+
+```json
+{
+  "session_id": "session-a", "provider": "teams", "operation": "teams_update_message",
+  "channel_target": "team-a/channel-a", "message_id": "message-a", "message": "Reviewing",
+  "thread_id": "root-a", "artifact_ids": ["comm_0123456789abcdef0123456789abcdef"]
+}
+```
+
+New workflow providers are:
+
+| Effect | Behavior |
+| --- | --- |
+| `effect:teams:render-progress-image` | Validate a strict snapshot and stage a deterministic PNG under a real scoped session; return artifact ID, digest, expiry and readable status. |
+| `effect:teams:post-file` | Invoke the same authorized file-post command as MCP; require a durable creation key. |
+| `effect:teams:sync-progress-message` | Optional single-message controller, defaulting off. Persist generation/outline identity, sequence, message/revision, pending operation, retained pixels and renewal state. |
+
+The renderer uses Pillow and the add-on's bundled DejaVu Sans font/license. It draws chapter and
+section drafting counts and a phase/status; 100% drafting does not mean delivery. It invokes no
+model or browser. Generated progress PNGs use the existing signed artifact route with inline
+disposition and `nosniff`; ordinary file downloads retain attachment disposition.
+
+The coordinator coalesces routine writing updates for 30 seconds, flushes phase changes promptly,
+rejects stale/conflicting snapshots, and schedules identifier-only renewal/flush events in the
+existing durable event scheduler. Renewal runs at half the actual remaining source lifetime and
+requires at least five minutes of usable lifetime. It stages the retained verified pixels as a new
+source version without inference. Duplicate or superseded timers do nothing; terminal delivery or
+cancellation clears the temporary image. Delivery requires separate successful Word/PDF receipts
+matching current source/output hashes and uses Teams receipt links, without recording owner approval.
+
+Current permissions and approval still apply to renewal. Expired sessions or uncertain/unapplied
+expired sources fail closed. Notification errors are durable and returned as `notification_failed`;
+they cannot start or restart writers, reviews or exports. Retrying affects only notification work.
+Operator journals live under `runtime/teams-operations`, with restrictive permissions independently
+of the inbox cache. Signed sources remain bounded by configured link and artifact expiry.
+
+See the runnable, network-free [synthetic example](examples/progress-message/README.md), including
+bindable node fragments and renewal subscriptions. Actual operator documentation packs, identities
+and existing jobs are not migrated or enabled. Before channel rollout, finish Graph consent and
+signed-in Teams client/channel verification; mocked local validation does not establish live rendering.
+
 ## Extension contract
 
 Registration contributes Teams settings, a host-only credential resolver, configuration readiness,

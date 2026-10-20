@@ -1,0 +1,66 @@
+[
+  {
+    "id": "render",
+    "display_name": "Render progress",
+    "type": "effect:teams:render-progress-image",
+    "config": {
+      "session_id": "${{prepare.coordinator_session_id}}",
+      "snapshot": "${{prepare.progress_snapshot}}"
+    }
+  },
+  {
+    "id": "post",
+    "display_name": "Post progress once",
+    "type": "effect:teams:post-file",
+    "config": {
+      "session_id": "${{prepare.coordinator_session_id}}",
+      "channel_target": "example-team/example-channel",
+      "thread_id": "${{prepare.root_message_id}}",
+      "message": "${{render.status_text}}",
+      "artifact_ids": ["${{render.artifact_id}}"],
+      "editable_image_artifact_id": "${{render.artifact_id}}",
+      "idempotency_key": "${{prepare.progress_creation_key}}"
+    }
+  },
+  {
+    "id": "update",
+    "display_name": "Update existing progress",
+    "type": "effect:teams:update-message",
+    "config": {
+      "session_id": "${{prepare.coordinator_session_id}}",
+      "channel_target": "example-team/example-channel",
+      "thread_id": "${{prepare.root_message_id}}",
+      "message_id": "${{prepare.progress_message_id}}",
+      "expected_revision": "${{prepare.progress_message_revision}}",
+      "message": "${{render.status_text}}",
+      "image_artifact_id": "${{render.artifact_id}}"
+    }
+  },
+  {
+    "id": "sync",
+    "display_name": "Maintain one progress message",
+    "type": "effect:teams:sync-progress-message",
+    "config": {
+      "enabled": false,
+      "session_id": "${{prepare.coordinator_session_id}}",
+      "channel_target": "example-team/example-channel",
+      "thread_id": "${{prepare.root_message_id}}",
+      "snapshot": "${{prepare.progress_snapshot}}"
+    }
+  },
+  {
+    "id": "renew",
+    "display_name": "Renew current progress image",
+    "type": "effect:teams:sync-progress-message",
+    "config": {
+      "enabled": false,
+      "session_id": "${{timer.payload.session_id}}",
+      "channel_target": "${{timer.payload.channel_target}}",
+      "thread_id": "${{timer.payload.thread_id}}",
+      "generation_id": "${{timer.payload.generation_id}}",
+      "outline_sha256": "${{timer.payload.outline_sha256}}",
+      "source_version": "${{timer.payload.source_version}}",
+      "action": "${{timer.payload.action}}"
+    }
+  }
+]

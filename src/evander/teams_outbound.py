@@ -7,12 +7,37 @@ import hashlib
 import json
 import os
 import time
+import html
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+from datetime import datetime
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class TeamsImageVersion(BaseModel):
+    """Host-issued immutable source; URLs are sensitive and never enter results/audits."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    artifact_id: str
+    sha256: str
+    mime_type: str = "image/png"
+    expires_at: datetime
+    renew_at: datetime
+    source_url: str = Field(repr=False)
+    alt_text: str = "Progress graphic"
+
+
+class TeamsImageSlot(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    # Exact acknowledged wrapper split around the img element. Only this slot
+    # is mutable; the rest of the suffix remains protected.
+    before: str
+    after: str
+    paragraph_prefix: str = "<p>"
+    paragraph_suffix: str = "</p>"
 
 
 class TeamsOutboundReceipt(BaseModel):
@@ -30,12 +55,15 @@ class TeamsOutboundReceipt(BaseModel):
     editable: bool = True
     uneditable_reason: str | None = None
     web_url: str | None = None
+    image_slot: TeamsImageSlot | None = None
+    image_uneditable_reason: str | None = None
 
 
 class TeamsPendingEdit(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     text_html: str
     body_html: str
+    image: TeamsImageVersion | None = None
 
 
 class TeamsOutboundEditState(BaseModel):
@@ -44,6 +72,7 @@ class TeamsOutboundEditState(BaseModel):
     text_html: str
     body_html: str
     pending: TeamsPendingEdit | None = None
+    image: TeamsImageVersion | None = None
 
 
 def outbound_key(channel_target: str, message_id: str) -> str:
@@ -136,3 +165,40 @@ class JsonTeamsOutboundStore:
             raise ValueError("No Teams outbound ownership receipt")
         payload["state"] = state.model_dump(mode="json")
         self._write(self._path(channel_target, message_id), payload)
+
+
+def compose_outbound_body(receipt, text_html, image):
+    """Compose only receipt-authorized regions; old receipts retain their exact suffix."""
+    slot = receipt.image_slot
+    suffix = receipt.body_suffix
+    if slot is not None:
+        paragraph = ""
+        if image is not None:
+            paragraph = (
+                slot.paragraph_prefix
+                + '<img src="'
+                + html.escape(image.source_url, quote=True)
+                + '" alt="'
+                + html.escape(image.alt_text, quote=True)
+                + '">'
+                + slot.paragraph_suffix
+            )
+        suffix = slot.before + paragraph + slot.after
+    return receipt.body_prefix + text_html + suffix
+
+
+def outbound_edit_result(receipt, state, status):
+    image = state.image
+    return {
+        "success": True,
+        "status": status,
+        "session_id": receipt.session_id,
+        "channel_target": receipt.channel_target,
+        "message_id": receipt.message_id,
+        "thread_id": receipt.thread_id,
+        "message_revision": state.revision,
+        "web_url": receipt.web_url,
+        "image_sha256": image.sha256 if image else None,
+        "image_expires_at": image.expires_at.isoformat() if image else None,
+        "image_renew_at": image.renew_at.isoformat() if image else None,
+    }

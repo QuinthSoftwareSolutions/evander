@@ -10,7 +10,7 @@ A documentation job should be able to post one progress message when writing sta
 
 Extend the session-owned Teams posting and editing implementation already on `feature/teams-message-edit`. Use a new immutable PNG URL for each changed graphic and replace only the explicitly designated image region in the same message body. Keep other mentions, attachments, hosted images, cards, file links, and their surrounding layout intact.
 
-This document authorizes no implementation by itself. The current requested deliverables are the completed isolated compatibility probe and this local plan. Subsequent local implementation, live consent, deployment, operator workflow changes, pushes, and PRs are separate actions. Production documentation sessions must continue untouched throughout this planning work and any later local implementation.
+Local implementation was authorized on 20 October 2026, in the same isolated worktree and branch. A subsequent instruction authorized committing, pushing and an agent review against the branch's merge base. Live consent, live Graph tests, deployment, operator workflow changes and PR creation remain outside that authorization. Production documentation sessions and configuration remain untouched. Channel/client compatibility and a later operator rollout remain release gates after review and CI/CD.
 
 ## Progress
 
@@ -23,9 +23,11 @@ This document authorizes no implementation by itself. The current requested deli
 - [x] (2026-10-19) Addressed the reviewer's P2 expiry finding by specifying scheduled same-message image renewal, stable renewal intent, and a fixed-clock acceptance test.
 - [ ] Obtain channel-edit consent and confirm channel-root and channel-reply behavior in a dedicated test conversation before enabling this for a channel workflow.
 - [ ] Verify actual image display and refresh in a signed-in Teams client. Graph body/readback and source-byte verification alone do not establish client rendering.
-- [ ] Implement opt-in image receipts, shared publication authorization, and guarded image edits with focused tests.
-- [ ] Implement deterministic progress rendering and optional add-on workflow providers and a synthetic example.
-- [ ] Run the affected add-on and core suites, review the local diff, and verify the primary checkout remains unchanged.
+- [x] (2026-10-20) Implemented opt-in image receipts, shared publication/approval commands, guarded image edits, protected-content checks and source-byte verification.
+- [x] (2026-10-20) Implemented deterministic rendering with a bundled licensed font, typed providers, synthetic node fragments and a runnable offline post/edit/clear example.
+- [x] (2026-10-20) Added a generic durable progress coordinator, renewal/coalescing event catalog, stale-event guards, notification-only recovery and receipt-verified terminal clearing. No production pack was changed.
+- [x] (2026-10-20) Finished local validation: 491 add-on tests and 281 affected core tests passed; changed Python files passed Ruff and the diff passed whitespace checks. All five example node fragments materialized; the offline example created one message with revisions 1–4 and terminal clearing. Built the add-on wheel in a temporary isolated build environment and verified the bundled font/license. The primary checkout's HEAD, index and working tree match its saved baseline.
+- [x] (2026-10-20) Committed and pushed implementation `60a69c32`; a read-only agent review against merge base `9736459c` found three P2 regressions. Reproduced and fixed all three: locked-state image-source validation, configured timer storage/wake paths, and executable example bindings. All four new regression cases failed before the fixes and passed afterward; final validation passed 495 add-on tests and 318 affected core tests, plus Ruff and diff checks.
 - [ ] After separate deployment approval, introduce progress only for newly created documentation jobs and verify one-message behavior end to end.
 
 ## Surprises & Discoveries
@@ -40,6 +42,10 @@ The existing account's token includes `Chat.ReadWrite`, `ChannelMessage.Read.All
 The public artifact route already serves immutable staged artifacts using signed URLs. Its URL lifetime is bounded by both link TTL and artifact expiry, and its response uses `Cache-Control: no-store`. It currently uses download-style Content-Disposition; the signed-in client proof must check whether a narrow image response adjustment is necessary. Do not infer a Microsoft image-cache duration or assume that reusing a URL will refresh pixels.
 
 Pillow is already a core dependency in `pyproject.toml`. A small PNG chart can therefore be generated without adding Chromium, a browser service, JavaScript packages, or model calls. Browser automation remains relevant for client acceptance, not for drawing the progress bar.
+
+Implementation discoveries (20 October 2026): A rich message suffix can close a wrapper opened in the text prefix, so image-slot discovery must parse the complete acknowledged HTML before calculating suffix-relative spans. The mocked rich-content cases now cover this. A lost PATCH acknowledgment can outlive its signed source; notification recovery first reconciles the original body without republishing that expired source, then renews retained verified pixels. Cross-process creation/edit tests and fixed-clock expiry tests cover these cases. The event-schedule effect is a core-executed registry placeholder, so the generic coordinator uses its existing ScheduledInternalEventStore through the shared metadata-aware builder, with no new daemon or model wake.
+
+Merge-base review discoveries (20 October 2026): selecting a source verifier from pre-lock edit state allowed a waiting text-only call to commit a corrupt pending image. Every command now supplies a lazy verifier, and the service invokes it using locked state. Hardcoding the default orchestration database left timers unpolled with custom storage; the effect now forwards runtime metadata to the shared store builder, including the trigger wake path. Object-form `$ref` dictionaries were accepted as generic configuration but never resolved by the runtime. The examples now use `${{node_id.output}}` strings and are tested through the real resolver and providers, including flush/renew event payloads and terminal image clearing. The example instructions also use the actual `trigger:event` type.
 
 ## Decision Log
 
@@ -58,12 +64,26 @@ Decision: Treat client rendering and channel operation as outstanding release ga
 
 Decision: Schedule an expiry-aware image renewal even when visible progress is unchanged. Rationale: Section and phase events may stop during a long review or blocker, while every signed source still expires. Renewal must deliberately change the source version and preserve ordinary identical-retry no-ops. Date/Author: 2026-10-19 / Codex, following independent review.
 
+Decision (2026-10-20): Add effect:teams:sync-progress-message as a generic optional add-on coordinator, alongside the planned rendering and file-post primitives. Rationale: durable sequencing, coalescing, source renewal and notification-only retry should have one tested implementation rather than be rebuilt separately in each operator pack. It defaults disabled and contributes no production workflow.
+
+Decision (2026-10-20): Serve only server-generated progress PNG artifacts inline through the existing signed route, after signature/expiry checks and a PNG signature check; retain attachment disposition for other files and set nosniff. This supplies the local embedding path while authenticated Teams-client rendering remains an unverified release gate.
+
+Decision (2026-10-20): Keep source verification lazy but always available to the serialized edit service, and construct progress timers from trusted effect runtime metadata using the core scheduled-store builder. Validate example bindings by executing the resolved fragment chain rather than treating materialization as execution proof. These choices address the three reproduced merge-base review findings without adding publication authority or production wiring.
+
 ## Outcomes & Retrospective
 
 
 Planning outcome: Graph can change an image reference in an existing chat message, and versioned signed PNG sources are an API-compatible candidate. The attempted native hosted upload did not produce a valid new image despite HTTP 204. The test was isolated from documentation work, and both test messages and both temporary artifact publications were cleaned up.
 
-Independent review found one P2 lifecycle gap and no P1 findings: an unchanged active job needed renewal before its signed image expired. This revision adds the scheduled renewal and fixed-clock acceptance scenario. No image-aware tool implementation or live progress automation exists as a result of this plan. Before production release, verify real Teams rendering and channel routes with the correct delegated consent. If that client proof fails, retain the existing text-only edit behavior and record the blocker; do not ship broken images or replace failed edits with additional posts.
+Independent planning review found one P2 lifecycle gap and no P1 findings: an unchanged active job needed renewal before its signed image expired. The plan was extended with scheduled renewal and a fixed-clock acceptance scenario before implementation.
+
+Local implementation outcome (20 October 2026): the optional add-on now provides image-aware posting/editing, deterministic PNG rendering and a durable progress coordinator. It preserves one message, protected rich content, exact uncertain-write intent and source integrity; coalesces writing events; renews retained pixels; and clears the temporary image only on verified delivery or cancellation. Forty progress-specific cases cover policy, scoped providers, concurrency, stale events, expiry, lost acknowledgments and corrupted-source recovery. The final add-on suite passed 491 tests and the affected core suites passed 281 tests. Ruff, example materialization, the offline one-message demo, wheel construction with font/license verification, diff review and the primary-checkout preservation check passed.
+
+Validation exposed a missing sanitized publication summary in file-post audits; restoring the existing audit fields resolved it. Two initial core failures came from omitting the optional Azure DevOps source path and passed with the correct source paths. An existing TestClient check stalled inside the filesystem sandbox; that process was stopped and the bounded suite passed outside it. The development environment lacked setuptools, so the final wheel was built using a disposable isolated build environment without changing the development virtual environment.
+
+Review-fix outcome (20 October 2026): all three P2 findings against implementation `60a69c32` were reproduced and corrected. The concurrency regression retains revision 1 and pending intent when a waiting text edit encounters corrupt image bytes. Renewal/flush timers reach the configured database and wake socket. Both primitive and coordinated example chains execute through real binding resolution while creating one message each; the coordinated chain flushes, renews, ignores duplicate renewal and clears on cancellation. The final local suites passed 813 tests (495 add-on and 318 affected core), with Ruff and diff checks passing. The existing release entry was updated; version reconciliation before merge remains a separate step.
+
+Changes are prepared on the existing feature branch for the authorized commit, push and merge-base review, with enablement defaulting off. No deployment, production workflow/configuration change, Graph call, consent grant or production job activity was performed during implementation. Before production release, verify real Teams rendering and channel routes with the correct delegated consent. If that client proof fails, retain readable text updates and record the blocker; do not ship broken images or replace failed edits with additional posts.
 
 ## Context and Orientation
 
@@ -289,3 +309,5 @@ Use `TeamsMessageCommands` for common policy/audit behavior; `GraphTeamsService`
 Revision note (2026-10-19): Created after an isolated live chat compatibility probe. Selected immutable signed PNG references because tested hosted-byte replacement returned a misleading 204 without a valid new image. Explicitly retained channel/client verification gates and the boundary protecting ongoing documentation jobs.
 
 Revision note (2026-10-19, review follow-up): Addressed the independent P2 finding that unchanged active jobs could retain an expired image. Added a durable scheduled renewal through the existing event scheduler, explicit new-source semantics for identical pixels, stale-timer guards, bounded lifetime policy, and fixed-clock tests. Implementation and live workflow state remain untouched.
+
+Revision note (2026-10-20, implementation): Implemented the locally authorized media, rendering, notification-state and timer surfaces; updated the boundary, progress and decisions to distinguish completed local work from outstanding channel/client acceptance and deployment.

@@ -43,6 +43,10 @@
 - Add the optional Teams/Graph `teams_update_message` tool and deterministic `effect:teams:update-message` workflow effect for channel posts, replies, and existing chats.
 - Record durable, session-owned send receipts separately from inbox refreshes; preserve rich content while replacing the recorded text region, and reject unowned or externally changed messages.
 - Add guarded revisions, per-message process locks, pending-write reconciliation, audit events, guided workflow fields, and local stub post/edit behavior. Existing session grants and Microsoft scopes remain unchanged.
+- Add opt-in replacement and clearing of one session-owned PNG region, shared file publication/approval checks, and a real-session `effect:teams:post-file` with durable creation idempotency. Other images, mentions, files and cards stay protected.
+- Render deterministic progress PNGs with a bundled licensed Unicode font. Add optional render/sync effects with durable snapshots, coalescing, expiry renewal, notification-only recovery and verified Word/PDF delivery links; enablement defaults off.
+- Serve signed, generated progress PNGs inline with `nosniff`, retain ordinary attachment downloads, and protect Teams receipt/cache files containing image bearer references. Channel consent, authenticated client acceptance and operator rollout remain separate from local implementation.
+- Preserve source verification when text edits race image recovery, route timers through configured storage and trigger wake paths, and use executable workflow bindings in the progress examples.
 
 ## 2026-10-17 - Allow public login identifiers to overlap passwords (0.101.1)
 

@@ -15,7 +15,14 @@ from evander.integration_services.teams import (
     _teams_message_to_html,
     parse_teams_target,
 )
-from evander.teams_outbound import TeamsOutboundReceipt, TeamsOutboundEditState, TeamsPendingEdit
+from evander.teams_outbound import (
+    TeamsOutboundReceipt,
+    TeamsOutboundEditState,
+    TeamsPendingEdit,
+    TeamsImageSlot,
+    compose_outbound_body,
+    outbound_edit_result,
+)
 
 
 class TeamsMessageEditError(ValueError):
@@ -169,7 +176,7 @@ def _protected(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload.get(key) or [] for key in ("mentions", "attachments")}
 
 
-def record_outbound(service, *, payload, target, envelope, message) -> None:
+def record_outbound(service, *, payload, target, envelope, message, image_version=None) -> None:
     """An unusual acknowledged layout must never turn a successful POST into a retry."""
     text_html = _teams_message_to_html(message)
     body = payload.get("body") or {}
@@ -200,6 +207,40 @@ def record_outbound(service, *, payload, target, envelope, message) -> None:
             raise TeamsMessageEditError("Provider changed the editable text layout")
     except (ValueError, IndexError) as exc:
         reason = str(exc)
+    slot = None
+    image_reason = None
+    if image_version is not None:
+        try:
+            if reason:
+                raise TeamsMessageEditError("Text layout is not editable")
+            # The suffix can close a wrapper opened in the prefix. Parse the
+            # complete acknowledged body, then retain suffix-relative spans.
+            image_tokens = _BodyParser(body_html).tokens
+            suffix_start = len(body_html) - len(suffix)
+            matches = [
+                i
+                for i, t in enumerate(image_tokens)
+                if t.signature[:2] == ("start", "img")
+                and dict(t.signature[2]).get("src") == image_version.source_url
+            ]
+            if len(matches) != 1:
+                raise TeamsMessageEditError("Cannot identify a unique editable image")
+            i = matches[0]
+            if (
+                i < 1
+                or i + 1 >= len(image_tokens)
+                or image_tokens[i - 1].signature != ("start", "p", ())
+                or image_tokens[i + 1].signature != ("end", "p")
+            ):
+                raise TeamsMessageEditError("Editable image requires its own paragraph")
+            start, end = image_tokens[i - 1].start, image_tokens[i + 1].end
+            if start < suffix_start:
+                raise TeamsMessageEditError("Editable image is outside its designated suffix")
+            slot = TeamsImageSlot(
+                before=suffix[: start - suffix_start], after=suffix[end - suffix_start :]
+            )
+        except (ValueError, IndexError):
+            image_reason = "Acknowledged image layout is ambiguous; image editing unavailable"
     receipt = TeamsOutboundReceipt(
         channel_target=target.normalized,
         message_id=envelope.message_id,
@@ -212,9 +253,14 @@ def record_outbound(service, *, payload, target, envelope, message) -> None:
         editable=reason is None,
         uneditable_reason=reason,
         web_url=envelope.metadata.get("web_url"),
+        image_slot=slot,
+        image_uneditable_reason=image_reason,
     )
     service.message_store.create_outbound_receipt(
-        receipt, TeamsOutboundEditState(text_html=text_html, body_html=body_html)
+        receipt,
+        TeamsOutboundEditState(
+            text_html=text_html, body_html=body_html, image=image_version if slot else None
+        ),
     )
 
 
@@ -246,6 +292,9 @@ def update_message(
     message,
     thread_id=None,
     expected_revision=None,
+    image_version=None,
+    clear_image=False,
+    verify_image_source=None,
 ):
     target = parse_teams_target(channel_target)
     if target.kind == "user":
@@ -263,6 +312,10 @@ def update_message(
             raise TeamsMessageEditError("thread_id does not match the recorded Teams message")
         if not receipt.editable:
             raise TeamsMessageEditError(f"Teams message is uneditable: {receipt.uneditable_reason}")
+        if image_version is not None and clear_image:
+            raise TeamsMessageEditError("Replacement image and clear_image are mutually exclusive")
+        if (image_version is not None or clear_image) and receipt.image_slot is None:
+            raise TeamsMessageEditError("No editable image slot was recorded for this message")
         state = store.get_outbound_edit_state(target.normalized, message_id)
         if state is None:
             raise TeamsMessageEditError("Teams message edit state is missing")
@@ -277,12 +330,19 @@ def update_message(
                     return current, str(current["body"]["content"])
 
                 current, current_body = inspect()
+
+                def image_key(image):
+                    return (image.artifact_id, image.sha256) if image else None
+
                 if state.pending is not None:
                     if _same_body(current_body, state.pending.body_html):
+                        if state.pending.image is not None and verify_image_source is not None:
+                            verify_image_source(state.pending.image)
                         state = TeamsOutboundEditState(
                             revision=state.revision + 1,
                             text_html=state.pending.text_html,
                             body_html=current_body,
+                            image=state.pending.image,
                         )
                         store.save_outbound_edit_state(target.normalized, message_id, state)
                         _cache_current(service, current, target, receipt)
@@ -290,22 +350,45 @@ def update_message(
                         raise TeamsMessageEditError(
                             "Pending Teams edit conflicts with an external change; operator reconciliation is required"
                         )
-                    elif desired != state.pending.text_html:
+                    elif desired != state.pending.text_html or image_key(
+                        image_version
+                        if image_version is not None
+                        else None
+                        if clear_image
+                        else state.image
+                    ) != image_key(state.pending.image):
                         raise TeamsMessageEditError(
                             "A Teams edit is still pending; retry its original replacement text first"
                         )
+                    elif image_version is not None:
+                        # A concurrent retry may have issued another URL before
+                        # this lock was acquired. Always retry the durable URL.
+                        image_version = state.pending.image
                 elif not _same_body(current_body, state.body_html):
                     raise TeamsMessageEditError(
                         "Teams message layout or text changed outside this editing service"
                     )
-                if state.pending is None and desired == state.text_html:
+                desired_image = (
+                    image_version
+                    if image_version is not None
+                    else None
+                    if clear_image
+                    else state.image
+                )
+                if (
+                    state.pending is None
+                    and desired == state.text_html
+                    and image_key(desired_image) == image_key(state.image)
+                ):
                     return _result(receipt, state, "unchanged")
                 if expected_revision is not None and expected_revision != state.revision:
                     raise TeamsMessageEditError(
                         f"Stale Teams message revision; current revision is {state.revision}"
                     )
                 pending = TeamsPendingEdit(
-                    text_html=desired, body_html=receipt.body_prefix + desired + receipt.body_suffix
+                    text_html=desired,
+                    body_html=compose_outbound_body(receipt, desired, desired_image),
+                    image=desired_image,
                 )
                 state = state.model_copy(update={"pending": pending})
                 store.save_outbound_edit_state(target.normalized, message_id, state)
@@ -322,8 +405,13 @@ def update_message(
                     raise TeamsMessageEditError(
                         "Teams edit could not be verified; intent retained for reconciliation"
                     )
+                if desired_image is not None and verify_image_source is not None:
+                    verify_image_source(desired_image)
                 state = TeamsOutboundEditState(
-                    revision=state.revision + 1, text_html=desired, body_html=current_body
+                    revision=state.revision + 1,
+                    text_html=desired,
+                    body_html=current_body,
+                    image=desired_image,
                 )
                 store.save_outbound_edit_state(target.normalized, message_id, state)
                 _cache_current(service, current, target, receipt)
@@ -368,13 +456,4 @@ def _cache_current(service, current, target, receipt):
 
 
 def _result(receipt, state, status):
-    return {
-        "success": True,
-        "status": status,
-        "session_id": receipt.session_id,
-        "channel_target": receipt.channel_target,
-        "message_id": receipt.message_id,
-        "thread_id": receipt.thread_id,
-        "message_revision": state.revision,
-        "web_url": receipt.web_url,
-    }
+    return outbound_edit_result(receipt, state, status)
