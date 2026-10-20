@@ -1,3 +1,4 @@
+import "../../../frontend/admin-web/src/design/addon-context.js";
 import { VoiceControls, voiceJson } from "./voice-controls.js";
 import { messageDelivery } from "./message-delivery.js";
 export {};
@@ -298,8 +299,3 @@ async function catalog() {
   }
 }
 void (sessionId ? openViewer() : catalog()).catch(showError);
-window.addEventListener("message", (event) => {
-  if (event.source !== parent || event.origin !== location.origin || event.data?.type !== "admin-addon-context") return;
-  if (event.data.theme) document.documentElement.dataset.theme = event.data.theme;
-});
-if (parent !== window) parent.postMessage({ type: "admin-addon-ready" }, location.origin);

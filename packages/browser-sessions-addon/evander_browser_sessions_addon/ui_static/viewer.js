@@ -1,12 +1,51 @@
+// ../../frontend/admin-web/src/design/addon-context.js
+var root = document.documentElement;
+root.dataset.adminDesign = "";
+var systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+var hostTheme = false;
+var privilegedUnlocked = new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
+var privilegeListeners = /* @__PURE__ */ new Set();
+function stored(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function applyAppearance(data) {
+  if (data.theme === "light" || data.theme === "dark") {
+    root.dataset.theme = data.theme;
+    root.style.colorScheme = data.theme;
+  }
+}
+applyAppearance({
+  theme: stored("admin-web:theme") ?? (systemTheme.matches ? "dark" : "light")
+});
+systemTheme.addEventListener("change", (event) => {
+  if (!hostTheme && !stored("admin-web:theme")) applyAppearance({ theme: event.matches ? "dark" : "light" });
+});
+window.addEventListener("message", (event) => {
+  if (window.parent === window || event.source !== window.parent || event.origin !== window.location.origin) return;
+  const data = event.data;
+  if (!data || typeof data !== "object" || data.type !== "admin-addon-context") return;
+  hostTheme = data.theme === "light" || data.theme === "dark";
+  applyAppearance(data);
+  if (typeof data.privileged_operations?.unlocked === "boolean") {
+    privilegedUnlocked = data.privileged_operations.unlocked;
+    for (const listener of privilegeListeners) listener(privilegedUnlocked);
+  }
+});
+if (window.parent !== window) window.parent.postMessage({ type: "admin-addon-ready" }, window.location.origin);
+
 // web/voice-controls.ts
 var VoiceControls = class {
-  constructor(root, transport, context = () => null) {
+  constructor(root2, transport, context = () => null) {
     this.transport = transport;
     this.context = context;
-    this.talk = root.querySelector("[data-voice-talk]");
-    this.replies = root.querySelector("[data-voice-replies]");
-    this.stop = root.querySelector("[data-voice-stop]");
-    this.status = root.querySelector("[data-voice-status]");
+    this.talk = root2.querySelector("[data-voice-talk]");
+    this.replies = root2.querySelector("[data-voice-replies]");
+    this.stop = root2.querySelector("[data-voice-stop]");
+    this.status = root2.querySelector("[data-voice-status]");
     const watch = (target, name, listener) => target.addEventListener(name, listener, { signal: this.events.signal });
     watch(this.talk, "pointerdown", (event) => {
       if (!this.microphoneReady || event.button !== 0) return;
@@ -321,9 +360,9 @@ var labels = {
   cancelled: "Cancelled",
   answered: "Answered"
 };
-function messageDelivery(root, updates, retry) {
+function messageDelivery(root2, updates, retry) {
   const byId = new Map(updates.map((value) => [value.id, value]));
-  for (const item of Array.from(root.querySelectorAll("[data-message-id]"))) {
+  for (const item of Array.from(root2.querySelectorAll("[data-message-id]"))) {
     const update2 = byId.get(item.dataset.messageId);
     if (!update2) continue;
     let status = item.querySelector(".message-delivery");
@@ -781,8 +820,3 @@ async function catalog() {
   }
 }
 void (sessionId ? openViewer() : catalog()).catch(showError);
-window.addEventListener("message", (event) => {
-  if (event.source !== parent || event.origin !== location.origin || event.data?.type !== "admin-addon-context") return;
-  if (event.data.theme) document.documentElement.dataset.theme = event.data.theme;
-});
-if (parent !== window) parent.postMessage({ type: "admin-addon-ready" }, location.origin);
