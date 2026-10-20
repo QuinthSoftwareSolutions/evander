@@ -1,0 +1,18 @@
+---
+- name: Refresh running Browser Sessions services after package installation
+  when:
+    - evander_browser_sessions_package_install is defined
+    - not (evander_browser_sessions_package_install.skipped | default(false) | bool)
+    - (evander_browser_sessions_package_install.rc | default(1)) == 0
+  block:
+    - name: Discover installed Browser Sessions services
+      ansible.builtin.service_facts:
+
+    - name: Restart existing running Browser Sessions services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - evander-browser-session-relay.service
+        - evander-browser-session-worker.service
+      when: ansible_facts.services.get(item, {}).get('state') == 'running'

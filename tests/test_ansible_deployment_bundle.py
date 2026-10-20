@@ -1151,3 +1151,52 @@ def test_optional_browser_install_requires_provisioning_or_explicit_enablement()
         if override is not None:
             context["evander_browser_sessions_addon_enabled"] = override
         assert enabled(**context) is expected
+
+
+@pytest.mark.parametrize("package_result", [None, {"skipped": True}, {"rc": 1}, {"rc": 0}])
+def test_browser_package_refresh_preserves_optional_service_runtime_state(package_result):
+    """A refreshed supervisor must run new code without enabling or starting stopped units."""
+    repo = Path(__file__).resolve().parents[1]
+    role = yaml.safe_load(
+        (repo / "ansible/roles/browser_sessions_runtime/tasks/main.yml").read_text()
+    )[0]
+    env = NativeEnvironment(undefined=StrictUndefined)
+    env.filters["bool"] = bool
+    context = {}
+    if package_result is not None:
+        context["evander_browser_sessions_package_install"] = package_result
+    refresh = all(env.compile_expression(condition)(**context) for condition in role["when"])
+    restart = next(task for task in role["block"] if "ansible.builtin.systemd" in task)
+    assert restart["ansible.builtin.systemd"] == {"name": "{{ item }}", "state": "restarted"}
+    running = env.compile_expression(restart["when"])
+    relay, worker = "evander-browser-session-relay.service", "evander-browser-session-worker.service"
+    assert set(restart["loop"]) == {relay, worker}
+    for services, expected in [
+        ({}, set()),
+        ({relay: {"state": "stopped", "status": "enabled"}}, set()),
+        ({worker: {"state": "running", "status": "enabled"}}, {worker}),
+        ({relay: {"state": "running", "status": "disabled"}}, {relay}),
+        ({relay: {"state": "running"}, worker: {"state": "stopped"}}, {relay}),
+    ]:
+        selected = {
+            item for item in restart["loop"]
+            if refresh and running(ansible_facts={"services": services}, item=item)
+        }
+        assert selected == (expected if package_result == {"rc": 0} else set())
+
+
+def test_both_deployments_refresh_browser_services_after_installation():
+    repo = Path(__file__).resolve().parents[1]
+    install = next(
+        task for task in yaml.safe_load(
+            (repo / "ansible/roles/python_env/tasks/main.yml").read_text()
+        )
+        if "./packages/browser-sessions-addon" in task.get("ansible.builtin.command", {}).get("cmd", "")
+    )
+    assert install["register"] == "evander_browser_sessions_package_install"
+    for filename, runtime, verification in [
+        ("site.yml", "service_runtime", "verification"),
+        ("worker.yml", "container_worker_service", "container_worker_verification"),
+    ]:
+        roles = [role["role"] for role in yaml.safe_load((repo / "ansible" / filename).read_text())[0]["roles"]]
+        assert roles.index("python_env") < roles.index(runtime) < roles.index("browser_sessions_runtime") < roles.index(verification)

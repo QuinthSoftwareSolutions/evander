@@ -61,6 +61,7 @@
   environment: "{{ evander_python_install_env | default({}) }}"
   become_user: "{{ evander_run_user }}"
   changed_when: false
+  register: evander_browser_sessions_package_install
   when: >-
     evander_browser_sessions_addon_enabled | default(
       (evander_browser_sessions_environment.results | selectattr('stat.exists') | list | length) > 0

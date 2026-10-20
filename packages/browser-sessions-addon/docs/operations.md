@@ -1,7 +1,7 @@
 # Opt-in deployment
 
-1. Build assets/extension ZIP and install this Python package into control-plane and worker environments. Subsequent standard deployments refresh the optional package on hosts with /etc/evander/browser-relay.env or /etc/evander/browser-worker.env; evander_browser_sessions_addon_enabled explicitly overrides discovery.
-2. Enable browser-sessions-addon through the loader; restart gateway, Admin Web and effect worker through normal deployment.
+1. Build assets/extension ZIP and install this Python package into control-plane and worker environments. Subsequent standard deployments refresh the optional package on hosts with /etc/evander/browser-relay.env or /etc/evander/browser-worker.env; evander_browser_sessions_addon_enabled explicitly overrides discovery. After a successful refresh, both playbooks restart any already-running browser relay or supervisor without changing service enablement; stopped or missing optional units stay untouched.
+2. Enable browser-sessions-addon through the loader; restart gateway, Admin Web and effect worker through normal deployment. When deploying a wheel separately from the core checkout, select evander_browser_sessions_addon in both host and trigger-orchestrator addon_loader.modules so package-directory discovery does not keep using the checkout copy. Use the configuration APIs and their lock/revision checks. Verify the loaded source and exercise creation/invitation through the actual MCP endpoint.
 3. Require Admin sign-in, configure public HTTPS, and assign directory browser permissions.
 4. Install the opt-in deploy/ units. The core installer does not install optional daemons.
 5. Store distinct relay/worker tokens in root-readable env files. Relay uses EVANDER_BROWSER_RELAY_TOKEN; worker references must agree in both settings copies.
