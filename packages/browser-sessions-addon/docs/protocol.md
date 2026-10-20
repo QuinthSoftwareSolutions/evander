@@ -18,6 +18,8 @@ Protocol version 1 uses authenticated WSS. Hosted viewers pass through Admin Web
 
 Broker and endpoint both check live state, origin, generation and controller. Actions are observe, navigate, click, hover, fill, type, selected keys, scroll, dialog, highlight and reload. There is no arbitrary evaluation, CDP passthrough, cookie export or filesystem API. Observation returns a screenshot and bounded accessibility references. Navigation invalidates references; control changes fence input between focus and typing.
 
+The type action emits character keydown, keypress and keyup events for page-level keyboard listeners as well as focused fields. The fill action focuses and replaces a referenced field with direct text insertion. The key action supports Enter, Space and the bounded navigation/editing keys; Enter and Space include their text events. Every input event rechecks the control generation and approved origin.
+
 Command IDs are durable and one-use. Timeout/disconnect means unknown outcome. Mutations are never replayed automatically. Pause always revokes input despite unrelated session revisions; grants/handover use their own control generation.
 
 ## Resource isolation
