@@ -16,7 +16,7 @@ from .service import Service
 TOOLS = {
     "browser_session_profiles": "List approved preview profile names and modes for this agent's directory.",
     "browser_session_workspaces": "List opaque workspace references on this agent's pinned worker. Write a repo-local launch manifest before creating a hosted preview.",
-    "browser_session_create": "Create a hosted demo, hosted development preview or local Chrome support task. Reuse request_id for safe retries.",
+    "browser_session_create": "Create a hosted demo, hosted development preview or local Chrome session for this agent. Local sharing starts with observation; the user must grant input. Reuse request_id for safe retries.",
     "browser_session_invite": "Issue a short-lived single-use invitation for the local Chrome host. Hosted links always require Admin UI sign-in.",
     "browser_session_status": "Read shared browser state, control generation, expiry and viewer URL. Does not renew activity.",
     "browser_session_observe": "Observe the current approved page: screenshot and accessible element references. Does not save a recording.",

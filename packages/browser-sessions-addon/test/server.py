@@ -62,7 +62,6 @@ async def setup(request):
         service.store.save_settings("root", revision, settings)
     local = payload.get("local", False)
     session = Session(id="browser-" + os.urandom(12).hex(), directory="root/demo", agent_session_id="agent-a",
-        support_agent_session_id="support-a" if local else None,
         mode="user_hosted" if local else "hosted_development", title="Shared station preview",
         state="starting", controller=None if local else "agent:agent-a", allowed_origins=[base],
         created_at=time.time(), expires_at=time.time()+600, last_activity_at=time.time())
@@ -90,12 +89,15 @@ async def perform_test_operation(request):
         return JSONResponse({"messages": service.store.messages(sid)})
     payload = await request.json()
     if action == "command":
-        actor = "agent:" + (session.support_agent_session_id or session.agent_session_id)
-        result = await asyncio.to_thread(service.command, sid, actor, BrowserCommand.model_validate(payload), agent=True)
+        command = BrowserCommand.model_validate(payload)
+        tool = "browser_session_observe" if command.observing else "browser_session_act"
+        session = service.agent_session("agent-a", sid, tool)
+        actor = "agent:" + session.agent_session_id
+        result = await asyncio.to_thread(service.command, sid, actor, command, agent=True)
     elif action == "control":
         result = await asyncio.to_thread(service.control, sid, "user:operator", payload["action"])
     elif action == "reply":
-        result = service.reply(session.support_agent_session_id or session.agent_session_id,
+        result = service.reply(session.agent_session_id,
                                sid, payload["message_id"], payload["body"])
     elif action == "style":
         (folder / "position.txt").write_text(str(payload["left"]))

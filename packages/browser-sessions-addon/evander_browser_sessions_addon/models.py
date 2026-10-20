@@ -240,6 +240,7 @@ class Session(Contract):
     directory: str
     agent_session_id: str
     native_thread_id: str | None = None
+    # Retained only to clean up support agents belonging to pre-upgrade sessions.
     support_agent_session_id: str | None = None
     mode: Mode
     title: str = Field(default="Shared browser", max_length=160)

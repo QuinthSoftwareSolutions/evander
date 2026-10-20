@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-20 - Keep local browser sharing with the creating agent (0.105.4)
+
+- Let the agent that creates a local Chrome sharing session observe and interact with it using its existing conversation context and browser tool grants.
+- Route extension messages, input grants and saved screenshots to that same agent, without creating a separate support agent.
+- Preserve explicit local control, origin and ownership checks, and cleanup of support agents from older sessions. Browser Sessions server package 0.2.4 remains compatible with Chrome extension 0.2.3.
+
 ## 2026-10-20 - Diagnose Chrome sharing attachment failures (0.105.3)
 
 - Show the original browser error and failing setup step when attaching a shared application tab.

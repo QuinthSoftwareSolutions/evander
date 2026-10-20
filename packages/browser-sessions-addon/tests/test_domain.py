@@ -94,24 +94,65 @@ def test_local_invitation_is_atomic_single_use_and_does_not_authorize_hosted_vie
     assert invitation not in stored and result["host_token"] not in stored
 
 
-def test_guest_control_is_host_only_and_original_agent_cannot_operate(domain, local):
-    service, _, _ = domain
+@pytest.mark.parametrize("legacy_support", [None, "browser-support-legacy"])
+def test_local_creator_observes_and_requires_explicit_revocable_host_control(
+    domain, local, legacy_support
+):
+    service, _, peers = domain
+    assert local.support_agent_session_id is None
+    if legacy_support:
+        service.store.mutate(
+            local.id, "test", lambda s: setattr(s, "support_agent_session_id", legacy_support)
+        )
     token = service.invite(local.id, "agent:agent-a")["invitation_url"].split("invite=")[1]
     paired = service.pair(token, "https://app.test/")
     principal = paired["session"]["host_principal"]
-    with pytest.raises(BrowserError, match="local host"):
-        service.control(local.id, "user:operator", "grant")
-    granted = service.control(local.id, principal, "grant", host=True)
-    assert granted["controller"] == "agent:" + local.support_agent_session_id
-    with pytest.raises(BrowserError, match="restricted support"):
-        service.agent_session("agent-a", local.id, "browser_session_act")
-    assert (
-        service.agent_session(local.support_agent_session_id, local.id, "browser_session_act").id
-        == local.id
+    generation = paired["session"]["control_generation"]
+    assert service.agent_session("agent-a", local.id, "browser_session_observe").id == local.id
+    service.command(
+        local.id, "agent:agent-a",
+        BrowserCommand(id="observe", generation=generation, action="observe"), agent=True,
     )
+    with pytest.raises(BrowserError, match="different agent"):
+        service.agent_session("agent-b", local.id, "browser_session_observe")
+    if legacy_support:
+        with pytest.raises(BrowserError, match="different agent"):
+            service.agent_session(legacy_support, local.id, "browser_session_act")
+    with pytest.raises(BrowserError, match="local host"):
+        service.control(local.id, "agent:agent-a", "grant")
+    with pytest.raises(BrowserError, match="local host"):
+        service.control(local.id, "guest:other", "grant", host=True)
+    before = len(peers.calls)
+    with pytest.raises(BrowserError, match="not been granted"):
+        service.command(
+            local.id, "agent:agent-a",
+            BrowserCommand(id="before-grant", generation=generation, action="click",
+                           observation_id="current", ref="node-1"), agent=True,
+        )
+    assert len(peers.calls) == before
+    granted = service.control(local.id, principal, "grant", host=True)
+    assert granted["controller"] == "agent:agent-a"
+    assert service.agent_session("agent-a", local.id, "browser_session_act").id == local.id
+    service.command(
+        local.id, "agent:agent-a",
+        BrowserCommand(id="authorized", generation=granted["control_generation"], action="click",
+                       observation_id="current", ref="node-1"), agent=True,
+    )
+    with pytest.raises(BrowserError, match="outside the approved"):
+        service.command(
+            local.id, "agent:agent-a",
+            BrowserCommand(id="other-origin", generation=granted["control_generation"],
+                           action="navigate", url="https://other.test/"), agent=True,
+        )
     paused = service.control(local.id, principal, "pause", host=True)
     assert paused["controller"] is None
     assert paused["control_generation"] > granted["control_generation"]
+    with pytest.raises(BrowserError, match="not been granted"):
+        service.command(
+            local.id, "agent:agent-a",
+            BrowserCommand(id="after-pause", generation=paused["control_generation"],
+                           action="click", observation_id="current", ref="node-1"), agent=True,
+        )
 
 
 def test_takeover_fences_in_flight_actions_and_only_one_human_controls(domain, hosted):

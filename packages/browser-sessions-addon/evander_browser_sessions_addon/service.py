@@ -70,60 +70,8 @@ class Bindings:
 
         return build_admin_runtime(self.runtime_dir).vm_agent_admin
 
-    def prepare_support(self, session, parent, settings):
-        from evander.admin.services.agent_capabilities import AgentCapabilityRestriction
-
-        child_id = session.support_agent_session_id or "browser-support-" + session.id.removeprefix(
-            "browser-"
-        )
-        tools = (
-            "browser_session_status",
-            "browser_session_observe",
-            "browser_session_act",
-            "browser_session_highlight",
-            "browser_session_reply",
-            "browser_session_save_screenshot",
-        )
-        binding = {"kind": "browser_support", "browser_session_id": session.id}
-        existing = self.runtime.session_repository.get_session(child_id)
-        if existing is not None:
-            if existing.metadata.get("capability_binding") != binding or set(
-                existing.allowed_tools
-            ) != set(tools):
-                raise BrowserError("Support agent identity conflict", "identity_conflict", 409)
-            return child_id
-        parent_manifest = self.runtime.policy.get_session(parent.session_id)
-        # Browser supervisor labels are add-on-local, not core worker IDs.
-        # Legacy/default-worker parents leave placement to normal core selection.
-        result = self.admin().create_admin_agent(
-            {
-                "backend": "container_worker_vm",
-                "session_id": child_id,
-                **({"worker_id": parent.worker_id} if parent.worker_id else {}),
-                "directory_path": parent.directory,
-                "ttl_seconds": max(60, int(session.expires_at - time.time())),
-                "model": parent_manifest.model,
-                "agent_provider": parent_manifest.metadata.get("agent_provider"),
-                "model_provider_mode": parent_manifest.metadata.get("model_provider_mode"),
-                "connector_grants": {},
-                "host_directory_grants": {},
-                "allowed_contact_ids": [],
-                "communication_target_ids": [],
-                "discord_channels": [],
-                "teams_channel_allowlist": [],
-                "teams_chat_allowlist": [],
-                "teams_user_allowlist": [],
-                "email_mailbox_grants": [],
-                "codex_auth_mode": parent_manifest.codex_auth_mode,
-                "subscription_profile_id": parent_manifest.subscription_profile_id,
-            },
-            capability_restriction=AgentCapabilityRestriction(tools, binding),
-        )
-        if not result.get("success"):
-            raise BrowserError("Support agent could not be prepared", "support_unavailable", 503)
-        return child_id
-
     def close_support(self, session):
+        # Older sessions retain this ID so their support agent is still cleaned up.
         if session.support_agent_session_id:
             if (
                 self.runtime.session_repository.get_session(session.support_agent_session_id)
@@ -151,10 +99,10 @@ class Bindings:
         if not callable(callback):
             raise BrowserError("Agent chat dispatch is unavailable", "dispatch_unavailable", 503)
         result = callback(
-            session.support_agent_session_id or session.agent_session_id,
+            session.agent_session_id,
             prompt,
             dispatch_id="browser:" + message["id"],
-            resume_thread_id=None if session.support_agent_session_id else session.native_thread_id,
+            resume_thread_id=session.native_thread_id,
             resume_mode="same_context",
         )
         if not (getattr(result, "queued", False) or getattr(result, "success", False)):
@@ -226,24 +174,8 @@ class Service:
     def agent_session(self, agent_session_id, session_id, tool):
         parent = self.bindings.parent(agent_session_id, tool)
         session = self.store.get(session_id, parent.directory)
-        allowed = {session.agent_session_id, session.support_agent_session_id}
-        if agent_session_id not in allowed:
+        if agent_session_id != session.agent_session_id:
             raise BrowserError("Browser session is owned by a different agent", "not_found", 404)
-        if (
-            session.mode == "user_hosted"
-            and tool
-            in {
-                "browser_session_observe",
-                "browser_session_act",
-                "browser_session_highlight",
-                "browser_session_reply",
-                "browser_session_save_screenshot",
-            }
-            and agent_session_id != session.support_agent_session_id
-        ):
-            raise BrowserError(
-                "Local-browser actions require the restricted support agent", "forbidden", 403
-            )
         return session
 
     def receipt(self, session):
@@ -312,10 +244,6 @@ class Service:
             idle_seconds=settings.idle_seconds,
             source=source or {},
         )
-        if request.mode == "user_hosted":
-            session.support_agent_session_id = "browser-support-" + session.id.removeprefix(
-                "browser-"
-            )
         session, created = self.store.create(
             session, request.request_id, settings.max_hosted_per_worker
         )
@@ -328,33 +256,6 @@ class Service:
                 settings.relay_url + "/internal/sessions/" + session.id + "/close",
                 settings.relay_token_env,
             )
-            try:
-                child_id = self.bindings.prepare_support(session, parent, settings)
-                support_parent = self.bindings.parent(child_id)
-
-                def support_prepared(value):
-                    value.support_agent_session_id = child_id
-                    value.expires_at = min(value.expires_at, support_parent.expires_at)
-
-                session = self.store.mutate(
-                    session.id,
-                    "system",
-                    support_prepared,
-                    kind="support_prepared",
-                )
-            except Exception:
-                self.store.mutate(
-                    session.id,
-                    "system",
-                    lambda value: (
-                        setattr(value, "state", "failed"),
-                        setattr(value, "error", "Support agent preparation failed"),
-                    ),
-                    kind="support_failed",
-                )
-                raise BrowserError(
-                    "Restricted support agent preparation failed", "support_unavailable", 503
-                ) from None
         if connection and profile:
             self.store.set_private(
                 session.id,
@@ -543,9 +444,7 @@ class Service:
                     raise BrowserError(
                         "Only the current controller can hand back control", "forbidden", 403
                     )
-                value.controller = "agent:" + (
-                    value.support_agent_session_id or value.agent_session_id
-                )
+                value.controller = "agent:" + value.agent_session_id
             else:
                 value.controller = None
             value.control_generation += 1
@@ -597,7 +496,7 @@ class Service:
         session = self.store.get(session_id)
         record = CommunicationArtifactStore(self.runtime_dir).stage(
             provider="browser-session",
-            session_id=session.support_agent_session_id or session.agent_session_id,
+            session_id=session.agent_session_id,
             content=content,
             original_filename=session.id + ".jpg",
             mime_type="image/jpeg",
