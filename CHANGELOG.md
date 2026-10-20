@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-20 - Improve shared browser keyboard and pointer input (0.105.5)
+## 2026-10-20 - Improve shared browser keyboard and pointer input (0.106.1)
 
 - Send character key events for shared-browser typing so scanner input and page keyboard listeners receive the same characters as editable fields.
 - Generate Enter and Space text events so scanner submission and normal form submission work through the bounded key action.
