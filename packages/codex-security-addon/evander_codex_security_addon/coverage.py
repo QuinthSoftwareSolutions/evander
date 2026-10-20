@@ -89,6 +89,7 @@ def task(kind, paths, *, parent=None):
         "attempts": [],
         "parent": parent,
         "next_at": None,
+        "deferred_keys": [],
     }
 
 
@@ -307,9 +308,13 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     for deferred in receipt.get("deferred", []):
         key = proof["provider_scan_id"] + ":" + str(deferred["id"])
         state["deferred"].setdefault(key, {**deepcopy(deferred), "resolution": None})
+        if item["kind"] == "boundary" and key not in item["deferred_keys"]:
+            item["deferred_keys"].append(key)
     for question in receipt.get("open_questions", []):
         key = proof["provider_scan_id"] + ":question:" + digest(question)[:24]
         state["deferred"].setdefault(key, {"reason": question["question"], "resolution": None})
+        if item["kind"] == "boundary" and key not in item["deferred_keys"]:
+            item["deferred_keys"].append(key)
     closed = (
         receipt.get("coverage") == "complete"
         and not receipt.get("deferred")
@@ -329,14 +334,17 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     if item["kind"] == "boundary":
         for key, value in receipt.get("resolutions", {}).items():
             if (
-                key in state["deferred"]
+                key in item["deferred_keys"]
                 and value.get("disposition")
                 in {"reported", "rejected", "not_applicable", "no_issue_found"}
                 and value.get("reason")
             ):
                 state["deferred"][key]["resolution"] = {**value, "receipt": proof["archive_key"]}
-        # A nominally complete turn cannot leave the host's earlier work open.
-        closed = closed and all(x.get("resolution") for x in state["deferred"].values())
+        # Other parallel scopes own their outstanding work. Global closure is
+        # checked by complete(), without spending retries on another review.
+        closed = closed and all(
+            state["deferred"][key].get("resolution") for key in item["deferred_keys"]
+        )
     if closed:
         dispositions = receipt.get("dispositions", {})
         for path in item["paths"] if item["kind"] == "files" else []:
@@ -372,9 +380,13 @@ def retry(state, item, reason, *, split=False, at=None):
     item["error"] = reason
     if split and len(item["paths"]) > 1:
         midpoint = len(item["paths"]) // 2
+        children = []
         for paths in (item["paths"][:midpoint], item["paths"][midpoint:]):
             child = task(item["kind"], paths, parent=item["id"])
             state["tasks"].setdefault(child["id"], child)
+            children.append(state["tasks"][child["id"]])
+        if item["kind"] == "boundary":
+            assign_deferred(state, children, item["deferred_keys"])
         item["status"] = "split"
     elif len(item["attempts"]) < 3:
         item["status"] = "pending"
@@ -387,6 +399,29 @@ def retry(state, item, reason, *, split=False, at=None):
             for path in item["paths"]:
                 if state["files"][path]["disposition"] == "pending":
                     state["files"][path].update(disposition="blocked", reason=reason)
+
+
+def assign_deferred(state, scopes, keys):
+    """Give each outstanding item one durable owner, including pathless questions."""
+    for scope in scopes:
+        scope["deferred_keys"] = []
+    for key in sorted(keys):
+        if state["deferred"][key].get("resolution"):
+            continue
+        paths = state["deferred"][key].get("paths", [])
+        owner = next(
+            (
+                scope
+                for scope in scopes
+                if any(
+                    path == pattern or path.startswith(pattern.rstrip("/") + "/")
+                    for path in scope["paths"]
+                    for pattern in paths
+                )
+            ),
+            scopes[0],
+        )
+        owner["deferred_keys"].append(key)
 
 
 def plan_boundaries(state):
@@ -408,9 +443,12 @@ def plan_boundaries(state):
     if not anchors:
         anchors = set(state["files"])
     if anchors:
+        scopes = []
         for paths in batches([x for x in state["inventory"] if x["path"] in anchors]):
             item = task("boundary", paths)
             state["tasks"][item["id"]] = item
+            scopes.append(item)
+        assign_deferred(state, scopes, state["deferred"])
     state["boundary_planned"] = True
 
 

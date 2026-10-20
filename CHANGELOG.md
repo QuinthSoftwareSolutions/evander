@@ -6,6 +6,7 @@
 - Schedule at most two scoped SDK reviews with a six-hour deadline, restart recovery and bounded retries. Explicit continuation starts a linked run at the original retained snapshot, preserving accepted work and immutable earlier reports.
 - Add the directory-scoped scan metadata query, live workflow progress and deterministic Evander aggregate reports with the original native reports. Keep coverage retention independent of private diagnostics and preserve repository reservations during uncertain worker cleanup.
 - Package and fingerprint the new scanner runtime files. Existing provider-policy, commit-range and deep scans retain their behavior; existing agent sessions are unchanged.
+- Keep parallel boundary reviews independent through durable work assignments, recheck every retained sealed native artifact after transport, and preserve valid finding writeups with native SDK filenames.
 
 ## 2026-10-20 - Improve shared browser keyboard and pointer input (0.106.1)
 

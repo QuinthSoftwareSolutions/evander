@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -38,6 +37,7 @@ from evander.security_scans import (
 from evander.published_artifacts import PublishedArtifactStore
 from evander.effects.providers.artifacts import ArtifactPublishArtifactsEffectProvider
 from evander.events.provider_models import ArtifactPublishArtifactsEffectDefinition
+from .report_files import public_report_path
 
 RUNNER = "/opt/evander/codex-security/runner.py"
 
@@ -350,18 +350,7 @@ class CodexSecurityScanProvider:
                     part in {"..", ".", ""} for part in relative.split("/")
                 ):
                     raise ValueError("Invalid security scan artifact paths")
-                if relative in {"result.json", "target.json"} or (
-                    relative.startswith("reports/")
-                    and (
-                        relative.split("/")[-1] in canonical
-                        or relative.endswith("/exports/results.sarif")
-                        or re.fullmatch(r"reports/.+/checkpoints/[^/]+\.json", relative)
-                        or re.fullmatch(r"reports/.+/findings/([a-z0-9-]+)/\1\.md", relative)
-                        or re.fullmatch(
-                            r"reports/.+/hardening/(?:[a-z0-9_-]+/)*[a-z0-9_.-]+\.md", relative
-                        )
-                    )
-                ):
+                if public_report_path(relative):
                     allowed.append(value)
             files = sorted(set(allowed))
             if not files:

@@ -12,7 +12,7 @@ from evander.security_scans import SecurityScanHandle
 from evander_codex_security_addon.coverage import make_state, progress
 from evander_codex_security_addon.coverage_provider import CoverageController
 
-from test_coverage import entry, request
+from test_coverage import entry, request, mapping, finish as finish_scope
 
 
 class Worker:
@@ -40,7 +40,17 @@ class Worker:
         self.destroyed.append(execution_id)
 
 
-def native_archive(store, scan_id, receipt, *, bad_revision=False):
+def native_archive(
+    store,
+    scan_id,
+    receipt,
+    *,
+    bad_revision=False,
+    native_files=None,
+    mutated_files=None,
+    missing_files=(),
+    extra_records=(),
+):
     prefix = f"security-scans/{scan_id}/reports/review/"
     documents = {
         "findings.json": {
@@ -56,7 +66,11 @@ def native_archive(store, scan_id, receipt, *, bad_revision=False):
         },
         "coverage.json": {"completeness": receipt["coverage"], "deferred": receipt["deferred"]},
     }
+    writeups = [path for path in (native_files or {}) if path.startswith("findings/")]
+    if writeups:
+        documents["findings.json"]["findings"][0]["writeup"] = {"reportPath": writeups[0]}
     bodies = {name: json.dumps(value).encode() for name, value in documents.items()}
+    bodies.update(native_files or {})
     bodies["scan-manifest.json"] = json.dumps(
         {
             "scan": {
@@ -75,11 +89,16 @@ def native_archive(store, scan_id, receipt, *, bad_revision=False):
                 "artifacts": [
                     {"path": name, "sha256": hashlib.sha256(body).hexdigest()}
                     for name, body in bodies.items()
-                ],
+                ]
+                + list(extra_records),
             }
         }
     ).encode()
-    bodies["report.md"] = b"Native immutable report\n"
+    # The pinned SDK renders report.md as an unsealed projection by default.
+    bodies.setdefault("report.md", b"Native immutable report\n")
+    bodies.update(mutated_files or {})
+    for name in missing_files:
+        bodies.pop(name)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for name, body in bodies.items():
@@ -150,7 +169,7 @@ def running(tmp_path):
     )
     controller.store.create(state)
 
-    def finish_jobs():
+    def finish_jobs(*, native_files=None):
         for execution_id, (state, item, attempt) in list(worker.active.items()):
             receipt = {
                 "kind": item["kind"],
@@ -167,7 +186,7 @@ def running(tmp_path):
                     "threat_model": {"assets": ["source"]},
                     "paths": ["a/a.py", "b/b.py"],
                 }
-            native_archive(artifacts, attempt["scan_id"], receipt)
+            native_archive(artifacts, attempt["scan_id"], receipt, native_files=native_files)
             worker.results[execution_id] = {
                 "status": "completed",
                 "coverage": "complete",
@@ -203,6 +222,104 @@ def test_full_controller_preserves_native_files_and_runs_at_most_two_reviews(run
         coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
         assert coverage["progress"]["files_total"] == 3
         assert all(value["receipt"] for value in coverage["files"].values())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "report.md",
+        "findings/auth_bypass/auth_bypass.md",
+        "hardening/boundary.md",
+        "exports/results.sarif",
+        "checkpoints/review.json",
+    ],
+)
+@pytest.mark.parametrize("change", ["tampered", "missing", "duplicate"])
+def test_native_sealed_report_changes_are_rejected_after_publication(running, path, change):
+    controller, _, _, _ = running
+    receipt = {
+        "kind": "files",
+        "paths": ["a/a.py"],
+        "revision": "d" * 40,
+        "sdk_version": "0.1.31",
+        "coverage": "complete",
+        "deferred": [],
+    }
+    body = b"original sealed native report"
+    scan_id = "f" * 32
+    native_archive(
+        controller.artifacts,
+        scan_id,
+        receipt,
+        native_files={path: body},
+        mutated_files={path: b"changed after sealing"} if change == "tampered" else {},
+        missing_files=[path] if change == "missing" else [],
+        extra_records=[{"path": path, "sha256": hashlib.sha256(body).hexdigest()}]
+        if change == "duplicate"
+        else [],
+    )
+    child = SecurityScanHandle(
+        execution_id="scan-" + scan_id, metadata={"scan_id": scan_id, "session_id": "scan-session"}
+    )
+    with pytest.raises(ValueError, match="[Ss]eal"):
+        controller.proof({"status": "completed", "coverage": "complete"}, child, receipt)
+
+
+@pytest.mark.parametrize(
+    "slug", ["auth_bypass", "auth.bypass", "auth-bypass", "diagnostics", "sessions", "log"]
+)
+def test_native_writeup_links_survive_aggregate_publication(running, slug):
+    controller, handle, _, finish = running
+    relative = f"findings/{slug}/{slug}.md"
+    body = b"Unchanged native finding writeup\n"
+    for _ in range(10):
+        result = controller.poll(handle)
+        if result.status != "running":
+            break
+        finish(native_files={relative: body})
+    assert result.success
+    artifact = controller.artifacts.get(result.artifacts["archive_key"])
+    with tarfile.open(artifact.blob_path) as archive:
+        native_findings = [
+            n for n in archive.getnames() if "/sources/" in n and n.endswith("/findings.json")
+        ]
+        assert native_findings
+        for name in native_findings:
+            linked = json.load(archive.extractfile(name))["findings"][0]["writeup"]["reportPath"]
+            assert linked == relative
+            assert archive.extractfile(name.rsplit("/", 1)[0] + "/" + linked).read() == body
+
+
+def test_boundary_worker_inputs_only_include_their_own_outstanding_work(running, monkeypatch):
+    from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+    from evander_codex_security_addon.coverage import begin, pending, plan_boundaries
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    for scope in list(pending(state)):
+        finish_scope(state, scope)
+    for scope in list(pending(state)):
+        finish_scope(state, scope)
+    state["deferred"] = {
+        "native:a": {"paths": ["a/a.py"], "resolution": None},
+        "native:b": {"paths": ["b/b.py"], "resolution": None},
+    }
+    plan_boundaries(state)
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", lambda *_: None)
+    controller.provider._start_raw = lambda **kwargs: SecurityScanHandle(
+        execution_id="scan-" + kwargs["scan_id"], metadata={}
+    )
+    scopes = pending(state)
+    assert len(scopes) == 2
+    for scope, expected in zip(scopes, ["native:a", "native:b"], strict=True):
+        attempt = begin(state, scope)
+        CoverageController.launch(controller, state, scope)
+        staged = json.loads(
+            (controller.store.root / "requests" / (attempt["scan_id"] + ".json")).read_text()
+        )
+        assert list(staged["coverage_task"]["deferred"]) == [expected]
+        assert staged["coverage_task"]["paths"] == scope["paths"]
 
 
 def test_cancel_keeps_repository_claim_until_cleanup_is_confirmed(running):

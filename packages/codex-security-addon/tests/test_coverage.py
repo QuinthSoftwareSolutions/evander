@@ -197,6 +197,93 @@ def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
     assert c.complete(s)
 
 
+def test_parallel_boundaries_close_independently_and_keep_global_work_until_resolved(tmp_path):
+    s = state(("a/a.py", "b/b.py"))
+    mapping(s)
+    for item in list(c.pending(s)):
+        finish(s, item)
+    s["deferred"] = {
+        "native:a": {"paths": ["a/a.py"], "resolution": None},
+        "native:b": {"paths": ["b/b.py"], "resolution": None},
+        "native:question": {
+            "reason": "Verify the shared authentication boundary",
+            "resolution": None,
+        },
+    }
+    c.plan_boundaries(s)
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    s = c.CoverageStore(tmp_path).get(s["scan_id"], "root/project")
+    first, second = c.pending(s)
+    slow = c.begin(s, second)
+    finish(
+        s,
+        first,
+        resolutions={
+            key: {"disposition": "no_issue_found", "reason": "Source authorization verified"}
+            for key in ("native:a", "native:question")
+        },
+    )
+    assert first["status"] == "completed"
+    assert first["deferred_keys"] == ["native:a", "native:question"]
+    assert second["deferred_keys"] == ["native:b"]
+    assert len(first["attempts"]) == 1
+    assert not c.complete(s)
+    assert s["deferred"]["native:b"]["resolution"] is None
+    c.accept(
+        s,
+        second,
+        slow["scan_id"],
+        receipt(
+            s,
+            second,
+            resolutions={
+                "native:b": {
+                    "disposition": "reported",
+                    "reason": "Validated boundary finding retained",
+                }
+            },
+        ),
+        proof(slow["scan_id"]),
+    )
+    slow["cleanup_confirmed"] = True
+    assert c.complete(s)
+
+
+def test_partial_boundary_splits_keep_each_outstanding_item_assigned_once():
+    s = state(("src/a.py", "src/b.py"))
+    mapping(s)
+    finish(s, c.pending(s)[0])
+    s["deferred"] = {
+        "native:a": {"paths": ["src/a.py"], "resolution": None},
+        "native:b": {"paths": ["src/b.py"], "resolution": None},
+    }
+    c.plan_boundaries(s)
+    parent = c.pending(s)[0]
+    finish(
+        s,
+        parent,
+        closed=False,
+        deferred=[{"id": "followup", "paths": ["src/b.py"], "reason": "Additional source review"}],
+    )
+    children = c.pending(s)
+    assert len(children) == 2
+    assigned = [key for item in children for key in item["deferred_keys"]]
+    assert len(assigned) == len(set(assigned)) == 3
+    assert set(assigned) == set(s["deferred"])
+    for item in children:
+        finish(
+            s,
+            item,
+            resolutions={
+                key: {"disposition": "no_issue_found", "reason": "Source reviewed"}
+                for key in item["deferred_keys"]
+            },
+        )
+    assert c.complete(s)
+
+
 def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
     s = state(("a/a.py", "b/a.py", "c/a.py"))
     mapping(s)

@@ -47,7 +47,9 @@ from .coverage import (
     progress,
     resumable,
     retry,
+    valid_path,
 )
+from .report_files import public_report_path
 
 
 class CoverageController:
@@ -241,24 +243,11 @@ class CoverageController:
                     raise ValueError("Unsafe retained review artifact")
                 if member.name in members:
                     raise ValueError("Duplicate retained artifact path")
-                # Reapply the publication allowlist on read, including legacy bundles.
-                allowed = (
-                    path.name
-                    in {
-                        "scan-manifest.json",
-                        "findings.json",
-                        "coverage.json",
-                        "report.md",
-                        "result.json",
-                        "target.json",
-                    }
-                    or ("checkpoints" in path.parts and path.suffix == ".json")
-                    or re.search(r"/findings/([a-z0-9-]+)/\1\.md$", str(path))
-                    or re.search(r"/hardening/(?:[a-z0-9_-]+/)*[a-z0-9_.-]+\.md$", str(path))
-                    or str(path).endswith("/exports/results.sarif")
-                )
-                if not allowed or any(
-                    part in {"diagnostics", "codex-home", "sessions", "log"} for part in path.parts
+                # Reapply exactly the publication allowlist, including legacy bundles.
+                if not (
+                    len(path.parts) > 2
+                    and path.parts[0] == "security-scans"
+                    and public_report_path("/".join(path.parts[2:]))
                 ):
                     continue
                 total += member.size
@@ -318,15 +307,32 @@ class CoverageController:
             or scan.get("status") != "completed"
         ):
             raise ValueError("Retained native scope or seal does not match its review")
-        # Check the canonical document hashes again after transport, before credit.
-        records = scan.get("artifacts", [])
-        for name in ("findings.json", "coverage.json"):
-            matches = [x for x in records if PurePosixPath(x.get("path", "")).name == name]
+        # Recheck every retained sealed artifact after transport, not only the
+        # two canonical JSON documents. Private evidence remains unpublished.
+        records, collisions = {}, set()
+        for record in scan.get("artifacts", []):
+            if not isinstance(record, dict):
+                raise ValueError("Invalid native artifact seal")
+            path = valid_path(record.get("path"))
+            collision = path.lower()
+            sha256 = record.get("sha256")
             if (
-                len(matches) != 1
-                or matches[0].get("sha256") != hashlib.sha256(members[prefix + name]).hexdigest()
+                collision in collisions
+                or not isinstance(sha256, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", sha256)
             ):
-                raise ValueError("Native canonical seal verification failed")
+                raise ValueError("Invalid native artifact seal")
+            collisions.add(collision)
+            records[path] = record
+            body = members.get(prefix + path)
+            if body is None:
+                if public_report_path("reports/review/" + path):
+                    raise ValueError("Sealed native report is missing")
+                continue
+            if record["sha256"] != hashlib.sha256(body).hexdigest():
+                raise ValueError("Native artifact seal verification failed")
+        if not {"findings.json", "coverage.json"}.issubset(records):
+            raise ValueError("Native canonical seal verification failed")
         if receipt["coverage"] != coverage["completeness"] or receipt["deferred"] != coverage.get(
             "deferred", []
         ):
@@ -401,7 +407,12 @@ class CoverageController:
                 "assigned_entries": [x for x in state["inventory"] if x["path"] in item["paths"]],
                 "inventory_paths": list(state["files"]),
                 "architecture": state["architecture"],
-                "deferred": {k: v for k, v in state["deferred"].items() if not v.get("resolution")},
+                "deferred": {
+                    k: v
+                    for k, v in state["deferred"].items()
+                    if not v.get("resolution")
+                    and (item["kind"] != "boundary" or k in item["deferred_keys"])
+                },
                 "accepted_file_reviews": {
                     p: x["receipt"]
                     for p, x in state["files"].items()

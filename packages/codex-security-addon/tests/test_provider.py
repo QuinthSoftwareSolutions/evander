@@ -109,8 +109,25 @@ def test_archive_publication_filters_raw_diagnostics_even_from_older_images(
         prefix + "launcher.log",
         prefix + "execution.json",
         prefix + "diagnostics/native/sessions/rollout.jsonl",
+        prefix + "reports/scan/diagnostics/report.md",
     ]
     files += [prefix + "reports"] if legacy else report_paths
+    writeups = (
+        []
+        if legacy
+        else [
+            prefix + f"reports/scan/findings/{slug}/{slug}.md"
+            for slug in (
+                "auth_bypass",
+                "auth.bypass",
+                "auth-bypass",
+                "diagnostics",
+                "sessions",
+                "log",
+            )
+        ]
+    )
+    files += writeups
     monkeypatch.setattr(provider, "_command", lambda *args: {"paths": files})
     published = []
 
@@ -141,6 +158,7 @@ def test_archive_publication_filters_raw_diagnostics_even_from_older_images(
     )
     assert set(published[0].source_paths) == {
         *report_paths,
+        *writeups,
         prefix + "result.json",
         prefix + "target.json",
     }

@@ -71,6 +71,11 @@ content remains blocked. Text cannot be dismissed as not applicable. Boundary
 results must explicitly resolve previously retained work using `deferred:<key>`
 surfaces. Architecture mapping itself earns no file coverage.
 
+Each boundary scope owns a durable subset of outstanding items. Partial scopes
+pass those assignments to their split children; one scope cannot consume retries
+waiting for another scope's work. The run still requires all outstanding items
+to be resolved before reporting complete coverage.
+
 Partial multi-file scopes split in half. A leaf or transient execution gets at
 most three attempts in a run (two retries), with short backoff. Quota failures
 wait before retrying, still under that limit and the original deadline.
@@ -87,6 +92,8 @@ are deduplicated while uncertain matches stay separate. If repeated exact
 identities disagree on severity, the aggregate uses the highest retained severity
 and preserves all source receipts. Unsealed interrupted artifacts are retained
 separately without earning coverage credit.
+Every retained artifact listed in the native seal is checked by its exact path
+and hash after transport. Private artifacts stay excluded from public delivery.
 
 ## Resume and retention
 
