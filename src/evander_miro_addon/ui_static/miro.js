@@ -145,6 +145,7 @@ async function refreshGrants() {
   $("grant-session").replaceChildren();
   for (const session of result.sessions) {
     const option = document.createElement("option"); option.value = session.session_id;
+    option.dataset.createdAt = session.created_at;
     option.textContent = `${session.session_id} · ${session.directory_path}`;
     $("grant-session").append(option);
   }
@@ -170,11 +171,13 @@ async function refreshGrants() {
 }
 $("grant-form").addEventListener("submit", run(async () => {
   const session = $("grant-session").value;
+  const createdAt = $("grant-session").selectedOptions[0]?.dataset.createdAt;
+  if (!createdAt) throw new Error("Select a current session before granting access.");
   const reference = $("grant-board").value.trim();
   let boardId = reference;
   if (reference.startsWith('https://miro.com/app/board/')) boardId = decodeURIComponent(new URL(reference).pathname.split('/')[3]);
-  const current = (state.grants || []).find(g => g.session_id === session && g.board_id === boardId && g.session_valid);
-  await request(`${connectionPath()}/session-grants`, {session_id:session, board_id:reference,
+  const current = (state.grants || []).find(g => g.session_id === session && g.session_created_at === createdAt && g.board_id === boardId && g.session_valid);
+  await request(`${connectionPath()}/session-grants`, {session_id:session, session_created_at:createdAt, board_id:reference,
     access:$("grant-access").value, expected_revision:current?.revision || 0});
   await refreshGrants(); notice("Session board access saved.");
 }));

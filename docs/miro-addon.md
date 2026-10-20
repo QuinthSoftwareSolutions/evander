@@ -42,8 +42,9 @@ Grants are bound to the connection, exact board ID, session ID and session creat
 renewals and service restarts retain grants; expiry blocks their use. Deleting and recreating a
 session, even under the same name, requires fresh grants. Edit access includes read access.
 Administrators can change or revoke a grant with revision checks, including through inherited
-connections in the selected session directory. Listing boards and connection board counts reveals
-only the current session's grants.
+connections in the selected session directory. Admin grant requests include the selected session's
+creation time; a recreated session requires refreshing the selection before approval. Listing boards
+and connection board counts reveals only the current session's grants.
 
 On the first upgraded startup, legacy connection-wide board approvals are invalidated atomically
 and retained as private migration evidence. They are never copied to sessions. OAuth credentials,
@@ -75,8 +76,8 @@ does not automatically approve or enumerate its upstream boards. Creating a boar
 
 Agent identity and directory come from the authenticated transport session. Every Miro workflow
 query, effect and polling trigger requires a `session_id` and checks that session's grants, tool
-policy, lifetime and directory. Workflow directory scope and the connection's `allow_workflows`
-setting are additional requirements. There is no session-free workflow board permission fallback. All tools appear in the **Miro** tool
+policy (including argument restrictions), lifetime and directory. Workflow directory scope and the
+connection's `allow_workflows` setting are additional requirements. There is no session-free workflow board permission fallback. All tools appear in the **Miro** tool
 catalog. Discovery is agent-only; matching workflow query/effect names for the other tools replace
 underscores with hyphens, for example `miro_read_canvas` → `query:miro:read-canvas`.
 

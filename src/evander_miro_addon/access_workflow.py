@@ -202,7 +202,12 @@ def access_context(context, service, payload, *, require_fresh=True):
                 and current_pending(value, message, result.record.updated_at)
             ):
                 pending = value
-        if board and board not in boards and (pending is None or pending.get("board_id") != board):
+        # An explicit reference in this message always takes precedence over a
+        # prior question. Pending state can resolve a board only for a linkless reply.
+        if board and (
+            (boards and boards != [board])
+            or (not boards and (pending is None or pending.get("board_id") != board))
+        ):
             raise MiroError(
                 "forbidden", "Board does not match the source message or pending request"
             )

@@ -162,7 +162,12 @@ def invoke(entry, setup, monkeypatch):
                 addon_id="miro-addon",
                 runtime_dir=setup.store.root.parents[1],
                 addon_runtime_dir=setup.store.root,
-                service=SimpleNamespace(policy=SimpleNamespace(require_tool=require_tool)),
+                service=SimpleNamespace(
+                    policy=SimpleNamespace(
+                        require_tool=require_tool,
+                        require_tool_arguments=lambda session, tool, arguments: None,
+                    )
+                ),
             ),
         )
 

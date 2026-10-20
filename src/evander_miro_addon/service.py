@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from evander.policy import PolicyError
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 from .canvas_authoring import AUTHORING_CHECKS, validate_connectors
@@ -188,6 +189,7 @@ class MiroService:
         )
         self.policy = policy
         self._operation_tool = None
+        self._operation_arguments = {}
         self._session_instance = access.session_created_at
 
     def session(self):
@@ -206,12 +208,26 @@ class MiroService:
         self._session_instance = instance
         return session
 
+    def require_tool_arguments(self, tool, arguments):
+        if self.access.admin:
+            return
+        session = self.session()
+        if self.policy is not None:
+            session = self.policy.require_tool(session.session_id, tool)
+            if session_instance(session) != self._session_instance:
+                raise MiroError("forbidden", "Miro session was replaced; obtain a new board grant")
+            self.policy.require_tool_arguments(session, tool, arguments)
+        elif tool not in {str(getattr(t, "value", t)) for t in session.allowed_tools}:
+            raise MiroError("forbidden", "Miro tool is not allowed for this session")
+
     @asynccontextmanager
     async def open_client(self, record):
         service = self
         async with self.client_factory(self.store, record).open() as client:
 
             class GuardedClient:
+                mutation_dispatched = False
+
                 def prepare(self, operation, **values):
                     return client.prepare(operation, **values)
 
@@ -225,19 +241,14 @@ class MiroService:
                         raise MiroError(
                             "connection_changed", "Connection binding changed; retry the operation"
                         )
-                    if not service.access.admin:
-                        session = service.session()
-                        tool = service._operation_tool or "miro_" + (
-                            "get_canvas_format" if operation == "load_format" else operation
-                        )
-                        if service.policy is not None:
-                            service.policy.require_tool(session.session_id, tool)
-                        elif tool not in {
-                            str(getattr(t, "value", t)) for t in session.allowed_tools
-                        }:
-                            raise MiroError(
-                                "forbidden", "Miro tool is not allowed for this session"
-                            )
+                    tool = service._operation_tool or "miro_" + (
+                        "get_canvas_format" if operation == "load_format" else operation
+                    )
+                    service.require_tool_arguments(tool, service._operation_arguments)
+                    # A failure before this point cannot have sent a mutation.
+                    # Keep this true through readback so a later denial remains uncertain.
+                    if operation in WRITE_OPERATIONS:
+                        self.mutation_dispatched = True
                     return await client.call(operation, **values)
 
             yield GuardedClient()
@@ -291,14 +302,8 @@ class MiroService:
             raise MiroError("invalid_input", "Unknown Miro operation")
         args = OperationInput.model_validate(arguments)
         self._operation_tool = "miro_" + operation
-        if not self.access.admin:
-            session = self.session()
-            if self.policy is not None:
-                self.policy.require_tool(session.session_id, self._operation_tool)
-            elif "miro_" + operation not in {
-                str(getattr(t, "value", t)) for t in session.allowed_tools
-            }:
-                raise MiroError("forbidden", "Miro tool is not allowed for this session")
+        self._operation_arguments = args.model_dump(mode="json")
+        self.require_tool_arguments(self._operation_tool, self._operation_arguments)
         if operation not in {
             "list_boards",
             "get_canvas_format",
@@ -709,7 +714,7 @@ class MiroService:
                         entry["layout_review"] = observed["layout_review"]
                 except Exception as exc:
                     # Even a remote tool error can follow a partial multi-item mutation.
-                    pre_send = (
+                    pre_send = not client.mutation_dispatched or (
                         isinstance(exc, MiroError)
                         and exc.code
                         in {
@@ -721,7 +726,11 @@ class MiroService:
                     )
                     entry.update(
                         status="not_applied" if pre_send else "uncertain",
-                        error=exc.code if isinstance(exc, MiroError) else "upstream_unavailable",
+                        error=exc.code
+                        if isinstance(exc, MiroError)
+                        else "forbidden"
+                        if isinstance(exc, PolicyError)
+                        else "upstream_unavailable",
                     )
                 self.store.put("operation", op_id, entry)
                 return self.saved_operation(record, op_id)
@@ -884,14 +893,8 @@ class MiroService:
             )
         args = OperationInput.model_validate(arguments)
         self._operation_tool = "miro_read_" + kind
-        if not self.access.admin:
-            session = self.session()
-            if self.policy is not None:
-                self.policy.require_tool(session.session_id, self._operation_tool)
-            elif self._operation_tool not in {
-                str(getattr(t, "value", t)) for t in session.allowed_tools
-            }:
-                raise MiroError("forbidden", "Miro tool is not allowed for this session")
+        self._operation_arguments = args.model_dump(mode="json")
+        self.require_tool_arguments(self._operation_tool, self._operation_arguments)
         require(args.board_id, "board_id")
         self.authorize(args.connection_id, args.board_id)
         key = digest(

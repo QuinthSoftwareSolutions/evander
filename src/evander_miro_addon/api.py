@@ -128,6 +128,10 @@ def admin_api_routes(context):
         if request.method == "POST":
             payload = await body(request)
             session = target_session(request, payload["session_id"])
+            if not payload.get("session_created_at"):
+                raise MiroError("invalid_input", "Select the exact session instance to approve")
+            if payload["session_created_at"] != session_instance(session):
+                raise MiroError("conflict", "Session was replaced; reload before granting access")
             effective = repository.resolve_connection(
                 session.directory_path, record["config"]["id"]
             )
