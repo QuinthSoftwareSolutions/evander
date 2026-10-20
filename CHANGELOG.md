@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-20 - Preserve configured browser deployment (0.105.1)
+
+- Retain public browser relay routing, refresh the optional package on provisioned hosts, and restart running browser relay and supervisor services during managed deployments.
+- Allow host-approved preview container UIDs and GIDs, pin them per preview, and match output ownership to the selected identity.
+- Hand Docker a protected host bind mount of the checked checkout inode, and keep deletion guards active until that mount is released.
+- Create local browser support agents through the configured core worker selection, without treating browser supervisor labels as registered worker IDs.
+
 ## 2026-10-19 - Talk during shared browser sessions (0.105.0)
 
 - Add optional push-to-talk transcription and interruptible spoken replies to hosted viewers and invited local browser support.

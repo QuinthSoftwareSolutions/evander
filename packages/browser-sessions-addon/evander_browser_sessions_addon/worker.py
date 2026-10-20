@@ -13,12 +13,13 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .models import (
     BrowserError,
@@ -40,12 +41,24 @@ class WorkerSettings(Contract):
     allocations_enabled: bool = False
     callback_url: str = "http://127.0.0.1:11891"
     max_sessions: int = Field(default=1, ge=1, le=32)
+    container_user: str = "1000:1000"
     profiles: dict[str, LaunchProfile] = Field(default_factory=dict)
     relay_urls: list[str] = Field(default_factory=list)
     sql_server: str | None = None
     sql_admin_user: str = "sa"
     sql_admin_password_env: str = "EVANDER_BROWSER_SQL_ADMIN_PASSWORD"
     sqlcmd: str = "/opt/mssql-tools18/bin/sqlcmd"
+
+    @field_validator("container_user")
+    @classmethod
+    def unprivileged_identity(cls, value):
+        parts = value.split(":")
+        if len(parts) != 2 or any(
+            not part.isascii() or not part.isdigit() or not 1 <= int(part) < 2**32 - 1
+            for part in parts
+        ):
+            raise ValueError("Expected an unprivileged numeric UID:GID")
+        return ":".join(str(int(part)) for part in parts)
 
 
 def contained(root: Path, path: Path) -> Path:
@@ -243,6 +256,7 @@ class Supervisor:
                 "state": "accepted",
                 "session": session.model_dump(),
                 "profile": profile.model_dump(),
+                "container_user": self.settings.container_user,
                 "workspace": str(workspace),
                 "manifest": manifest.model_dump(),
                 "allowed_origins": origins,
@@ -281,6 +295,13 @@ class Supervisor:
             "workspace_path": lease["workspace_path"],
             "error": lease["error"],
         }
+
+    def host_mount_command(self, *args, **kwargs):
+        # Docker resolves bind sources in the host mount namespace. PrivateTmp
+        # places the supervisor in another namespace, so pin/cleanup explicitly there.
+        return self.command(
+            "nsenter", "--target=1", "--mount", "--root", "--wd", "--", *args, **kwargs
+        )
 
     def ipt(self, *args, **kwargs):
         return self.command("iptables", "-w", "5", *args, **kwargs)
@@ -412,7 +433,8 @@ class Supervisor:
             folder.mkdir(mode=0o700, exist_ok=True)
             output = folder / "output"
             output.mkdir(mode=0o700, exist_ok=True)
-            os.chown(output, 1000, 1000)
+            identity = lease.get("container_user", "1000:1000")
+            os.chown(output, *map(int, identity.split(":")))
             self.docker(
                 "network",
                 "create",
@@ -474,7 +496,7 @@ class Supervisor:
                 "--security-opt",
                 "no-new-privileges",
                 "--user",
-                "1000:1000",
+                identity,
                 "--pids-limit",
                 "512",
                 "--dns",
@@ -523,8 +545,19 @@ class Supervisor:
             except BaseException:
                 os.close(descriptor)
                 raise
-            mount_source = f"/proc/{os.getpid()}/fd/{descriptor}"
+            mount_source = folder / "workspace"
             try:
+                mount_source.mkdir(mode=0o700, exist_ok=True)
+                # libmount must not canonicalize the proc-fd back into an agent-
+                # controlled path. The kernel bind holds the already checked inode.
+                checked = os.fstat(descriptor)
+                self.host_mount_command(
+                    sys.executable, "-B", "-m", "evander_browser_sessions_addon.mount_pin",
+                    "--worker-root", str(self.settings.worker_root),
+                    "--relative", workspace.relative_to(self.settings.worker_root.resolve()).as_posix(),
+                    "--target", str(mount_source),
+                    "--device", str(checked.st_dev), "--inode", str(checked.st_ino),
+                )
                 self.docker(
                     "run",
                     "-d",
@@ -669,6 +702,15 @@ class Supervisor:
                     self._sql(
                         f"IF DB_ID('{name}') IS NOT NULL BEGIN ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]; END; IF SUSER_ID('{name}') IS NOT NULL DROP LOGIN [{name}];"
                     )
+                mount_source = self.root / session_id / "workspace"
+                if mount_source.exists():
+                    result = self.host_mount_command(
+                        "mountpoint", "-q", "--", str(mount_source), check=False
+                    )
+                    if result.returncode == 0:
+                        self.host_mount_command("umount", "--", str(mount_source))
+                    elif result.returncode != 32:  # util-linux: present, not a mountpoint
+                        raise BrowserError("Could not verify workspace mount cleanup")
                 shutil.rmtree(self.root / session_id, ignore_errors=False) if (
                     self.root / session_id
                 ).exists() else None

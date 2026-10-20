@@ -70,6 +70,8 @@ tasks/
 !ansible/roles/semantic_store_qdrant/tasks/main.yml
 !ansible/roles/admin_web_caddy/tasks/
 !ansible/roles/admin_web_caddy/tasks/main.yml
+!ansible/roles/browser_sessions_runtime/tasks/
+!ansible/roles/browser_sessions_runtime/tasks/main.yml
 !ansible/roles/worker_apt_proxy/tasks/
 !ansible/roles/worker_apt_proxy/tasks/main.yml
 !ansible/roles/worker_git_access/tasks/

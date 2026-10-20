@@ -3300,3 +3300,5 @@ See [Git submission through MCP](git-remotes.md#submitting-committed-work-throug
 The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) provides authenticated hosted Chrome previews, development feedback in the same browser, and an invitation-based Chrome extension for user-hosted tabs. Install and configure it separately. Its private worker supervisor and relay do not add default guest firewall ports. Hosted viewers require Admin UI sign-in and directory-scoped browser permissions.
 
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](../packages/browser-sessions-addon/docs/voice.md).
+
+The managed Admin Web Caddy role discovers the optional browser relay through evander_admin_web_browser_relay_environment_file (default /etc/evander/browser-relay.env). evander_admin_web_browser_relay_enabled overrides discovery; evander_admin_web_browser_relay_upstream_host and evander_admin_web_browser_relay_upstream_port select the private upstream (default 127.0.0.1:11890).

@@ -93,18 +93,13 @@ class Bindings:
                 raise BrowserError("Support agent identity conflict", "identity_conflict", 409)
             return child_id
         parent_manifest = self.runtime.policy.get_session(parent.session_id)
-        worker_id = parent.worker_id or (
-            next(iter(settings.workers)) if len(settings.workers) == 1 else None
-        )
-        if not worker_id:
-            raise BrowserError(
-                "A support-agent worker must be configured", "worker_unavailable", 409
-            )
+        # Browser supervisor labels are add-on-local, not core worker IDs.
+        # Legacy/default-worker parents leave placement to normal core selection.
         result = self.admin().create_admin_agent(
             {
                 "backend": "container_worker_vm",
                 "session_id": child_id,
-                "worker_id": worker_id,
+                **({"worker_id": parent.worker_id} if parent.worker_id else {}),
                 "directory_path": parent.directory,
                 "ttl_seconds": max(60, int(session.expires_at - time.time())),
                 "model": parent_manifest.model,

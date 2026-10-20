@@ -129,6 +129,7 @@
     - role: service_runtime
     - role: package_cache_nexus
     - role: semantic_store_qdrant
+    - role: browser_sessions_runtime
     - role: verification
 
   post_tasks:

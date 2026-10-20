@@ -5,6 +5,12 @@
 	}
 
 {% endif %}
+{% if evander_admin_web_browser_relay_enabled | default(evander_admin_web_browser_relay_env.stat.exists) | bool %}
+	handle /_browser/* {
+		reverse_proxy {{ evander_admin_web_browser_relay_upstream_host }}:{{ evander_admin_web_browser_relay_upstream_port }}
+	}
+
+{% endif %}
 	handle /api/* {
 		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
 	}

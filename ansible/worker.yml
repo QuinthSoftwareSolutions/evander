@@ -218,4 +218,5 @@
     - role: worker_mssql_client_toolchain
     - role: worker_container_egress_policy
     - role: container_worker_service
+    - role: browser_sessions_runtime
     - role: container_worker_verification
