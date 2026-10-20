@@ -19,9 +19,6 @@ class Bindings:
             agent, "root/demo", time.time() + 20000, "worker-a", "https://worker.test", "thread-123"
         )
 
-    def prepare_support(self, session, parent, settings):
-        return "support-" + session.id
-
     def close_support(self, session):
         self.closed.append(session.id)
 

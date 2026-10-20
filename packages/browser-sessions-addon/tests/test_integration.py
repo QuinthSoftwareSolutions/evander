@@ -59,7 +59,8 @@ def test_workflow_cannot_launch_for_an_agent_in_another_directory(domain):
             operation.execute()
 
 
-def test_message_dispatch_uses_bound_thread_and_channel_instructions(tmp_path):
+@pytest.mark.parametrize("legacy_support", [None, "legacy-support-agent"])
+def test_message_dispatch_uses_bound_owner_thread_and_channel_instructions(tmp_path, legacy_support):
     calls = []
     admin = SimpleNamespace(
         enqueue_agent_prompt=lambda *args, **kwargs: (
@@ -70,7 +71,7 @@ def test_message_dispatch_uses_bound_thread_and_channel_instructions(tmp_path):
     session = SimpleNamespace(
         id="browser-a",
         agent_session_id="author-a",
-        support_agent_session_id=None,
+        support_agent_session_id=legacy_support,
         native_thread_id="author-thread",
     )
     bindings.enqueue(

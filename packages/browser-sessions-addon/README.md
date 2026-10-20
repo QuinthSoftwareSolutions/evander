@@ -28,7 +28,11 @@ The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual 
 6. Viewer feedback resumes the authoring task. Answer with browser_session_reply and its message ID. Source edits stay normal repository edits.
 7. Close to release resources before removing the owning checkout.
 
-For local support, create mode user_hosted and call browser_session_invite. The user opens their app tab and extension, pastes the invitation and approves the control-plane connection. It starts in observe mode. Only that host grants input, approves another origin or stops sharing. A separate browser-only support agent inherits no repository, connector, contact, HTTP-target or publication grants.
+For local support, create mode user_hosted and call browser_session_invite. The user opens their app tab and extension, pastes the invitation and approves the control-plane connection. It starts in observe mode. Only that host grants input, approves another origin or stops sharing. The agent that creates the session observes and interacts with it using its existing context and browser tool grants. Extension chat resumes that same agent and its originating thread; replies remain in the extension transcript. No separate support agent is created.
+
+After upgrading, existing local sessions can be observed by their creating agent. Use **Allow Truman to interact** again to grant that agent input; legacy support agents are removed when their session closes.
+
+Browser feedback is pinned to the creating conversation. If its native thread is still being recorded, messages wait for that run rather than resume another recent chat. For an older session without a recorded conversation, create a new sharing session from the intended assistant conversation.
 
 Workflow nodes effect:browser-session:ensure, query:browser-session:status and effect:browser-session:close use the same service and require the workflow and owner to share a directory. See [node examples](examples/workflow-nodes.json).
 

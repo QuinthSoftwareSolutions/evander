@@ -131,7 +131,7 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
     assert.equal(state.controller,null);
     const grant=await send({kind:"control",action:"grant"});assert.equal(grant.ok,true,grant.error);
     state=await f.api(path+"/state");
-    assert.equal(state.controller,"agent:support-a");
+    assert.equal(state.controller,"agent:agent-a");
     observed=await f.api(path+"/command",command(state,"observe"));
     await f.api(path+"/command",command(state,"fill",{observation_id:observed.observation_id,
       ref:observed.elements.find(e=>e.role==="textbox").ref,text:"Copper"}));

@@ -97,35 +97,43 @@ def read_latest_agent_prompt_execution(
 
 
 def read_latest_agent_prompt_lifecycle_receipt(
-    path: Path, *, session_id: str, dispatch_id: str
+    path: Path, *, session_id: str, dispatch_id: str, include_direct_prompts: bool = False,
 ) -> dict[str, Any] | None:
-    return _read_latest_prompt_execution(path, session_id=session_id, dispatch_id=dispatch_id,
-                                         lifecycle_only=True)
+    return _read_latest_prompt_execution(
+        path, session_id=session_id, dispatch_id=dispatch_id, lifecycle_only=True,
+        include_direct_prompts=include_direct_prompts,
+    )
 
 
 def _read_latest_prompt_execution(
     path: Path, *, session_id: str, dispatch_id: str, lifecycle_only: bool,
+    include_direct_prompts: bool = False,
 ) -> dict[str, Any] | None:
     """Read a dispatch receipt using indexed metadata, with legacy inline fallback."""
     if not path.is_file():
         return None
+    types = (
+        ("effect:agent:enqueue-prompt", "effect:agent:prompt")
+        if include_direct_prompts else ("effect:agent:enqueue-prompt",)
+    )
+    placeholders = ",".join("?" for _ in types)
     with connect_orchestration_db_read_only(path) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
-            """SELECT payload_json FROM (
+            f"""SELECT payload_json FROM (
                 SELECT e.payload_json, e.execution_id,
                        COALESCE(p.native_thread_observed_at,e.finished_at,e.started_at) AS observed_at
                 FROM workflow_execution_projections p INDEXED BY idx_execution_projection_dispatch
                 JOIN effect_executions e ON e.execution_id=p.record_id
                 WHERE p.dispatch_id=? AND p.session_id=? AND p.record_kind='effect' AND p.queued!=1
-                  AND e.effect_type='effect:agent:enqueue-prompt'
+                  AND e.effect_type IN ({placeholders})
                   AND e.status IN ('running','waiting','completion_pending','succeeded','failed')
                 UNION ALL
                 SELECT e.payload_json, e.execution_id,
                        COALESCE(json_extract(e.payload_json,'$.outputs.native_thread_observed_at'),
                                 e.finished_at,e.started_at) AS observed_at
                 FROM effect_executions e
-                WHERE e.effect_type='effect:agent:enqueue-prompt'
+                WHERE e.effect_type IN ({placeholders})
                   AND json_extract(e.payload_json,'$.outputs.dispatch_id')=?
                   AND e.status IN ('running','waiting','completion_pending','succeeded','failed')
                   AND COALESCE(NULLIF(json_extract(e.payload_json,'$.outputs.session_id'),''),
@@ -135,7 +143,7 @@ def _read_latest_prompt_execution(
                   AND NOT EXISTS(SELECT 1 FROM workflow_execution_projections p
                                  WHERE p.record_kind='effect' AND p.record_id=e.execution_id)
             ) ORDER BY observed_at DESC,execution_id DESC LIMIT 1""",
-            (dispatch_id, session_id, dispatch_id, session_id),
+            (dispatch_id, session_id, *types, *types, dispatch_id, session_id),
         ).fetchone()
         if row is None:
             return None

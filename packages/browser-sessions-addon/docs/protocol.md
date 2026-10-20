@@ -8,6 +8,8 @@ Assign browser_sessions.view, browser_sessions.control and browser_sessions.mana
 
 Guest invitations cannot access hosted sessions. Random tokens are hashed, single-use and expiring; invitation tokens stay in URL fragments. Pairing exchanges one for distinct endpoint and host credentials in Chrome session storage. Each endpoint role and host capability is bound to one local session.
 
+The creating agent owns both hosted and local sessions. Browser tools still require its configured grants; another agent cannot inspect or operate the session. Local hosts grant and revoke input to that creating agent. Extension messages resume the owner's original thread and reply only to the browser transcript. Legacy support-agent IDs are retained solely for cleanup.
+
 The bundled MV3 extension requests a control-plane host permission after an explicit Share click and attaches to one selected tab. It exposes no externally_connectable web API. Stop revokes local input before network acknowledgement. Detach, reconnect, origin changes, expiry and handover fence input. Reconnect never restores input silently.
 
 ## Typed commands
