@@ -3437,6 +3437,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:enqueue-prompt",
         label="Agent enqueue prompt",
         fields=[
+            _field("delivery_mode", "Busy delivery", "enum", bindable=True, default_value="queue",
+                   options=[_field_option("queue", "Queue"), _field_option("steer_if_running", "Steer the active conversation")]),
+            _field("conversation_key", "Conversation key", "string", bindable=True),
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
@@ -3487,6 +3490,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("queue_key", "Queue key", "string", bindable=True),
         ],
         output_ports=[
+            _port("steered", "Steered", description="Input was accepted by an existing turn; this is not job completion."),
             _port(
                 AGENT_PROMPT_STARTED_PORT,
                 "Started",
@@ -4658,6 +4662,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:session-context",
         label="Session context",
         fields=[
+            _field("include_activity", "Include active conversation", "boolean", bindable=True, default_value=False),
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),

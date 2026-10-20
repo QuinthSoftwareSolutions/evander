@@ -160,7 +160,11 @@ def enqueue_agent_prompt(
                 retry_at=retry_not_before,
             )
             if capacity_deferral
-            else queue_store.put(pending_record, max_retries=max_retries)
+            else queue_store.put(
+                pending_record,
+                max_retries=max_retries,
+                count_retry=not (metadata or {}).get("delivery_mode") == "steer_if_running",
+            )
         )
         latency_ms = int((time.monotonic() - start) * 1000)
         logger.info(

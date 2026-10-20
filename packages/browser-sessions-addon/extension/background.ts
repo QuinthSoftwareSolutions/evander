@@ -365,6 +365,7 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
       } catch (error) { granted = false; throw error; }
     }
     if (message.kind === "message") return api("message", { request_id: crypto.randomUUID(), body: message.body });
+    if (message.kind === "retry-message") return api("retry-message", {request_id:message.request_id,message_id:message.message_id});
     if (message.kind === "voice") {
       if (_sender.id !== chrome.runtime.id ||
           _sender.url?.split(/[?#]/)[0] !== chrome.runtime.getURL("panel.html"))

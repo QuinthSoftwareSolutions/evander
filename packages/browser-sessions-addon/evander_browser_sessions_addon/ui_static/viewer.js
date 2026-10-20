@@ -310,6 +310,51 @@ async function voiceJson(response) {
   return value;
 }
 
+// web/message-delivery.ts
+var labels = {
+  pending: "Sending\u2026",
+  queued: "Queued for the next turn",
+  steered: "Added to the active turn",
+  started: "Delivered",
+  delivery_unknown: "Delivery uncertain \u2014 check with your assistant before retrying",
+  failed: "Delivery failed",
+  cancelled: "Cancelled",
+  answered: "Answered"
+};
+function messageDelivery(root, updates, retry) {
+  const byId = new Map(updates.map((value) => [value.id, value]));
+  for (const item of Array.from(root.querySelectorAll("[data-message-id]"))) {
+    const update2 = byId.get(item.dataset.messageId);
+    if (!update2) continue;
+    let status = item.querySelector(".message-delivery");
+    if (!status) {
+      status = document.createElement("small");
+      status.className = "message-delivery";
+      status.setAttribute("role", "status");
+      item.append(status);
+    }
+    const state = update2.status === "answered" ? "answered" : update2.delivery_status ?? "pending";
+    status.dataset.delivery = state;
+    const label = labels[state] ?? "Sending\u2026";
+    if (status.textContent !== label) status.textContent = label;
+    let button = item.querySelector(".retry-delivery");
+    if (state === "delivery_unknown" && retry) {
+      if (!button) {
+        button = document.createElement("button");
+        button.className = "retry-delivery";
+        button.type = "button";
+        button.textContent = "Retry message";
+        item.append(button);
+      }
+      button.disabled = false;
+      button.onclick = () => {
+        button.disabled = true;
+        retry(update2.id);
+      };
+    } else button?.remove();
+  }
+}
+
 // web/viewer.ts
 var base = "/api/addons/browser-sessions-addon";
 var $ = (id) => document.getElementById(id);
@@ -449,9 +494,15 @@ async function messages() {
     name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
     item.append(name, document.createTextNode(message.body));
     $("messages").append(item);
+    if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
     after = Math.max(after, message.seq);
   }
   voice?.messages(result.messages);
+  messageDelivery(
+    $("messages"),
+    [...result.messages, ...result.message_updates ?? []],
+    (id) => void api("/sessions/" + sessionId + "/retry-message", { message_id: id, request_id: crypto.randomUUID() }).then(messages).catch(showError)
+  );
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
 $("chat-form").addEventListener("submit", async (event) => {

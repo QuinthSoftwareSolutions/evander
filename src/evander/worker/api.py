@@ -21,6 +21,7 @@ from .models import (
     WorkerFileWriteRequest,
     WorkerGitWriteKeyRequest,
     WorkerJobRequest,
+    WorkerSteerRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerReferenceRepoPrepareRequest,
@@ -74,8 +75,30 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                     "codex_ultrafast_mode": 1,
                     "codex_runtime_bridge": 1,
                     "inference_usage": 1,
+                    "codex_native_steering": 1,
                 },
             }
+        )
+
+    async def steer_job(request: Request) -> JSONResponse:
+        record = daemon.store.get(request.path_params["job_id"])
+        if record is None:
+            return JSONResponse({"error": "job not found"}, status_code=404)
+        try:
+            payload = WorkerSteerRequest.model_validate(await request.json())
+            receipt = await run_in_threadpool(daemon.steer_job, record, payload)
+            return JSONResponse(receipt)
+        except ValueError:
+            return JSONResponse(
+                {"error": "Invalid or conflicting steering delivery"}, status_code=409
+            )
+
+    async def steering_receipt(request: Request) -> JSONResponse:
+        receipt = daemon.store.steering(
+            request.path_params["job_id"], request.path_params["delivery_id"]
+        )
+        return JSONResponse(
+            receipt or {"error": "delivery not found"}, status_code=200 if receipt else 404
         )
 
     async def telemetry(request: Request) -> JSONResponse:
@@ -587,7 +610,9 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         lifespan=lifespan,
         routes=[
             Route("/healthz", health, methods=["GET"]),
-            Route("/v1/sessions/{session_id}/worktrees/salvage", capture_git_salvage, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/worktrees/salvage", capture_git_salvage, methods=["POST"]
+            ),
             Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/codex-auth", codex_auth_status, methods=["GET"]),
             Route("/v1/codex-auth/profiles", list_codex_auth_profiles, methods=["GET"]),
@@ -691,6 +716,8 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
             Route("/v1/jobs/{job_id}/stop", stop_job, methods=["POST"]),
+            Route("/v1/jobs/{job_id}/steer", steer_job, methods=["POST"]),
+            Route("/v1/jobs/{job_id}/steering/{delivery_id}", steering_receipt, methods=["GET"]),
             Route(
                 "/v1/jobs/{job_id}/interrupt-active-tool",
                 interrupt_active_tool,

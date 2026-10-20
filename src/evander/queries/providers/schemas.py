@@ -49,6 +49,7 @@ class SessionContextQueryDefinition(QueryDefinition):
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
+    include_activity: ConfigValue = False
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "SessionContextQueryDefinition":

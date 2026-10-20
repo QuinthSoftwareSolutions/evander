@@ -119,6 +119,7 @@ _QUEUED_PROMPT_METADATA_KEYS = (
     *_QUEUED_PROMPT_CONTEXT_METADATA_KEYS,
 )
 _SUBSCRIPTION_DEFERRAL_METADATA_KEYS = (
+    "conversation_key",
     *_QUEUED_PROMPT_METADATA_KEYS,
     "operator_steering",
     "operator_steering_note_id",

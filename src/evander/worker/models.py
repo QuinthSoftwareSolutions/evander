@@ -951,6 +951,18 @@ class WorkerMssqlSessionDeleteRecord(BaseModel):
     deleted_login: bool = False
 
 
+class WorkerSteerRequest(BaseModel):
+    """An idempotent user-message delivery to one pinned native turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    delivery_id: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")
+    session_id: str = Field(min_length=1, max_length=256)
+    expected_thread_id: str = Field(min_length=1, max_length=256)
+    expected_turn_id: str = Field(min_length=1, max_length=256)
+    prompt: str = Field(min_length=1, max_length=262144)
+
+
 class WorkerJobRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -89,6 +89,7 @@ _RECONCILED_QUEUE_EXECUTION_STATUSES = {
     "skipped",
 }
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
+    "conversation_key",
     "cost_category_snapshot",
     "workflow_run_id",
     "mcp_tool_approval_lease_id",
@@ -860,6 +861,34 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         except Exception:
             return False
 
+        delivery_metadata = getattr(record, "metadata", {})
+        delivery_service = None
+        if delivery_metadata.get("delivery_mode") == "steer_if_running":
+            from evander.admin.services.conversation_delivery_service import (
+                ConversationDeliveryService,
+            )
+
+            delivery_service = ConversationDeliveryService(config.runtime_dir, backend)
+            delivered = delivery_service.try_steer(
+                session_id=session_id,
+                delivery_id=dispatch_id,
+                prompt=record.prompt,
+                conversation_key=delivery_metadata.get("conversation_key") or None,
+                thread_id=record.resume_thread_id,
+                model=delivery_metadata.get("steering_model") or None,
+                approval_lease_id=delivery_metadata.get("mcp_tool_approval_lease_id"),
+                turn_settings=json.loads(delivery_metadata.get("steering_settings") or "{}"),
+                allow_native=record.resume_mode != "new_context",
+            )
+            if delivered is not None:
+                if delivered["delivery_status"] in {"steered", "started", "cancelled"}:
+                    self._record_message_delivery(worker, record, delivered)
+                    self._delete_queue_record_if_current(
+                        queue_store=queue_store, queue_key=queue_key, dispatch_id=dispatch_id
+                    )
+                    return True
+                return False
+
         if AgentEnqueuePromptEffectProvider.container_session_is_busy_for_backend(
             backend=backend,
             session_id=session_id,
@@ -901,7 +930,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         queue_key, record, dispatch_id = claimed
-        execution_id = safe_effect_execution_id("agent", session_id)
+        execution_id = (
+            "agent-msg-" + hashlib.sha256(f"{session_id}:{dispatch_id}".encode()).hexdigest()[:32]
+            if delivery_service is not None
+            else safe_effect_execution_id("agent", session_id)
+        )
         record_metadata = getattr(record, "metadata", {})
         workflow_run_id = (
             str(record_metadata.get("workflow_run_id") or "").strip()
@@ -999,6 +1032,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                 codex_turn=codex_turn,
                                 metadata={
                                     "effect_type": "effect:agent:enqueue-prompt",
+                                    "conversation_key": delivery_metadata.get("conversation_key"),
+                                    "mcp_tool_approval_lease_id": mcp_tool_approval_lease_id,
                                     "dispatch_id": dispatch_id,
                                     "agent_provider": agent_harness,
                                     "model": model,
@@ -1091,6 +1126,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 )
                 self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
+        if delivery_service is not None:
+            delivery_service.mark_started(
+                session_id=session_id,
+                delivery_id=dispatch_id,
+                prompt=record.prompt,
+                conversation_key=delivery_metadata.get("conversation_key") or None,
+                thread_id=record.resume_thread_id,
+                execution_id=handle.execution_id,
+            )
         steering_note_consumed = self._mark_queued_operator_steering_delivered(
             worker=worker,
             record=record,
@@ -1104,6 +1148,41 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 dispatch_id=dispatch_id,
             )
         return True
+
+    def _record_message_delivery(self, worker, record, outputs):
+        from evander.daemons.effect_orchestrator import EffectExecutionRecord
+
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=record.queue_key, dispatch_id=record.dispatch_id, record=record
+        )
+        key = f"{event_id}::{record.effect_id}"
+        now = datetime.now(UTC)
+        payload = {}
+        self._restore_workflow_context(input_payload=payload, record=record)
+        delivery = EffectExecutionRecord(
+            execution_id=f"exec-{hashlib.sha1(key.encode()).hexdigest()[:16]}",
+            idempotency_key=key,
+            event_id=event_id,
+            trace_id=event_id,
+            source_node_id=record.effect_id,
+            source_trigger_type="effect:agent:enqueue-prompt",
+            effect_id=record.effect_id,
+            effect_type="effect:agent:enqueue-prompt",
+            status="succeeded",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash=self._json_sha256({}),
+            resolved_config={},
+            input_payload=payload,
+            outputs={**outputs, "success": True, "queued": False},
+        )
+        worker.execution_store.record_execution(delivery)
+        worker._publish_effect_completion_event_or_mark_pending(
+            record=delivery,
+            outputs=delivery.outputs,
+            branch_port="steered" if outputs.get("delivery_status") == "steered" else None,
+            pending_status="succeeded",
+        )
 
     def _scheduled_wake_queue_record_is_current(
         self,
@@ -2286,7 +2365,11 @@ class _QueuedPromptDispatch:
                 record=record,
             ):
                 continue
-            if self.hook._has_waiting_enqueue_prompt_for_record(worker=self.worker, record=record):
+            if record.metadata.get(
+                "delivery_mode"
+            ) != "steer_if_running" and self.hook._has_waiting_enqueue_prompt_for_record(
+                worker=self.worker, record=record
+            ):
                 continue
             if self.hook._dispatch_container_record_if_idle(
                 worker=self.worker,

@@ -583,6 +583,8 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
+    delivery_mode: ConfigValue = "queue"
+    conversation_key: ConfigValue | None = None
     model: ConfigValue | None = None
     cost_category: ConfigValue | None = Field(
         default=None,
@@ -611,6 +613,17 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
+    @field_validator("delivery_mode")
+    @classmethod
+    def validate_delivery_mode(cls, value):
+        if (
+            isinstance(value, str)
+            and "${{" not in value
+            and value not in {"queue", "steer_if_running"}
+        ):
+            raise ValueError("delivery_mode must be queue or steer_if_running")
+        return value
 
     @field_validator("fast_mode")
     @classmethod

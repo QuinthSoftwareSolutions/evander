@@ -144,6 +144,14 @@ def admin_api_routes(context):
                 payload = await read_json(request)
             if action == "state":
                 result = service.receipt(session)
+            elif action == "retry-message":
+                result = await run_in_threadpool(
+                    service.retry_message,
+                    session.id,
+                    actor,
+                    payload["message_id"],
+                    payload["request_id"],
+                )
             elif action == "messages":
                 if request.method == "POST":
                     result = service.enqueue_message(
@@ -151,9 +159,10 @@ def admin_api_routes(context):
                     )
                 else:
                     result = {
+                        "message_updates": service.store.message_updates(session.id),
                         "messages": service.store.messages(
                             session.id, "viewer", int(request.query_params.get("after", 0))
-                        )
+                        ),
                     }
             elif action == "control":
                 result = await run_in_threadpool(

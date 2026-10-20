@@ -47,6 +47,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS voice_requests_active ON voice_requests(state,lease_until);
 
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if "delivery_status" not in {
+                row[1] for row in db.execute("PRAGMA table_info(messages)")
+            }:
+                db.execute("ALTER TABLE messages ADD COLUMN delivery_status TEXT DEFAULT 'pending'")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -313,6 +318,16 @@ class Store:
                 for row in db.execute(
                     "SELECT * FROM messages WHERE session_id=? AND channel=? AND seq>? ORDER BY seq LIMIT 200",
                     (session_id, channel, after),
+                )
+            ]
+
+    def message_updates(self, session_id, channel="viewer"):
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT id,status,delivery_status FROM messages WHERE session_id=? AND channel=? AND reply_to IS NULL ORDER BY seq DESC LIMIT 50",
+                    (session_id, channel),
                 )
             ]
 

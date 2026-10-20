@@ -21,13 +21,14 @@ class SessionContextQueryProvider(QueryProviderBase):
         query_fn = getattr(context.session_context_reader, "session_context_query", None)
         if not callable(query_fn):
             raise RuntimeError("Admin runtime session_context_query is not available")
-        result = query_fn(target=target)
+        options = {"include_activity": True} if payload.get("include_activity") is True else {}
+        result = query_fn(target=target, **options)
         return self._coerce_result(result)
 
     def _query_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         query = self.query_definition
-        for field_name in ("target", "session_id", "vm_name"):
+        for field_name in ("target", "session_id", "vm_name", "include_activity"):
             if query is not None and hasattr(query, field_name):
                 payload[field_name] = getattr(query, field_name)
         return payload

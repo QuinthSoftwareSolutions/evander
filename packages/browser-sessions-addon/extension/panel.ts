@@ -1,3 +1,4 @@
+import { messageDelivery } from "../web/message-delivery.js";
 import { VoiceControls, voiceJson } from "../web/voice-controls.js";
 import { prepareMicrophone } from "./microphone.js";
 declare const chrome: any;
@@ -98,8 +99,11 @@ async function refresh() {
     for (const message of result.messages ?? []) {
       const item = document.createElement("p");
       item.textContent = (message.actor.startsWith("agent:") ? "Truman: " : "You: ") + message.body;
+      if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
       $("messages").append(item); after = Math.max(after, message.seq);
     }
+    messageDelivery($("messages"), [...(result.messages ?? []), ...(result.message_updates ?? [])],
+      id => void call({kind:"retry-message",message_id:id,request_id:crypto.randomUUID()}).then(refresh).catch(failure));
     voice?.messages(result.messages ?? []);
   } finally {
     refreshing = false;

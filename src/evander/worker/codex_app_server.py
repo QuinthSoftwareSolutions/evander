@@ -51,6 +51,7 @@ class CodexAppServerProcess:
         self._write_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._pending: dict[int, Queue[dict[str, Any]]] = {}
+        self._response_observers: dict[int, Callable[[dict[str, Any]], None]] = {}
         self._next_request_id = 1
         self._closed = threading.Event()
         self._reader: threading.Thread | None = None
@@ -115,6 +116,7 @@ class CodexAppServerProcess:
         params: dict[str, Any] | None = None,
         *,
         timeout_seconds: float | None = None,
+        response_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if not self.running:
             if self._process is None:
@@ -125,6 +127,8 @@ class CodexAppServerProcess:
             self._next_request_id += 1
             response_queue: Queue[dict[str, Any]] = Queue(maxsize=1)
             self._pending[request_id] = response_queue
+            if response_observer is not None:
+                self._response_observers[request_id] = response_observer
         self._write({"id": request_id, "method": method, "params": params or {}})
         timeout = (
             self.request_timeout_seconds
@@ -245,6 +249,9 @@ class CodexAppServerProcess:
         if isinstance(request_id, int):
             with self._state_lock:
                 response_queue = self._pending.pop(request_id, None)
+                observer = self._response_observers.pop(request_id, None)
+            if observer is not None:
+                self._observe_response(observer, message)
             if response_queue is not None:
                 response_queue.put(message)
             return
@@ -269,6 +276,10 @@ class CodexAppServerProcess:
         with self._state_lock:
             pending = list(self._pending.values())
             self._pending.clear()
+            observers = list(self._response_observers.values())
+            self._response_observers.clear()
+        for observer in observers:
+            self._observe_response(observer, {"transportClosed": True})
         for response_queue in pending:
             try:
                 response_queue.put_nowait(
@@ -276,6 +287,15 @@ class CodexAppServerProcess:
                 )
             except Exception:
                 pass
+
+    @staticmethod
+    def _observe_response(observer, response):
+        try:
+            observer(response)
+        except Exception:
+            # Durable send claims remain uncertain if receipt storage is unavailable;
+            # never terminate the protocol reader or resend an accepted write.
+            pass
 
 
 def _dict_params(value: object) -> dict[str, Any]:
