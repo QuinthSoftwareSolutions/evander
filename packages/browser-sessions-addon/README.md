@@ -40,7 +40,7 @@ Workflow nodes effect:browser-session:ensure, query:browser-session:status and e
 
 ## Voice
 
-Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts open a scoped companion voice page from the Chrome extension. See [voice setup and usage](docs/voice.md).
+Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts use recording, spoken replies and typed chat directly in the Chrome extension sidebar. First-use microphone permission may need a small permission window; ongoing voice uses no separate tab. Update to Chrome extension 0.3.0 and Browser Sessions package 0.3.0 for this flow. See [voice setup and usage](docs/voice.md).
 
 ## Boundaries
 
@@ -49,3 +49,9 @@ Hosted sessions require container_worker_vm on Linux with Docker IPv4 bridge fil
 Defaults: one controller; one hosted preview per worker and authoring agent; four-hour hard deadline; thirty-minute inactivity limit; ten-minute invitations. “Keep active” resets inactivity without extending the hard deadline. Frames and polling do not renew activity.
 
 Customer recipes, credentials and seed data belong in operator-owned storage.
+
+
+Chrome sharing automatically uses compatibility mode if a password manager or another extension injects a protected frame that blocks debugger attachment. Other extensions remain enabled and their frames stay in place. Compatibility mode captures only the selected tab, including while it is in the background, and supports application DOM inspection, form entry, clicks, scrolling and page keyboard handlers. It does not enter protected/cross-origin frames, operate native JavaScript dialogs, or generate trusted native input. Applications that require those capabilities can use the optional native helper, normal mode, or the host's local input. Click the Evander toolbar icon on the application tab before sharing so Chrome grants tab-capture access. No remote-debugging flag, local companion or application port forwarding is required.
+
+
+For native input while keeping other extensions enabled, select **Installed helper — full browser control** after installing the optional standalone companion. The helper uses Chrome 144+ consent-based debugging; the sidebar remains the interface for sharing, chat and voice. See [helper installation, packaging and boundaries](docs/helper.md). Helper packages must be built and included in the deployment bundle before the download page offers them.

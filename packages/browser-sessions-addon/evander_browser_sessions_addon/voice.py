@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import wave
 
@@ -278,7 +279,13 @@ class Voice:
                 self.finish(session_id, actor, request_id, "unknown")
 
 
-def require_voice_origin(request, settings):
+def require_voice_origin(request, settings, *, allow_extension=False):
     supplied = request.headers.get("origin")
-    if not supplied or origin(supplied) != origin(settings.public_base_url):
+    if allow_extension and re.fullmatch(r"chrome-extension://[a-p]{32}", supplied or ""):
+        return
+    try:
+        accepted = supplied and origin(supplied) == origin(settings.public_base_url)
+    except BrowserError:
+        accepted = False
+    if not accepted:
         raise BrowserError("Voice request origin was rejected", "forbidden", 403)

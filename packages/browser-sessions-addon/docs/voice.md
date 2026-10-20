@@ -4,7 +4,7 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.2 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.3 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
 In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and coral. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
 
@@ -20,9 +20,15 @@ Enable **Speak new replies** to hear subsequent agent replies. Text remains visi
 
 ## User-hosted tabs
 
-After pairing the extension with the application tab, choose **Open voice chat**. This opens a companion page on the control-plane origin. Keep it beside the application tab or in another window.
+With Chrome extension **0.3.0** or later, pair the application tab and expand **Voice** in the extension sidebar. Choose **Enable microphone**, then hold **Talk** and release to send. **Speak new replies** and **Stop audio** operate in the same sidebar. Typed and spoken messages share its existing transcript. No separate voice tab is opened.
 
-The companion uses a separate expiring capability tied to that browser and host. It can read/send that session's chat and use speech. It cannot grant browser input, approve an origin, close sharing or access other sessions. The capability travels in a URL fragment, is removed from browser history after admission, and remains in page memory. Reloading requires opening voice chat again from the extension. Admin sign-in is not required for this invited local host.
+Chrome can require a one-time extension-origin microphone grant. When access has not yet been granted, a small **Enable microphone** permission window opens. Choose **Allow microphone**, approve Chrome's prompt, and return to the sidebar; the permission window closes automatically. It stops its test stream without recording or uploading audio. Cancelling closes setup and permits another attempt. Once permission is granted, subsequent setup needs no extra window. This handles Chrome's [side-panel permission limitation](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/cJmdMLmpbjg/m/zYGc54AaAQAJ).
+
+The sidebar obtains a separate expiring voice capability tied to that browser and host. It can use only that session's chat and speech endpoints. It cannot grant browser input, approve an origin, close sharing or access other sessions. The capability stays in extension page memory and is never placed in a page URL or persisted by the voice UI. Only the extension sidebar can request it from the background worker. Extension-origin voice requests still require that capability; hosted voice mutations retain their control-plane origin checks.
+
+Collapsing or hiding the voice UI, closing the sidebar, ending sharing or pairing a replacement session stops microphone tracks and playback, cancels permission setup and aborts pending transcription. Voice never switches its capability or an unfinished message to another session. Reopen the controls and enable the microphone to resume.
+
+Older extensions can continue using the existing companion voice page. Its voice capability travels in the URL fragment and is removed from browser history after admission. The current extension keeps this flow entirely in its sidebar. Admin sign-in and browser input control are not required for the invited local host's voice chat.
 
 ## Limits and recovery
 
@@ -34,6 +40,6 @@ If microphone access is denied, repair the site's Chrome microphone permission a
 
 ## Validation
 
-The automated suite uses a real Chrome microphone recorder with a synthetic input device, real WAV playback, actual extension pairing, scoped companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
+The automated suite uses a real Chrome microphone recorder with a synthetic input device, real WAV playback, actual extension pairing, sidebar capture, microphone permission cancellation/retry, scoped legacy companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
 
 Hands-free turn detection and precise narration timing alongside agent actions remain future extensions to this bounded push-to-talk flow.
