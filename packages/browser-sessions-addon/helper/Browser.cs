@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
@@ -154,6 +155,31 @@ sealed class Browser : IAsyncDisposable
         currentUrl = await Location();
         await Fence(state!.Generation, false, Interlocked.Read(ref epoch));
     }
+    static JsonObject Accessibility(JsonObject tree)
+    {
+        var roles = new HashSet<string> { "button", "link", "textbox", "combobox", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row" };
+        var nodes = new JsonArray();
+        foreach (var value in tree["nodes"]?.AsArray() ?? [])
+        {
+            if (nodes.Count == 600) break;
+            var node = value!.AsObject();
+            string? role = node["role"]?["value"]?.GetValue<string>();
+            if (node["ignored"]?.GetValue<bool>() == true || node["backendDOMNodeId"] is null || role is null || !roles.Contains(role)) continue;
+            string name = node["name"]?["value"]?.GetValue<string>() ?? "";
+            if (name.Length > 400) name = name[..400];
+            var compact = new JsonObject { ["backendDOMNodeId"] = node["backendDOMNodeId"]!.DeepClone(),
+                ["role"] = new JsonObject { ["value"] = role }, ["name"] = new JsonObject { ["value"] = name } };
+            // Account for JSON escaping as well as UTF-8, retaining all 600
+            // supported controls without sending Chrome's unused AX metadata.
+            while (JsonSerializer.SerializeToUtf8Bytes(compact).Length > 1200)
+            {
+                name = name[..Math.Max(0, name.Length - 32)];
+                compact["name"]!["value"] = name;
+            }
+            nodes.Add(compact);
+        }
+        return new() { ["nodes"] = nodes };
+    }
     public async Task<JsonObject> Command(string method, JsonObject parameters, long generation, long expectedEpoch)
     {
         if (!Methods.TryGetValue(method, out var allowed) || parameters.Any(item => !allowed.Contains(item.Key))) throw new Denied("unsupported_action");
@@ -194,6 +220,7 @@ sealed class Browser : IAsyncDisposable
             parameters["quality"] = size.Quality;
             parameters["clip"]!["scale"] = Math.Min(1, Math.Min(size.Width / captureWidth, size.Height / captureHeight));
         }
+        if (method == "Accessibility.getFullAXTree") return Accessibility(result);
         if (method == "Page.getFrameTree") return new() { ["frameTree"] = new JsonObject { ["frame"] = result["frameTree"]!["frame"]!.DeepClone() } };
         return result;
     }

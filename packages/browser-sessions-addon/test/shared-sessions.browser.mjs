@@ -721,3 +721,31 @@ test("a protected frame added during native sharing switches modes without repla
     await host.send({ kind: "disconnect" });
   } finally { await host?.context.close(); await f.stop(); }
 });
+
+
+test("compatibility clicks SVG button icons and preserves form activation", async () => {
+  const f = await fixture(); let host;
+  try {
+    host = await compatibilityHost(f); assert.equal(host.paired.ok, true, host.paired.error);
+    await until(async () => (await f.api(host.path + "/state")).state === "paused", "compatible sharing ready");
+    await host.application.evaluate(() => {
+      const form = document.createElement("form");
+      form.innerHTML = '<button aria-label="Save material"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" fill="blue" /></svg></button>';
+      window.saved = 0; window.submitted = 0;
+      form.querySelector("button").onclick = () => window.saved++;
+      form.onsubmit = event => { event.preventDefault(); window.submitted++; };
+      document.body.prepend(form);
+    });
+    await host.send({ kind: "control", action: "grant" });
+    const state = await f.api(host.path + "/state");
+    const observed = await f.api(host.path + "/command", command(state, "observe"));
+    const button = observed.elements.find(value => value.name === "Save material"); assert.ok(button);
+    await f.api(host.path + "/command", command(state, "click", { observation_id: observed.observation_id, ref: button.ref }));
+    assert.equal(await host.application.evaluate(() => window.saved), 1);
+    assert.equal(await host.application.evaluate(() => window.submitted), 1);
+    assert.equal(await host.application.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Save material");
+    await host.application.getByRole("button", { name: "Save material" }).evaluate(button => button.disabled = true);
+    await f.api(host.path + "/command", command(state, "click", { observation_id: observed.observation_id, ref: button.ref }));
+    assert.equal(await host.application.evaluate(() => window.saved), 1, "Disabled icon buttons remain disabled");
+  } finally { await host?.context.close(); await f.stop(); }
+});

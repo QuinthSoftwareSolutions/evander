@@ -103,13 +103,14 @@ sealed class Cdp : IAsyncDisposable
             var buffer = new byte[65536];
             while (!lifetime.IsCancellationRequested)
             {
+                // Wide application AX trees are compacted to 600 controls before Native Messaging.
                 using var data = new MemoryStream();
                 WebSocketReceiveResult frame;
                 do
                 {
                     frame = await socket.ReceiveAsync(buffer, lifetime.Token);
                     if (frame.MessageType == WebSocketMessageType.Close) return;
-                    if (frame.MessageType != WebSocketMessageType.Text || data.Length + frame.Count > 4194304) throw new Denied("invalid_request");
+                    if (frame.MessageType != WebSocketMessageType.Text || data.Length + frame.Count > 33554432) throw new Denied("invalid_request");
                     data.Write(buffer, 0, frame.Count);
                 } while (!frame.EndOfMessage);
                 var message = JsonNode.Parse(data.GetBuffer().AsSpan(0, (int)data.Length))!.AsObject();

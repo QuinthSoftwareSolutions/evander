@@ -12,7 +12,7 @@ export function applicationDOM(method: string, params: any, origin: string): any
     if (!value?.isConnected) throw new Error("stale_observation");
     return value as HTMLElement;
   };
-  const hit = (x: number, y: number): HTMLElement => {
+  const hit = (x: number, y: number): Element => {
     let value = document.elementFromPoint(x, y);
     while (value?.shadowRoot) {
       const inner = value.shadowRoot.elementFromPoint(x, y);
@@ -21,7 +21,12 @@ export function applicationDOM(method: string, params: any, origin: string): any
     }
     // Never enter another extension's frame, or another document implicitly.
     if (!value || value.closest("iframe,frame,object,embed")) throw new Error("unsupported_target");
-    return value as HTMLElement;
+    return value;
+  };
+  const activate = (target: Element, options: MouseEventInit = {}) => {
+    if (target.closest(":disabled")) return;
+    if (target instanceof HTMLElement) target.click();
+    else target.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true, cancelable: true, view: window, detail: 1, ...options }));
   };
   const active = (allowFrame = false): HTMLElement => {
     let value = document.activeElement;
@@ -127,8 +132,8 @@ export function applicationDOM(method: string, params: any, origin: string): any
         if (target.dispatchEvent(new KeyboardEvent("keypress", { ...options, charCode: character, keyCode: character, which: character }))) {
           if (params.key === "Enter" && !(target instanceof HTMLTextAreaElement) && !target.isContentEditable) {
             if (target instanceof HTMLInputElement) target.form?.requestSubmit();
-            else if (target.matches("button,a[href]")) target.click();
-          } else if (params.key === " " && target.matches("button,input[type=checkbox],input[type=radio]")) target.click();
+            else if (target.matches("button,a[href]")) activate(target);
+          } else if (params.key === " " && target.matches("button,input[type=checkbox],input[type=radio]")) activate(target);
           else edit(target, params.text === "\r" ? "\n" : params.text);
         }
       } else if (params.key === "Tab") {
@@ -155,7 +160,7 @@ export function applicationDOM(method: string, params: any, origin: string): any
       const options = { clientX: params.x, clientY: params.y, bubbles: true, composed: true, cancelable: true, button: 0 };
       if (params.type === "mouseWheel") {
         if (!target.dispatchEvent(new WheelEvent("wheel", { ...options, deltaX: params.deltaX, deltaY: params.deltaY }))) return {};
-        let scroll: HTMLElement | null = target;
+        let scroll: Element | null = target;
         while (scroll && !(scroll.scrollHeight > scroll.clientHeight && /auto|scroll/.test(getComputedStyle(scroll).overflowY))) scroll = scroll.parentElement;
         (scroll ?? document.scrollingElement)?.scrollBy({ left: params.deltaX, top: params.deltaY, behavior: "instant" });
       } else if (params.type === "mouseMoved") {
@@ -179,12 +184,13 @@ export function applicationDOM(method: string, params: any, origin: string): any
         if (state.pressed) {
           const prior = active(true);
           if (prior !== target && state.dirty.delete(prior)) prior.dispatchEvent(new Event("change", { bubbles: true }));
-          target.focus();
+          const focus = target.closest<HTMLElement>("button,input,textarea,select,a[href],[tabindex],[contenteditable]") ?? target as HTMLElement;
+          if (typeof focus.focus === "function") focus.focus();
         }
       } else if (params.type === "mouseReleased") {
         target.dispatchEvent(new PointerEvent("pointerup", { ...options, pointerId: 1, pointerType: "mouse" }));
         target.dispatchEvent(new MouseEvent("mouseup", options));
-        if (state.pressed === target) target.click();
+        if (state.pressed === target) activate(target, options);
         state.pressed = null;
       }
       return {};

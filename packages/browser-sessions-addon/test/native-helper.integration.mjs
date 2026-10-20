@@ -231,3 +231,32 @@ test("helper observations and streaming fit native messages on a detailed full-H
     assert.equal((await host.send({ kind: "state" })).connected, true);
   } finally { await host?.context.close(); await f.stop(); }
 });
+
+
+test("helper observes a wide accessibility tree through its bounded native transport", async () => {
+  const f = await fixture(); let host;
+  try {
+    host = await helperHost(f); assert.equal(host.paired.ok, true, host.paired.error);
+    const state = await until(async () => { const value = await f.api(host.path + "/state"); return value.state === "paused" && value; }, "helper ready");
+    await host.application.evaluate(() => {
+      const group = document.createElement("div");
+      for (let index = 0; index < 3000; index++) {
+        const button = document.createElement("button"); button.textContent = "Material operation " + index + " " + (index < 600 ? "素材".repeat(200) : "Station control");
+        group.append(button);
+      }
+      document.body.append(group);
+    });
+    const debuggerSession = await host.context.newCDPSession(host.application);
+    const tree = await debuggerSession.send("Accessibility.getFullAXTree");
+    assert.ok(Buffer.byteLength(JSON.stringify(tree)) > 4194304, "Fixture must exceed the previous CDP ingress limit");
+    await debuggerSession.detach();
+    const observed = await f.api(host.path + "/command", command(state, "observe"));
+    assert.equal(observed.elements.length, 600);
+    assert.ok(observed.elements.some(node => node.name.startsWith("Material operation 0 ")));
+    assert.equal((await host.send({ kind: "state" })).connected, true);
+    await host.send({ kind: "control", action: "grant" });
+    const granted = await f.api(host.path + "/state");
+    await f.api(host.path + "/command", command(granted, "click", { observation_id: observed.observation_id,
+      ref: observed.elements.find(node => node.name.startsWith("Material operation 0 ")).ref }));
+  } finally { await host?.context.close(); await f.stop(); }
+});
