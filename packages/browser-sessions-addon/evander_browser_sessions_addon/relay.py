@@ -20,7 +20,7 @@ import uvicorn
 from .models import BrowserCommand, BrowserError, Frame, MessageRequest, TERMINAL, origin
 from .protocol import authorize_command
 from .service import Service
-from .voice import Voice, read_audio, require_voice_origin
+from .voice import Voice, read_audio, require_voice_origin, stream_audio
 
 
 def bearer(headers):
@@ -438,6 +438,11 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
                             session.id, actor, MessageRequest.model_validate(payload)
                         )
                     else:
+                        if payload.get("stream") is True:
+                            return await stream_audio(speech.speech_chunks(
+                                session.id, actor, str(payload["request_id"]), str(payload["message_id"]),
+                                validate=lambda: service.store.authenticate(token, "guest_voice"),
+                            ))
                         content = await speech.speech(
                             session.id, actor, str(payload["request_id"]), str(payload["message_id"])
                         )

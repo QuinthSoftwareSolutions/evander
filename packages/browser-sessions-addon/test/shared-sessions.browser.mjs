@@ -38,7 +38,16 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     await viewer.request.post(f.base+"/api/auth/login");
     await viewer.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,{waitUntil:"domcontentloaded"});
     await viewer.locator("#empty").waitFor({state:"hidden"});
+    await viewer.getByLabel("Shared application", {exact:true}).click({position:{x:40,y:40}});
+    await viewer.getByRole("button", {name:"Dismiss notification",exact:true}).waitFor();
+    const notice = await viewer.locator("#error").boundingBox();
+    const send = await viewer.getByRole("button", {name:"Send",exact:true}).boundingBox();
+    assert.ok(notice.x + notice.width <= send.x, "The control reminder must not cover chat controls");
+    await viewer.getByRole("button", {name:"Dismiss notification",exact:true}).click();
+    assert.equal(await viewer.locator("#error").isHidden(), true);
+    await viewer.getByLabel("Shared application", {exact:true}).click({position:{x:40,y:40}});
     await viewer.getByRole("button",{name:"Take control",exact:true}).click();
+    await viewer.locator("#error").waitFor({state:"hidden"});
     await until(async()=>{const s=await f.api(path+"/state");return s.controller==="user:operator"&&s;}, "human control");
     state=await f.api(path+"/state");
     const denied = await fetch(f.base+path+"/command",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -224,6 +233,10 @@ async function trackVoice(context) {
         return stream;
       };
     }
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      const result = start.apply(this, args); window.__voicePlayCount += 1; return result;
+    };
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
       return play.call(this).then(() => { window.__voicePlayCount += 1; });
@@ -233,7 +246,7 @@ async function trackVoice(context) {
 
 async function exerciseVoice(page, f, id) {
   const status = page.locator("[data-voice-status]");
-  await page.getByRole("checkbox", {name:"Speak new replies"}).check();
+  await page.getByRole("checkbox", {name:"Speak replies (AI voice)"}).check();
   await page.getByRole("button", {name:"Enable microphone",exact:true}).click();
   const talk = page.getByRole("button", {name:"Hold Talk",exact:true});
   await talk.waitFor();
@@ -243,8 +256,9 @@ async function exerciseVoice(page, f, id) {
   await page.waitForTimeout(400);
   await page.keyboard.up("Space");
   await page.getByRole("log").getByText(/Move the button to the left\./).waitFor();
-  assert.ok(await page.evaluate(() => window.__voiceStreams.length >= 2 &&
-    window.__voiceStreams.every(stream => stream.getTracks().every(track => track.readyState === "ended"))));
+  assert.ok(await page.evaluate(() => window.__voiceStreams.length >= 1 &&
+    window.__voiceStreams.some(stream => stream.getAudioTracks().some(track => track.readyState === "live"))),
+    "An enabled microphone stays ready between clips");
   const messages = (await f.api("/test/"+id+"/messages")).messages;
   const question = messages.find(message=>message.body==="Move the button to the left.");
   assert.ok(question);
@@ -280,7 +294,7 @@ test("hosted voice captures a bounded phrase, captions the task and plays an int
     });
     await page.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,
       {waitUntil:"domcontentloaded"});
-    await page.getByRole("checkbox",{name:"Speak new replies"}).check();
+    await page.getByRole("checkbox",{name:"Speak replies (AI voice)"}).check();
     releaseHistory();
     await page.getByRole("log").getByText("Earlier reply.",{exact:false}).waitFor();
     await exerciseVoice(page,f,config.session.id);
@@ -303,6 +317,8 @@ test("hosted voice captures a bounded phrase, captions the task and plays an int
     await page.keyboard.up("Space");
     assert.match(await page.locator("[data-voice-status]").textContent(),/Recording cancelled/);
     assert.equal((await f.api("/test/voice/events")).events.filter(event=>event.action==="transcribe").length,1);
+    await page.getByRole("button", {name:"Enable microphone",exact:true}).click();
+    await talk.waitFor();
     await talk.focus(); await page.keyboard.down("Space");
     await until(async()=>/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"keyboard recording");
     await page.keyboard.press("Tab"); await page.keyboard.up("Space");
@@ -553,6 +569,10 @@ test("native Chrome side panel captures speech and plays replies alongside the s
     sidebar = await nativeSidebar(host);
     await sidebar.evaluate(() => {
       window.__voicePlayCount = 0;
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (...args) {
+        const result = start.apply(this, args); window.__voicePlayCount += 1; return result;
+      };
       const play = HTMLMediaElement.prototype.play;
       HTMLMediaElement.prototype.play = function () {
         return play.call(this).then(() => { window.__voicePlayCount += 1; });

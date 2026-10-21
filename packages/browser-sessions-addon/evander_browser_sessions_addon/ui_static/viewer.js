@@ -1,3 +1,12 @@
+// web/composer.ts
+function enterToSend(body, form) {
+  body.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!event.repeat && body.value.trim()) form.requestSubmit();
+  });
+}
+
 // ../../frontend/admin-web/src/design/addon-context.js
 var root = document.documentElement;
 root.dataset.adminDesign = "";
@@ -37,6 +46,96 @@ window.addEventListener("message", (event) => {
 });
 if (window.parent !== window) window.parent.postMessage({ type: "admin-addon-ready" }, window.location.origin);
 
+// web/pcm-player.ts
+var PcmPlayer = class {
+  context;
+  cancel;
+  async unlock() {
+    const context = this.context ??= new AudioContext();
+    await context.resume();
+  }
+  async play(response, signal, started) {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Spoken audio is unavailable.");
+    const context = this.context ??= new AudioContext();
+    const sources = /* @__PURE__ */ new Set();
+    let cancelled = false, complete = false, first = true, trailing = new Uint8Array(0), total = 0;
+    let next = 0;
+    let drained;
+    const ended = new Promise((resolve) => {
+      drained = resolve;
+    });
+    const cancel = () => {
+      cancelled = true;
+      void reader.cancel().catch(() => {
+      });
+      for (const source of sources) source.stop();
+      sources.clear();
+      drained();
+    };
+    this.cancel = cancel;
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      if (signal.aborted) {
+        cancel();
+        return;
+      }
+      await context.resume();
+      while (!cancelled) {
+        const { value, done } = await reader.read();
+        if (cancelled || signal.aborted) break;
+        if (done) {
+          if (trailing.length || !total) throw new Error("Spoken audio was incomplete.");
+          complete = true;
+          if (!sources.size) drained();
+          await ended;
+          break;
+        }
+        total += value.byteLength;
+        if (total > 8e6) throw new Error("Spoken audio exceeded its limit.");
+        const bytes = new Uint8Array(trailing.length + value.length);
+        bytes.set(trailing);
+        bytes.set(value, trailing.length);
+        const count = Math.floor(bytes.length / 2);
+        trailing = bytes.slice(count * 2);
+        if (!count) continue;
+        const buffer = context.createBuffer(1, count, 24e3);
+        const samples = buffer.getChannelData(0), data = new DataView(bytes.buffer);
+        for (let i = 0; i < count; i++) samples[i] = data.getInt16(i * 2, true) / 32768;
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(context.destination);
+        sources.add(source);
+        source.onended = () => {
+          source.disconnect();
+          sources.delete(source);
+          if (complete && !sources.size) drained();
+        };
+        next = Math.max(next, context.currentTime + 0.05);
+        source.start(next);
+        next += buffer.duration;
+        if (first) {
+          first = false;
+          started();
+        }
+      }
+    } finally {
+      if (!complete || cancelled) cancel();
+      signal.removeEventListener("abort", cancel);
+      reader.releaseLock();
+      if (this.cancel === cancel) this.cancel = void 0;
+    }
+  }
+  stop() {
+    this.cancel?.();
+  }
+  dispose() {
+    this.stop();
+    void this.context?.close();
+    this.context = void 0;
+  }
+};
+
 // web/voice-controls.ts
 var VoiceControls = class {
   constructor(root2, transport, context = () => null) {
@@ -45,6 +144,12 @@ var VoiceControls = class {
     this.talk = root2.querySelector("[data-voice-talk]");
     this.replies = root2.querySelector("[data-voice-replies]");
     this.stop = root2.querySelector("[data-voice-stop]");
+    this.microphoneOff = document.createElement("button");
+    this.microphoneOff.type = "button";
+    this.microphoneOff.className = "quiet";
+    this.microphoneOff.textContent = "Turn off microphone";
+    this.microphoneOff.hidden = true;
+    this.talk.after(this.microphoneOff);
     this.status = root2.querySelector("[data-voice-status]");
     const watch = (target, name, listener) => target.addEventListener(name, listener, { signal: this.events.signal });
     watch(this.talk, "pointerdown", (event) => {
@@ -56,7 +161,11 @@ var VoiceControls = class {
     });
     watch(this.talk, "pointerup", () => this.finish());
     watch(this.talk, "pointercancel", () => this.finish(true));
-    watch(this.talk, "blur", () => this.finish(true));
+    watch(this.talk, "blur", () => {
+      const capturing = this.recording || this.opening;
+      this.finish(true);
+      if (capturing) this.releaseMicrophone();
+    });
     watch(this.talk, "keydown", (event) => {
       if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
       event.preventDefault();
@@ -77,18 +186,33 @@ var VoiceControls = class {
     });
     watch(this.replies, "change", () => {
       if (!this.replies.checked) this.stopAudio();
+      else if (typeof AudioContext !== "undefined") void this.pcm.unlock().catch(() => this.say("Audio playback needs permission."));
     });
     watch(this.stop, "click", () => this.stopAudio());
-    window.addEventListener("blur", () => this.finish(true), { signal: this.events.signal });
+    watch(this.microphoneOff, "click", () => {
+      this.finish(true);
+      this.releaseMicrophone();
+      this.say("");
+    });
+    window.addEventListener("blur", () => {
+      this.finish(true);
+      this.releaseMicrophone();
+    }, { signal: this.events.signal });
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) this.finish(true);
+      if (document.hidden) {
+        this.finish(true);
+        this.releaseMicrophone();
+      }
     }, { signal: this.events.signal });
     window.addEventListener("pagehide", () => this.dispose(), { once: true, signal: this.events.signal });
+    this.say("");
     void this.initialize();
   }
   talk;
   replies;
   stop;
+  microphoneOff;
+  pcm = new PcmPlayer();
   status;
   config;
   events = new AbortController();
@@ -114,7 +238,10 @@ var VoiceControls = class {
   seen = /* @__PURE__ */ new Set();
   speakAfter = Infinity;
   say(text) {
-    if (!this.disposed) this.status.textContent = text;
+    if (!this.disposed) {
+      this.status.textContent = text;
+      this.status.hidden = !text;
+    }
   }
   async initialize() {
     try {
@@ -135,7 +262,7 @@ var VoiceControls = class {
         return;
       }
       this.talk.disabled = false;
-      this.say("Enable the microphone, then hold Talk to record and send.");
+      this.say("");
     } catch (error) {
       if (!this.disposed) this.say(error.message);
     }
@@ -151,14 +278,18 @@ var VoiceControls = class {
       if (this.disposed || setup.signal.aborted) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+        noiseSuppression: false,
+        autoGainControl: false
       }, video: false });
-      stream.getTracks().forEach((track) => track.stop());
-      if (this.disposed) return;
+      if (this.disposed || setup.signal.aborted || document.hidden) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this.stream = stream;
       this.microphoneReady = true;
+      this.microphoneOff.hidden = false;
       this.talk.textContent = "Hold Talk";
-      this.say("Ready. Release Talk to send your words to Truman.");
+      this.say("");
     } catch (error) {
       if (!this.disposed) this.say(error.message || "Microphone access was denied or unavailable.");
     } finally {
@@ -177,16 +308,12 @@ var VoiceControls = class {
     const context = structuredClone(this.context());
     this.say("Opening microphone\u2026");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }, video: false });
-      if (this.disposed || capture !== this.capture || this.discard) {
-        stream.getTracks().forEach((track) => track.stop());
+      const stream = this.stream;
+      if (!stream?.getAudioTracks().some((track) => track.readyState === "live")) {
+        this.releaseMicrophone();
+        this.say("Enable the microphone before holding Talk.");
         return;
       }
-      this.stream = stream;
       const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((value) => MediaRecorder.isTypeSupported(value));
       if (!type) throw new Error("This browser cannot record a supported audio format.");
       const recorder = new MediaRecorder(stream, { mimeType: type });
@@ -206,8 +333,6 @@ var VoiceControls = class {
       });
       recorder.addEventListener("stop", () => {
         clearTimeout(this.timer);
-        stream.getTracks().forEach((track) => track.stop());
-        this.stream = void 0;
         this.recorder = void 0;
         this.recording = false;
         if (!this.disposed) this.talk.setAttribute("aria-pressed", "false");
@@ -224,11 +349,10 @@ var VoiceControls = class {
       this.talk.setAttribute("aria-pressed", "true");
       recorder.start(250);
       this.timer = setTimeout(() => this.finish(), this.config.max_recording_seconds * 1e3);
-      this.say("Recording. Release Talk to send.");
+      this.say("Recording.");
       if (this.released) this.finish();
     } catch (error) {
-      this.stream?.getTracks().forEach((track) => track.stop());
-      this.stream = void 0;
+      this.releaseMicrophone();
       this.recording = false;
       this.recorder = void 0;
       if (!this.disposed) {
@@ -249,7 +373,13 @@ var VoiceControls = class {
     this.discard ||= discard;
     clearTimeout(this.timer);
     if (this.recorder?.state === "recording") this.recorder.stop();
+  }
+  releaseMicrophone() {
     this.stream?.getTracks().forEach((track) => track.stop());
+    this.stream = void 0;
+    this.microphoneReady = false;
+    this.microphoneOff.hidden = true;
+    if (!this.disposed) this.talk.textContent = "Enable microphone";
   }
   async submit(audio, context) {
     this.transcribing = true;
@@ -294,12 +424,21 @@ var VoiceControls = class {
         this.say("Preparing spoken reply\u2026");
         let url;
         try {
-          const blob = await this.transport.speech(message, crypto.randomUUID(), abort.signal);
+          const result = await this.transport.speech(message, crypto.randomUUID(), abort.signal);
+          if (abort.signal.aborted || playback !== this.playback || this.disposed) {
+            if (result instanceof Response) await result.body?.cancel();
+            break;
+          }
+          if (result instanceof Response && result.headers.get("Content-Type")?.split(";")[0] === "audio/pcm") {
+            await this.pcm.play(result, abort.signal, () => this.say("Speaking."));
+            continue;
+          }
+          const blob = result instanceof Response ? await result.blob() : result;
           if (abort.signal.aborted || playback !== this.playback || this.disposed) break;
           url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           this.audio = audio;
-          this.say("Speaking. Talk or Stop audio to interrupt.");
+          this.say("Speaking.");
           await new Promise((resolve, reject) => {
             this.finishAudio = resolve;
             audio.onended = () => resolve();
@@ -326,6 +465,7 @@ var VoiceControls = class {
     this.audioAbort?.abort();
     this.audio?.pause();
     this.finishAudio?.();
+    this.pcm.stop();
     this.stop.disabled = true;
     if (!this.disposed) this.say("Audio stopped.");
   }
@@ -336,10 +476,14 @@ var VoiceControls = class {
     this.events.abort();
     this.microphoneSetupAbort?.abort();
     this.finish(true);
+    this.releaseMicrophone();
     this.transcriptionAbort?.abort();
     this.stopAudio();
+    this.microphoneOff.remove();
+    this.pcm.dispose();
     this.talk.disabled = true;
     this.replies.disabled = true;
+    this.status.hidden = false;
     this.status.textContent = "Voice session ended.";
   }
 };
@@ -401,6 +545,28 @@ var input = (id) => $(id);
 var canvas = $("display");
 var directory = new URLSearchParams(location.search).get("directory_path") ?? new URLSearchParams(location.search).get("directory") ?? "root";
 var sessionId = location.pathname.match(/\/view\/([^/]+)$/)?.[1];
+document.body.classList.toggle("viewer-page", !!sessionId);
+var themeToggle = $("theme-toggle");
+themeToggle.hidden = window.parent !== window;
+function syncThemeToggle() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  themeToggle.textContent = next === "dark" ? "Dark mode" : "Light mode";
+  themeToggle.setAttribute("aria-label", "Switch to " + next + " mode");
+}
+themeToggle.addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  try {
+    localStorage.setItem("admin-web:theme", theme);
+  } catch {
+  }
+});
+new MutationObserver(syncThemeToggle).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ["data-theme"]
+});
+syncThemeToggle();
 var session;
 var actor = "";
 var after = 0;
@@ -413,9 +579,22 @@ var voice;
 var frameURL = "";
 var observation = "";
 var pendingInput = Promise.resolve();
-function showError(error) {
+var notificationTimer;
+function dismissNotification() {
+  clearTimeout(notificationTimer);
+  $("error").hidden = true;
+}
+function showNotification(text, reminder = false) {
+  clearTimeout(notificationTimer);
+  $("error-message").textContent = text;
+  $("error").dataset.kind = reminder ? "reminder" : "error";
+  $("error").setAttribute("role", reminder ? "status" : "alert");
   $("error").hidden = false;
-  $("error").textContent = error.message ?? String(error);
+  if (reminder) notificationTimer = setTimeout(dismissNotification, 5e3);
+}
+$("dismiss-error").addEventListener("click", dismissNotification);
+function showError(error) {
+  showNotification(error.message ?? String(error));
 }
 async function api(path, body, method) {
   const response = await fetch(base + path, {
@@ -434,12 +613,19 @@ async function api(path, body, method) {
 }
 function update(value) {
   session = value;
+  if (session.controller === actor && $("error").dataset.kind === "reminder") dismissNotification();
   $("session-title").textContent = session.title;
+  $("session-title").title = session.title;
   $("status").textContent = session.state.replaceAll("_", " ");
   $("status").dataset.state = session.state;
   $("application-url").textContent = session.current_url ?? "Preparing application";
   $("expiry").textContent = "Expires " + new Date(session.expires_at * 1e3).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("control-help").textContent = session.controller === actor ? "You control this browser. Click the application and type normally." : session.controller?.startsWith("agent:") ? "Truman controls this browser. You can point, chat, or take control." : "Agent input is paused. Take control or hand control back to Truman.";
+  const yours = !!actor && session.controller === actor;
+  const agent = session.controller?.startsWith("agent:");
+  $("claim").textContent = yours ? "Hand back to Truman" : "Take control";
+  $("claim").setAttribute("aria-pressed", String(yours));
+  $("claim").disabled = !actor || ["closing", "closed", "expired", "failed", "cleanup_failed"].includes(session.state);
+  $("control-help").textContent = yours ? "You control this browser. Click the application and type normally." : agent ? "Truman controls this browser. You can point, chat, or take control." : session.controller ? "Another viewer controls this browser. You can point, chat, or take control." : "Agent input is paused. Take control to use the application.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
     voice?.dispose();
     $("empty").hidden = false;
@@ -460,7 +646,10 @@ async function command(action, options = {}) {
 }
 function serializeInput(action, options = {}) {
   pendingInput = pendingInput.then(async () => {
-    if (session.controller !== actor) throw new Error("Take control before interacting");
+    if (session?.controller !== actor) {
+      showNotification("Take control before interacting", true);
+      return;
+    }
     await command("observe");
     await command(action, options);
   }).catch(showError);
@@ -514,12 +703,14 @@ $("clear-annotation").addEventListener("click", () => {
   annotation = void 0;
   $("annotation").hidden = true;
 });
-for (const [id, action] of [["claim", "claim"], ["handback", "handback"], ["pause", "pause"]]) {
-  $(id).addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
-    action,
-    expected_generation: session.control_generation
-  }).then(update).catch(showError));
-}
+$("claim").addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
+  action: session.controller === actor ? "handback" : "claim",
+  expected_generation: session.control_generation
+}).then(update).catch(showError));
+$("pause").addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
+  action: "pause",
+  expected_generation: session.control_generation
+}).then(update).catch(showError));
 $("extend").addEventListener("click", () => void api("/sessions/" + sessionId + "/extend", {
   expected_revision: session.revision
 }).then(update).catch(showError));
@@ -544,8 +735,10 @@ async function messages() {
   );
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
+enterToSend($("chat-body"), $("chat-form"));
 $("chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!input("chat-body").value.trim()) return;
   try {
     await api("/sessions/" + sessionId + "/messages", {
       request_id: crypto.randomUUID(),
@@ -587,7 +780,7 @@ async function openViewer() {
     speech: async (message, id, signal) => {
       const response = await voiceRequest(
         "speech",
-        JSON.stringify({ message_id: message, request_id: id }),
+        JSON.stringify({ message_id: message, request_id: id, stream: typeof AudioContext !== "undefined" }),
         { "Content-Type": "application/json" },
         signal
       );
@@ -595,7 +788,7 @@ async function openViewer() {
         await voiceJson(response);
         throw new Error("Speech unavailable.");
       }
-      return response.blob();
+      return response;
     },
     send: async (text, id, context) => {
       await api("/sessions/" + sessionId + "/messages", {
@@ -824,6 +1017,8 @@ input("show-closed").addEventListener("change", renderCatalog);
 async function catalog() {
   $("catalog").hidden = false;
   $("directory-label").textContent = directory;
+  $("catalog").prepend($("error"));
+  document.querySelector(".top-actions").prepend(themeToggle);
   const result = await api("/sessions?directory=" + encodeURIComponent(directory));
   catalogSessions = result.sessions;
   renderCatalog();

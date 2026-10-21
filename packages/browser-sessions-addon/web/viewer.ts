@@ -1,3 +1,4 @@
+import { enterToSend } from "./composer.js";
 import "../../../frontend/admin-web/src/design/addon-context.js";
 import { VoiceControls, voiceJson } from "./voice-controls.js";
 import { messageDelivery } from "./message-delivery.js";
@@ -9,12 +10,44 @@ const canvas = $("display") as HTMLCanvasElement;
 const directory = new URLSearchParams(location.search).get("directory_path") ??
   new URLSearchParams(location.search).get("directory") ?? "root";
 const sessionId = location.pathname.match(/\/view\/([^/]+)$/)?.[1];
+document.body.classList.toggle("viewer-page", !!sessionId);
+const themeToggle = $("theme-toggle") as HTMLButtonElement;
+// Embedded viewers inherit the host's existing theme control.
+themeToggle.hidden = window.parent !== window;
+function syncThemeToggle() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  themeToggle.textContent = next === "dark" ? "Dark mode" : "Light mode";
+  themeToggle.setAttribute("aria-label", "Switch to " + next + " mode");
+}
+themeToggle.addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  try { localStorage.setItem("admin-web:theme", theme); } catch { /* Storage is optional. */ }
+});
+new MutationObserver(syncThemeToggle).observe(document.documentElement, {
+  attributes: true, attributeFilter: ["data-theme"],
+});
+syncThemeToggle();
 let session: any, actor = "", after = 0, pointing = false, annotation: any;
 let settings: any, settingsRevision = 0, websocket: WebSocket | undefined;
 let voice: VoiceControls | undefined;
 let frameURL = "", observation = "", pendingInput = Promise.resolve();
+let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+function dismissNotification() {
+  clearTimeout(notificationTimer); $("error").hidden = true;
+}
+function showNotification(text: string, reminder = false) {
+  clearTimeout(notificationTimer);
+  $("error-message").textContent = text;
+  $("error").dataset.kind = reminder ? "reminder" : "error";
+  $("error").setAttribute("role", reminder ? "status" : "alert");
+  $("error").hidden = false;
+  if (reminder) notificationTimer = setTimeout(dismissNotification, 5000);
+}
+$("dismiss-error").addEventListener("click", dismissNotification);
 function showError(error: any) {
-  $("error").hidden = false; $("error").textContent = error.message ?? String(error);
+  showNotification(error.message ?? String(error));
 }
 async function api(path: string, body?: any, method?: string) {
   const response = await fetch(base + path, {
@@ -32,15 +65,23 @@ async function api(path: string, body?: any, method?: string) {
 }
 function update(value: any) {
   session = value;
+  if (session.controller === actor && $("error").dataset.kind === "reminder") dismissNotification();
   $("session-title").textContent = session.title;
+  $("session-title").title = session.title;
   $("status").textContent = session.state.replaceAll("_", " ");
   $("status").dataset.state = session.state;
   $("application-url").textContent = session.current_url ?? "Preparing application";
   $("expiry").textContent = "Expires " + new Date(session.expires_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("control-help").textContent = session.controller === actor ?
-    "You control this browser. Click the application and type normally." :
-    session.controller?.startsWith("agent:") ? "Truman controls this browser. You can point, chat, or take control." :
-    "Agent input is paused. Take control or hand control back to Truman.";
+  const yours = !!actor && session.controller === actor;
+  const agent = session.controller?.startsWith("agent:");
+  $("claim").textContent = yours ? "Hand back to Truman" : "Take control";
+  $("claim").setAttribute("aria-pressed", String(yours));
+  ($("claim") as HTMLButtonElement).disabled = !actor || ["closing", "closed", "expired", "failed", "cleanup_failed"].includes(session.state);
+  $("control-help").textContent = yours ?
+    "You control this browser. Click the application and type normally." : agent ?
+    "Truman controls this browser. You can point, chat, or take control." : session.controller ?
+    "Another viewer controls this browser. You can point, chat, or take control." :
+    "Agent input is paused. Take control to use the application.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
     voice?.dispose();
     $("empty").hidden = false;
@@ -58,7 +99,9 @@ async function command(action: string, options: any = {}) {
 }
 function serializeInput(action: string, options: any = {}) {
   pendingInput = pendingInput.then(async () => {
-    if (session.controller !== actor) throw new Error("Take control before interacting");
+    if (session?.controller !== actor) {
+      showNotification("Take control before interacting", true); return;
+    }
     await command("observe"); await command(action, options);
   }).catch(showError);
 }
@@ -100,11 +143,12 @@ $("point").addEventListener("click", () => {
   canvas.style.cursor = pointing ? "crosshair" : "";
 });
 $("clear-annotation").addEventListener("click", () => { annotation = undefined; $("annotation").hidden = true; });
-for (const [id, action] of [["claim", "claim"], ["handback", "handback"], ["pause", "pause"]]) {
-  $(id).addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
-    action, expected_generation: session.control_generation,
-  }).then(update).catch(showError));
-}
+$("claim").addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
+  action: session.controller === actor ? "handback" : "claim", expected_generation: session.control_generation,
+}).then(update).catch(showError));
+$("pause").addEventListener("click", () => void api("/sessions/" + sessionId + "/control", {
+  action: "pause", expected_generation: session.control_generation,
+}).then(update).catch(showError));
 $("extend").addEventListener("click", () => void api("/sessions/" + sessionId + "/extend", {
   expected_revision: session.revision,
 }).then(update).catch(showError));
@@ -124,8 +168,10 @@ async function messages() {
     id => void api("/sessions/" + sessionId + "/retry-message", {message_id:id,request_id:crypto.randomUUID()}).then(messages).catch(showError));
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
+enterToSend($("chat-body") as HTMLTextAreaElement, $("chat-form") as HTMLFormElement);
 $("chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!input("chat-body").value.trim()) return;
   try {
     await api("/sessions/" + sessionId + "/messages", {
       request_id: crypto.randomUUID(), body: input("chat-body").value, annotation: annotation ?? null,
@@ -149,10 +195,10 @@ async function openViewer() {
     transcribe: async (audio, id, signal) => voiceJson(await voiceRequest("transcribe", audio,
       { "Content-Type": audio.type, "X-Voice-Request-ID": id }, signal)),
     speech: async (message, id, signal) => {
-      const response = await voiceRequest("speech", JSON.stringify({message_id:message,request_id:id}),
+      const response = await voiceRequest("speech", JSON.stringify({message_id:message,request_id:id,stream:typeof AudioContext !== "undefined"}),
         { "Content-Type": "application/json" }, signal);
       if (!response.ok) { await voiceJson(response); throw new Error("Speech unavailable."); }
-      return response.blob();
+      return response;
     },
     send: async (text, id, context) => {
       await api("/sessions/" + sessionId + "/messages", {
@@ -304,6 +350,8 @@ function renderCatalog() {
 input("show-closed").addEventListener("change", renderCatalog);
 async function catalog() {
   $("catalog").hidden = false; $("directory-label").textContent = directory;
+  $("catalog").prepend($("error"));
+  document.querySelector(".top-actions")!.prepend(themeToggle);
   const result = await api("/sessions?directory=" + encodeURIComponent(directory));
   catalogSessions = result.sessions;
   renderCatalog();

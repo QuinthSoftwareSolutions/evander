@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, Mount
 import uvicorn
 
@@ -146,6 +146,13 @@ async def speech_provider(request):
         return JSONResponse({"text": voice_transcript})
     payload = await request.json()
     voice_events.append({"action": "speech", "text": payload["input"]})
+    if payload.get("response_format") == "pcm":
+        async def chunks():
+            raw = b"\0\0" * 72000
+            for offset in range(0, len(raw), 4800):
+                yield raw[offset:offset + 4800]
+                await asyncio.sleep(0.02)
+        return StreamingResponse(chunks(), media_type="audio/pcm")
     return Response(voice_audio, media_type="audio/wav")
 
 async def speech_events(request):
