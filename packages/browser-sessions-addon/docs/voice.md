@@ -4,7 +4,7 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.3 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.5 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
 In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and coral. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
 
@@ -14,13 +14,15 @@ Use HTTPS for the public control-plane URL and remote speech providers. Chrome m
 
 ## Hosted viewers
 
-Enable the microphone once. Hold **Talk** with the mouse or Space/Enter, speak, then release. Releasing sends a bounded clip for transcription and posts the recognized words to the existing viewer chat. The page annotation selected before recording accompanies that message.
+Enable the microphone once. It stays ready between clips, avoiding repeated device initialization for Bluetooth headsets. Browser noise suppression and automatic gain processing are disabled to preserve phrase onsets; echo cancellation remains enabled. Audio is recorded only while Talk is held and sent after release. **Turn off microphone** releases the device explicitly.
 
-Enable **Speak new replies** to hear subsequent agent replies. Text remains visible in the chat. **Stop audio**, starting another recording or ending the session interrupts local playback. Moving keyboard focus away from Talk, losing window focus or hiding the page cancels microphone capture. Browser input still follows the session's existing control grant.
+Hold **Talk** with the mouse or Space/Enter, speak, then release. Releasing sends a bounded clip for transcription and posts the recognized words to the existing viewer chat. The page annotation selected before recording accompanies that message.
+
+Enable **Speak replies (AI voice)** to hear subsequent agent replies. New clients play bounded 24 kHz PCM as it arrives, before synthesis finishes; the reply must first be published in chat. Older clients retain WAV playback. Text remains visible in the chat. **Stop audio**, starting another recording or ending the session interrupts local playback. Moving keyboard focus away from Talk during recording, losing window focus or hiding the page cancels the clip and releases the microphone. Enable it again to resume. Browser input still follows the session's existing control grant.
 
 ## User-hosted tabs
 
-With Chrome extension **0.3.0** or later, pair the application tab and expand **Voice** in the extension sidebar. Choose **Enable microphone**, then hold **Talk** and release to send. **Speak new replies** and **Stop audio** operate in the same sidebar. Typed and spoken messages share its existing transcript. No separate voice tab is opened.
+With Chrome extension **0.4.1** or later, pair the application tab and expand **Voice** in the extension sidebar. Choose **Enable microphone**, then hold **Talk** and release to send. **Speak replies (AI voice)** and **Stop audio** operate in the same sidebar. Typed and spoken messages share its existing transcript. No separate voice tab is opened. Enter sends non-empty typed messages; Shift+Enter inserts a newline.
 
 Chrome can require a one-time extension-origin microphone grant. When access has not yet been granted, a small **Enable microphone** permission window opens. Choose **Allow microphone**, approve Chrome's prompt, and return to the sidebar; the permission window closes automatically. It stops its test stream without recording or uploading audio. Cancelling closes setup and permits another attempt. Once permission is granted, subsequent setup needs no extra window. This handles Chrome's [side-panel permission limitation](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/cJmdMLmpbjg/m/zYGc54AaAQAJ).
 
@@ -32,7 +34,7 @@ Older extensions can continue using the existing companion voice page. Its voice
 
 ## Limits and recovery
 
-Defaults are 45 seconds per recording, 2 MB per uploaded clip, 20 speech requests per minute per browser session, two concurrent requests per session and eight across the relay/Admin store. Advanced settings can adjust recording bytes, duration, rate and the spoken prefix length. Speech generation reads up to 2,000 reply characters by default; full replies remain in text. Audio uploads have a 20-second deadline. The host decodes accepted containers to mono 16 kHz WAV, counts decoded samples and rejects recordings above the configured duration before contacting the provider. FFmpeg has pipe-only access, a 10-second deadline and a bounded output frame count; interrupted decoders are killed and reaped. Provider requests have a 40-second overall deadline and output is bounded to 8 MB of WAV audio.
+Defaults are 45 seconds per recording, 2 MB per uploaded clip, 20 speech requests per minute per browser session, two concurrent requests per session and eight across the relay/Admin store. Advanced settings can adjust recording bytes, duration, rate and the spoken prefix length. Speech generation reads up to 2,000 reply characters by default; full replies remain in text. Audio uploads have a 20-second deadline. The host decodes accepted containers to mono 16 kHz WAV, counts decoded samples and rejects recordings above the configured duration before contacting the provider. FFmpeg has pipe-only access, a 10-second deadline and a bounded output frame count; interrupted decoders are killed and reaped. Provider requests have a 40-second overall deadline and output is bounded to 8 MB of PCM or legacy WAV audio. Stream access is rechecked throughout delivery, and stopping playback closes the provider connection and releases its concurrency slot.
 
 Raw microphone clips, normalized transcription audio and generated reply audio are held in memory during processing and are not saved by Evander. Provider retention is governed by the configured provider. Transcription text, request fingerprints, outcome records and small audit entries follow the session's normal retention policy. Idempotent transcription retries return the completed text; uncertain provider requests are never automatically replayed. Stopping local playback aborts the download, though a provider may finish a request already accepted.
 
@@ -40,6 +42,6 @@ If microphone access is denied, repair the site's Chrome microphone permission a
 
 ## Validation
 
-The automated suite uses a real Chrome microphone recorder with a synthetic input device, real WAV playback, actual extension pairing, sidebar capture, microphone permission cancellation/retry, scoped legacy companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
+The automated suite uses a real Chrome microphone recorder with a synthetic input device, incremental PCM and legacy WAV playback, actual extension pairing, sidebar capture, microphone permission cancellation/retry, scoped legacy companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
 
 Hands-free turn detection and precise narration timing alongside agent actions remain future extensions to this bounded push-to-talk flow.

@@ -277,3 +277,181 @@ def test_session_closed_during_decoding_does_not_contact_provider(
         ))
     assert closed.value.status == 410
     assert not speech_provider["calls"]
+
+
+def test_streamed_speech_starts_before_provider_finishes_and_closes_on_stop(
+    domain, hosted, speech_provider
+):
+    import httpx
+    import json
+
+    service, _, _ = domain
+    question = service.enqueue_message(
+        hosted.id, "user:alice", MessageRequest(request_id="stream-question", body="Show me")
+    )
+    reply = service.reply("agent-a", hosted.id, question["id"], "Here is the shared application.")
+
+    async def run():
+        release = asyncio.Event()
+        closed = []
+        requests = []
+
+        class Audio(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"\0\1" * 2400
+                await release.wait()
+                yield b"\0\2" * 2400
+
+            async def aclose(self):
+                closed.append(True)
+
+        async def respond(request):
+            requests.append(request)
+            return httpx.Response(200, stream=Audio(), headers={"Content-Type": "audio/pcm"})
+
+        voice = Voice(service, transport=httpx.MockTransport(respond))
+        stream = voice.speech_chunks(
+            hosted.id, "user:alice", "stream-stop", reply["id"], validate=lambda: None
+        )
+        first = await asyncio.wait_for(anext(stream), 2)
+        assert first == b"\0\1" * 2400 and not release.is_set()
+        assert json.loads(requests[0].content)["response_format"] == "pcm"
+        await stream.aclose()
+        assert closed, "Stopping playback must close the upstream HTTP stream immediately"
+        with service.store.connect() as db:
+            assert db.execute("SELECT state FROM voice_requests WHERE request_id='stream-stop'").fetchone()[0] == "unknown"
+        with pytest.raises(BrowserError) as duplicate:
+            await anext(voice.speech_chunks(
+                hosted.id, "user:alice", "stream-stop", reply["id"], validate=lambda: None
+            ))
+        assert duplicate.value.status == 409 and len(requests) == 1
+
+        release.set()
+        chunks = [chunk async for chunk in voice.speech_chunks(
+            hosted.id, "user:alice", "stream-complete", reply["id"], validate=lambda: None
+        )]
+        assert b"".join(chunks) == b"\0\1" * 2400 + b"\0\2" * 2400
+        with service.store.connect() as db:
+            assert db.execute("SELECT state FROM voice_requests WHERE request_id='stream-complete'").fetchone()[0] == "completed"
+
+    asyncio.run(run())
+
+
+def test_streamed_speech_rechecks_access_and_releases_prefetched_audio(
+    domain, hosted, speech_provider
+):
+    import httpx
+    from evander_browser_sessions_addon.voice import stream_audio
+
+    service, _, _ = domain
+    question = service.enqueue_message(
+        hosted.id, "user:alice", MessageRequest(request_id="stream-auth-question", body="Show me")
+    )
+    reply = service.reply("agent-a", hosted.id, question["id"], "This is the application.")
+
+    async def run():
+        closed = []
+
+        class Audio(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"\0\1" * 100
+                yield b"\0\2" * 100
+
+            async def aclose(self):
+                closed.append(True)
+
+        voice = Voice(service, transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=Audio(), headers={"Content-Type": "audio/pcm"})
+        ))
+        allowed = True
+        def validate():
+            if not allowed:
+                raise BrowserError("Permission changed", "forbidden", 403)
+        stream = voice.speech_chunks(
+            hosted.id, "user:alice", "stream-auth", reply["id"], validate=validate
+        )
+        assert await anext(stream) == b"\0\1" * 100
+        allowed = False
+        with pytest.raises(BrowserError, match="Permission changed"):
+            await anext(stream)
+        assert len(closed) == 1
+
+        response = await stream_audio(voice.speech_chunks(
+            hosted.id, "user:alice", "stream-unsent", reply["id"], validate=lambda: None
+        ))
+        assert response.media_type == "audio/pcm"
+        async def unavailable(message):
+            raise OSError("The viewer disconnected before headers were sent")
+        async def receive():
+            return {"type": "http.disconnect"}
+        with pytest.raises(Exception):
+            await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, unavailable)
+        assert len(closed) == 2
+        with service.store.connect() as db:
+            assert {row[0] for row in db.execute("SELECT state FROM voice_requests")} == {"unknown"}
+
+    asyncio.run(run())
+
+
+def test_normalizing_preserves_the_beginning_of_audio_after_silence():
+    import array
+    from evander_browser_sessions_addon.voice import normalize_recording
+
+    output = io.BytesIO()
+    # Independent timing markers: a quiet lead-in, an initial sound, then a later sound.
+    samples = array.array("h", [0] * 4000 + [5000, -5000] * 1000 + [0] * 2000 + [9000, -9000] * 1000)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    with wave.open(output, "wb") as recording:
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(8000)
+        recording.writeframes(samples.tobytes())
+    normalized = asyncio.run(normalize_recording(output.getvalue(), "audio/wav", 5))
+    with wave.open(io.BytesIO(normalized), "rb") as recording:
+        result = array.array("h", recording.readframes(recording.getnframes()))
+        if sys.byteorder != "little":
+            result.byteswap()
+        assert recording.getnframes() == 20000
+        assert max(abs(value) for value in result[8100:11800]) > 4000
+        assert max(abs(value) for value in result[16100:19800]) > 8000
+        assert max(abs(value) for value in result[:7800]) < 100
+
+
+def test_speech_stream_timeout_belongs_to_its_consumer_task(
+    domain, hosted, speech_provider, monkeypatch
+):
+    import httpx
+    import evander_browser_sessions_addon.voice as module
+
+    service, _, _ = domain
+    question = service.enqueue_message(
+        hosted.id, "user:alice", MessageRequest(request_id="timeout-question", body="Show me")
+    )
+    reply = service.reply("agent-a", hosted.id, question["id"], "This is the application.")
+    monkeypatch.setattr(module, "PROVIDER_TIMEOUT_SECONDS", .05)
+
+    async def run():
+        closed = []
+        class Audio(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"\0\1" * 100
+                await asyncio.Event().wait()
+            async def aclose(self):
+                closed.append(True)
+        voice = Voice(service, transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=Audio(), headers={"Content-Type": "audio/pcm"})
+        ))
+        stream = voice.speech_chunks(
+            hosted.id, "user:alice", "cross-task-timeout", reply["id"], validate=lambda: None
+        )
+        await anext(stream)  # Route prefetch; a response task consumes the remainder.
+        consumer = asyncio.create_task(anext(stream))
+        with pytest.raises(BrowserError) as failure:
+            await asyncio.wait_for(consumer, 2)
+        assert failure.value.code == "speech_provider" and closed
+        assert not asyncio.current_task().cancelling()
+        with service.store.connect() as db:
+            assert db.execute("SELECT state FROM voice_requests").fetchone()[0] == "unknown"
+
+    asyncio.run(run())

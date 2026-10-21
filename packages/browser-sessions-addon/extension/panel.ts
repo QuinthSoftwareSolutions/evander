@@ -1,3 +1,4 @@
+import { enterToSend } from "../web/composer.js";
 import { messageDelivery } from "../web/message-delivery.js";
 import { VoiceControls, voiceJson } from "../web/voice-controls.js";
 import { prepareMicrophone } from "./microphone.js";
@@ -65,9 +66,9 @@ function startVoice() {
       headers: { "Content-Type": audio.type, "X-Voice-Request-ID": id },
     })),
     speech: async (message, id, signal) => {
-      const response = await request("speech", { message_id: message, request_id: id }, { signal });
+      const response = await request("speech", { message_id: message, request_id: id, stream: typeof AudioContext !== "undefined" }, { signal });
       if (!response.ok) { await voiceJson(response); throw new Error("Speech unavailable."); }
-      return response.blob();
+      return response;
     },
     send: async (text, id) => {
       await voiceJson(await request("message", { request_id: id, body: text })); await refresh();
@@ -135,8 +136,10 @@ chrome.storage.onChanged.addListener((changes: any, area: string) => {
     stopVoice(); void refresh().catch(failure);
   }
 });
+enterToSend($("body") as HTMLTextAreaElement, $("chat") as HTMLFormElement);
 $("chat").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!($("body") as HTMLTextAreaElement).value.trim()) return;
   try {
     const body = $("body") as HTMLTextAreaElement;
     await call({ kind: "message", body: body.value }); body.value = ""; await refresh();

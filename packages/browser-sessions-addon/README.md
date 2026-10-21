@@ -38,6 +38,12 @@ Browser feedback is pinned to the creating conversation. If its native thread is
 
 Workflow nodes effect:browser-session:ensure, query:browser-session:status and effect:browser-session:close use the same service and require the workflow and owner to share a directory. See [node examples](examples/workflow-nodes.json).
 
+## Hosted viewer
+
+The standalone viewer fills the page with a compact browser toolbar, the shared application and chat, without a separate page header, footer or session-list link. Session details stay in the toolbar. One button indicates control ownership and toggles between **Take control** and **Hand back to Truman**. The theme button beside **Talk with Truman** remembers the light/dark preference used by Admin Web; embedded views follow their host's theme. This changes the viewer's appearance, independently of the shared application's own theme.
+
+Enter sends a non-empty message; Shift+Enter inserts a newline. Observe-only clicks show a brief reminder, and other errors remain dismissible inside the toolbar without covering chat.
+
 ## Voice
 
 Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts use recording, spoken replies and typed chat directly in the Chrome extension sidebar. First-use microphone permission may need a small permission window; ongoing voice uses no separate tab. Update to Chrome extension 0.3.0 and Browser Sessions package 0.3.0 for this flow. See [voice setup and usage](docs/voice.md).

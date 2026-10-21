@@ -61,3 +61,90 @@ for (const pending of ["microphone setup", "message send"]) {
     });
   });
 }
+
+test("enabled microphone stays ready across recordings and can be turned off", async () => {
+  await voiceFixture(async page => {
+    await page.evaluate(() => {
+      const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      window.openings = 0; window.recordings = [];
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        window.openings++;
+        const stream = await original(constraints); window.microphone = stream; return stream;
+      };
+      window.widget = new VoiceWidgetFixture.VoiceControls(document.querySelector("#voice"), {
+        ...window.transport,
+        transcribe: async audio => { window.recordings.push(audio.size); return {text:"Synthetic message"}; },
+      });
+    });
+    await page.getByRole("button", {name:"Enable microphone",exact:true}).click();
+    const talk = page.getByRole("button", {name:"Hold Talk",exact:true});
+    await talk.waitFor();
+    for (let clip = 0; clip < 2; clip++) {
+      await talk.focus(); await page.keyboard.down("Space");
+      await page.waitForFunction(() => /Recording\./.test(document.querySelector("[data-voice-status]").textContent));
+      await page.waitForTimeout(200); await page.keyboard.up("Space");
+      await page.waitForFunction(count => window.recordings.length === count && !document.querySelector("[data-voice-talk]").disabled, clip + 1);
+    }
+    assert.equal(await page.evaluate(() => window.openings), 1);
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "live");
+    await page.getByRole("button", {name:"Turn off microphone",exact:true}).click();
+    await page.getByRole("button", {name:"Enable microphone",exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+  });
+});
+
+test("losing window focus during microphone acquisition stops a late stream and permits retry", async () => {
+  await voiceFixture(async page => {
+    await page.evaluate(() => {
+      const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      let first = true;
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        if (first) {
+          first = false;
+          await new Promise(resolve => { window.resumeAcquisition = resolve; });
+        }
+        const stream = await acquire(constraints); window.microphone = stream; return stream;
+      };
+      window.widget = new VoiceWidgetFixture.VoiceControls(document.querySelector("#voice"), window.transport);
+    });
+    const enable = page.getByRole("button", {name:"Enable microphone",exact:true});
+    await enable.click();
+    await page.waitForFunction(() => typeof window.resumeAcquisition === "function");
+    await page.evaluate(() => { window.dispatchEvent(new Event("blur")); window.resumeAcquisition(); });
+    await page.waitForFunction(() => window.microphone && !document.querySelector("[data-voice-talk]").disabled);
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+    assert.equal(await enable.isVisible(), true);
+    assert.equal(await page.getByRole("button", {name:"Turn off microphone",exact:true}).isVisible(), false);
+    await enable.click();
+    await page.getByRole("button", {name:"Hold Talk",exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "live");
+    await page.evaluate(() => window.widget.dispose());
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+  });
+});
+
+test("spoken PCM starts before generation completes and Stop cancels the stream", async () => {
+  await voiceFixture(async page => {
+    await page.evaluate(() => {
+      window.streamFinished = false; window.streamCancelled = false;
+      window.widget = new VoiceWidgetFixture.VoiceControls(document.querySelector("#voice"), {
+        ...window.transport,
+        speech: async () => new Response(new ReadableStream({
+          start(controller) {
+            const samples = new Int16Array(4800);
+            for (let i = 0; i < samples.length; i++) samples[i] = Math.round(Math.sin(i * 2 * Math.PI * 440 / 24000) * 1000);
+            controller.enqueue(new Uint8Array(samples.buffer));
+            window.finishSpeech = () => { window.streamFinished = true; controller.close(); };
+          },
+          cancel() { window.streamCancelled = true; },
+        }), {headers:{"Content-Type":"audio/pcm"}}),
+      });
+    });
+    await page.getByRole("checkbox", {name:"Speak replies"}).check();
+    await page.evaluate(() => window.widget.messages([{id:"reply-one",seq:1,reply_to:"question-one",actor:"agent:assistant"}]));
+    await page.waitForFunction(() => /Speaking\./.test(document.querySelector("[data-voice-status]").textContent));
+    assert.equal(await page.evaluate(() => window.streamFinished), false);
+    await page.getByRole("button", {name:"Stop audio",exact:true}).click();
+    await page.waitForFunction(() => window.streamCancelled);
+  });
+});

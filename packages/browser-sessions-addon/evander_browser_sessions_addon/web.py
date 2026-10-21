@@ -26,7 +26,7 @@ from evander.models import DirectoryPath
 from .models import BrowserCommand, BrowserError, CreateRequest, MessageRequest, Settings, origin
 from .relay import error, read_json
 from .service import Service
-from .voice import Voice, read_audio, require_voice_origin
+from .voice import Voice, read_audio, require_voice_origin, stream_audio
 
 
 def authenticated(context, connection):
@@ -232,6 +232,11 @@ def admin_api_routes(context):
             if request.method == "POST" and action == "speech":
                 mutation(request, config)
                 payload = await read_json(request)
+                if payload.get("stream") is True:
+                    return await stream_audio(voice.speech_chunks(
+                        session.id, actor, str(payload["request_id"]), str(payload["message_id"]),
+                        validate=lambda: authorize(context, request, session.directory, permission),
+                    ))
                 content = await voice.speech(
                     session.id, actor, str(payload["request_id"]), str(payload["message_id"])
                 )

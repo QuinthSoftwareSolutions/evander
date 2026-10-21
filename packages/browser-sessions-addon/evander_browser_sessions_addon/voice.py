@@ -10,9 +10,11 @@ import os
 import re
 import shutil
 import wave
+from contextlib import aclosing
 
 import httpx
 from starlette.requests import ClientDisconnect
+from starlette.responses import StreamingResponse
 
 from .models import BrowserError, identifier, origin
 
@@ -175,34 +177,53 @@ class Voice:
                 (state, json.dumps(result) if result else None, session_id, actor, request_id),
             )
 
-    async def provider(self, config, path, *, maximum, **kwargs):
+    async def provider_chunks(self, config, path, *, maximum, content_types=None, **kwargs):
+        # Each awaited operation owns its timeout. A prefetched stream may later be
+        # consumed by Starlette's separate response task, so no timeout scope spans yield.
+        deadline = asyncio.get_running_loop().time() + PROVIDER_TIMEOUT_SECONDS
         try:
-            async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS):
-                async with httpx.AsyncClient(
-                    timeout=30, trust_env=False, follow_redirects=False, transport=self.transport
-                ) as client:
-                    async with client.stream(
-                        "POST",
-                        config.api_base_url + path,
-                        headers={"Authorization": "Bearer " + os.environ[config.api_key_env]},
-                        **kwargs,
-                    ) as response:
-                        if response.status_code != 200:
-                            raise BrowserError(
-                                "Speech service is unavailable", "speech_provider", 502
-                            )
-                        content = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if len(content) + len(chunk) > maximum:
-                                raise BrowserError(
-                                    "Speech response exceeded its limit", "speech_limit", 502
-                                )
-                            content.extend(chunk)
-                        return bytes(content)
+            async with httpx.AsyncClient(
+                timeout=30, trust_env=False, follow_redirects=False, transport=self.transport
+            ) as client:
+                request = client.build_request(
+                    "POST", config.api_base_url + path,
+                    headers={"Authorization": "Bearer " + os.environ[config.api_key_env]},
+                    **kwargs,
+                )
+                async with asyncio.timeout_at(deadline):
+                    response = await client.send(request, stream=True)
+                try:
+                    if response.status_code != 200:
+                        raise BrowserError("Speech service is unavailable", "speech_provider", 502)
+                    content_type = response.headers.get("content-type", "").split(";")[0].lower()
+                    if content_types and content_type not in content_types:
+                        raise BrowserError("Invalid speech response", "speech_provider", 502)
+                    size = 0
+                    chunks = response.aiter_bytes()
+                    while True:
+                        try:
+                            async with asyncio.timeout_at(deadline):
+                                chunk = await anext(chunks)
+                        except StopAsyncIteration:
+                            break
+                        size += len(chunk)
+                        if size > maximum:
+                            raise BrowserError("Speech response exceeded its limit", "speech_limit", 502)
+                        if chunk:
+                            yield chunk
+                finally:
+                    await response.aclose()
         except BrowserError:
             raise
         except (httpx.HTTPError, TimeoutError, KeyError):
             raise BrowserError("Speech service is unavailable", "speech_provider", 502) from None
+
+    async def provider(self, config, path, *, maximum, **kwargs):
+        content = bytearray()
+        async with aclosing(self.provider_chunks(config, path, maximum=maximum, **kwargs)) as chunks:
+            async for chunk in chunks:
+                content.extend(chunk)
+        return bytes(content)
 
     async def transcribe(self, session_id, actor, request_id, audio, mime):
         config = self.configured(session_id)
@@ -241,7 +262,7 @@ class Voice:
             if not completed:
                 self.finish(session_id, actor, request_id, "unknown")
 
-    async def speech(self, session_id, actor, request_id, message_id):
+    def speech_input(self, session_id, actor, request_id, message_id):
         config = self.configured(session_id)
         with self.store.connect() as db:
             message = db.execute(
@@ -254,6 +275,10 @@ class Voice:
         text = message["body"][: config.max_speech_characters]
         fingerprint = hashlib.sha256((message_id + "\0" + text).encode()).hexdigest()
         self.begin(session_id, actor, request_id, "speech", fingerprint, config)
+        return config, text
+
+    async def speech(self, session_id, actor, request_id, message_id):
+        config, text = self.speech_input(session_id, actor, request_id, message_id)
         completed = False
         try:
             content = await self.provider(
@@ -277,6 +302,65 @@ class Voice:
         finally:
             if not completed:
                 self.finish(session_id, actor, request_id, "unknown")
+
+
+    async def speech_chunks(self, session_id, actor, request_id, message_id, *, validate):
+        """Bounded raw PCM, keeping auth and provider lifetime attached to consumption."""
+        config, text = self.speech_input(session_id, actor, request_id, message_id)
+        completed = False
+        size = 0
+        try:
+            async with aclosing(self.provider_chunks(
+                config, "/audio/speech", maximum=8_000_000,
+                content_types={"audio/pcm", "application/octet-stream"},
+                json={"model": config.speech_model, "voice": config.voice,
+                      "input": text, "response_format": "pcm"},
+            )) as chunks:
+                async for chunk in chunks:
+                    self.configured(session_id)
+                    validate()
+                    size += len(chunk)
+                    yield chunk
+            if not size or size % 2:
+                raise BrowserError("Invalid speech response", "speech_provider", 502)
+            self.configured(session_id)
+            validate()
+            self.finish(session_id, actor, request_id, "completed")
+            self.store.audit(session_id, actor, "voice_spoken", {"message_id": message_id})
+            completed = True
+        finally:
+            if not completed:
+                self.finish(session_id, actor, request_id, "unknown")
+
+
+async def stream_audio(chunks):
+    # Validate the provider and first chunk before committing a successful HTTP status.
+    try:
+        first = await anext(chunks)
+    except BaseException:
+        await chunks.aclose()
+        raise
+
+    async def body():
+        try:
+            yield first
+            async for chunk in chunks:
+                yield chunk
+        finally:
+            await chunks.aclose()
+
+    class AudioResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # Also close a prefetched provider when HTTP headers cannot be sent.
+                await chunks.aclose()
+
+    return AudioResponse(body(), media_type="audio/pcm", headers={
+        "Cache-Control": "no-store", "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 def require_voice_origin(request, settings, *, allow_extension=False):
