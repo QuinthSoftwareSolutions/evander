@@ -765,6 +765,20 @@ a worker Codex App Server version supporting `account/rateLimitResetCredit/consu
 
 ### Codex runtime access programs
 
+Worker-owned profiles default to `sandbox_policy: native`, preserving the
+client's native Codex permission profiles. On a worker that cannot create nested
+Linux namespaces, an operator may explicitly set `sandbox_policy: container`
+for a runtime whose Docker job provides the isolation boundary. The broker then
+selects an unrestricted native permission profile inside that job for exec,
+resumed exec and read-only SDK preflight processes. This prevents an SDK's
+generated permission profile from attempting to launch bubblewrap inside Docker.
+It does not add container privileges, mounts or external network access; the
+worker's unprivileged UID, dropped capabilities and egress policy remain in force.
+Subscription credentials stay outside the container. Do not select this mode
+for a runtime that depends on native filesystem or network isolation within its
+container. Guests cannot select the policy through Codex arguments or environment.
+Restart the worker after updating the profile; running jobs retain their policy.
+
 Worker-owned Codex runtime profiles may set `default_cyber_access_program` to
 `standard`, `daybreak_blue`, or `daybreak_red`. The broker supplies this default
 to each new or resumed exec turn, including separate SDK child executions;

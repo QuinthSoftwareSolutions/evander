@@ -96,7 +96,9 @@ def job(**kwargs):
 
 
 @pytest.mark.parametrize("worker", [None, "daybreak_blue"], indirect=True)
-def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_tokens(worker, request):
+def test_runtime_uses_selected_profile_and_keeps_command_without_transferring_tokens(
+    worker, request
+):
     instance, runtime, selected = worker
     record = instance.start_job(job())
     again = instance.start_job(job())
@@ -130,6 +132,15 @@ def test_session_program_override_takes_precedence_over_worker_default(worker):
     record = instance.start_job(request)
     bridge = instance._codex_runtime_bridges[record.job_id]
     assert bridge.kwargs["default_cyber_access_program"] == "standard"
+
+
+@pytest.mark.parametrize("policy", ["native", "container"])
+def test_runtime_uses_sandbox_policy_from_worker_owned_profile(worker, policy):
+    instance, _, _ = worker
+    instance._codex_runtime_profiles["scan"].sandbox_policy = policy
+    record = instance.start_job(job())
+    bridge = instance._codex_runtime_bridges[record.job_id]
+    assert bridge.kwargs["sandbox_policy"] == policy
 
 
 def test_runtime_identity_cannot_be_reused_for_different_work(worker):
