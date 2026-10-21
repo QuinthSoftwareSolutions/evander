@@ -1,4 +1,4 @@
-/** Play the provider's 24 kHz signed little-endian PCM without buffering a full reply. */
+/** Play bounded 24 kHz PCM with a short buffer for uneven provider delivery. */
 export class PcmPlayer {
   private context?: AudioContext;
   private cancel?: () => void;
@@ -13,12 +13,35 @@ export class PcmPlayer {
     if (!reader) throw new Error("Spoken audio is unavailable.");
     const context = this.context ??= new AudioContext();
     const sources = new Set<AudioBufferSourceNode>();
+    const rate = 24000;
     let cancelled = false, complete = false, first = true, trailing = new Uint8Array(0), total = 0;
-    let next = 0;
+    let next = 0, pending: Float32Array[] = [], pendingSamples = 0;
     let drained!: () => void;
     const ended = new Promise<void>(resolve => { drained = resolve; });
+    const schedule = () => {
+      if (cancelled || !pendingSamples) return;
+      const buffering = first || !sources.size;
+      // Do not play a tiny opening fragment while the rest is still being generated.
+      // If delivery stalls later, collect another useful segment before resuming.
+      if (!complete && pendingSamples < rate * (buffering ? 1.5 : 0.1)) return;
+      const buffer = context.createBuffer(1, pendingSamples, rate);
+      const samples = buffer.getChannelData(0);
+      let offset = 0;
+      for (const chunk of pending) { samples.set(chunk, offset); offset += chunk.length; }
+      pending = []; pendingSamples = 0;
+      const source = context.createBufferSource();
+      source.buffer = buffer; source.connect(context.destination); sources.add(source);
+      source.onended = () => {
+        source.disconnect(); sources.delete(source);
+        schedule();
+        if (complete && !sources.size && !pendingSamples) drained();
+      };
+      next = buffering ? context.currentTime + 0.08 : Math.max(next, context.currentTime + 0.02);
+      source.start(next); next += buffer.duration;
+      if (first) { first = false; started(); }
+    };
     const cancel = () => {
-      cancelled = true;
+      cancelled = true; pending = []; pendingSamples = 0;
       void reader.cancel().catch(() => {});
       for (const source of sources) source.stop();
       sources.clear(); drained();
@@ -33,7 +56,7 @@ export class PcmPlayer {
         if (cancelled || signal.aborted) break;
         if (done) {
           if (trailing.length || !total) throw new Error("Spoken audio was incomplete.");
-          complete = true;
+          complete = true; schedule();
           if (!sources.size) drained();
           await ended; break;
         }
@@ -44,18 +67,10 @@ export class PcmPlayer {
         const count = Math.floor(bytes.length / 2);
         trailing = bytes.slice(count * 2);
         if (!count) continue;
-        const buffer = context.createBuffer(1, count, 24000);
-        const samples = buffer.getChannelData(0), data = new DataView(bytes.buffer);
+        const samples = new Float32Array(count), data = new DataView(bytes.buffer);
         for (let i = 0; i < count; i++) samples[i] = data.getInt16(i * 2, true) / 32768;
-        const source = context.createBufferSource();
-        source.buffer = buffer; source.connect(context.destination); sources.add(source);
-        source.onended = () => {
-          source.disconnect(); sources.delete(source);
-          if (complete && !sources.size) drained();
-        };
-        next = Math.max(next, context.currentTime + 0.05);
-        source.start(next); next += buffer.duration;
-        if (first) { first = false; started(); }
+        pending.push(samples); pendingSamples += samples.length;
+        schedule();
       }
     } finally {
       if (!complete || cancelled) cancel();

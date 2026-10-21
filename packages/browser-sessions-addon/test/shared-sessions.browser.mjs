@@ -331,11 +331,13 @@ test("hosted voice captures a bounded phrase, captions the task and plays an int
     const elsewhere=await context.newPage();
     await elsewhere.goto(f.base+"/_browser/guest/join",{waitUntil:"domcontentloaded"});
     await elsewhere.bringToFront(); await elsewhere.keyboard.up("Space");
-    // Playwright headless pages emulate focus. Exercise the browser blur-event
-    // boundary explicitly, then verify that the real microphone tracks end.
-    await page.evaluate(()=>window.dispatchEvent(new FocusEvent("blur")));
+    // Hiding the page releases capture; an ordinary focus change keeps it warm.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {value:true, configurable:true});
+      document.dispatchEvent(new Event("visibilitychange")); delete document.hidden;
+    });
     await until(async()=>await page.evaluate(()=>window.__voiceStreams.every(stream =>
-      stream.getTracks().every(track=>track.readyState==="ended"))),"microphone cancelled on focus loss");
+      stream.getTracks().every(track=>track.readyState==="ended"))),"microphone released when hidden");
     await page.bringToFront();
     // Each Playwright page keeps its own keyboard state; clear the key held
     // before switching pages so the next keydown is a new press.
@@ -347,8 +349,9 @@ test("hosted voice captures a bounded phrase, captions the task and plays an int
     await talk.focus(); await page.keyboard.down("Space");
     await until(async()=>/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"keyboard recording");
     await page.keyboard.press("Tab"); await page.keyboard.up("Space");
-    await until(async()=>await page.evaluate(()=>window.__voiceStreams.every(stream =>
-      stream.getTracks().every(track=>track.readyState==="ended"))),"microphone cancelled when Talk loses focus");
+    await until(async()=>!/Recording\./.test(await page.locator("[data-voice-status]").textContent()),"recording cancelled when Talk loses focus");
+    assert.ok(await page.evaluate(()=>window.__voiceStreams.some(stream =>
+      stream.getAudioTracks().some(track=>track.readyState==="live"))), "Focus changes keep the microphone ready");
     await page.waitForTimeout(5200);
     assert.equal((await f.api("/test/voice/events")).events.filter(event=>event.action==="transcribe").length,1,
       "Moving keyboard focus must discard the recording instead of submitting at its deadline");
@@ -583,6 +586,7 @@ async function nativeSidebar(host) {
   };
   const up = point => send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...point });
   return { evaluate, down, up, click: async selector => up(await down(selector)),
+    screenshot: () => send("Page.captureScreenshot"),
     dispose: () => { for (const item of pending.values()) clearTimeout(item.timer); return bridge.detach(); } };
 }
 
@@ -825,4 +829,83 @@ test("fast run works with other extensions and sidebar Stop interrupts a waiting
     state=await f.api(host.path+"/state");assert.equal(state.controller,null);
     assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
   }finally{await host?.context.close();await f.stop();}
+});
+
+
+test("native Chrome sidebar sends hands-free speech without opening a recording tab", async () => {
+  const f = await fixture(); let context, sidebar;
+  try {
+    const host = await localVoiceHost(f, {microphoneGranted:true}); context = host.context;
+    const pages = context.pages().length;
+    sidebar = await nativeSidebar(host);
+    await sidebar.evaluate(() => {
+      window.inputContext = new AudioContext();
+      const oscillator = window.inputContext.createOscillator(); oscillator.frequency.value = 230;
+      window.level = window.inputContext.createGain(); window.level.gain.value = 0;
+      const destination = window.inputContext.createMediaStreamDestination();
+      oscillator.connect(window.level); window.level.connect(destination); oscillator.start();
+      window.microphone = destination.stream;
+      navigator.mediaDevices.getUserMedia = async () => destination.stream;
+    });
+    await sidebar.click("#voice-panel > summary");
+    await sidebar.click("[data-voice-hands-free]");
+    await sidebar.click("[data-voice-talk]");
+    await until(async () => await sidebar.evaluate(() => document.querySelector("[data-voice-status]").textContent === "Listening."), "sidebar hands-free readiness");
+    await writeFile("test-output/native-sidebar-hands-free.png", Buffer.from((await sidebar.screenshot()).data,"base64"));
+    await sidebar.evaluate(async () => {
+      const {connection} = await chrome.storage.session.get("connection");
+      await chrome.storage.session.set({connection:{...connection, fixtureMetadataRevision:1}});
+    });
+    assert.equal(await sidebar.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "live",
+      "Same-session metadata updates must not disconnect voice");
+    await sidebar.evaluate(async () => { await window.inputContext.resume(); window.level.gain.value = 0.2; });
+    await new Promise(resolve => setTimeout(resolve, 450));
+    await sidebar.evaluate(() => { window.level.gain.value = 0; });
+    await until(async () => (await f.api("/test/" + host.setup.session.id + "/messages")).messages.length === 1, "hands-free sidebar transcription");
+    assert.equal(context.pages().length, pages, "Hands-free capture must stay in the native sidebar");
+    await sidebar.evaluate(async () => {
+      document.querySelector("#voice-panel").open = false;
+      await window.inputContext.close();
+    });
+    await until(async () => await sidebar.evaluate(() => window.microphone.getAudioTracks()[0].readyState === "ended"), "hands-free sidebar cleanup");
+  } finally { await sidebar?.dispose(); await context?.close(); await f.stop(); }
+});
+
+test("hosted viewer loads hands-free capture through authenticated assets", async () => {
+  const f = await fixture(); let browser;
+  try {
+    browser = await chromium.launch({headless:true,args:["--no-sandbox"]});
+    const page = await browser.newPage();
+    const errors = []; page.on("pageerror", error => errors.push(error.message));
+    await page.request.post(f.base + "/api/auth/login");
+    const setup = await f.api("/test/setup", {});
+    await page.addInitScript(() => {
+      window.inputContext = new AudioContext();
+      const source = window.inputContext.createOscillator(); source.frequency.value = 220;
+      window.level = window.inputContext.createGain(); window.level.gain.value = 0;
+      const destination = window.inputContext.createMediaStreamDestination();
+      source.connect(window.level); window.level.connect(destination); source.start();
+      window.microphone = destination.stream;
+      navigator.mediaDevices.getUserMedia = async () => destination.stream;
+    });
+    await page.goto(f.base + "/addons/browser-sessions-addon/view/" + setup.session.id, {waitUntil:"domcontentloaded"});
+    await page.getByRole("checkbox", {name:"Hands-free",exact:true}).check();
+    const moduleResponse = await page.request.get(f.base + "/addons/browser-sessions-addon/assets/capture-worklet.js");
+    assert.equal(moduleResponse.status(), 200);
+    await page.getByRole("button", {name:"Enable microphone",exact:true}).click();
+    try {
+      await page.waitForFunction(() => document.querySelector("[data-voice-status]").textContent === "Listening.", null, {timeout:5000});
+    } catch (error) {
+      const state = await page.evaluate(() => ({status:document.querySelector("[data-voice-status]").textContent,
+        talk:document.querySelector("[data-voice-talk]").textContent, input:window.inputContext?.state}));
+      throw new Error(error.message + " " + JSON.stringify({state,errors}));
+    }
+    await page.evaluate(async () => { await window.inputContext.resume(); window.level.gain.value = 0.2; });
+    await page.waitForTimeout(450);
+    await page.evaluate(() => { window.level.gain.value = 0; });
+    await until(async () => (await f.api("/test/" + setup.session.id + "/messages")).messages.length === 1, "hosted hands-free phrase");
+    await page.getByRole("button", {name:"Turn off microphone",exact:true}).click();
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+    await page.evaluate(() => window.inputContext.close());
+  } finally { await browser?.close(); await f.stop(); }
 });

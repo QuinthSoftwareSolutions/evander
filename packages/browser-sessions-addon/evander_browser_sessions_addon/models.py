@@ -140,7 +140,7 @@ class VoiceSettings(Contract):
     )
     transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
     speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
-    voice: str = Field(default="coral", min_length=1, max_length=128)
+    voice: str = Field(default="onyx", min_length=1, max_length=128)
     max_recording_seconds: int = Field(default=45, ge=5, le=120)
     max_audio_bytes: int = Field(default=2_000_000, ge=65536, le=5_000_000)
     max_speech_characters: int = Field(default=2000, ge=100, le=4096)

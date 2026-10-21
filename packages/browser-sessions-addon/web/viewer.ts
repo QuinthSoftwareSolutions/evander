@@ -273,7 +273,7 @@ function renderSettings() {
     ["voice-key", "api_key_env", "EVANDER_BROWSER_VOICE_API_KEY"],
     ["voice-stt", "transcription_model", "gpt-transcribe"],
     ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
-    ["voice-name", "voice", "coral"],
+    ["voice-name", "voice", "onyx"],
     ["voice-seconds", "max_recording_seconds", 45],
   ] as const) {
     input(id).value = String(settings.voice[key] ?? fallback);

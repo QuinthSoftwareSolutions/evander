@@ -4,9 +4,9 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.5 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.8 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
-In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and coral. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
+In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and onyx. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
 
 Provision the environment variable named by api_key_env (default EVANDER_BROWSER_VOICE_API_KEY) in both Admin Web and the browser relay service environments. Speech uses that provider credential independently of the agent's model authentication. The worker, extension and page receive no speech API credential. No additional worker ports or service are needed.
 
@@ -14,15 +14,21 @@ Use HTTPS for the public control-plane URL and remote speech providers. Chrome m
 
 ## Hosted viewers
 
-Enable the microphone once. It stays ready between clips, avoiding repeated device initialization for Bluetooth headsets. Browser noise suppression and automatic gain processing are disabled to preserve phrase onsets; echo cancellation remains enabled. Audio is recorded only while Talk is held and sent after release. **Turn off microphone** releases the device explicitly.
+Enable the microphone once. It stays ready between clips, avoiding repeated device initialization for Bluetooth headsets. Browser noise suppression and automatic gain processing are disabled to preserve phrase onsets; echo cancellation remains enabled. In push-to-talk mode, audio is recorded while Talk is held and sent after release. **Turn off microphone** releases the device explicitly.
 
 Hold **Talk** with the mouse or Space/Enter, speak, then release. Releasing sends a bounded clip for transcription and posts the recognized words to the existing viewer chat. The page annotation selected before recording accompanies that message.
 
-Enable **Speak replies (AI voice)** to hear subsequent agent replies. New clients play bounded 24 kHz PCM as it arrives, before synthesis finishes; the reply must first be published in chat. Older clients retain WAV playback. Text remains visible in the chat. **Stop audio**, starting another recording or ending the session interrupts local playback. Moving keyboard focus away from Talk during recording, losing window focus or hiding the page cancels the clip and releases the microphone. Enable it again to resume. Browser input still follows the session's existing control grant.
+Enable **Speak replies (AI voice)** to hear subsequent agent replies. New clients play bounded 24 kHz PCM as it arrives, before synthesis finishes; the reply must first be published in chat. Older clients retain WAV playback. Text remains visible in the chat. **Stop audio**, starting another recording or ending the session interrupts local playback. Moving keyboard focus away from Talk during recording or losing window focus cancels a partial push-to-talk clip but keeps the enabled microphone warm. Hiding the page, closing the voice panel, ending sharing or choosing Turn off microphone releases the device. Enable it again after those actions to resume. Browser input still follows the session's existing control grant.
+
+## Hands-free mode
+
+Select **Hands-free** and enable the microphone. The sidebar or viewer then listens while its voice controls stay open and visible; no button needs to be held. Local speech detection retains about 350 ms before the detected onset, ignores short clicks, and ends a phrase after about 900 ms of quiet. Detected phrases use the same transcription endpoint and existing session/chat authorization. Idle periods produce no uploads; each detected phrase includes only a short lead-in and tail.
+
+Starting a phrase interrupts a spoken reply. Echo cancellation remains enabled, but a headset is preferable when using hands-free mode so speaker output is not picked up as new speech. Clips retain configured time/byte limits; transcription runs serially with at most two waiting clips. Disabling hands-free returns to push-to-talk. Turning off the microphone or closing/hiding the panel stops local capture and discards an unfinished phrase.
 
 ## User-hosted tabs
 
-With Chrome extension **0.4.1** or later, pair the application tab and expand **Voice** in the extension sidebar. Choose **Enable microphone**, then hold **Talk** and release to send. **Speak replies (AI voice)** and **Stop audio** operate in the same sidebar. Typed and spoken messages share its existing transcript. No separate voice tab is opened. Enter sends non-empty typed messages; Shift+Enter inserts a newline.
+With Chrome extension **0.6.0** or later, pair the application tab and expand **Voice** in the extension sidebar. Choose **Enable microphone**, then hold **Talk** and release to send. **Speak replies (AI voice)** and **Stop audio** operate in the same sidebar. Typed and spoken messages share its existing transcript. No separate voice tab is opened. Enter sends non-empty typed messages; Shift+Enter inserts a newline.
 
 Chrome can require a one-time extension-origin microphone grant. When access has not yet been granted, a small **Enable microphone** permission window opens. Choose **Allow microphone**, approve Chrome's prompt, and return to the sidebar; the permission window closes automatically. It stops its test stream without recording or uploading audio. Cancelling closes setup and permits another attempt. Once permission is granted, subsequent setup needs no extra window. This handles Chrome's [side-panel permission limitation](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/cJmdMLmpbjg/m/zYGc54AaAQAJ).
 
@@ -44,4 +50,4 @@ If microphone access is denied, repair the site's Chrome microphone permission a
 
 The automated suite uses a real Chrome microphone recorder with a synthetic input device, incremental PCM and legacy WAV playback, actual extension pairing, sidebar capture, microphone permission cancellation/retry, scoped legacy companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
 
-Hands-free turn detection and precise narration timing alongside agent actions remain future extensions to this bounded push-to-talk flow.
+Precise narration timing alongside agent actions remains a future extension. Physical microphone sensitivity, background noise and speaker echo need qualification on the intended device.

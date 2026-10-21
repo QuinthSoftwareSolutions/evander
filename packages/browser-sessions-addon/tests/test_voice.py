@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,7 @@ def test_speech_settings_require_https_and_only_credential_references():
     with pytest.raises(ValueError):
         VoiceSettings(api_key_env="not a reference")
     assert not VoiceSettings().enabled
+    assert VoiceSettings().voice == "onyx"
 
 
 def test_transcription_retry_does_not_bill_twice_or_persist_audio(domain, hosted, speech_provider):
@@ -59,6 +61,7 @@ def test_speech_can_only_read_an_agent_reply_from_this_browser(domain, hosted, s
     )
     reply = service.reply("agent-a", hosted.id, question["id"], "I have moved the button.")
     audio = asyncio.run(voice.speech(hosted.id, "user:alice", "read-a", reply["id"]))
+    assert json.loads(speech_provider["calls"][0].content)["voice"] == "onyx"
     assert audio.startswith(b"RIFF")
     assert len(speech_provider["calls"]) == 1
     with pytest.raises(BrowserError):

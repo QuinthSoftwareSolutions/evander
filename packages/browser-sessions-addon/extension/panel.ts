@@ -137,7 +137,9 @@ $("disconnect").addEventListener("click", () => {
 });
 chrome.storage.onChanged.addListener((changes: any, area: string) => {
   if (area === "session" && "connection" in changes) {
-    stopVoice(); void refresh().catch(failure);
+    const nextSession = changes.connection.newValue?.session?.id ?? null;
+    if (nextSession !== sessionId) stopVoice();
+    void refresh().catch(failure);
   }
 });
 enterToSend($("body") as HTMLTextAreaElement, $("chat") as HTMLFormElement);

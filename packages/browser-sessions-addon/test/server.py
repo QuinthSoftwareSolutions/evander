@@ -177,7 +177,7 @@ async def speech_provider(request):
                              "wav": b'filename="speech.wav"' in content})
         return JSONResponse({"text": voice_transcript})
     payload = await request.json()
-    voice_events.append({"action": "speech", "text": payload["input"]})
+    voice_events.append({"action": "speech", "text": payload["input"], "voice": payload["voice"]})
     if payload.get("response_format") == "pcm":
         async def chunks():
             raw = b"\0\0" * 72000
