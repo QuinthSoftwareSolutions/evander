@@ -424,6 +424,19 @@ def _safe_rate_limit_window(value: object) -> dict[str, Any] | None:
     }
 
 
+def _safe_credits_snapshot(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    has_credits = value.get("hasCredits")
+    unlimited = value.get("unlimited")
+    balance = value.get("balance")
+    return {
+        "has_credits": has_credits if isinstance(has_credits, bool) else None,
+        "unlimited": unlimited if isinstance(unlimited, bool) else None,
+        "balance": balance if isinstance(balance, str) else None,
+    }
+
+
 def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -431,6 +444,7 @@ def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
         "limit_id": value.get("limitId"),
         "limit_name": value.get("limitName"),
         "plan_type": value.get("planType"),
+        "credits": _safe_credits_snapshot(value.get("credits")),
         "primary": _safe_rate_limit_window(value.get("primary")),
         "secondary": _safe_rate_limit_window(value.get("secondary")),
         "rate_limit_reached_type": value.get("rateLimitReachedType"),
