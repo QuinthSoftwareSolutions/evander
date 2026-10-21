@@ -604,3 +604,25 @@ details textarea {
   opacity: .75;
   font-size: .8em;
 }
+.catalog-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.catalog-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.catalog-filter input {
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .page-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}

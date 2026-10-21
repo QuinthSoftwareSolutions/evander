@@ -279,16 +279,19 @@ $("settings-form").addEventListener("submit", async (event) => {
     settingsRevision = result.revision; $("settings-status").textContent = "Saved";
   } catch (error) { showError(error); }
 });
-async function catalog() {
-  $("catalog").hidden = false; $("directory-label").textContent = directory;
-  const result = await api("/sessions?directory=" + encodeURIComponent(directory));
+let catalogSessions: any[] = [];
+const closedStates = new Set(["closed", "expired"]);
+function renderCatalog() {
+  const showClosed = input("show-closed").checked;
+  const visible = catalogSessions.filter(item => showClosed || !closedStates.has(item.state));
   $("session-list").replaceChildren();
-  if (!result.sessions.length) {
+  if (!visible.length) {
     const message = document.createElement("p"); message.className = "muted";
-    message.textContent = "No hosted sessions yet. Ask Truman to start a demonstration or preview.";
+    message.textContent = showClosed ? "No hosted sessions yet. Ask Truman to start a demonstration or preview." :
+      "No active hosted sessions. Ask Truman to start a demonstration or preview.";
     $("session-list").append(message);
   }
-  for (const item of result.sessions.reverse()) {
+  for (const item of [...visible].reverse()) {
     const card = document.createElement("a"); card.className = "session-card"; card.href = item.viewer_url;
     const status = document.createElement("span"); status.className = "status"; status.textContent = item.state.replaceAll("_", " ");
     status.dataset.state = item.state;
@@ -297,5 +300,12 @@ async function catalog() {
     const expiry = document.createElement("p"); expiry.textContent = "Expires " + new Date(item.expires_at * 1000).toLocaleString();
     card.append(status, title, type, expiry); $("session-list").append(card);
   }
+}
+input("show-closed").addEventListener("change", renderCatalog);
+async function catalog() {
+  $("catalog").hidden = false; $("directory-label").textContent = directory;
+  const result = await api("/sessions?directory=" + encodeURIComponent(directory));
+  catalogSessions = result.sessions;
+  renderCatalog();
 }
 void (sessionId ? openViewer() : catalog()).catch(showError);

@@ -790,18 +790,19 @@ $("settings-form").addEventListener("submit", async (event) => {
     showError(error);
   }
 });
-async function catalog() {
-  $("catalog").hidden = false;
-  $("directory-label").textContent = directory;
-  const result = await api("/sessions?directory=" + encodeURIComponent(directory));
+var catalogSessions = [];
+var closedStates = /* @__PURE__ */ new Set(["closed", "expired"]);
+function renderCatalog() {
+  const showClosed = input("show-closed").checked;
+  const visible = catalogSessions.filter((item) => showClosed || !closedStates.has(item.state));
   $("session-list").replaceChildren();
-  if (!result.sessions.length) {
+  if (!visible.length) {
     const message = document.createElement("p");
     message.className = "muted";
-    message.textContent = "No hosted sessions yet. Ask Truman to start a demonstration or preview.";
+    message.textContent = showClosed ? "No hosted sessions yet. Ask Truman to start a demonstration or preview." : "No active hosted sessions. Ask Truman to start a demonstration or preview.";
     $("session-list").append(message);
   }
-  for (const item of result.sessions.reverse()) {
+  for (const item of [...visible].reverse()) {
     const card = document.createElement("a");
     card.className = "session-card";
     card.href = item.viewer_url;
@@ -818,5 +819,13 @@ async function catalog() {
     card.append(status, title, type, expiry);
     $("session-list").append(card);
   }
+}
+input("show-closed").addEventListener("change", renderCatalog);
+async function catalog() {
+  $("catalog").hidden = false;
+  $("directory-label").textContent = directory;
+  const result = await api("/sessions?directory=" + encodeURIComponent(directory));
+  catalogSessions = result.sessions;
+  renderCatalog();
 }
 void (sessionId ? openViewer() : catalog()).catch(showError);
