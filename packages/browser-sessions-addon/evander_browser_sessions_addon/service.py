@@ -191,7 +191,9 @@ class Bindings:
         )
 
     def cancel_message(self, session, message):
-        self.admin().cancel_agent_message(session.agent_session_id, "browser:" + message["id"])
+        return self.admin().cancel_agent_message(
+            session.agent_session_id, "browser:" + message["id"]
+        )
 
 
 # Only endpoint-defined codes cross the private relay boundary. Never relay raw
@@ -734,12 +736,14 @@ class Service:
             ):
                 raise BrowserError("Retry identity conflict", "message_conflict", 409)
             return dict(existing)
-        if original["delivery_status"] != "delivery_unknown":
+        if original["status"] != "dispatched" or original["delivery_status"] != "delivery_unknown":
             raise BrowserError("Only uncertain deliveries can be retried", "message_conflict", 409)
         status = self.bindings.delivery(session, dict(original))
         if status.get("delivery_status") in {"steered", "started"}:
             raise BrowserError("This message was already delivered", "message_conflict", 409)
-        self.bindings.cancel_message(session, dict(original))
+        cancelled = self.bindings.cancel_message(session, dict(original))
+        if isinstance(cancelled, dict) and cancelled.get("delivery_status") in {"steered", "started"}:
+            raise BrowserError("This message was already delivered", "message_conflict", 409)
         with self.store.connect(write=True) as db:
             existing = db.execute(
                 "SELECT * FROM messages WHERE id=?", ("browser-msg-" + request_id,)
@@ -753,7 +757,7 @@ class Service:
                     raise BrowserError("Retry identity conflict", "message_conflict", 409)
                 return dict(existing)
             claimed = db.execute(
-                "UPDATE messages SET status='cancelled',delivery_status='cancelled' WHERE id=? AND delivery_status='delivery_unknown'",
+                "UPDATE messages SET status='cancelled',delivery_status='cancelled' WHERE id=? AND status='dispatched' AND delivery_status='delivery_unknown'",
                 (message_id,),
             )
             if claimed.rowcount != 1:
@@ -943,22 +947,27 @@ class Service:
         for row in messages:
             if row["delivery_status"] in {"steered", "started"}:
                 continue
-            if callable(cancel):
-                cancel(session, dict(row))
+            outcome = cancel(session, dict(row)) if callable(cancel) else None
+            delivered = (
+                outcome.get("delivery_status") if isinstance(outcome, dict) else None
+            )
             with self.store.connect(write=True) as db:
                 db.execute(
-                    "UPDATE messages SET status='cancelled',delivery_status='cancelled' WHERE id=?",
-                    (row["id"],),
+                    """UPDATE messages SET status=?,delivery_status=? WHERE id=?
+                       AND status IN ('queued','dispatched')
+                       AND delivery_status NOT IN ('steered','started')""",
+                    (
+                        "dispatched" if delivered in {"steered", "started"} else "cancelled",
+                        delivered if delivered in {"steered", "started"} else "cancelled",
+                        row["id"],
+                    ),
                 )
 
     def _refresh_message_deliveries(self):
         callback = getattr(self.bindings, "delivery", None)
         if not callable(callback):
             return
-        with self.store.connect() as db:
-            messages = db.execute(
-                "SELECT * FROM messages WHERE status='dispatched' AND reply_to IS NULL AND delivery_status IN ('queued','pending','delivery_unknown') ORDER BY seq LIMIT 50"
-            ).fetchall()
+        messages = self.store.message_delivery_batch()
         for row in messages:
             try:
                 session = self.store.get(row["session_id"])
@@ -976,7 +985,9 @@ class Service:
                     continue
                 with self.store.connect(write=True) as db:
                     db.execute(
-                        "UPDATE messages SET delivery_status=? WHERE id=?", (status, row["id"])
+                        """UPDATE messages SET delivery_status=? WHERE id=?
+                           AND status='dispatched' AND delivery_status=?""",
+                        (status, row["id"], row["delivery_status"]),
                     )
             except BrowserError as exc:
                 if exc.status in {404, 410}:

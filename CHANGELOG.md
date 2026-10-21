@@ -4,7 +4,7 @@
 
 - Add opt-in native Codex steering for Teams personal-assistant follow-ups and shared-browser messages, preserving the running job, conversation and reply destination. Queue unsupported runners without interrupting them.
 - Persist message and worker delivery receipts, reconcile uncertain acknowledgements without blind retries, preserve ordered queued messages, and cancel undelivered browser requests when sharing ends.
-- Show per-message delivery status in the hosted viewer and Chrome sidebar. Publish Browser Sessions and Chrome extension 0.4.0.
+- Show per-message delivery status in the hosted viewer and Chrome sidebar. Preserve delivery receipts during concurrent retries, coordinate cancellation with native sends, and rotate status polling across unresolved messages. Publish Browser Sessions and Chrome extension 0.4.0.
 - Add an activity query and offline workflow transformation for a busy follow-up route that skips idle preparation. Document worker-first rollout and revision-checked workflow activation.
 
 ## 2026-10-20 - Provision fresh browser-preview SQL databases (0.109.1)

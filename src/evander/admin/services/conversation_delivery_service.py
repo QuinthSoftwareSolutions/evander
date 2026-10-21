@@ -6,13 +6,17 @@ pins retries to the original worker job; uncertainty must never become a new tur
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 ACTIVE = {"created", "starting", "running"}
+DELIVERED = {"steered", "started"}
+TERMINAL_DELIVERY = DELIVERED | {"cancelled"}
 
 
 class ConversationDeliveryStore:
@@ -27,6 +31,20 @@ class ConversationDeliveryStore:
 
     def connect(self):
         return sqlite3.connect(self.path, timeout=10)
+
+    @contextmanager
+    def delivery_lock(self, session_id, delivery_id):
+        # Different admin/orchestrator processes must agree on the first-send
+        # decision. Never hold a database transaction while waiting for the worker.
+        directory = self.path.parent / "agent-message-delivery-locks"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        key = hashlib.sha256(json.dumps([session_id, delivery_id]).encode()).hexdigest()
+        with (directory / (key + ".lock")).open("a+b") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream, fcntl.LOCK_UN)
 
     def get(self, session_id, delivery_id):
         with self.connect() as db:
@@ -49,8 +67,8 @@ class ConversationDeliveryStore:
                     return current
                 if row[0] != fingerprint:
                     raise ValueError("Message delivery identity conflict")
-                if claim:
-                    return json.loads(row[1])
+                if claim or current.get("delivery_status") in DELIVERED:
+                    return current
             db.execute(
                 "INSERT OR REPLACE INTO deliveries VALUES(?,?,?,?,?)",
                 (session_id, delivery_id, fingerprint, json.dumps(payload), time.time()),
@@ -58,19 +76,20 @@ class ConversationDeliveryStore:
         return payload
 
     def cancel(self, session_id, delivery_id):
-        with self.connect() as db:
+        with self.delivery_lock(session_id, delivery_id), self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT payload FROM deliveries WHERE session_id=? AND delivery_id=?",
                 (session_id, delivery_id),
             ).fetchone()
             receipt = json.loads(row[0]) if row else {}
-            if receipt.get("delivery_status") not in {"steered", "started"}:
+            if receipt.get("delivery_status") not in DELIVERED:
                 receipt["delivery_status"] = "cancelled"
                 db.execute(
                     "INSERT INTO deliveries VALUES(?,?,?,?,?) ON CONFLICT(session_id,delivery_id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated",
                     (session_id, delivery_id, "cancelled", json.dumps(receipt), time.time()),
                 )
+            return receipt
 
 
 def active_conversation(backend, session_id):
@@ -110,7 +129,7 @@ class ConversationDeliveryService:
             if saved["delivery_status"] == "cancelled":
                 return saved
             # Validate even when returning an earlier successful delivery.
-            self.store.save(session_id, delivery_id, fingerprint, saved, claim=True)
+            saved = self.store.save(session_id, delivery_id, fingerprint, saved, claim=True)
             if saved["delivery_status"] in {"steered", "started", "cancelled"}:
                 return saved
             if saved.get("worker_job_id"):
@@ -194,9 +213,10 @@ class ConversationDeliveryService:
         return self._deliver(session_id, delivery_id, fingerprint, saved, prompt)
 
     def _deliver(self, session_id, delivery_id, fingerprint, saved, prompt):
-        record = self.backend.repository.get(saved["execution_id"])
-        result = dict(saved)
+        if saved.get("delivery_status") in TERMINAL_DELIVERY:
+            return saved
         try:
+            record = self.backend.repository.get(saved["execution_id"])
             if (
                 record is None
                 or record.worker_job_id != saved["worker_job_id"]
@@ -209,27 +229,37 @@ class ConversationDeliveryService:
                 "message-" + hashlib.sha256(f"{session_id}:{delivery_id}".encode()).hexdigest()
             )
             receipt = client.steering_receipt(record.worker_job_id, wire_id)
-            if receipt is None:
-                receipt = client.steer(
-                    record.worker_job_id,
-                    {
-                        "session_id": session_id,
-                        "delivery_id": wire_id,
-                        "prompt": prompt,
-                        "expected_thread_id": saved["thread_id"],
-                        "expected_turn_id": saved["turn_id"],
-                    },
-                )
-            state = receipt["status"]
-            result["delivery_status"] = {
-                "accepted": "steered",
-                "rejected": "queued",
-                "sending": "pending",
-            }.get(state, "delivery_unknown")
         except Exception:
             # HTTP loss and worker loss are not evidence that input was rejected.
-            result["delivery_status"] = "delivery_unknown"
-        result = self.store.save(session_id, delivery_id, fingerprint, result)
+            receipt = {"status": "delivery_unknown"}
+
+        # The lookup is read-only and may stall. Cancellation can win during it;
+        # recheck under the shared lock before writing any new native input.
+        with self.store.delivery_lock(session_id, delivery_id):
+            current = self.store.get(session_id, delivery_id)
+            if current and current.get("delivery_status") in TERMINAL_DELIVERY:
+                return current
+            result = dict(saved)
+            try:
+                if receipt is None:
+                    receipt = client.steer(
+                        record.worker_job_id,
+                        {
+                            "session_id": session_id,
+                            "delivery_id": wire_id,
+                            "prompt": prompt,
+                            "expected_thread_id": saved["thread_id"],
+                            "expected_turn_id": saved["turn_id"],
+                        },
+                    )
+                result["delivery_status"] = {
+                    "accepted": "steered",
+                    "rejected": "queued",
+                    "sending": "pending",
+                }.get(receipt["status"], "delivery_unknown")
+            except Exception:
+                result["delivery_status"] = "delivery_unknown"
+            result = self.store.save(session_id, delivery_id, fingerprint, result)
         if result["delivery_status"] == "queued":
             return None
         return result

@@ -623,3 +623,121 @@ def test_admin_vm_dispatch_keeps_queue_fallback_without_container_configuration(
         },
     )
     assert result["success"] and result["queued"]
+
+
+@pytest.mark.parametrize("stale_status", ["sending", "delivery_unknown"])
+def test_successful_delivery_survives_stale_concurrent_status(tmp_path, stale_status):
+    from concurrent.futures import ThreadPoolExecutor
+    from evander.admin.services.vm_agent.agent_prompt import VmAgentPromptMixin
+
+    b, c = backend(tmp_path)
+    sending, stale_read, accepted_saved = (threading.Event() for _ in range(3))
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue.put(
+        QueuedAgentPromptRecord(
+            queue_key="message:session-1:message-1",
+            target="session-1",
+            vm_name="session-1",
+            session_id="session-1",
+            prompt="Move button",
+            dispatch_id="message-1",
+            effect_id="enqueue",
+        ),
+        count_retry=False,
+    )
+    original_send = c.steer
+
+    def send(job, payload):
+        c.receipts[job, payload["delivery_id"]] = {"status": stale_status}
+        sending.set()
+        assert stale_read.wait(5)
+        return original_send(job, payload)
+
+    def lookup(job, delivery):
+        receipt = c.receipts.get((job, delivery))
+        if receipt and receipt["status"] == stale_status:
+            stale_read.set()
+            assert accepted_saved.wait(5)
+        return receipt
+
+    c.steer, c.steering_receipt = send, lookup
+    first_service = ConversationDeliveryService(tmp_path, b)
+    second_service = ConversationDeliveryService(tmp_path, b)
+
+    def first_delivery():
+        result = deliver(first_service)
+        queue.delete_if_dispatch_id("message:session-1:message-1", "message-1")
+        accepted_saved.set()
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_delivery)
+        assert sending.wait(5)
+        second = pool.submit(deliver, second_service)
+        assert first.result(timeout=10)["delivery_status"] == "steered"
+        assert second.result(timeout=10)["delivery_status"] == "steered"
+    admin = SimpleNamespace(
+        config=SimpleNamespace(runtime_dir=tmp_path),
+        runtime=SimpleNamespace(
+            session_repository=SimpleNamespace(
+                get_session=lambda target: SimpleNamespace(session_id="session-1")
+            )
+        ),
+    )
+    assert VmAgentPromptMixin.agent_message_delivery(admin, "session-1", "message-1")[
+        "delivery_status"
+    ] == "steered"
+    assert queue.read_all() == {} and len(c.calls) == 1
+
+
+def test_cancellation_during_receipt_lookup_prevents_native_send(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    b, c = backend(tmp_path)
+    lookup_started, release_lookup = threading.Event(), threading.Event()
+
+    def lookup(job, delivery):
+        lookup_started.set()
+        assert release_lookup.wait(5)
+        return None
+
+    c.steering_receipt = lookup
+    delivery = ConversationDeliveryService(tmp_path, b)
+    cancellation = ConversationDeliveryService(tmp_path, b)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(deliver, delivery)
+        try:
+            assert lookup_started.wait(5)
+            cancellation.store.cancel("session-1", "message-1")
+        finally:
+            release_lookup.set()
+        assert future.result(timeout=10)["delivery_status"] == "cancelled"
+    assert c.calls == []
+
+
+def test_cancellation_waits_for_an_inflight_send_receipt(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    b, c = backend(tmp_path)
+    sending, cancellation_started = threading.Event(), threading.Event()
+    original_send = c.steer
+    delivery = ConversationDeliveryService(tmp_path, b)
+    cancellation = ConversationDeliveryService(tmp_path, b)
+
+    def send(job, payload):
+        sending.set()
+        assert cancellation_started.wait(5)
+        return original_send(job, payload)
+
+    def cancel():
+        cancellation_started.set()
+        return cancellation.store.cancel("session-1", "message-1")
+
+    c.steer = send
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(deliver, delivery)
+        assert sending.wait(5)
+        cancelled = pool.submit(cancel)
+        assert first.result(timeout=10)["delivery_status"] == "steered"
+        assert cancelled.result(timeout=10)["delivery_status"] == "steered"
+    assert len(c.calls) == 1

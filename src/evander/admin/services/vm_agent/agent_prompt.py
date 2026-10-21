@@ -38,18 +38,21 @@ class VmAgentPromptMixin:
                 return receipt or {"delivery_status": "queued"}
         return receipt or {"delivery_status": "pending"}
 
-    def cancel_agent_message(self, target: str, dispatch_id: str) -> None:
+    def cancel_agent_message(self, target: str, dispatch_id: str) -> dict[str, Any]:
         from evander.admin.services.conversation_delivery_service import ConversationDeliveryStore
         from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
         session = self.runtime.session_repository.get_session(target)
         if session is None:
             raise ValueError(f"Unknown session: {target}")
-        ConversationDeliveryStore(self.config.runtime_dir).cancel(session.session_id, dispatch_id)
+        receipt = ConversationDeliveryStore(self.config.runtime_dir).cancel(
+            session.session_id, dispatch_id
+        )
         queue = AgentPromptQueueStore(self.config.runtime_dir / "queued-agent-prompts.json")
         for item in queue.read_all().values():
             if item.session_id == session.session_id and item.dispatch_id == dispatch_id:
                 queue.delete_if_dispatch_id(item.queue_key, dispatch_id)
+        return receipt
 
     def enqueue_agent_prompt(
         self,
