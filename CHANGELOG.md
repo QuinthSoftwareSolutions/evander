@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 - Keep shared browser views focused and follow Admin Web themes (0.110.1)
+
+- Apply the shared Admin Web light/dark palette to hosted browser viewers, session lists, settings, chat, voice controls and status/error surfaces. Follow live host theme changes and the saved or system preference in standalone viewers.
+- Hide closed and expired hosted sessions by default, with a Show closed sessions option for history. Keep failed and cleanup-pending sessions visible.
+- Package the shared theme assets with Browser Sessions server package 0.4.1. The Chrome extension remains 0.4.0.
+
 ## 2026-10-20 - Steer active conversations from chat (0.110.0)
 
 - Add opt-in native Codex steering for Teams personal-assistant follow-ups and shared-browser messages, preserving the running job, conversation and reply destination. Queue unsupported runners without interrupting them.
