@@ -463,6 +463,9 @@ var token = new URLSearchParams(location.hash.slice(1)).get("token");
 history.replaceState(null, "", location.pathname);
 var after = 0;
 var ended = false;
+var refreshing = false;
+var refreshAgain = false;
+var displayedMessages = /* @__PURE__ */ new Set();
 function fail(error) {
   $("error").textContent = error.message || "Voice session unavailable.";
 }
@@ -506,15 +509,22 @@ var voice = new VoiceControls($("voice-controls"), {
 });
 async function refresh() {
   if (ended) return;
+  if (refreshing) {
+    refreshAgain = true;
+    return;
+  }
+  refreshing = true;
   try {
     const result = await voiceJson(await request("state?after=" + after));
     $("session-title").textContent = result.session.title;
     $("scope").textContent = "Shared tab: " + (result.session.current_url ? new URL(result.session.current_url).origin : "waiting for the application");
     for (const message of result.messages) {
+      after = Math.max(after, message.seq);
+      if (displayedMessages.has(message.id)) continue;
       const paragraph = document.createElement("p");
       paragraph.textContent = (message.actor.startsWith("agent:") ? "Truman: " : "You: ") + message.body;
       $("messages").append(paragraph);
-      after = Math.max(after, message.seq);
+      displayedMessages.add(message.id);
     }
     voice.messages(result.messages);
     if (["closed", "expired", "failed", "cleanup_failed"].includes(result.session.state)) {
@@ -523,6 +533,12 @@ async function refresh() {
     }
   } catch (error) {
     fail(error);
+  } finally {
+    refreshing = false;
+    if (refreshAgain) {
+      refreshAgain = false;
+      void refresh();
+    }
   }
 }
 enterToSend($("body"), $("chat"));

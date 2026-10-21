@@ -106,6 +106,31 @@ def test_mutations_require_post_json_same_origin_and_guest_never_uses_admin_view
         )
 
 
+def test_hosted_chat_returns_followup_replies_after_the_first_answer(admin, domain, hosted):
+    app, _ = admin
+    service, _, _ = domain
+    path = "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/messages"
+    with TestClient(app, base_url="https://control.test") as client:
+        client.post("/api/auth/login")
+        posted = client.post(
+            path, headers={"Origin": "https://control.test"},
+            json={"request_id": "question", "body": "Move the button"},
+        )
+        assert posted.status_code == 200
+        message_id = posted.json()["id"]
+        service.reply("agent-a", hosted.id, message_id, "Working.", request_id="progress")
+        first = client.get(path).json()
+        assert [row["body"] for row in first["messages"]] == ["Move the button", "Working."]
+        assert first["message_updates"][0]["status"] == "answered"
+        cursor = first["messages"][-1]["seq"]
+        final = service.reply("agent-a", hosted.id, message_id, "Done.", request_id="final")
+        service.reply("agent-a", hosted.id, message_id, "Done.", request_id="final")
+        updated = client.get(path, params={"after": cursor}).json()
+        assert [(row["id"], row["body"], row["reply_to"]) for row in updated["messages"]] == [
+            (final["id"], "Done.", message_id)
+        ]
+
+
 def test_auth_disabled_cannot_open_hosted_browser(admin, hosted):
     app, auth = admin
     auth.config = replace(auth.config, auth_mode="none")

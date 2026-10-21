@@ -153,20 +153,32 @@ $("extend").addEventListener("click", () => void api("/sessions/" + sessionId + 
   expected_revision: session.revision,
 }).then(update).catch(showError));
 $("close").addEventListener("click", () => void api("/sessions/" + sessionId + "/close", {}).then(update).catch(showError));
+let refreshingMessages = false, refreshMessagesAgain = false;
+const displayedMessages = new Set<string>();
 async function messages() {
-  const result = await api("/sessions/" + sessionId + "/messages?after=" + after);
-  for (const message of result.messages) {
-    const item = document.createElement("div"); item.className = "message" + (message.actor.startsWith("agent:") ? " agent" : "");
-    const name = document.createElement("strong");
-    name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
-    item.append(name, document.createTextNode(message.body)); $("messages").append(item);
-    if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
-    after = Math.max(after, message.seq);
+  if (refreshingMessages) { refreshMessagesAgain = true; return; }
+  refreshingMessages = true;
+  try {
+    const result = await api("/sessions/" + sessionId + "/messages?after=" + after);
+    let appended = false;
+    for (const message of result.messages) {
+      after = Math.max(after, message.seq);
+      if (displayedMessages.has(message.id)) continue;
+      const item = document.createElement("div"); item.className = "message" + (message.actor.startsWith("agent:") ? " agent" : "");
+      const name = document.createElement("strong");
+      name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
+      item.append(name, document.createTextNode(message.body)); $("messages").append(item);
+      if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
+      displayedMessages.add(message.id); appended = true;
+    }
+    voice?.messages(result.messages);
+    messageDelivery($("messages"), [...result.messages, ...(result.message_updates ?? [])],
+      id => void api("/sessions/" + sessionId + "/retry-message", {message_id:id,request_id:crypto.randomUUID()}).then(messages).catch(showError));
+    if (appended) $("messages").scrollTop = $("messages").scrollHeight;
+  } finally {
+    refreshingMessages = false;
+    if (refreshMessagesAgain) { refreshMessagesAgain = false; void messages().catch(showError); }
   }
-  voice?.messages(result.messages);
-  messageDelivery($("messages"), [...result.messages, ...(result.message_updates ?? [])],
-    id => void api("/sessions/" + sessionId + "/retry-message", {message_id:id,request_id:crypto.randomUUID()}).then(messages).catch(showError));
-  if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
 enterToSend($("chat-body") as HTMLTextAreaElement, $("chat-form") as HTMLFormElement);
 $("chat-form").addEventListener("submit", async (event) => {

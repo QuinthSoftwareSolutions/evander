@@ -10,6 +10,8 @@ Guest invitations cannot access hosted sessions. Random tokens are hashed, singl
 
 The creating agent owns both hosted and local sessions. Browser tools still require its configured grants; another agent cannot inspect or operate the session. Local hosts grant and revoke input to that creating agent. Extension messages resume the owner's original thread and reply only to the browser transcript. Legacy support-agent IDs are retained solely for cleanup.
 
+Browser chat permits any number of agent replies to an original participant message, including further updates after it is marked answered. Each reply keeps the original session and transcript channel. The optional browser_session_reply request_id identifies one outgoing reply within that browser session: reuse it only for an identical retry to the same original message; changed text or a changed parent is rejected. Fresh IDs allow intentional repeated text. Older callers may omit request_id; identical text for the same original message is then deduplicated, while different replies are accepted. Existing replies survive upgrades without a data migration.
+
 The bundled MV3 extension requests a control-plane host permission after an explicit Share click and attaches to one selected tab. It exposes no externally_connectable web API. Stop revokes local input before network acknowledgement. Detach, reconnect, origin changes, expiry and handover fence input. Reconnect never restores input silently.
 
 ## Typed commands

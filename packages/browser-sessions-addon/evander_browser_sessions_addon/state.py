@@ -274,6 +274,8 @@ class Store:
                     existing["session_id"] != session_id
                     or existing["actor"] != actor
                     or existing["body"] != body
+                    or existing["channel"] != channel
+                    or existing["reply_to"] != reply_to
                 ):
                     raise BrowserError("Message identity conflict", "message_conflict", 409)
                 return dict(existing)
