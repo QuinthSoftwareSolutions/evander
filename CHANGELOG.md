@@ -5,7 +5,7 @@
 - Fill the hosted viewer with its browser, compact toolbar and chat sidebar. Move session details into the toolbar, indicate control ownership with one takeover/handback button, and add a saved light/dark toggle for standalone viewers.
 - Align browser-session settings in grouped responsive sections, with worker and launch-profile names above their fields.
 - Show dismissible inline errors without covering chat controls. Treat observe-only clicks as brief reminders that also clear on takeover. Send non-empty chat with Enter and retain Shift+Enter for newlines and normal input-method composition.
-- Keep an enabled microphone ready between push-to-talk clips, avoid browser gain/noise processing that can suppress phrase onsets, and provide an explicit microphone-off control. Stop capture on focus loss, hiding, session changes and disposal.
+- Keep an enabled microphone ready between push-to-talk clips, avoid browser gain/noise processing that can suppress phrase onsets, and provide an explicit microphone-off control. Stop capture on focus loss, hiding, session changes and disposal, including capture that finishes opening after focus was lost.
 - Start spoken replies from bounded PCM chunks while synthesis is still running, retain authorization and cancellation throughout streaming, and preserve WAV compatibility for older clients. Publish Browser Sessions server package 0.5.0 and Chrome extension 0.4.1.
 
 ## 2026-10-21 - Respect container isolation for brokered SDK reviews (0.110.2)

@@ -18,6 +18,7 @@ export class VoiceControls {
   private events = new AbortController();
   private microphoneSetupAbort?: AbortController;
   private microphoneReady = false;
+  private microphoneGeneration = 0;
   private opening = false;
   private recording = false;
   private transcribing = false;
@@ -120,9 +121,12 @@ export class VoiceControls {
     try {
       await this.transport.prepareMicrophone?.(setup.signal);
       if (this.disposed || setup.signal.aborted) return;
+      // The permission popup may deliberately blur the sidebar during preparation.
+      // Only acquisition after that flow must be invalidated by a later focus loss.
+      const generation = this.microphoneGeneration;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         echoCancellation: true, noiseSuppression: false, autoGainControl: false }, video: false });
-      if (this.disposed || setup.signal.aborted || document.hidden) {
+      if (this.disposed || setup.signal.aborted || document.hidden || generation !== this.microphoneGeneration) {
         stream.getTracks().forEach(track => track.stop()); return;
       }
       this.stream = stream;
@@ -196,6 +200,7 @@ export class VoiceControls {
     if (this.recorder?.state === "recording") this.recorder.stop();
   }
   private releaseMicrophone() {
+    this.microphoneGeneration += 1;
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = undefined;
     this.microphoneReady = false; this.microphoneOff.hidden = true;
     if (!this.disposed) this.talk.textContent = "Enable microphone";

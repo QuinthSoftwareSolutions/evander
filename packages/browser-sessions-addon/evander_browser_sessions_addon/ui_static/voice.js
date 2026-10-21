@@ -179,6 +179,7 @@ var VoiceControls = class {
   events = new AbortController();
   microphoneSetupAbort;
   microphoneReady = false;
+  microphoneGeneration = 0;
   opening = false;
   recording = false;
   transcribing = false;
@@ -237,12 +238,13 @@ var VoiceControls = class {
     try {
       await this.transport.prepareMicrophone?.(setup.signal);
       if (this.disposed || setup.signal.aborted) return;
+      const generation = this.microphoneGeneration;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         echoCancellation: true,
         noiseSuppression: false,
         autoGainControl: false
       }, video: false });
-      if (this.disposed || setup.signal.aborted || document.hidden) {
+      if (this.disposed || setup.signal.aborted || document.hidden || generation !== this.microphoneGeneration) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -336,6 +338,7 @@ var VoiceControls = class {
     if (this.recorder?.state === "recording") this.recorder.stop();
   }
   releaseMicrophone() {
+    this.microphoneGeneration += 1;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = void 0;
     this.microphoneReady = false;

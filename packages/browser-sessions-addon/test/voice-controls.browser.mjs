@@ -93,6 +93,36 @@ test("enabled microphone stays ready across recordings and can be turned off", a
   });
 });
 
+test("losing window focus during microphone acquisition stops a late stream and permits retry", async () => {
+  await voiceFixture(async page => {
+    await page.evaluate(() => {
+      const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      let first = true;
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        if (first) {
+          first = false;
+          await new Promise(resolve => { window.resumeAcquisition = resolve; });
+        }
+        const stream = await acquire(constraints); window.microphone = stream; return stream;
+      };
+      window.widget = new VoiceWidgetFixture.VoiceControls(document.querySelector("#voice"), window.transport);
+    });
+    const enable = page.getByRole("button", {name:"Enable microphone",exact:true});
+    await enable.click();
+    await page.waitForFunction(() => typeof window.resumeAcquisition === "function");
+    await page.evaluate(() => { window.dispatchEvent(new Event("blur")); window.resumeAcquisition(); });
+    await page.waitForFunction(() => window.microphone && !document.querySelector("[data-voice-talk]").disabled);
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+    assert.equal(await enable.isVisible(), true);
+    assert.equal(await page.getByRole("button", {name:"Turn off microphone",exact:true}).isVisible(), false);
+    await enable.click();
+    await page.getByRole("button", {name:"Hold Talk",exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "live");
+    await page.evaluate(() => window.widget.dispose());
+    assert.equal(await page.evaluate(() => window.microphone.getAudioTracks()[0].readyState), "ended");
+  });
+});
+
 test("spoken PCM starts before generation completes and Stop cancels the stream", async () => {
   await voiceFixture(async page => {
     await page.evaluate(() => {
