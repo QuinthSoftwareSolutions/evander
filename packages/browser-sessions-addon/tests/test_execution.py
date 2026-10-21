@@ -32,6 +32,8 @@ def execution(request, domain, hosted):
         "mode": "normal",
         "attribution": [],
         "choices": {},
+        "observation_prefix": "observation-",
+        "page_epoch": "1",
     }
     original = peers.call
 
@@ -41,8 +43,8 @@ def execution(request, domain, hosted):
             state["commands"].append(command)
             if command["action"] == "observe":
                 return {
-                    "observation_id": "observation-" + str(len(state["commands"])),
-                    "page_epoch": "1",
+                    "observation_id": state["observation_prefix"] + str(len(state["commands"])),
+                    "page_epoch": state["page_epoch"],
                     "url": "https://application.test/accounts",
                     "elements": [
                         {
@@ -230,6 +232,38 @@ def test_multistep_adapters_literals_fresh_final_state_and_retry(execution):
     assert len(e.state["commands"]) == before
     with pytest.raises(BrowserError, match="identity conflict"):
         e.run(goal="Different objective")
+
+
+def test_same_page_and_actions_have_same_model_input_despite_new_receipt_ids(execution):
+    e = execution
+    first = e.run()
+    first_wire = list(e.state["provider_calls"])
+    first_commands = list(e.state["commands"])
+    e.state.update(
+        value="", saved=False, commands=[], observation_prefix="new-document-", page_epoch="27"
+    )
+    second = e.run(request_id="deliberate-second-objective")
+    second_wire = e.state["provider_calls"][len(first_wire) :]
+    assert first["status"] == second["status"] == "needs_verification"
+    assert len(first_wire) == len(second_wire) == 3
+    assert first_wire == second_wire
+    # Current semantic state and completed actions must still reach the provider.
+    states = [body.get("state") or json.loads(body["input"]) for body in second_wire]
+    assert states[0]["page"]["elements"][0]["value"] == ""
+    assert states[1]["page"]["elements"][0]["value"] == "Example"
+    assert states[2]["page"]["elements"][-1]["name"] == "Account saved"
+    assert states[1]["completed_actions"] == [
+        {"action": "fill", "ref": "node-1", "outcome": "completed"}
+    ]
+    # Do not normalize the actual command fences, returned observation or accounting identity.
+    assert second["observation"]["observation_id"].startswith("new-document-")
+    assert second["observation"]["page_epoch"] == "27"
+    for command in e.state["commands"]:
+        if command["action"] != "observe":
+            assert command["observation_id"].startswith("new-document-")
+            assert command["generation"] == e.session.control_generation
+    assert {c["id"] for c in first_commands}.isdisjoint(c["id"] for c in e.state["commands"])
+    assert e.state["attribution"][-1]["trace_id"] == second["id"] != first["id"]
 
 
 @pytest.mark.parametrize("action,parameter", [("key", "key"), ("scroll", "direction")])
