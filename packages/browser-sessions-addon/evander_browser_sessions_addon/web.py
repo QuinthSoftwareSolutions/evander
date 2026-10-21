@@ -346,7 +346,7 @@ def admin_ui_routes(context):
 
     async def asset(request):
         name = request.path_params["name"]
-        if name not in {"viewer.js", "styles.css"}:
+        if name not in {"viewer.js", "styles.css", "capture-worklet.js"}:
             return JSONResponse({"error": "Not found"}, status_code=404)
         return FileResponse(root / name)
 

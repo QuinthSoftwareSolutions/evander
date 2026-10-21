@@ -20,14 +20,48 @@ var PcmPlayer = class {
     if (!reader) throw new Error("Spoken audio is unavailable.");
     const context = this.context ??= new AudioContext();
     const sources = /* @__PURE__ */ new Set();
+    const rate = 24e3;
     let cancelled = false, complete = false, first = true, trailing = new Uint8Array(0), total = 0;
-    let next = 0;
+    let next = 0, pending = [], pendingSamples = 0;
     let drained;
     const ended2 = new Promise((resolve) => {
       drained = resolve;
     });
+    const schedule = () => {
+      if (cancelled || !pendingSamples) return;
+      const buffering = first || !sources.size;
+      if (!complete && pendingSamples < rate * (buffering ? 1.5 : 0.1)) return;
+      const buffer = context.createBuffer(1, pendingSamples, rate);
+      const samples = buffer.getChannelData(0);
+      let offset = 0;
+      for (const chunk of pending) {
+        samples.set(chunk, offset);
+        offset += chunk.length;
+      }
+      pending = [];
+      pendingSamples = 0;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      sources.add(source);
+      source.onended = () => {
+        source.disconnect();
+        sources.delete(source);
+        schedule();
+        if (complete && !sources.size && !pendingSamples) drained();
+      };
+      next = buffering ? context.currentTime + 0.08 : Math.max(next, context.currentTime + 0.02);
+      source.start(next);
+      next += buffer.duration;
+      if (first) {
+        first = false;
+        started();
+      }
+    };
     const cancel = () => {
       cancelled = true;
+      pending = [];
+      pendingSamples = 0;
       void reader.cancel().catch(() => {
       });
       for (const source of sources) source.stop();
@@ -48,6 +82,7 @@ var PcmPlayer = class {
         if (done) {
           if (trailing.length || !total) throw new Error("Spoken audio was incomplete.");
           complete = true;
+          schedule();
           if (!sources.size) drained();
           await ended2;
           break;
@@ -60,25 +95,11 @@ var PcmPlayer = class {
         const count = Math.floor(bytes.length / 2);
         trailing = bytes.slice(count * 2);
         if (!count) continue;
-        const buffer = context.createBuffer(1, count, 24e3);
-        const samples = buffer.getChannelData(0), data = new DataView(bytes.buffer);
+        const samples = new Float32Array(count), data = new DataView(bytes.buffer);
         for (let i = 0; i < count; i++) samples[i] = data.getInt16(i * 2, true) / 32768;
-        const source = context.createBufferSource();
-        source.buffer = buffer;
-        source.connect(context.destination);
-        sources.add(source);
-        source.onended = () => {
-          source.disconnect();
-          sources.delete(source);
-          if (complete && !sources.size) drained();
-        };
-        next = Math.max(next, context.currentTime + 0.05);
-        source.start(next);
-        next += buffer.duration;
-        if (first) {
-          first = false;
-          started();
-        }
+        pending.push(samples);
+        pendingSamples += samples.length;
+        schedule();
       }
     } finally {
       if (!complete || cancelled) cancel();
@@ -97,6 +118,143 @@ var PcmPlayer = class {
   }
 };
 
+// web/hands-free.ts
+var SpeechSegmenter = class {
+  constructor(rate, seconds, bytes, started, finished) {
+    this.rate = rate;
+    this.started = started;
+    this.finished = finished;
+    this.maximum = Math.floor(Math.min(seconds, Math.max(0, bytes - 44) / 32e3) * rate);
+  }
+  lead = [];
+  leadSize = 0;
+  chunks = [];
+  size = 0;
+  voiced = 0;
+  quiet = 0;
+  active = false;
+  floor = 2e-3;
+  maximum;
+  push(samples) {
+    if (!samples.length || this.maximum < this.rate * 0.2) return;
+    let power = 0;
+    for (const sample of samples) power += sample * sample;
+    const rms = Math.sqrt(power / samples.length);
+    const speech = rms > Math.max(0.012, this.floor * 3);
+    if (!this.active && !speech) this.floor = Math.min(0.012, this.floor * 0.95 + rms * 0.05);
+    if (!this.active) {
+      this.lead.push(samples);
+      this.leadSize += samples.length;
+      while (this.lead.length > 1 && this.leadSize - this.lead[0].length >= this.rate * 0.35)
+        this.leadSize -= this.lead.shift().length;
+      if (!speech) return;
+      this.active = true;
+      this.chunks = this.lead;
+      this.size = this.leadSize;
+      this.lead = [];
+      this.leadSize = 0;
+      this.voiced = samples.length;
+      this.quiet = 0;
+    } else {
+      this.chunks.push(samples);
+      this.size += samples.length;
+      if (speech) {
+        this.voiced += samples.length;
+        this.quiet = 0;
+      } else this.quiet += samples.length;
+    }
+    if (this.voiced >= this.rate * 0.12 && this.voiced - (speech ? samples.length : 0) < this.rate * 0.12)
+      this.started();
+    if (this.quiet >= this.rate * 0.9 || this.size >= this.maximum) this.complete();
+  }
+  complete() {
+    const length = Math.min(this.maximum, this.size - Math.max(0, this.quiet - Math.floor(this.rate * 0.15)));
+    let audio;
+    if (this.voiced >= this.rate * 0.2 && length > 0) {
+      const samples = new Float32Array(length);
+      let offset = 0;
+      for (const chunk of this.chunks) {
+        const count = Math.min(chunk.length, length - offset);
+        if (!count) break;
+        samples.set(chunk.subarray(0, count), offset);
+        offset += count;
+      }
+      audio = wav(samples, this.rate);
+    }
+    this.reset();
+    this.finished(audio);
+  }
+  reset() {
+    this.lead = [];
+    this.leadSize = 0;
+    this.chunks = [];
+    this.size = 0;
+    this.voiced = 0;
+    this.quiet = 0;
+    this.active = false;
+  }
+};
+function wav(samples, sourceRate) {
+  const count = Math.floor(samples.length * 16e3 / sourceRate);
+  const bytes = new ArrayBuffer(44 + count * 2), view = new DataView(bytes);
+  const text = (offset, value) => {
+    for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  text(0, "RIFF");
+  view.setUint32(4, bytes.byteLength - 8, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16e3, true);
+  view.setUint32(28, 32e3, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, count * 2, true);
+  for (let i = 0; i < count; i++) {
+    const first = Math.floor(i * sourceRate / 16e3);
+    const end = Math.min(samples.length, Math.max(first + 1, Math.floor((i + 1) * sourceRate / 16e3)));
+    let sum = 0;
+    for (let j = first; j < end; j++) sum += samples[j];
+    view.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, sum / (end - first))) * 32767), true);
+  }
+  return new Blob([bytes], { type: "audio/wav" });
+}
+var HandsFreeCapture = class {
+  context;
+  source;
+  node;
+  stopped = false;
+  segmenter;
+  async start(stream, seconds, bytes, started, finished) {
+    const context = this.context = new AudioContext();
+    await context.audioWorklet.addModule(new URL("./capture-worklet.js", import.meta.url));
+    if (this.stopped) return;
+    this.segmenter = new SpeechSegmenter(context.sampleRate, seconds, bytes, started, finished);
+    this.source = context.createMediaStreamSource(stream);
+    this.node = new AudioWorkletNode(context, "evander-microphone");
+    this.node.port.onmessage = (event) => {
+      if (!this.stopped) this.segmenter.push(event.data);
+    };
+    this.source.connect(this.node);
+    this.node.connect(context.destination);
+    await context.resume();
+  }
+  stop() {
+    this.stopped = true;
+    this.segmenter?.reset();
+    if (this.node) {
+      this.node.port.onmessage = null;
+      this.node.port.close();
+      this.node.disconnect();
+    }
+    this.source?.disconnect();
+    void this.context?.close();
+  }
+};
+
 // web/voice-controls.ts
 var VoiceControls = class {
   constructor(root, transport, context = () => null) {
@@ -111,10 +269,18 @@ var VoiceControls = class {
     this.microphoneOff.textContent = "Turn off microphone";
     this.microphoneOff.hidden = true;
     this.talk.after(this.microphoneOff);
+    this.handsFreeLabel = document.createElement("label");
+    this.handsFreeLabel.className = "check voice-replies";
+    this.handsFree = document.createElement("input");
+    this.handsFree.type = "checkbox";
+    this.handsFree.disabled = true;
+    this.handsFree.dataset.voiceHandsFree = "";
+    this.handsFreeLabel.append(this.handsFree, "Hands-free");
+    this.microphoneOff.after(this.handsFreeLabel);
     this.status = root.querySelector("[data-voice-status]");
     const watch = (target, name, listener) => target.addEventListener(name, listener, { signal: this.events.signal });
     watch(this.talk, "pointerdown", (event) => {
-      if (!this.microphoneReady || event.button !== 0) return;
+      if (!this.microphoneReady || this.handsFree.checked || event.button !== 0) return;
       event.preventDefault();
       this.talk.focus({ preventScroll: true });
       this.talk.setPointerCapture(event.pointerId);
@@ -123,27 +289,33 @@ var VoiceControls = class {
     watch(this.talk, "pointerup", () => this.finish());
     watch(this.talk, "pointercancel", () => this.finish(true));
     watch(this.talk, "blur", () => {
-      const capturing = this.recording || this.opening;
-      this.finish(true);
-      if (capturing) this.releaseMicrophone();
+      if (this.recording) this.finish(true);
     });
     watch(this.talk, "keydown", (event) => {
-      if (!this.microphoneReady || ![" ", "Enter"].includes(event.key)) return;
+      if (!this.microphoneReady || this.handsFree.checked || ![" ", "Enter"].includes(event.key)) return;
       event.preventDefault();
       if (!event.repeat) void this.start();
     });
     watch(this.talk, "keyup", (event) => {
-      if (this.microphoneReady && [" ", "Enter"].includes(event.key)) {
+      if (this.microphoneReady && !this.handsFree.checked && [" ", "Enter"].includes(event.key)) {
         event.preventDefault();
         this.finish();
       }
     });
     watch(this.talk, "click", (event) => {
       if (!this.microphoneReady) void this.enable();
-      else if (event.detail === 0) {
+      else if (!this.handsFree.checked && event.detail === 0) {
         if (this.recording || this.opening) this.finish();
         else void this.start();
       }
+    });
+    watch(this.handsFree, "change", () => {
+      this.failed = false;
+      this.finish(true);
+      this.stopHandsFree();
+      this.renderMicrophone();
+      if (this.handsFree.checked && this.microphoneReady) void this.startHandsFree();
+      else this.idleStatus();
     });
     watch(this.replies, "change", () => {
       if (!this.replies.checked) this.stopAudio();
@@ -151,13 +323,14 @@ var VoiceControls = class {
     });
     watch(this.stop, "click", () => this.stopAudio());
     watch(this.microphoneOff, "click", () => {
+      this.failed = false;
       this.finish(true);
       this.releaseMicrophone();
       this.say("");
     });
     window.addEventListener("blur", () => {
-      this.finish(true);
-      this.releaseMicrophone();
+      if (this.recording) this.finish(true);
+      if (!this.microphoneReady) this.microphoneGeneration += 1;
     }, { signal: this.events.signal });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
@@ -173,6 +346,12 @@ var VoiceControls = class {
   replies;
   stop;
   microphoneOff;
+  handsFree;
+  handsFreeLabel;
+  autoCapture;
+  autoSpeaking = false;
+  autoContext;
+  failed = false;
   pcm = new PcmPlayer();
   status;
   config;
@@ -196,6 +375,7 @@ var VoiceControls = class {
   finishAudio;
   playback = 0;
   playing = false;
+  clips = [];
   pending = [];
   seen = /* @__PURE__ */ new Set();
   speakAfter = Infinity;
@@ -204,6 +384,21 @@ var VoiceControls = class {
       this.status.textContent = text;
       this.status.hidden = !text;
     }
+  }
+  reportError(text) {
+    this.failed = true;
+    this.say(text);
+  }
+  idleStatus() {
+    if (!this.failed && this.status.textContent !== "Audio stopped." && !this.playing && !this.opening && !this.recording && !this.transcribing && !this.autoSpeaking)
+      this.say(this.handsFree.checked && this.microphoneReady ? "Listening." : "");
+  }
+  renderMicrophone() {
+    if (this.disposed) return;
+    this.talk.disabled = !this.config?.enabled || this.config.microphone_available === false || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined" || this.opening || this.transcribing || this.handsFree.checked && this.microphoneReady;
+    this.talk.textContent = !this.microphoneReady ? "Enable microphone" : this.handsFree.checked ? "Listening" : "Hold Talk";
+    this.talk.setAttribute("aria-pressed", String(this.recording || this.autoSpeaking));
+    this.microphoneOff.hidden = !this.microphoneReady;
   }
   async initialize() {
     try {
@@ -223,7 +418,8 @@ var VoiceControls = class {
         this.say("Microphone recording needs Chrome over HTTPS.");
         return;
       }
-      this.talk.disabled = false;
+      this.handsFree.disabled = typeof AudioWorkletNode === "undefined";
+      this.renderMicrophone();
       this.say("");
     } catch (error) {
       if (!this.disposed) this.say(error.message);
@@ -231,8 +427,9 @@ var VoiceControls = class {
   }
   async enable() {
     if (this.opening || this.disposed) return;
+    this.failed = false;
     this.opening = true;
-    this.talk.disabled = true;
+    this.renderMicrophone();
     const setup = new AbortController();
     this.microphoneSetupAbort = setup;
     try {
@@ -242,7 +439,8 @@ var VoiceControls = class {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         echoCancellation: true,
         noiseSuppression: false,
-        autoGainControl: false
+        autoGainControl: false,
+        channelCount: 1
       }, video: false });
       if (this.disposed || setup.signal.aborted || document.hidden || generation !== this.microphoneGeneration) {
         stream.getTracks().forEach((track) => track.stop());
@@ -250,19 +448,67 @@ var VoiceControls = class {
       }
       this.stream = stream;
       this.microphoneReady = true;
-      this.microphoneOff.hidden = false;
-      this.talk.textContent = "Hold Talk";
+      for (const track of stream.getAudioTracks()) track.addEventListener("ended", () => {
+        if (this.stream !== stream) return;
+        this.finish(true);
+        this.releaseMicrophone();
+        this.reportError("Microphone disconnected. Enable it to reconnect.");
+      }, { once: true, signal: this.events.signal });
       this.say("");
+      if (this.handsFree.checked) await this.startHandsFree();
     } catch (error) {
-      if (!this.disposed) this.say(error.message || "Microphone access was denied or unavailable.");
+      if (!this.disposed) this.reportError(error.message || "Microphone access was denied or unavailable.");
     } finally {
       this.microphoneSetupAbort = void 0;
       this.opening = false;
-      if (!this.disposed) this.talk.disabled = false;
+      this.renderMicrophone();
+      this.idleStatus();
     }
   }
+  async startHandsFree() {
+    if (this.disposed || !this.stream || !this.config || !this.handsFree.checked || this.autoCapture) return;
+    const capture = new HandsFreeCapture();
+    this.autoCapture = capture;
+    try {
+      await capture.start(
+        this.stream,
+        this.config.max_recording_seconds,
+        this.config.max_audio_bytes,
+        () => {
+          if (this.autoCapture !== capture || this.disposed) return;
+          this.failed = false;
+          this.autoContext = structuredClone(this.context());
+          this.autoSpeaking = true;
+          this.stopAudio();
+          this.say("Recording.");
+          this.renderMicrophone();
+        },
+        (audio) => {
+          if (this.autoCapture !== capture || this.disposed) return;
+          this.autoSpeaking = false;
+          this.renderMicrophone();
+          if (audio) this.queueClip(audio, this.autoContext);
+          else this.idleStatus();
+        }
+      );
+      if (this.autoCapture === capture) this.idleStatus();
+    } catch (error) {
+      if (this.autoCapture !== capture || this.disposed) return;
+      this.stopHandsFree();
+      this.handsFree.checked = false;
+      this.renderMicrophone();
+      this.reportError(error.message || "Hands-free recording is unavailable.");
+    }
+  }
+  stopHandsFree() {
+    const capture = this.autoCapture;
+    this.autoCapture = void 0;
+    this.autoSpeaking = false;
+    capture?.stop();
+  }
   async start() {
-    if (!this.config?.enabled || this.opening || this.recording || this.transcribing || this.disposed) return;
+    if (!this.config?.enabled || this.opening || this.recording || this.transcribing || this.disposed || this.handsFree.checked) return;
+    this.failed = false;
     this.stopAudio();
     this.opening = true;
     this.released = false;
@@ -287,29 +533,32 @@ var VoiceControls = class {
         bytes += event.data.size;
         if (bytes > this.config.max_audio_bytes) {
           this.finish(true);
-          this.say("Recording was too large. Try a shorter phrase.");
+          this.reportError("Recording was too large. Try a shorter phrase.");
         } else if (event.data.size) chunks.push(event.data);
       });
       recorder.addEventListener("error", () => {
         this.finish(true);
-        this.say("Microphone recording failed.");
+        this.reportError("Microphone recording failed.");
       });
       recorder.addEventListener("stop", () => {
         clearTimeout(this.timer);
         this.recorder = void 0;
         this.recording = false;
-        if (!this.disposed) this.talk.setAttribute("aria-pressed", "false");
-        if (this.discard || this.disposed || capture !== this.capture) return;
-        const audio = new Blob(chunks, { type });
-        if (!audio.size) {
-          this.say("No audio recorded. Hold Talk while speaking.");
+        this.renderMicrophone();
+        if (this.discard || this.disposed || capture !== this.capture) {
+          if (this.handsFree.checked) this.idleStatus();
           return;
         }
-        void this.submit(audio, context);
+        const audio = new Blob(chunks, { type });
+        if (!audio.size) {
+          this.reportError("No audio recorded. Hold Talk while speaking.");
+          return;
+        }
+        this.queueClip(audio, context);
       }, { once: true });
       this.recording = true;
       this.opening = false;
-      this.talk.setAttribute("aria-pressed", "true");
+      this.renderMicrophone();
       recorder.start(250);
       this.timer = setTimeout(() => this.finish(), this.config.max_recording_seconds * 1e3);
       this.say("Recording.");
@@ -318,20 +567,14 @@ var VoiceControls = class {
       this.releaseMicrophone();
       this.recording = false;
       this.recorder = void 0;
-      if (!this.disposed) {
-        this.talk.setAttribute("aria-pressed", "false");
-        if (error.name === "NotAllowedError") {
-          this.microphoneReady = false;
-          this.talk.textContent = "Enable microphone";
-        }
-        this.say(error.message || "Microphone recording failed.");
-      }
+      if (!this.disposed) this.reportError(error.message || "Microphone recording failed.");
     } finally {
       this.opening = false;
+      this.renderMicrophone();
     }
   }
   finish(discard = false) {
-    if (discard && (this.opening || this.recording) && !this.disposed) this.say("Recording cancelled.");
+    if (discard && this.recording && !this.disposed) this.say("Recording cancelled.");
     this.released = true;
     this.discard ||= discard;
     clearTimeout(this.timer);
@@ -339,30 +582,48 @@ var VoiceControls = class {
   }
   releaseMicrophone() {
     this.microphoneGeneration += 1;
-    this.stream?.getTracks().forEach((track) => track.stop());
+    this.stopHandsFree();
+    const stream = this.stream;
     this.stream = void 0;
     this.microphoneReady = false;
-    this.microphoneOff.hidden = true;
-    if (!this.disposed) this.talk.textContent = "Enable microphone";
+    stream?.getTracks().forEach((track) => track.stop());
+    this.renderMicrophone();
   }
-  async submit(audio, context) {
+  queueClip(audio, context) {
+    if (this.disposed) return;
+    if (this.clips.length >= 2) {
+      this.reportError("Please wait for the recorded messages to finish sending.");
+      return;
+    }
+    this.failed = false;
+    this.clips.push({ audio, context });
+    void this.submit();
+  }
+  async submit() {
+    if (this.transcribing || this.disposed) return;
     this.transcribing = true;
-    this.talk.disabled = true;
-    const abort = new AbortController();
-    this.transcriptionAbort = abort;
-    const id = crypto.randomUUID();
-    this.say("Transcribing\u2026");
+    this.renderMicrophone();
     try {
-      const result = await this.transport.transcribe(audio, id, abort.signal);
-      if (this.disposed || abort.signal.aborted) return;
-      await this.transport.send(result.text, "voice-" + id, context);
-      this.say("Voice message sent.");
-    } catch (error) {
-      if (!this.disposed) this.say(error.message || "Voice request failed.");
+      while (this.clips.length && !this.disposed) {
+        const { audio, context } = this.clips.shift();
+        const abort = new AbortController();
+        this.transcriptionAbort = abort;
+        const id = crypto.randomUUID();
+        this.say("Transcribing\u2026");
+        try {
+          const result = await this.transport.transcribe(audio, id, abort.signal);
+          if (this.disposed || abort.signal.aborted) return;
+          await this.transport.send(result.text, "voice-" + id, context);
+          this.say("Voice message sent.");
+        } catch (error) {
+          if (!this.disposed && !abort.signal.aborted) this.reportError(error.message || "Voice request failed.");
+        }
+      }
     } finally {
       this.transcribing = false;
-      if (!this.disposed) this.talk.disabled = false;
       this.transcriptionAbort = void 0;
+      this.renderMicrophone();
+      this.idleStatus();
       void this.play();
     }
   }
@@ -376,7 +637,8 @@ var VoiceControls = class {
     void this.play();
   }
   async play() {
-    if (this.playing || this.opening || this.recording || this.transcribing || this.disposed || !this.replies.checked) return;
+    if (!this.pending.length || this.playing || this.opening || this.recording || this.autoSpeaking || this.transcribing || this.disposed || !this.replies.checked) return;
+    this.failed = false;
     this.playing = true;
     const playback = this.playback;
     try {
@@ -410,7 +672,7 @@ var VoiceControls = class {
             void audio.play().catch(() => reject(new Error("Audio playback was blocked. Toggle Speak replies and try again.")));
           });
         } catch (error) {
-          if (!abort.signal.aborted && !this.disposed) this.say(error.message);
+          if (!abort.signal.aborted && !this.disposed) this.reportError(error.message);
         } finally {
           this.finishAudio = void 0;
           this.audio = void 0;
@@ -421,6 +683,7 @@ var VoiceControls = class {
       this.playing = false;
       if (!this.disposed) this.stop.disabled = true;
       this.audioAbort = void 0;
+      this.idleStatus();
     }
   }
   stopAudio() {
@@ -437,6 +700,7 @@ var VoiceControls = class {
     if (this.disposed) return;
     this.disposed = true;
     this.capture += 1;
+    this.clips = [];
     this.events.abort();
     this.microphoneSetupAbort?.abort();
     this.finish(true);
@@ -444,6 +708,7 @@ var VoiceControls = class {
     this.transcriptionAbort?.abort();
     this.stopAudio();
     this.microphoneOff.remove();
+    this.handsFreeLabel.remove();
     this.pcm.dispose();
     this.talk.disabled = true;
     this.replies.disabled = true;

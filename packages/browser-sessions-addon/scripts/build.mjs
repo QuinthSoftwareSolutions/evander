@@ -5,6 +5,8 @@ await mkdir("evander_browser_sessions_addon/controller", { recursive: true });
 await mkdir("dist/extension", { recursive: true });
 for (const [entry, outfile, platform] of [
   ["shared/engine.ts", "dist/engine.mjs", "browser"],
+  ["web/capture-worklet.ts", "evander_browser_sessions_addon/ui_static/capture-worklet.js", "browser"],
+  ["web/capture-worklet.ts", "dist/extension/capture-worklet.js", "browser"],
   ["web/voice-page.ts", "evander_browser_sessions_addon/ui_static/voice.js", "browser"],
   ["web/viewer.ts", "evander_browser_sessions_addon/ui_static/viewer.js", "browser"],
   ["web/styles.css", "evander_browser_sessions_addon/ui_static/styles.css", "browser"],

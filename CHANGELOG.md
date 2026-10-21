@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
+
+- Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.
+- Keep an enabled microphone connected through idle periods and window focus changes. Continue cancelling partial push-to-talk recordings on focus loss, and release the device when explicitly disabled, hidden, or disconnected.
+- Buffer streamed speech before playback and after underruns to avoid playing a tiny fragment ahead of a delayed response. Use Onyx as the default speech voice while preserving configured overrides.
+- Publish Browser Sessions server package 0.8.0 and Chrome extension 0.6.0.
+
 ## 2026-10-21 - Execute short browser objectives with decision models (0.113.0)
 
 - Add opt-in PA-owned multi-step browser execution through the directory’s Jev or OpenAI Decisions provider. Reuse the live shared browser, exact PA-supplied input values, existing permissions, provider privacy checks and usage attribution; return results for PA verification.

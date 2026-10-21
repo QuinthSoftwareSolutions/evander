@@ -488,7 +488,7 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
 
     async def voice_asset(request):
         name = request.path_params["name"]
-        if name not in {"voice.js", "voice.css"}:
+        if name not in {"voice.js", "voice.css", "capture-worklet.js"}:
             raise BrowserError("Unknown voice asset", "not_found", 404)
         return FileResponse(Path(__file__).parent / "ui_static" / name)
 

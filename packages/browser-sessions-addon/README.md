@@ -46,7 +46,7 @@ Enter sends a non-empty message; Shift+Enter inserts a newline. Observe-only cli
 
 ## Voice
 
-Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers record bounded push-to-talk clips and can hear new replies. Local hosts use recording, spoken replies and typed chat directly in the Chrome extension sidebar. First-use microphone permission may need a small permission window; ongoing voice uses no separate tab. Update to Chrome extension 0.3.0 and Browser Sessions package 0.3.0 for this flow. See [voice setup and usage](docs/voice.md).
+Enable optional speech in directory settings. Microphone transcription requires FFmpeg on the Admin Web and relay hosts. Hosted viewers and the Chrome sidebar support push-to-talk or opt-in hands-free capture with local speech detection. Streamed replies are buffered for smoother playback, and the default voice is Onyx. First-use microphone permission may need a small permission window; ongoing voice uses no separate tab. Use Chrome extension 0.6.0 and Browser Sessions package 0.8.0 for hands-free capture. See [voice setup and usage](docs/voice.md).
 
 ## Boundaries
 
