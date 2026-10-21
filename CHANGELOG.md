@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-21 - Support bounded Azure DevOps review votes (0.116.0)
+
+- Let `submit_pr_review` approve, approve with suggestions, wait for the author, or reset the authenticated host identity's reviewer vote after publishing its comments. Preserve comment-only submissions and GitHub review behavior; reject unsupported votes, including Reject.
+- Restrict voting to session-bound PRs where the host identity is already a reviewer, confirm the returned identity and vote, and include the vote in tool results and audit records.
+
 ## 2026-10-21 - Show subscription credit balances (0.115.0)
 
 - Show provider-reported credits beside seven-day remaining usage and banked resets on the Subscriptions page, including zero, unlimited, and unavailable balances.
