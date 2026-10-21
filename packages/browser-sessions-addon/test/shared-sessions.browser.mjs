@@ -59,6 +59,11 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     await f.api(path+"/command",command(state,"fill",{observation_id:observed.observation_id,
       ref:observed.elements.find(e=>e.role==="textbox").ref,text:"Steel"}));
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
+    const run=await f.api(path+"/run",{request_id:"fast-hosted",generation:state.control_generation,
+      goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
+    assert.equal(run.status,"needs_verification",run.reason);
+    assert.ok(run.observation.text.includes("Fast item added"));
+    assert.equal(run.observation.image,undefined);
     const before=(await observe()).image;
     // This fixture models a dev server applying the changed stylesheet to the same page.
     await f.api(path+"/style",{left:280});
@@ -66,6 +71,16 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const after=(await observe()).image;
     assert.notEqual(after,before);
     await viewer.screenshot({path:"test-output/hosted-session.png",fullPage:true});
+    const waiting=f.api(path+"/run",{request_id:"wait-hosted",generation:state.control_generation,goal:"Wait until stopped"});
+    await viewer.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
+    const cancellation=viewer.waitForResponse(response=>response.url().endsWith("/cancel-run"));
+    await viewer.getByRole("button",{name:"Stop current task",exact:true}).click();
+    const stopped=await cancellation;
+    assert.equal(stopped.status(),200);
+    assert.equal((await stopped.json()).status,"cancelled");
+    const waitResult=await waiting;
+    assert.equal(waitResult.status,"cancelled",waitResult.reason);
+    assert.equal((await f.api(path+"/state")).controller,null);
     assert.equal(controllerError,"");
   } finally {
     await browser?.close();
@@ -116,6 +131,10 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
     await f.api(path+"/command",command(state,"type",{observation_id:observed.observation_id,text:" alloy"}));
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
     assert.equal(await page.locator("#result").textContent(),"Copper alloy added");
+    const run=await f.api(path+"/run",{request_id:"fast-extension",generation:state.control_generation,
+      goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
+    assert.equal(run.status,"needs_verification",run.reason);
+    assert.equal(await page.locator("#result").textContent(),"Fast item added");
      const paused=await send({kind:"control",action:"pause"});assert.equal(paused.ok,true,paused.error);
     const denied=await fetch(f.base+path+"/command",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(command(state,"click",{observation_id:observed.observation_id,ref:button.ref}))});
@@ -203,6 +222,8 @@ test("guided launch-profile setup saves through the production settings API", as
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     await page.getByRole("button", { name: "Add profile", exact: true }).click();
     await page.getByLabel("Application image", { exact: true }).fill("seeded-preview:2");
+    await page.getByLabel("Maximum steps",{exact:true}).fill("12");
+    await page.getByLabel("Time limit (seconds)",{exact:true}).fill("15");
     const saved = page.waitForResponse(response =>
       response.request().method() === "PUT" &&
       response.url().includes("/api/addons/browser-sessions-addon/settings"));
@@ -214,6 +235,10 @@ test("guided launch-profile setup saves through the production settings API", as
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     assert.equal(await page.getByLabel("Application image", { exact: true }).inputValue(),
       "seeded-preview:2");
+    assert.equal(await page.getByLabel("Maximum steps",{exact:true}).inputValue(),"12");
+    assert.equal(await page.getByLabel("Time limit (seconds)",{exact:true}).inputValue(),"15");
+    await page.emulateMedia({colorScheme:"dark"});
+    await page.screenshot({path:"test-output/fast-settings.png",fullPage:true});
   } finally {
     await browser?.close();
     await f.stop();
@@ -778,4 +803,26 @@ test("compatibility clicks SVG button icons and preserves form activation", asyn
     assert.equal(await host.application.getByRole("checkbox", { name: "Enable advanced settings" }).isChecked(), true,
       "Controls in a disabled fieldset's first legend remain enabled under HTML rules");
   } finally { await host?.context.close(); await f.stop(); }
+});
+
+
+test("fast run works with other extensions and sidebar Stop interrupts a waiting objective",async()=>{
+  const f=await fixture();let host;
+  try {
+    host=await compatibilityHost(f);
+    assert.equal(host.paired.ok,true,host.paired.error);
+    await host.send({kind:"control",action:"grant"});
+    let state=await f.api(host.path+"/state");
+    assert.equal(state.endpoint_features.fast_execution,1);
+    const run=await f.api(host.path+"/run",{request_id:"fast-compatible",generation:state.control_generation,
+      goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
+    assert.equal(run.status,"needs_verification",run.reason);
+    assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
+    const waiting=f.api(host.path+"/run",{request_id:"wait-compatible",generation:state.control_generation,goal:"Wait until stopped"});
+    await host.panel.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
+    await host.panel.getByRole("button",{name:"Stop current task",exact:true}).click();
+    assert.equal((await waiting).status,"cancelled");
+    state=await f.api(host.path+"/state");assert.equal(state.controller,null);
+    assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
+  }finally{await host?.context.close();await f.stop();}
 });

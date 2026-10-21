@@ -1,3 +1,4 @@
+import { accessibleElements, targetSignature, pageSignature } from "./observation.js";
 export type Send = (method: string, params?: Record<string, unknown>) => Promise<any>;
 export type State = { id: string; controller: string | null; control_generation: number;
   allowed_origins: string[]; expires_at: number };
@@ -5,14 +6,19 @@ export class BrowserEngine {
   private observation = "";
   private refs = new Map<string, number>();
   private epoch = 0;
+  private signatures = new Map<string, string>();
+  private pageContext = "";
   constructor(private send: Send, private state: State, private emit: (event: any) => void) {}
-  update(state: State) { this.state = state; }
+  update(state: State) {
+    if (state.id === this.state.id && state.control_generation >= this.state.control_generation) this.state = state;
+  }
   navigate() { this.epoch += 1; this.observation = ""; this.refs.clear(); }
   private async location() {
     const tree = await this.send("Page.getFrameTree");
     return tree.frameTree.frame.url as string;
   }
   private guard(command: any, actor: string, epoch?: number) {
+    if (command.deadline_at && Date.now()/1000 >= command.deadline_at) throw new Error("run_deadline");
     if (Date.now() / 1000 >= this.state.expires_at) throw new Error("session_expired");
     if (command.generation !== this.state.control_generation) throw new Error("stale_control");
     if (!["observe", "highlight"].includes(command.action) && this.state.controller !== actor)
@@ -30,10 +36,30 @@ export class BrowserEngine {
       if (!this.state.allowed_origins.includes(new URL(current).origin)) throw new Error("origin_denied");
       return current;
     };
+    let edited = false, inputStarted = false;
+    const validateTarget = async () => {
+      if (!command.revalidate || !command.ref) return;
+      const {nodes} = await this.send("Accessibility.getFullAXTree");
+      const elements = accessibleElements(nodes ?? []).elements;
+      const fresh = elements.find(item => item.ref===command.ref);
+      if (!edited && pageSignature(elements)!==this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      const saved = this.signatures.get(command.ref);
+      if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
+      // Key-down/text can change a field's mutable state as part of this command.
+      if (edited) for (const key of ["value","checked","selected","expanded"]) { delete before[key]; delete after[key]; }
+      if (JSON.stringify(before)!==JSON.stringify(after)) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+    };
     const input = async (method: string, params: Record<string, unknown> = {}) => {
+      await validateTarget();
       await fence();
       this.guard(command, actor, epoch);
-      return this.send(method, params);
+      try {
+        inputStarted=true;
+        return await this.send(method, params);
+      } finally {
+        if (method === "Input.insertText" || method === "Input.dispatchKeyEvent" && params.type === "keyDown") edited=true;
+      }
     };
     const press = async (key: string, text?: string, code?: string, keyCode?: number) => {
       const identity = { key, ...(code ? { code } : {}),
@@ -45,21 +71,18 @@ export class BrowserEngine {
     const url = await fence();
     if (command.action === "observe") {
       const before = this.epoch;
-      const { nodes } = await this.send("Accessibility.getFullAXTree");
+      const tree = await this.send("Accessibility.getFullAXTree");
+      const nodes = tree.nodes;
       this.refs.clear();
-      const elements = [];
-      const roles = new Set(["button", "link", "textbox", "combobox", "checkbox", "radio",
-        "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row"]);
-      for (const node of nodes ?? []) {
-        if (elements.length >= 600) break;
-        const role = node.role?.value;
-        if (node.ignored || !node.backendDOMNodeId || !roles.has(role)) continue;
-        const ref = "node-" + node.backendDOMNodeId;
-        this.refs.set(ref, node.backendDOMNodeId);
-        elements.push({ ref, role, name: String(node.name?.value ?? "").slice(0, 400) });
+      this.signatures.clear();
+      const {elements,truncated} = accessibleElements(nodes ?? []);
+      this.pageContext = pageSignature(elements);
+      for (const element of elements) {
+        this.refs.set(element.ref,Number(element.ref.slice(5)));
+        this.signatures.set(element.ref,targetSignature(element));
       }
       let screenshot: any;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; command.include_image !== false && attempt < 3; attempt++) {
         try {
           screenshot = await this.send("Page.captureScreenshot", { format: "jpeg", quality: 65,
             captureBeyondViewport: false });
@@ -71,9 +94,15 @@ export class BrowserEngine {
       }
       await fence();
       if (before !== this.epoch) throw new Error("stale_observation");
+      const metrics = await this.send("Page.getLayoutMetrics");
+      const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
+      await fence();
       this.observation = crypto.randomUUID();
       return { observation_id: this.observation, page_epoch: String(this.epoch), url,
-        elements, image: screenshot.data, mime_type: "image/jpeg" };
+        elements, text: tree.text ?? (nodes ?? []).filter((n: any)=>n.role?.value==="StaticText").map((n: any)=>n.name?.value ?? "").join(" ").slice(0,12000),
+        title: String(tree.title ?? (nodes ?? []).find((n: any)=>n.role?.value==="RootWebArea")?.name?.value ?? "").slice(0,400),
+        viewport:viewport ? {x:viewport.pageX ?? 0,y:viewport.pageY ?? 0} : undefined,
+        truncated:truncated || tree.truncated === true, ...(screenshot ? {image:screenshot.data,mime_type:"image/jpeg"} : {}) };
     }
     if (!["navigate", "reload"].includes(command.action) && command.observation_id !== this.observation)
       throw new Error("stale_observation");
@@ -86,11 +115,12 @@ export class BrowserEngine {
     if (command.action === "reload") {
       await input("Page.reload"); this.navigate(); return { success: true };
     }
+    await validateTarget();
     let x = command.x, y = command.y;
-    if (command.ref && ["click", "hover", "highlight"].includes(command.action)) {
+    if (command.ref && ["click", "hover", "highlight", "scroll"].includes(command.action)) {
       const backendNodeId = this.refs.get(command.ref);
       if (!backendNodeId) throw new Error("stale_observation");
-      if (command.action !== "highlight") {
+      if (!["highlight", "scroll"].includes(command.action)) {
         await input("DOM.scrollIntoViewIfNeeded", { backendNodeId });
         await fence();
       }
@@ -123,6 +153,7 @@ export class BrowserEngine {
       this.guard(command, actor);
       await input("Input.insertText", { text: command.text ?? "" });
     } else if (command.action === "type") {
+      if (command.revalidate && command.ref) await input("DOM.focus", {backendNodeId:this.refs.get(command.ref)});
       // Character key events also reach page-level shortcuts and scanner listeners.
       // fill deliberately retains direct text insertion for editing a specific field.
       for (const character of (command.text ?? "").replace(/\r\n/g, "\n")) {
@@ -132,6 +163,7 @@ export class BrowserEngine {
           newline ? 13 : character === " " ? 32 : undefined);
       }
     } else if (command.action === "key") {
+      if (command.revalidate && command.ref) await input("DOM.focus", {backendNodeId:this.refs.get(command.ref)});
       const keys: Record<string, number> = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8,
         Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Space: 32 };
       const key = command.text;

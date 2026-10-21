@@ -115,6 +115,8 @@ class AddonMcpTool(BaseModel):
     group: str | None = None
     # Read-only discovery can accompany existing grants for this add-on's operations.
     discovery_for: tuple[str, ...] = ()
+    # Preserve decision/correlation audit without retaining sensitive tool payloads.
+    audit_metadata_only: bool = False
 
     @field_validator("name", "label", "description", mode="before")
     @classmethod

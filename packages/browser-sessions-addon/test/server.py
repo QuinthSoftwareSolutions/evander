@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.user_store import AdminWebUserStore
 from evander.admin.web.app import AuthMiddleware
-from evander_browser_sessions_addon.models import Session, Settings, BrowserCommand, BrowserError
+from evander.classification.models import ClassificationSettings
+from evander_browser_sessions_addon.models import Session, Settings, BrowserCommand, BrowserError, RunRequest
 from evander_browser_sessions_addon.service import Service, Parent
 from evander_browser_sessions_addon.relay import create_app as relay_app, error
 from evander_browser_sessions_addon import web
@@ -37,7 +38,36 @@ os.environ.update(EVANDER_BROWSER_RELAY_TOKEN="fixture-relay-token",
                   EVANDER_ADMIN_WEB_SESSION_SECRET="fixture-session-signing-secret",
                   EVANDER_BROWSER_VOICE_API_KEY="fixture-speech-secret")
 
+
+class FixtureClassifier:
+    secret_resolver = staticmethod(lambda _: "synthetic-decision-key")
+    def evaluate(self, settings, payload, **kwargs):
+        state=payload["state"]
+        controls=state["page"]["elements"]
+        field=next((item for item in controls if item["role"]=="textbox"),None)
+        button=next((item for item in controls if item["role"]=="button"),None)
+        value=state.get("inputs",{}).get("v0",{}).get("value","")
+        if state["goal"]=="Wait until stopped":
+            time.sleep(1)
+            action="wait"
+        elif field and field.get("value")!=value:
+            action="fill"
+        elif value+" added" not in state["page"].get("text",""):
+            action="click"
+        else:
+            action="done"
+        selected={"action":action,"target":field["ref"] if action=="fill" else button["ref"] if button else "_none","input":"v0","key":"Enter","direction":"down"}
+        answers={}
+        for name,question in payload["questions"].items():
+            choice=selected[name]
+            if choice not in question["criteria"]:
+                choice=next(iter(question["criteria"]))
+            answers[name]={"type":"choice","choice":choice,"probabilities":{key:int(key==choice) for key in question["criteria"]}}
+        return {"answers":answers}
+
 class Bindings:
+    def classifier(self, directory):
+        return FixtureClassifier(), ClassificationSettings(enabled=True)
     def parent(self, agent, tool=None):
         return Parent(agent, "root/demo", time.time() + 14400)
     def close_support(self, session):
@@ -46,7 +76,7 @@ class Bindings:
         return True
 
 service = Service(folder, bindings=Bindings())
-service.store.save_settings("root", 0, Settings(enabled=True, public_base_url=base, relay_url=base,
+service.store.save_settings("root", 0, Settings(enabled=True, public_base_url=base, relay_url=base, fast_execution={"enabled":True},
     voice={"enabled": True, "api_base_url": base + "/test/provider"}))
 auth = AdminWebAuth(AdminWebConfig.from_env(), AdminWebUserStore(folder / "users.db"))
 context = SimpleNamespace(auth=auth, runtime_dir=folder, service=None)
@@ -84,7 +114,7 @@ async def perform_test_operation(request):
     sid, action = request.path_params["id"], request.path_params["action"]
     session = service.store.get(sid)
     if action == "state":
-        return JSONResponse(session.model_dump())
+        return JSONResponse(service.receipt(session))
     if action == "messages":
         return JSONResponse({"messages": service.store.messages(sid)})
     payload = await request.json()
@@ -94,6 +124,8 @@ async def perform_test_operation(request):
         session = service.agent_session("agent-a", sid, tool)
         actor = "agent:" + session.agent_session_id
         result = await asyncio.to_thread(service.command, sid, actor, command, agent=True)
+    elif action == "run":
+        result=await asyncio.to_thread(service.run,"agent-a",sid,RunRequest.model_validate(payload))
     elif action == "control":
         result = await asyncio.to_thread(service.control, sid, "user:operator", payload["action"])
     elif action == "reply":

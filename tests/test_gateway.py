@@ -4123,3 +4123,72 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
         assert mcp_session_manager._task_group is not None
 
     assert mcp_session_manager._task_group is None
+
+
+@pytest.mark.parametrize("behavior", ["success", "failure", "denied"])
+def test_addon_metadata_only_audit_never_retains_tool_payloads(tmp_path, monkeypatch, behavior):
+    plugin = tmp_path / "payload_private_addon.py"
+    plugin.write_text("""
+def register_addon():
+    def register(server,context):
+        @server.tool(name="private_fixture_tool")
+        def private_fixture_tool(value:str, fail:bool=False, session_id:str|None=None, extra:dict|None=None) -> dict:
+            if fail: raise ValueError(value)
+            return {"observation":{"text":value}}
+        return ("private_fixture_tool",)
+    return {"addon_id":"private-fixture","display_name":"Private fixture","mcp_tools":register,
+            "mcp_tool_catalog":[{"name":"private_fixture_tool","label":"Private tool","description":"Synthetic tool","audit_metadata_only":True}]}
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("payload_private_addon", None)
+    runtime = tmp_path / "runtime"
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=runtime,
+            audit_log_path=runtime / "audit.jsonl",
+            session_store_path=runtime / "sessions.json",
+            approval_store_path=runtime / "approvals.json",
+            draft_store_path=runtime / "drafts.json",
+            email_store_path=runtime / "emails.json",
+            discord_command_store_path=runtime / "discord.json",
+            addon_loader=AddonLoaderConfig(
+                modules=["payload_private_addon"],
+                enabled_entry_points=False,
+                enabled_addon_ids=["private-fixture"],
+            ),
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="private-owner",
+            directory_path="root",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            allowed_tools=[] if behavior == "denied" else ["private_fixture_tool"],
+        )
+    )
+    server = create_server(context)
+    secret = "synthetic-private-tool-value"
+    arguments = {
+        "value": secret,
+        "fail": behavior == "failure",
+        "session_id": "private-owner",
+        "extra": {"trace_id": {"private": secret}},
+    }
+    if behavior == "success":
+        result = _call_tool(server, "private_fixture_tool", arguments)
+        if isinstance(result, list):
+            result = json.loads(result[0].text)
+        assert result["observation"]["text"] == secret
+    else:
+        with pytest.raises(ToolError):
+            _call_tool(server, "private_fixture_tool", arguments)
+    text = context.config.audit_log_path.read_text()
+    assert secret not in text
+    events = [
+        json.loads(line)
+        for line in text.splitlines()
+        if json.loads(line).get("tool_name") == "private_fixture_tool"
+    ]
+    assert events
+    assert all(e["args"] == {} and e["result"] == {"audit_payloads_omitted": True} for e in events)
+    assert all(e["session_id"] == "private-owner" and e["decision"] for e in events)

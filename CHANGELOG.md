@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 - Execute short browser objectives with decision models (0.113.0)
+
+- Add opt-in PA-owned multi-step browser execution through the directory’s Jev or OpenAI Decisions provider. Reuse the live shared browser, exact PA-supplied input values, existing permissions, provider privacy checks and usage attribution; return results for PA verification.
+- Add metadata-only gateway auditing for sensitive add-on tools, durable run receipts, single-session automation leases, execution budgets, target revalidation, and Stop controls in hosted viewers and the Chrome sidebar. Never replay uncertain mutations or resume interrupted runs. Retire interrupted command leases so a fresh authorized objective can proceed, preserve pre-input stale-target rejections across the relay, and tolerate lock contention during concurrent database initialization.
+- Enrich screenshot-free observations with field state, page text and row/form context across hosted Chrome, compatibility mode and the native helper. Publish Browser Sessions server package 0.7.0, Chrome extension 0.5.0 and native helper 0.4.0, with explicit capability negotiation for older installations. Discard queued frames from older capture settings before adapting native stream resolution again.
+
 ## 2026-10-21 - Allow browser-chat follow-ups and prevent duplicate display (0.112.0)
 
 - Let the creating agent send any number of progress updates and replies to a browser message. Give outgoing replies their own retry identities, retaining session/channel authorization and compatibility with existing callers and stored replies.

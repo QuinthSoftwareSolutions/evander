@@ -11,20 +11,31 @@ import sqlite3
 import time
 
 from .models import BrowserError, Session, Settings, TERMINAL
+from .run_state import RunStore
 
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-class Store:
+class Store(RunStore):
     def __init__(self, runtime_dir, *, now=time.time):
         self.root = Path(runtime_dir) / "addons" / "browser-sessions-addon"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.root / "state.db"
         self.now = now
         with self.connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            # Switching a legacy database to WAL can return SQLITE_BUSY even
+            # with busy_timeout set when another process initializes it too.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS settings(directory TEXT PRIMARY KEY, revision INTEGER, payload TEXT);
                 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, directory TEXT, owner TEXT,
@@ -48,7 +59,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS voice_requests_active ON voice_requests(state,lease_until);
 
             """)
-            db.execute("BEGIN IMMEDIATE")
+            self.init_runs(db)
             if "delivery_status" not in {
                 row[1] for row in db.execute("PRAGMA table_info(messages)")
             }:
@@ -189,7 +200,14 @@ class Store:
             session = Session.model_validate_json(row[0])
             if revision is not None and revision != session.revision:
                 raise BrowserError("Session changed; refresh and retry", "revision_conflict", 409)
+            old_generation = session.control_generation
             operation(session)
+            if session.control_generation != old_generation or session.state not in {
+                "starting",
+                "ready",
+                "paused",
+            }:
+                self.interrupt_run(db, session_id, kind)
             session.revision += 1
             db.execute(
                 "UPDATE sessions SET payload=? WHERE id=?", (session.model_dump_json(), session_id)
@@ -353,9 +371,10 @@ class Store:
                 )
             return rows
 
-    def record_command(self, session_id, actor, command):
+    def record_command(self, session_id, actor, command, *, run_id=None):
         fingerprint = digest(command.model_dump_json())
         with self.connect(write=True) as db:
+            self._command_access(db, session_id, actor, run_id)
             previous = db.execute("SELECT * FROM commands WHERE id=?", (command.id,)).fetchone()
             if previous:
                 if previous["fingerprint"] != fingerprint or previous["session_id"] != session_id:
@@ -366,14 +385,37 @@ class Store:
                     409,
                 )
             db.execute(
-                "INSERT INTO commands VALUES(?,?,?,?,?,?)",
-                (command.id, session_id, actor, "submitted", self.now(), fingerprint),
+                "INSERT INTO commands(id,session_id,actor,state,at,fingerprint,run_id,observing,action_metadata) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    command.id,
+                    session_id,
+                    actor,
+                    "submitted",
+                    self.now(),
+                    fingerprint,
+                    run_id,
+                    int(command.observing),
+                    json.dumps(command.audit()),
+                ),
             )
             self._audit(db, session_id, actor, "browser_action", command.audit())
 
     def finish_command(self, command_id, state):
         with self.connect(write=True) as db:
             db.execute("UPDATE commands SET state=? WHERE id=?", (state, command_id))
+            command = db.execute("SELECT * FROM commands WHERE id=?", (command_id,)).fetchone()
+            if command and command["run_id"] and not command["observing"]:
+                row = db.execute(
+                    "SELECT payload FROM browser_runs WHERE id=?", (command["run_id"],)
+                ).fetchone()
+                if row:
+                    value = json.loads(row[0])
+                    step = {**json.loads(command["action_metadata"]), "outcome": state}
+                    value["steps"] = [
+                        s for s in value["steps"] if s.get("command_id") != command_id
+                    ] + [step]
+                    value["step_count"] = len(value["steps"])
+                    self._write_run(db, value)
 
     def prune(self):
         with self.connect(write=True) as db:
@@ -388,6 +430,14 @@ class Store:
                     "DELETE FROM dispatches WHERE message_id IN (SELECT id FROM messages WHERE session_id=?)",
                     (session.id,),
                 )
-                for table in ("audit", "messages", "commands", "private_sessions", "voice_requests"):
+                for table in (
+                    "audit",
+                    "messages",
+                    "commands",
+                    "private_sessions",
+                    "voice_requests",
+                    "browser_runs",
+                    "endpoint_features",
+                ):
                     db.execute(f"DELETE FROM {table} WHERE session_id=?", (session.id,))
                 db.execute("DELETE FROM sessions WHERE id=?", (session.id,))

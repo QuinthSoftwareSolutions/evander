@@ -75,3 +75,12 @@ session cancels requests still waiting to start.
 Deploy the core worker before the control plane and this add-on. See
 [conversation steering operations](../../docs/operations.md#conversation-steering-from-teams-and-shared-browsers)
 for capability checks, receipt recovery and Teams workflow activation.
+
+## Faster multi-step interaction
+
+Browser Sessions 0.5.0 adds optional `browser_session_run` and
+`browser_session_cancel_run`. The PA chooses short multi-step objectives, supplies
+exact input values and verifies the result; the directory's Jev or OpenAI
+Decisions provider selects intermediate typed actions in the existing shared
+browser. This is disabled by default. See [setup, agent guidance, limits and
+benchmarks](docs/fast-execution.md).

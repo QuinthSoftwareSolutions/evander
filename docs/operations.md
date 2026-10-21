@@ -4407,6 +4407,8 @@ The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) prov
 
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](../packages/browser-sessions-addon/docs/voice.md).
 
+Optional [multi-step decision execution](../packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
+
 ## Conversation steering from Teams and shared browsers
 
 `effect:agent:enqueue-prompt` accepts `delivery_mode: steer_if_running`. The default

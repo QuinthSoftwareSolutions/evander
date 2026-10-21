@@ -400,3 +400,37 @@ def test_helper_downloads_only_serve_published_known_packages(domain, tmp_path, 
         assert client.get("/_browser/helper/linux-x64.zip").status_code == 404
         assert client.get("/_browser/helper/private.txt.zip").status_code == 404
         assert client.get("/_browser/helper/..%2Fprivate.txt.zip").status_code == 404
+
+
+def test_cancel_run_requires_authenticated_same_origin_control_and_is_retry_safe(
+    admin, domain, hosted
+):
+    from evander_browser_sessions_addon.models import RunRequest
+
+    service, _, _ = domain
+    run, _ = service.store.claim_run(
+        hosted.id,
+        "agent:agent-a",
+        RunRequest(
+            request_id="cancel-http", generation=hosted.control_generation, goal="Save account"
+        ),
+        "fingerprint",
+        seconds=30,
+        max_steps=1,
+    )
+    path = "/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/cancel-run"
+    with TestClient(admin[0], base_url="https://control.test") as client:
+        assert client.post(path, json={"run_id": run["id"]}).status_code == 401
+        client.post("/api/auth/login")
+        assert (
+            client.post(
+                path, json={"run_id": run["id"]}, headers={"Origin": "https://evil.test"}
+            ).status_code
+            == 403
+        )
+        result = client.post(path, json={"run_id": run["id"]})
+        assert result.status_code == 200
+        assert result.json()["status"] == "cancelled"
+        generation = service.store.get(hosted.id).control_generation
+        assert client.post(path, json={"run_id": run["id"]}).json()["status"] == "cancelled"
+        assert service.store.get(hosted.id).control_generation == generation

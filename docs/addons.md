@@ -211,6 +211,13 @@ def register_addon():
     }
 ```
 
+A tool catalog descriptor may set `audit_metadata_only: true` when its arguments
+or results contain private page contents or literal input values. Gateway audit
+still records the tool, owning session, decision, timing and canonical correlation
+identifiers; it omits argument/result payloads and raw error text before writing
+the JSONL log or audit index. The default is false. This option never suppresses
+the audit event itself and does not change execution or authorization.
+
 An `mcp_tool_catalog` entry for read-only public metadata discovery can declare
 `discovery_for`, a list of other tool names in the same add-on catalog. A session with an explicit
 grant to one of those tools also receives the discovery tool, unless directory policy denies that

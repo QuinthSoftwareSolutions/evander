@@ -46,6 +46,7 @@ class Bindings:
     def __init__(self, runtime_dir, service):
         self.runtime_dir, self.service = Path(runtime_dir), service
         self.runtime = getattr(service, "runtime", None) or service
+        self._classification_admin = None
 
     def parent(self, session_id, tool=None):
         if self.runtime is None or not hasattr(self.runtime, "policy"):
@@ -71,6 +72,19 @@ class Bindings:
             or metadata.get("native_thread_id")
             or metadata.get("thread_id"),
         )
+
+    def classifier(self, directory):
+        from evander.admin.composition import build_admin_runtime
+
+        if self._classification_admin is None:
+            components = getattr(self.service, "_components", None) or getattr(
+                self.service, "components", None
+            )
+            if components is None:
+                components = build_admin_runtime(self.runtime_dir)
+            self._classification_admin = components.classification_admin
+        admin = self._classification_admin
+        return admin.service, admin.resolver.resolve_for_directory(directory).classification
 
     def admin(self):
         for candidate in (self.service, getattr(self.service, "vm_agent_admin", None)):
@@ -205,9 +219,9 @@ ACTION_CONFLICTS = {
     "unsupported_target": "This target is inside a protected frame or cannot be edited in compatibility mode; choose an application element",
     "compatibility_unsupported": "This action needs native browser input; complete it locally or use normal sharing mode",
     "capture_unavailable": "Shared tab video is unavailable; reconnect the sharing session",
-
     "invalid_coordinates": "The target is outside the visible page; scroll it into view and observe again",
     "stale_observation": "The page changed; observe it again before interacting",
+    "stale_target": "The target changed before input; observe the page again before interacting",
     "stale_control": "Browser control changed; read session status and observe again",
     "control_required": "Browser control has not been granted",
     "origin_denied": "The page is outside the approved application; the local host must approve its origin",
@@ -296,6 +310,8 @@ class Service:
         settings = self.store.settings(session.directory)[1]
         payload = session.model_dump()
         payload.pop("source", None)
+        payload.update(self.store.run_status(session.id))
+        payload["endpoint_features"] = self.store.endpoint_features(session.id)
         payload["viewer_url"] = (
             settings.public_base_url + "/addons/browser-sessions-addon/view/" + session.id
             if session.mode != "user_hosted"
@@ -623,12 +639,12 @@ class Service:
         self.store.audit(session_id, actor, "screenshot_saved", {"artifact_id": record.artifact_id})
         return record.model_dump(mode="json")
 
-    def command(self, session_id, actor, command: BrowserCommand, *, agent=False):
+    def command(self, session_id, actor, command: BrowserCommand, *, agent=False, run_id=None):
         session = self.store.get(session_id)
         self.settings(session.directory)
         self.store.active(session)
         authorize_command(session, actor, command, agent=agent)
-        self.store.record_command(session_id, actor, command)
+        self.store.record_command(session_id, actor, command, run_id=run_id)
         private = self.store.private(session_id)
         settings = self.store.settings(session.directory)[1]
         peer = self.peer_factory(
@@ -639,8 +655,10 @@ class Service:
             result = peer.call(
                 "POST",
                 "/internal/sessions/" + session_id + "/command",
-                {"actor": actor, "command": command.model_dump()},
-                timeout=35,
+                {"actor": actor, "command": command.model_dump(), "run_id": run_id},
+                timeout=min(35, max(0.05, command.deadline_at - self.now()))
+                if command.deadline_at
+                else 35,
             )
             self.store.finish_command(command.id, "completed")
             if not command.observing:
@@ -651,9 +669,21 @@ class Service:
                     kind="activity",
                 )
             return result
-        except BrowserError:
-            self.store.finish_command(command.id, "unknown")
+        except BrowserError as exc:
+            self.store.finish_command(
+                command.id, "not_applied" if exc.code == "stale_target" else "unknown"
+            )
             raise
+
+    def run(self, agent, session_id, request):
+        from .execution import BrowserRun
+
+        return BrowserRun(self).execute(agent, session_id, request)
+
+    def cancel_run(self, session_id, actor, run_id=None):
+        value = self.store.cancel_run(session_id, actor, run_id)
+        self.sync(session_id)
+        return value
 
     def bind_conversation(self, session, *, required):
         resolve = getattr(self.bindings, "resolve_conversation", None)

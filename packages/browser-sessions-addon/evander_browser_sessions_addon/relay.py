@@ -71,10 +71,11 @@ class Broker:
                     queue.get_nowait()
             queue.put_nowait(payload)
 
-    async def execute(self, session_id, actor, command):
+    async def execute(self, session_id, actor, command, run_id=None):
         session = self.store.get(session_id)
         self.store.active(session)
         authorize_command(session, actor, command, agent=actor.startswith("agent:"))
+        self.store.command_access(session_id, actor, run_id)
         endpoint = self.endpoints.get(session_id)
         if endpoint is None:
             raise BrowserError(
@@ -100,7 +101,12 @@ class Broker:
                     "command": command.model_dump(),
                 }
             )
-            return await asyncio.wait_for(future, 30)
+            seconds = (
+                min(30, max(0.01, command.deadline_at - self.service.now()))
+                if command.deadline_at
+                else 30
+            )
+            return await asyncio.wait_for(future, seconds)
         except (TimeoutError, WebSocketDisconnect, RuntimeError):
             raise BrowserError(
                 "Browser action outcome is unknown; observe before retrying", "outcome_unknown", 409
@@ -135,6 +141,9 @@ class Broker:
             if old:
                 await old.close(code=1012)
             self.endpoints[session_id] = websocket
+            self.store.endpoint_features(
+                session_id, hello.get("features") if isinstance(hello.get("features"), dict) else {}
+            )
             if session.state == "disconnected":
 
                 def reconnect(value):
@@ -241,6 +250,7 @@ class Broker:
             if session_id and self.endpoints.get(session_id) is websocket:
                 self.endpoints.pop(session_id, None)
                 self.latest.pop(session_id, None)
+                self.store.endpoint_features(session_id, {})
                 session = self.store.get(session_id)
                 if session.state in {"starting", "ready", "paused", "disconnected"}:
 
@@ -360,6 +370,13 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
                     host=True,
                 )
                 await broker.publish(session.id, {"kind": "state", "session": result})
+            elif request.method == "POST" and action == "cancel-run":
+                payload = await read_json(request)
+                if capability["principal"] != session.host_principal:
+                    raise BrowserError("Local browser owner changed", "forbidden", 403)
+                result = await asyncio.to_thread(
+                    service.cancel_run, session.id, capability["principal"], payload.get("run_id")
+                )
             elif request.method == "POST" and action == "message":
                 payload = MessageRequest.model_validate(await read_json(request))
                 result = service.enqueue_message(session.id, capability["principal"], payload)
@@ -493,7 +510,9 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
                 raise BrowserError("Unknown relay operation", "not_found", 404)
             payload = await read_json(request)
             command = BrowserCommand.model_validate(payload["command"])
-            result = await broker.execute(session_id, str(payload["actor"]), command)
+            result = await broker.execute(
+                session_id, str(payload["actor"]), command, payload.get("run_id")
+            )
             return JSONResponse(result)
         except (BrowserError, ValueError, KeyError, ValidationError) as exc:
             return error(exc)
@@ -524,9 +543,12 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
         )
 
     helper_packages = {
-        "win-x64": "Windows x64", "win-arm64": "Windows ARM64",
-        "linux-x64": "Linux x64", "linux-arm64": "Linux ARM64",
-        "osx-x64": "macOS Intel", "osx-arm64": "macOS Apple Silicon",
+        "win-x64": "Windows x64",
+        "win-arm64": "Windows ARM64",
+        "linux-x64": "Linux x64",
+        "linux-arm64": "Linux ARM64",
+        "osx-x64": "macOS Intel",
+        "osx-arm64": "macOS Apple Silicon",
     }
 
     async def helper_download(request):

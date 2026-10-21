@@ -3,6 +3,7 @@ import { messageDelivery } from "../web/message-delivery.js";
 import { VoiceControls, voiceJson } from "../web/voice-controls.js";
 import { prepareMicrophone } from "./microphone.js";
 declare const chrome: any;
+let activeRunId: string | undefined;
 const $ = (id: string) => document.getElementById(id)!;
 let after = 0;
 let sessionId: string | null = null;
@@ -88,10 +89,13 @@ async function refresh() {
       $("voice-controls").querySelector<HTMLInputElement>("[data-voice-replies]")!.checked = false;
     }
     if (!result.session) return;
+    activeRunId=result.session.active_run?.id;
+    $("run-progress").hidden=!activeRunId; $("stop-run").hidden=!activeRunId;
+    $("run-progress").textContent="Truman is working · "+(result.session.active_run?.step_count ?? 0)+" steps";
     $("title").textContent = result.session.title;
     $("shared-origin").textContent = "Sharing " + (result.session.current_url ? new URL(result.session.current_url).origin : "the selected tab");
     $("status").textContent = !result.connected ? "Disconnected — agent control is paused" :
-      result.granted ? "Truman may interact with this tab" : "Observe only — you control this tab";
+      result.granted && result.session.controller?.startsWith("agent:") ? "Truman may interact with this tab" : "Observe only — you control this tab";
     $("compatibility").hidden = result.mode !== "compatibility";
     if (result.mode === "helper") $("status").textContent += " · Local helper";
     $("compatibility").textContent = "Compatibility mode keeps your other extensions active. Native browser dialogs and pages requiring trusted input need normal mode.";
@@ -163,3 +167,5 @@ $("invitation").addEventListener("input", () => {
     link.href = url.origin + "/_browser/helper"; link.hidden = false; $("helper-link-hint").hidden = true;
   } catch {}
 });
+
+$("stop-run").addEventListener("click",()=>{ if (activeRunId) void call({kind:"cancel-run"}).then(refresh).catch(failure); });

@@ -3311,4 +3311,6 @@ The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) prov
 
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](../packages/browser-sessions-addon/docs/voice.md).
 
+Optional [multi-step decision execution](../packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
+
 The managed Admin Web Caddy role discovers the optional browser relay through evander_admin_web_browser_relay_environment_file (default /etc/evander/browser-relay.env). evander_admin_web_browser_relay_enabled overrides discovery; evander_admin_web_browser_relay_upstream_host and evander_admin_web_browser_relay_upstream_port select the private upstream (default 127.0.0.1:11890).

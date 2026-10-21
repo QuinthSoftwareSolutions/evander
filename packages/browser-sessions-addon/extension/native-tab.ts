@@ -9,6 +9,8 @@ const errors: Record<string, string> = {
 export class NativeTab {
   private port: any;
   private sequence = 0;
+  fastExecution = false;
+  commandDeadline: number | undefined;
   private epoch = 0;
   private closed = false;
   private opened = false;
@@ -59,6 +61,8 @@ export class NativeTab {
     });
   }
   async open(target: string) {
+    const info = await this.request({kind:"ping"});
+    this.fastExecution = info.features?.fast_execution === 1;
     await this.request({ kind: "open", target_id: target, state: this.state }, 85000);
     this.opened = true;
   }
@@ -67,7 +71,8 @@ export class NativeTab {
     if (this.opened && !this.closed) void this.request({ kind: "state", state }).catch(() => this.fail(errors.helper_unavailable));
   }
   send(method: string, params: any = {}) {
-    return this.request({ kind: "command", method, params, generation: this.state.control_generation, epoch: this.epoch });
+    return this.request({ kind: "command", method, params, generation: this.state.control_generation, epoch: this.epoch,
+      ...(method !== "Page.screencastFrameAck" && this.commandDeadline ? {deadline_at:this.commandDeadline} : {}) });
   }
   close(reason = "disconnected") {
     if (this.closed) return;

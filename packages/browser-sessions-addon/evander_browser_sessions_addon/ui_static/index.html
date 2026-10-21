@@ -25,6 +25,12 @@
 <div class="section-heading"><h3 id="workers-heading">Workers</h3><button id="add-worker" type="button" class="quiet">Add worker</button></div><div id="workers"></div></section>
 <section class="settings-section" aria-labelledby="profiles-heading">
 <div class="section-heading"><h3 id="profiles-heading">Launch profiles</h3><button id="add-profile" type="button" class="quiet">Add profile</button></div><div id="profiles"></div></section>
+<section class="settings-section" aria-labelledby="fast-heading"><h3 id="fast-heading">Faster browser actions</h3>
+<div class="settings-toggles"><label class="check"><input type="checkbox" id="fast-enabled">Enable multi-step decision execution</label></div>
+<div class="form-grid">
+<label>Maximum steps<input id="fast-steps" type="number" min="1" max="40" value="20"></label>
+<label>Time limit (seconds)<input id="fast-seconds" type="number" min="1" max="60" value="30"></label>
+</div><p class="muted">Uses the directory’s decision provider. The assistant supplies input values and verifies the result.</p></section>
 <section class="settings-section" aria-labelledby="voice-heading"><h3 id="voice-heading">Voice</h3>
 <div class="settings-toggles"><label class="check"><input type="checkbox" id="voice-enabled">Enable voice for this directory</label></div>
 <div class="form-grid">
@@ -40,11 +46,12 @@
 <div class="form-actions"><button>Save settings</button><span id="settings-status" role="status"></span></div></form></section></main>
 <main id="workspace" class="workspace" hidden><section class="browser-area" aria-label="Shared browser">
 <div class="browser-toolbar" aria-label="Browser controls"><div class="session-details"><div class="session-summary">
-<h1 id="session-title">Connecting…</h1><span id="status" class="status" role="status">Connecting</span></div>
+<h1 id="session-title">Connecting…</h1><span id="status" class="status" role="status">Connecting</span><span id="run-progress" class="muted" role="status" hidden></span></div>
 <span id="application-url" class="application-url"></span></div><div class="toolbar-actions">
 <button id="point" class="quiet" aria-pressed="false">Point to something</button>
 <button id="claim" aria-pressed="false" disabled>Take control</button>
 <button id="pause" class="quiet">Pause agent</button>
+<button id="stop-run" class="quiet" hidden>Stop current task</button>
 <button id="extend" class="quiet">Keep active</button><button id="close" class="danger quiet">End session</button>
 </div>
 <p id="control-help" class="sr-only">You are watching. Take control to use the application.</p>

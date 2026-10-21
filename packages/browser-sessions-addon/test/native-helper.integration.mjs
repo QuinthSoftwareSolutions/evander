@@ -75,6 +75,11 @@ test("native helper controls the selected tab with trusted input while another e
     await f.api(host.path + "/command", command(state, "click", { observation_id: observed.observation_id,
       ref: observed.elements.find(value => value.role === "button").ref }));
     assert.equal(await host.application.locator("#result").textContent(), "Copper alloy added");
+    assert.equal((await f.api(host.path+"/state")).endpoint_features.fast_execution,1);
+    const run=await f.api(host.path+"/run",{request_id:"fast-helper",generation:state.control_generation,
+      goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
+    assert.equal(run.status,"needs_verification",run.reason);
+    assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
     assert.deepEqual(await host.application.evaluate(() => [...new Set(window.trustedKeys)]), [true]);
     assert.equal(await host.application.locator("#protected").count(), 1);
     await host.application.evaluate(() => { document.body.style.minHeight = "3000px";
@@ -153,6 +158,10 @@ test("helper independently rejects ungranted input, arbitrary CDP, stale generat
     assert.equal((await invoke("Page.navigate", { url: "https://unapproved.example/" })).error, "origin_denied");
     assert.equal(host.application.url(), f.base + "/application");
     assert.equal(await host.application.locator("input").inputValue(), "");
+    const expiredRun=await wire.request({kind:"command",method:"Input.insertText",params:{text:"blocked by deadline"},
+      generation:state.control_generation,epoch:wire.epoch,deadline_at:Date.now()/1000-1});
+    assert.equal(expiredRun.error,"run_deadline");
+    assert.equal(await host.application.locator("input").inputValue(),"");
     assert.equal((await invoke("Input.insertText", { text: "allowed" })).ok, true);
     assert.equal(await host.application.locator("input").inputValue(), "allowed");
     state.expires_at = Date.now() / 1000 + 0.25;
@@ -218,6 +227,10 @@ test("helper observations and streaming fit native messages on a detailed full-H
         pixels.data[offset + 2] = (seed >>> 16) & 255; pixels.data[offset + 3] = 255;
       }
       paint.putImageData(pixels, 0, 0);
+      // Keep generating frames while the helper adapts capture size. A static
+      // canvas can otherwise finish painting before the stream probe starts.
+      let tick=0;
+      setInterval(()=>{paint.fillStyle=(++tick%2) ? "#ffffff" : "#000000";paint.fillRect(0,0,4,4);},100);
     });
     const debuggerSession = await host.context.newCDPSession(host.application);
     const oversized = await debuggerSession.send("Page.captureScreenshot", { format: "jpeg", quality: 65 });
@@ -225,7 +238,13 @@ test("helper observations and streaming fit native messages on a detailed full-H
     await debuggerSession.detach();
     const observed = await f.api(host.path + "/command", command(state, "observe"));
     assert.ok(observed.image.length > 100000 && observed.image.length <= 800000);
-    await until(() => host.worker.evaluate(() => globalThis.__helperFrameSizes.some(size => size > 100000)), "detailed helper stream");
+    try {
+      await until(() => host.worker.evaluate(() => globalThis.__helperFrameSizes.some(size => size > 100000)), "detailed helper stream");
+    } catch (error) {
+      const sizes=await host.worker.evaluate(()=>globalThis.__helperFrameSizes.slice(-20));
+      const state=await host.send({kind:"state"});
+      throw new Error(error.message+" "+JSON.stringify({sizes,connected:state.connected,mode:state.mode,state:state.session?.state}));
+    }
     const sizes = await host.worker.evaluate(() => globalThis.__helperFrameSizes);
     assert.ok(sizes.every(size => size <= 800000));
     assert.equal((await host.send({ kind: "state" })).connected, true);

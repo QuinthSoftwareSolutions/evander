@@ -63,7 +63,7 @@ let streaming = false;
 async function join() {
   streaming = false;
   socket = new WebSocket(config.relay_url.replace(/^http/, "ws"));
-  socket.addEventListener("open", () => send({ kind: "authenticate", version: 1, token: config.endpoint_token }));
+  socket.addEventListener("open", () => send({ kind: "authenticate", version: 1, token: config.endpoint_token, features:{fast_execution:1} }));
   socket.addEventListener("error", () => socket?.close());
   socket.addEventListener("message", (event) => {
     let message: any;

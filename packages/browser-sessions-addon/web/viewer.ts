@@ -68,6 +68,8 @@ function update(value: any) {
   if (session.controller === actor && $("error").dataset.kind === "reminder") dismissNotification();
   $("session-title").textContent = session.title;
   $("session-title").title = session.title;
+  $("stop-run").hidden = !session.active_run; $("run-progress").hidden = !session.active_run;
+  $("run-progress").textContent = "Truman is working · " + (session.active_run?.step_count ?? 0) + " steps";
   $("status").textContent = session.state.replaceAll("_", " ");
   $("status").dataset.state = session.state;
   $("application-url").textContent = session.current_url ?? "Preparing application";
@@ -160,6 +162,7 @@ async function messages() {
   refreshingMessages = true;
   try {
     const result = await api("/sessions/" + sessionId + "/messages?after=" + after);
+    if (result.session) update(result.session);
     let appended = false;
     for (const message of result.messages) {
       after = Math.max(after, message.seq);
@@ -255,6 +258,13 @@ function field(card: HTMLElement, label: string, value: any, updateValue: (value
 }
 function syncAdvanced() { input("advanced-settings").value = JSON.stringify(settings, null, 2); }
 function renderSettings() {
+  settings.fast_execution ??= {enabled:false,max_steps:20,timeout_seconds:30};
+  input("fast-enabled").checked=settings.fast_execution.enabled;
+  input("fast-enabled").onchange=()=>{settings.fast_execution.enabled=input("fast-enabled").checked;syncAdvanced();};
+  for (const [id,key,fallback] of [["fast-steps","max_steps",20],["fast-seconds","timeout_seconds",30]] as const) {
+    input(id).value=String(settings.fast_execution[key] ?? fallback);
+    input(id).oninput=()=>{settings.fast_execution[key]=Number(input(id).value);syncAdvanced();};
+  }
   settings.voice ??= {};
   input("voice-enabled").checked = settings.voice.enabled ?? false;
   input("voice-enabled").onchange = () => { settings.voice.enabled = input("voice-enabled").checked; syncAdvanced(); };
@@ -369,3 +379,5 @@ async function catalog() {
   renderCatalog();
 }
 void (sessionId ? openViewer() : catalog()).catch(showError);
+
+$("stop-run").addEventListener("click",()=>{ if (session?.active_run) void api("/sessions/"+sessionId+"/cancel-run",{}).then(()=>api("/sessions/"+sessionId)).then(update).catch(showError); });
