@@ -181,10 +181,11 @@ export class VoiceControls {
           if (this.autoCapture !== capture || this.disposed) return;
           this.failed = false; this.autoContext = structuredClone(this.context());
           this.autoSpeaking = true; this.stopAudio(); this.say("Recording."); this.renderMicrophone();
-        }, audio => {
+        }, (audio, continuing) => {
           if (this.autoCapture !== capture || this.disposed) return;
-          this.autoSpeaking = false; this.renderMicrophone();
-          if (audio) this.queueClip(audio, this.autoContext); else this.idleStatus();
+          this.autoSpeaking = !!continuing; this.renderMicrophone();
+          if (audio) this.queueClip(audio, this.autoContext);
+          else { this.idleStatus(); void this.play(); }
         });
       if (this.autoCapture === capture) this.idleStatus();
     } catch (error: any) {

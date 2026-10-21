@@ -7,14 +7,23 @@ export class SpeechSegmenter {
   private voiced = 0;
   private quiet = 0;
   private active = false;
+  private continuing = false;
+  private announced = false;
   private floor = 0.002;
   private maximum: number;
   constructor(private rate: number, seconds: number, bytes: number,
-    private started: () => void, private finished: (audio?: Blob) => void) {
-    this.maximum = Math.floor(Math.min(seconds, Math.max(0, bytes - 44) / 32000) * rate);
+    private started: () => void, private finished: (audio?: Blob, continuing?: boolean) => void) {
+    const outputSamples = Math.floor(Math.min(seconds * 16000, Math.max(0, bytes - 44) / 2));
+    this.maximum = Math.floor(outputSamples * rate / 16000);
   }
   push(samples: Float32Array) {
     if (!samples.length || this.maximum < this.rate * 0.2) return;
+    if (this.active && samples.length > this.maximum - this.size) {
+      const remaining = this.maximum - this.size;
+      this.push(samples.subarray(0, remaining));
+      this.push(samples.subarray(remaining));
+      return;
+    }
     let power = 0;
     for (const sample of samples) power += sample * sample;
     const rms = Math.sqrt(power / samples.length);
@@ -32,15 +41,18 @@ export class SpeechSegmenter {
       if (speech) { this.voiced += samples.length; this.quiet = 0; }
       else this.quiet += samples.length;
     }
-    if (this.voiced >= this.rate * 0.12 && this.voiced - (speech ? samples.length : 0) < this.rate * 0.12)
-      this.started();
-    if (this.quiet >= this.rate * 0.9 || this.size >= this.maximum) this.complete();
+    if (!this.announced && this.voiced >= this.rate * 0.12) {
+      this.announced = true; this.started();
+    }
+    if (this.quiet >= this.rate * 0.9) this.complete();
+    else if (this.size >= this.maximum) this.complete(true);
   }
-  private complete() {
-    // Retain a short tail, rather than uploading the whole silence detector interval.
-    const length = Math.min(this.maximum, this.size - Math.max(0, this.quiet - Math.floor(this.rate * 0.15)));
+  private complete(atLimit = false) {
+    // Only trim silence at the end of a phrase, never at an in-phrase clip boundary.
+    const trailingSilence = Math.min(this.quiet, this.size);
+    const length = atLimit ? this.size : this.size - Math.max(0, trailingSilence - Math.floor(this.rate * 0.15));
     let audio: Blob | undefined;
-    if (this.voiced >= this.rate * 0.2 && length > 0) {
+    if ((this.voiced >= this.rate * 0.2 || (this.continuing && this.voiced > 0)) && length > 0) {
       const samples = new Float32Array(length);
       let offset = 0;
       for (const chunk of this.chunks) {
@@ -50,11 +62,17 @@ export class SpeechSegmenter {
       }
       audio = wav(samples, this.rate);
     }
-    this.reset(); this.finished(audio);
+    const continuing = atLimit && !!audio;
+    if (continuing) {
+      this.chunks = []; this.size = 0; this.voiced = 0;
+      this.continuing = true;
+    } else this.reset();
+    this.finished(audio, continuing);
   }
   reset() {
     this.lead = []; this.leadSize = 0; this.chunks = []; this.size = 0;
     this.voiced = 0; this.quiet = 0; this.active = false;
+    this.continuing = false; this.announced = false;
   }
 }
 function wav(samples: Float32Array, sourceRate: number) {
@@ -84,8 +102,8 @@ export class HandsFreeCapture {
   private stopped = false;
   private segmenter?: SpeechSegmenter;
   async start(stream: MediaStream, seconds: number, bytes: number,
-    started: () => void, finished: (audio?: Blob) => void) {
-    const context = this.context = new AudioContext();
+    started: () => void, finished: (audio?: Blob, continuing?: boolean) => void) {
+    const context = this.context = new AudioContext({sampleRate:48000});
     await context.audioWorklet.addModule(new URL("./capture-worklet.js", import.meta.url));
     if (this.stopped) return;
     this.segmenter = new SpeechSegmenter(context.sampleRate, seconds, bytes, started, finished);

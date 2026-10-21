@@ -163,7 +163,8 @@ var SpeechSegmenter = class {
     this.rate = rate;
     this.started = started;
     this.finished = finished;
-    this.maximum = Math.floor(Math.min(seconds, Math.max(0, bytes - 44) / 32e3) * rate);
+    const outputSamples = Math.floor(Math.min(seconds * 16e3, Math.max(0, bytes - 44) / 2));
+    this.maximum = Math.floor(outputSamples * rate / 16e3);
   }
   lead = [];
   leadSize = 0;
@@ -172,10 +173,18 @@ var SpeechSegmenter = class {
   voiced = 0;
   quiet = 0;
   active = false;
+  continuing = false;
+  announced = false;
   floor = 2e-3;
   maximum;
   push(samples) {
     if (!samples.length || this.maximum < this.rate * 0.2) return;
+    if (this.active && samples.length > this.maximum - this.size) {
+      const remaining = this.maximum - this.size;
+      this.push(samples.subarray(0, remaining));
+      this.push(samples.subarray(remaining));
+      return;
+    }
     let power = 0;
     for (const sample of samples) power += sample * sample;
     const rms = Math.sqrt(power / samples.length);
@@ -202,14 +211,18 @@ var SpeechSegmenter = class {
         this.quiet = 0;
       } else this.quiet += samples.length;
     }
-    if (this.voiced >= this.rate * 0.12 && this.voiced - (speech ? samples.length : 0) < this.rate * 0.12)
+    if (!this.announced && this.voiced >= this.rate * 0.12) {
+      this.announced = true;
       this.started();
-    if (this.quiet >= this.rate * 0.9 || this.size >= this.maximum) this.complete();
+    }
+    if (this.quiet >= this.rate * 0.9) this.complete();
+    else if (this.size >= this.maximum) this.complete(true);
   }
-  complete() {
-    const length = Math.min(this.maximum, this.size - Math.max(0, this.quiet - Math.floor(this.rate * 0.15)));
+  complete(atLimit = false) {
+    const trailingSilence = Math.min(this.quiet, this.size);
+    const length = atLimit ? this.size : this.size - Math.max(0, trailingSilence - Math.floor(this.rate * 0.15));
     let audio;
-    if (this.voiced >= this.rate * 0.2 && length > 0) {
+    if ((this.voiced >= this.rate * 0.2 || this.continuing && this.voiced > 0) && length > 0) {
       const samples = new Float32Array(length);
       let offset = 0;
       for (const chunk of this.chunks) {
@@ -220,8 +233,14 @@ var SpeechSegmenter = class {
       }
       audio = wav(samples, this.rate);
     }
-    this.reset();
-    this.finished(audio);
+    const continuing = atLimit && !!audio;
+    if (continuing) {
+      this.chunks = [];
+      this.size = 0;
+      this.voiced = 0;
+      this.continuing = true;
+    } else this.reset();
+    this.finished(audio, continuing);
   }
   reset() {
     this.lead = [];
@@ -231,6 +250,8 @@ var SpeechSegmenter = class {
     this.voiced = 0;
     this.quiet = 0;
     this.active = false;
+    this.continuing = false;
+    this.announced = false;
   }
 };
 function wav(samples, sourceRate) {
@@ -268,7 +289,7 @@ var HandsFreeCapture = class {
   stopped = false;
   segmenter;
   async start(stream, seconds, bytes, started, finished) {
-    const context = this.context = new AudioContext();
+    const context = this.context = new AudioContext({ sampleRate: 48e3 });
     await context.audioWorklet.addModule(new URL("./capture-worklet.js", import.meta.url));
     if (this.stopped) return;
     this.segmenter = new SpeechSegmenter(context.sampleRate, seconds, bytes, started, finished);
@@ -522,12 +543,15 @@ var VoiceControls = class {
           this.say("Recording.");
           this.renderMicrophone();
         },
-        (audio) => {
+        (audio, continuing) => {
           if (this.autoCapture !== capture || this.disposed) return;
-          this.autoSpeaking = false;
+          this.autoSpeaking = !!continuing;
           this.renderMicrophone();
           if (audio) this.queueClip(audio, this.autoContext);
-          else this.idleStatus();
+          else {
+            this.idleStatus();
+            void this.play();
+          }
         }
       );
       if (this.autoCapture === capture) this.idleStatus();
