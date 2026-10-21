@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from importlib.resources import files
 from typing import Annotated
 
 from pydantic import Field
@@ -13,21 +14,28 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from evander.addons import AddonMcpTool
 from evander.gateway.session_context import _resolve_session_id_from_context
 
-from .models import IDENTIFIER, BrowserCommand, BrowserError, CreateRequest, RunRequest
+from .models import (
+    IDENTIFIER,
+    BrowserCommand,
+    BrowserError,
+    CreateRequest,
+    LaunchManifest,
+    RunRequest,
+)
 from .service import Service
 
 TOOLS = {
-    "browser_session_profiles": "List approved preview profile names and modes for this agent's directory.",
+    "browser_session_profiles": "List approved preview profiles and modes for this agent's directory, with the add-on's operating guide and launch-manifest schema. Read this before preparing a hosted preview. The guide applies to every authorized agent role.",
     "browser_session_workspaces": "List opaque workspace references on this agent's pinned worker. Write a repo-local launch manifest before creating a hosted preview.",
-    "browser_session_create": "Create a hosted demo, hosted development preview or local Chrome session for this agent. Local sharing starts with observation; the user must grant input. Reuse request_id for safe retries.",
+    "browser_session_create": "Create a hosted demo, hosted development preview or local Chrome session owned by this agent. Returns agent_guidance for setup, sharing, control, chat and fast execution. Discover profiles/workspaces and prepare a repo-local launch manifest for hosted sessions. Local sharing starts with observation; the user must grant input. Reuse request_id for safe retries.",
     "browser_session_invite": "Issue a short-lived single-use invitation for the local Chrome host. Hosted links always require Admin UI sign-in.",
-    "browser_session_status": "Read shared browser state, control generation, expiry and viewer URL. Does not renew activity.",
+    "browser_session_status": "Read this agent's shared browser state, control generation, active/last run, endpoint features, expiry and viewer URL. Set include_guidance=true when joining an existing task to read the add-on's complete operating guide. Does not renew activity.",
     "browser_session_observe": "Observe the current approved page: screenshot and accessible element references. Does not save a recording.",
     "browser_session_act": "Perform a bounded browser action using a fresh observation and control generation. Use type for character keystrokes (including scanner input), fill to replace a referenced text field, and key for Enter or other supported keys. Never replay an action whose outcome is unknown.",
     "browser_session_highlight": "Show the agent's pointer at an observed element or point without taking control.",
     "browser_session_reply": "Send progress updates and replies to a browser-chat message in its original transcript, as often as needed. Use the supplied message_id. Give each outgoing reply a fresh request_id; reuse it only to retry that identical reply to the same message. Omitting request_id deduplicates identical text for that message.",
     "browser_session_save_screenshot": "Explicitly retain one current screenshot as a normal expiring artifact.",
-    "browser_session_run": "Execute a short multi-step browser goal using the directory decision provider. Prefer this over individual action calls for multi-step objectives when enabled. Supply exact named text values; never put secrets in the goal. Reuse request_id only to read its receipt, never replay uncertain actions. The PA must verify the final observation (or observe again if observation_current is false) before claiming success. Stop/pause cancels the objective; do not resume without a new user instruction.",
+    "browser_session_run": "Execute a short multi-step UI objective using the directory decision provider when enabled and supported by the endpoint. Use direct tools for a single known action. Resolve domain choices and author all text first, then supply every exact literal in request.values as {name: {description, value, sensitive}}; include an empty-string value to clear a field. Text in the goal alone cannot be entered. The loop selects actions and supplied inputs; it cannot write instructions or invent missing text. Split large tasks into bounded objectives; default caps are 20 steps/30 seconds and absolute maxima are 40/60. Use current control_generation. Reuse request_id with identical arguments only to read its receipt. Inspect needs_pa and outcome_unknown before continuing; never replay uncertain actions. You must verify the resulting page before claiming success, observing again if observation_current is false or no observation was returned. Stop/pause cancels the objective; wait for a new user instruction before resuming. Read browser_session_status with include_guidance=true for the full operating guide.",
     "browser_session_cancel_run": "Stop this agent's active browser objective and pause agent input. Safe to repeat. Does not undo already issued input.",
     "browser_session_close": "Close this agent's preview and release its dependent resources.",
 }
@@ -44,6 +52,18 @@ MCP_TOOL_CATALOG = tuple(
     )
     for name, description in TOOLS.items()
 )
+
+
+def with_guidance(result):
+    return {
+        **result,
+        "agent_guidance": {
+            "instructions": files(__package__)
+            .joinpath("agent-guide.md")
+            .read_text(encoding="utf-8"),
+            "launch_manifest_schema": LaunchManifest.model_json_schema(),
+        },
+    }
 
 
 def register_mcp_tools(server, context):
@@ -66,14 +86,16 @@ def register_mcp_tools(server, context):
         def run(agent):
             parent = service.bindings.parent(agent)
             settings = service.settings(parent.directory)[1]
-            return {
-                "profiles": [
-                    {"id": key, "database_enabled": value.database_enabled}
-                    for key, value in settings.profiles.items()
-                ],
-                "modes": ["hosted_demo", "hosted_development"]
-                + (["user_hosted"] if settings.guest_enabled else []),
-            }
+            return with_guidance(
+                {
+                    "profiles": [
+                        {"id": key, "database_enabled": value.database_enabled}
+                        for key, value in settings.profiles.items()
+                    ],
+                    "modes": ["hosted_demo", "hosted_development"]
+                    + (["user_hosted"] if settings.guest_enabled else []),
+                }
+            )
 
         return invoke(ctx, "browser_session_profiles", run)
 
@@ -83,7 +105,11 @@ def register_mcp_tools(server, context):
 
     @server.tool(description=TOOLS["browser_session_create"])
     def browser_session_create(request: CreateRequest, ctx: Context) -> dict:
-        return invoke(ctx, "browser_session_create", lambda agent: service.create(agent, request))
+        return invoke(
+            ctx,
+            "browser_session_create",
+            lambda agent: with_guidance(service.create(agent, request)),
+        )
 
     @server.tool(description=TOOLS["browser_session_invite"])
     def browser_session_invite(browser_session_id: str, ctx: Context) -> dict:
@@ -94,13 +120,19 @@ def register_mcp_tools(server, context):
         return invoke(ctx, "browser_session_invite", run)
 
     @server.tool(description=TOOLS["browser_session_status"])
-    def browser_session_status(browser_session_id: str, ctx: Context) -> dict:
+    def browser_session_status(
+        browser_session_id: str, ctx: Context, include_guidance: bool = False
+    ) -> dict:
+        def run(agent):
+            result = service.receipt(
+                service.agent_session(agent, browser_session_id, "browser_session_status")
+            )
+            return with_guidance(result) if include_guidance else result
+
         return invoke(
             ctx,
             "browser_session_status",
-            lambda agent: service.receipt(
-                service.agent_session(agent, browser_session_id, "browser_session_status")
-            ),
+            run,
         )
 
     def execute(agent, session_id, name, command):

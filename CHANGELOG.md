@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 - Preserve valid browser decisions and publish agent operating guidance (0.114.1)
+
+- Offer explicit no-key/no-scroll choices for irrelevant batched decision questions, avoiding refusals caused by missing applicable answers. Keep probability thresholds and provider validation, and reject missing keys/directions before issuing input.
+- Explain exact named input values, prewritten text, empty-string clearing, bounded objectives and final verification in tool descriptions, argument schemas and missing-input results. Identify the relevant choice and probability when a decision falls below its threshold.
+- Package an application-neutral operating guide with the add-on. Any authorized agent receives it through profile discovery and session creation, or requests it from status without depending on personal-assistant prompts. Include the launch-manifest schema and cover hosting, local Chrome, control handover, chat, recovery and cleanup.
+- Publish Browser Sessions server package 0.8.1. Chrome extension and native helper versions are unchanged.
+
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
 - Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, lossless boundaries between bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.

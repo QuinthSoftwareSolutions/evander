@@ -178,18 +178,58 @@ class FastExecutionSettings(Contract):
 
 class RunValue(Contract):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
-    description: str = Field(min_length=1, max_length=400)
-    value: str = Field(max_length=16384)
-    sensitive: bool = False
+    description: str = Field(
+        min_length=1,
+        max_length=400,
+        description="Explain which field or purpose this exact input serves, so the decision model can select it.",
+    )
+    value: str = Field(
+        max_length=16384,
+        description="Literal text to enter, preserving whitespace. Supply an empty string to clear a field.",
+    )
+    sensitive: bool = Field(
+        default=False,
+        description="Mask this literal from the decision provider and returned observations. Never put secrets in the goal.",
+    )
 
 
 class RunRequest(Contract):
-    request_id: str = Field(pattern=IDENTIFIER)
-    generation: int = Field(ge=0)
-    goal: str = Field(min_length=1, max_length=4000)
-    values: dict[str, RunValue] = Field(default_factory=dict, max_length=200)
-    max_steps: int | None = Field(default=None, ge=1, le=40)
-    timeout_seconds: float | None = Field(default=None, ge=1, le=60, allow_inf_nan=False)
+    request_id: str = Field(
+        pattern=IDENTIFIER,
+        description="Fresh identity for this objective. Reuse only with identical arguments to read its existing receipt, never to replay it.",
+    )
+    generation: int = Field(
+        ge=0, description="Current control_generation from this browser session's status."
+    )
+    goal: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="Short, concrete UI objective. Resolve domain choices and author all text before calling; put every text literal in values. Completion requires your verification.",
+    )
+    values: dict[str, RunValue] = Field(
+        default_factory=dict,
+        max_length=200,
+        description="Named exact inputs for every fill/type action. Text in the goal alone is not available for entry. Include text you authored beforehand and an empty-string input if a field must be cleared. Omit only for objectives needing no text entry.",
+        examples=[
+            {
+                "filter": {"description": "Search filter text", "value": "Example"},
+                "clear": {"description": "Clear the search field after checking it", "value": ""},
+            }
+        ],
+    )
+    max_steps: int | None = Field(
+        default=None,
+        ge=1,
+        le=40,
+        description="Optional lower step budget, bounded by the directory cap (default 20).",
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        ge=1,
+        le=60,
+        allow_inf_nan=False,
+        description="Optional lower time budget in seconds, bounded by the directory cap (default 30, maximum 60).",
+    )
 
     @field_validator("values")
     @classmethod
