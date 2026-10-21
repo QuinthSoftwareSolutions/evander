@@ -1560,7 +1560,7 @@ def test_workflow_catalog_effect_session_reset_context(catalog_payload) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:session:reset-context"
     )
     fields = {field["key"]: field for field in reset["fields"]}
-    assert set(fields) == {"target", "conversation_key", "request_id", "communication_target_id"}
+    assert set(fields) == {"target", "conversation_key", "request_id"}
     assert all(
         field["kind"] == "string" and field["bindable"] and field["required"]
         for field in fields.values()

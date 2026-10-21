@@ -1,8 +1,9 @@
 # Conversation context reset
 
-A workflow can reset one Teams assistant conversation before its next turn.
-An active turn finishes normally. Queued requests retain their text, order and
-delivery identities. The next eligible dispatch creates a fresh provider thread;
+A workflow can reset one assistant conversation before its next turn. The reset
+effect is independent of communication providers; the prepared personal-assistant
+workflow integrates Teams. An active turn finishes normally. Queued requests
+retain their text, order and delivery identities. The next eligible dispatch creates a fresh provider thread;
 later turns resume that thread. The model, workspace files, installed tools,
 saved preferences and persistent memory remain available.
 
@@ -13,21 +14,32 @@ Use `effect:session:reset-context` with these bindable string fields:
 | Field | Meaning |
 | --- | --- |
 | `target` | The assistant session selected by the host's user mapping. |
-| `conversation_key` | The same key used by prompt enqueue and resume metadata: `teams:<normalized-target>:agent_thread_id`. |
+| `conversation_key` | An opaque key within the selected session, matching prompt enqueue and resume metadata. |
 | `request_id` | A stable source-message identity, reused for retries. |
-| `communication_target_id` | A directory-scoped Teams target readable by the selected session. |
 
-The effect checks the workflow directory, session policy, configured target and
-conversation key before recording the reset. It returns `success`, `session_id`,
-`conversation_key`, `generation`, `pending` and `duplicate`. A duplicate returns
-the original receipt without clearing a newer accepted thread.
+The effect resolves the session within the workflow's directory scope and checks
+that the conversation key and request ID are non-empty. Conversation identities
+are scoped by the pair `(session_id, conversation_key)`. A caller may reset a
+conversation before it has a saved thread, without configuring a communication
+target. It returns `success`, `session_id`, `conversation_key`, `generation`,
+`pending` and `duplicate`. A duplicate returns the original receipt without
+clearing a newer accepted thread.
+
+The calling workflow or communication adapter selects and authorizes the incoming
+message's conversation binding. The prepared Teams workflow validates its target,
+session permission and `teams:<normalized-target>:agent_thread_id` key through
+`query:communication:messages` before invoking the reset, including for exact
+`!RESET` commands. A binding failure stops the reset and accompanying task.
+Confirmation delivery remains a separate communication effect.
 
 Recording a reset clears only the corresponding `agent_thread_ids` entry.
 Once a conversation has been reset, the context tables in
 `runtime/agent-message-deliveries.db` own its resume pointer. Session metadata is
 a compatibility mirror. Late completions from older generations cannot restore
 their pointer. A canonical context row is added on the first reset; admitted
-launches have separate receipts that preserve their original context.
+launches have separate receipts that preserve their original context. Existing
+receipt origin columns are retained for database compatibility; reset identity
+and replay no longer require a communication target.
 
 The reset remains pending until a new native thread is observed. Admission,
 worker acceptance without a native thread, failed launches and restarts do not

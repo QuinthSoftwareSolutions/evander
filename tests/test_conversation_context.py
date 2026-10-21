@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from evander.admin.composition import build_admin_runtime
+from evander.integration_services.teams import teams_conversation_key
 from evander.conversation_context import (
     ConversationContextStore,
     launch_context,
     reject_launch_context,
-    teams_conversation_key,
 )
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
@@ -41,7 +41,6 @@ def reset(store, request_id="request-1", session_id="session-1", key=KEY):
         session_id=session_id,
         conversation_key=key,
         request_id=request_id,
-        communication_target="chat:one",
     )
 
 
@@ -93,7 +92,6 @@ def test_provider_records_reset_only_for_bound_session_and_keeps_configuration(t
             target="session-1",
             conversation_key=KEY,
             request_id="message-1",
-            communication_target_id="assistant-chat",
         ),
         EffectRuntimeContext(session_context_resetter=AdminRuntimeProviderAdapter(admin)),
     )
@@ -110,7 +108,7 @@ def test_provider_records_reset_only_for_bound_session_and_keeps_configuration(t
 @pytest.mark.parametrize(
     "changes",
     [
-        {"conversation_key": teams_conversation_key("chat:other")},
+        {"conversation_key": " "},
         {"directory_path": "root/another-team"},
         {"target": "missing"},
         {"request_id": ""},
@@ -124,7 +122,6 @@ def test_reset_rejects_wrong_conversation_scope_and_missing_identity(tmp_path, c
                 "target": "session-1",
                 "conversation_key": KEY,
                 "request_id": "one",
-                "communication_target_id": "assistant-chat",
                 **changes,
             }
         )
@@ -141,7 +138,6 @@ def test_retry_and_restart_do_not_reset_a_newly_accepted_thread(tmp_path):
         target="session-1",
         conversation_key=KEY,
         request_id="request-1",
-        communication_target_id="assistant-chat",
     )
     service.reset_context(**command)
     store = ConversationContextStore(admin.runtime_dir)
@@ -171,7 +167,6 @@ def test_late_completion_cannot_restore_manifest_or_canonical_pointer(tmp_path):
         target="session-1",
         conversation_key=KEY,
         request_id="one",
-        communication_target_id="assistant-chat",
     )
     worker = SimpleNamespace(
         config=admin.config,
@@ -381,11 +376,11 @@ def test_context_query_bindings_are_paired_schema_inputs():
             context_session_id="session-1",
         )
     schema = SessionResetContextEffectDefinition.model_json_schema()
+    assert "communication_target_id" not in schema["properties"]
     assert set(schema["required"]) >= {
         "target",
         "conversation_key",
         "request_id",
-        "communication_target_id",
     }
 
 
@@ -445,3 +440,173 @@ def test_confirmed_rejection_recaptures_history_and_cannot_release_a_newer_gener
     assert recovered["generation"] == 2 and recovered["history_after"] == current["history_after"]
     assert store.accept_thread("session-1", KEY, 2, "fresh-thread")
     assert launch_context(tmp_path, "session-1", KEY, "next")["thread_id"] == "fresh-thread"
+
+
+@pytest.mark.parametrize("thread_id", [None, "old-browser-thread"])
+def test_reset_accepts_an_opaque_conversation_without_communication_configuration(tmp_path, thread_id):
+    admin = build_admin_runtime(tmp_path / "runtime")
+    key = "browser:conversation-one"
+    threads = {"other": "keep-thread"}
+    if thread_id:
+        threads[key] = thread_id
+    admin.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="browser-assistant",
+            allowed_tools=[],
+            expires_at="2099-01-01T00:00:00Z",
+            metadata={"agent_thread_ids": threads},
+        )
+    )
+    other_session = SessionManifest(
+        session_id="second-assistant",
+        allowed_tools=[],
+        expires_at="2099-01-01T00:00:00Z",
+        metadata={"agent_thread_ids": {key: "second-assistant-thread"}},
+    )
+    admin.runtime.session_repository.upsert_session(other_session)
+    provider = SessionResetContextEffectProvider()
+    provider.initialize(
+        SessionResetContextEffectDefinition(
+            id="reset",
+            display_name="Reset",
+            type="effect:session:reset-context",
+            target="browser-assistant",
+            conversation_key=key,
+            request_id="browser-message-one",
+        ),
+        EffectRuntimeContext(session_context_resetter=AdminRuntimeProviderAdapter(admin)),
+    )
+    assert provider.execute()["generation"] == 1
+    assert provider.execute()["duplicate"]
+    saved = admin.runtime.session_repository.get_session("browser-assistant")
+    assert saved.metadata["agent_thread_ids"] == {key: None, "other": "keep-thread"}
+    state = ConversationContextStore(admin.runtime_dir).get("browser-assistant", key)
+    assert state["pending"] and state["generation"] == 1
+    assert ConversationContextStore(admin.runtime_dir).get("second-assistant", key) is None
+    assert admin.runtime.session_repository.get_session("second-assistant") == other_session
+    assert launch_context(admin.runtime_dir, "browser-assistant", key, "next")["thread_id"] is None
+
+
+def test_communication_context_binding_checks_session_target_permission(tmp_path):
+    from evander.policy import PolicyError
+
+    admin = runtime_with_assistant(tmp_path)
+    admin.runtime.session_repository.patch_metadata("session-1", {"agent_thread_ids": {}})
+    session = admin.runtime.session_repository.get_session("session-1")
+    admin.runtime.session_repository.upsert_session(
+        session.model_copy(update={"teams_chat_allowlist": []})
+    )
+    provider = CommunicationMessagesQueryProvider()
+    provider.initialize(
+        CommunicationMessagesQueryDefinition(
+            id="binding",
+            display_name="Binding",
+            type="query:communication:messages",
+            communication_target_id="assistant-chat",
+            context_session_id="session-1",
+            conversation_key=KEY,
+            limit=1,
+        ),
+        QueryRuntimeContext(
+            admin_service=AdminRuntimeProviderAdapter(admin),
+            session_context_reader=AdminRuntimeProviderAdapter(admin),
+            metadata={"directory_path": "root"},
+        ),
+    )
+    with pytest.raises(PolicyError, match="allowlisted"):
+        provider.execute()
+    assert ConversationContextStore(admin.runtime_dir).get("session-1", KEY) is None
+
+
+@pytest.mark.parametrize("change", ["key", "missing-session", "session-scope", "directory-scope"])
+def test_communication_context_binding_rejects_wrong_identity_or_scope(tmp_path, change):
+    admin = runtime_with_assistant(tmp_path)
+    definition = dict(
+        id="binding",
+        display_name="Binding",
+        type="query:communication:messages",
+        communication_target_id="assistant-chat",
+        context_session_id="session-1",
+        conversation_key=KEY,
+        limit=1,
+    )
+    scope = "root"
+    if change == "key":
+        definition["conversation_key"] = teams_conversation_key("chat:other")
+    elif change == "missing-session":
+        definition["context_session_id"] = "missing"
+    elif change == "session-scope":
+        session = admin.runtime.session_repository.get_session("session-1")
+        admin.runtime.session_repository.upsert_session(
+            session.model_copy(update={"directory_path": "root/other"})
+        )
+        definition["directory_path"] = "root/selected"
+    else:
+        scope = "root/selected"
+        definition["directory_path"] = "root"
+    provider = CommunicationMessagesQueryProvider()
+    provider.initialize(
+        CommunicationMessagesQueryDefinition(**definition),
+        QueryRuntimeContext(
+            admin_service=AdminRuntimeProviderAdapter(admin),
+            metadata={"directory_path": scope},
+        ),
+    )
+    with pytest.raises(ValueError):
+        provider.execute()
+    assert ConversationContextStore(admin.runtime_dir).get("session-1", KEY) is None
+
+
+def test_existing_reset_receipts_replay_without_a_communication_target(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "agent-message-deliveries.db"
+    with sqlite3.connect(path) as db:
+        # Prior schema: origin is required and has no default. Keep old receipts
+        # and fresh thread mappings usable without requiring that origin again.
+        db.execute("""CREATE TABLE conversation_contexts(
+            session_id TEXT NOT NULL, conversation_key TEXT NOT NULL,
+            generation INTEGER NOT NULL, pending INTEGER NOT NULL,
+            thread_id TEXT, communication_target TEXT NOT NULL,
+            history_after TEXT, launch_dispatch_id TEXT, requested_at TEXT NOT NULL,
+            PRIMARY KEY(session_id,conversation_key))""")
+        db.execute("""CREATE TABLE context_reset_receipts(
+            session_id TEXT NOT NULL, conversation_key TEXT NOT NULL,
+            request_id TEXT NOT NULL, communication_target TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            PRIMARY KEY(session_id,conversation_key,request_id))""")
+        db.execute(
+            "INSERT INTO conversation_contexts VALUES(?,?,1,0,?,?,NULL,?,?)",
+            (
+                "session-1",
+                KEY,
+                "fresh-thread",
+                "chat:one",
+                "original-launch",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        db.execute(
+            "INSERT INTO context_reset_receipts VALUES(?,?,?,?,1)",
+            ("session-1", KEY, "original-reset", "chat:one"),
+        )
+    store = ConversationContextStore(tmp_path)
+    replayed = store.request_reset(
+        session_id="session-1", conversation_key=KEY, request_id="original-reset"
+    )
+    assert replayed["duplicate"] and replayed["generation"] == 1
+    assert store.get("session-1", KEY)["thread_id"] == "fresh-thread"
+    assert launch_context(tmp_path, "session-1", KEY, "later")["thread_id"] == "fresh-thread"
+    newer = store.request_reset(
+        session_id="session-1", conversation_key=KEY, request_id="another-reset"
+    )
+    assert newer["generation"] == 2 and newer["pending"]
+    assert store.get("session-1", KEY)["thread_id"] is None
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM context_reset_receipts").fetchone()[0] == 2
+        assert (
+            db.execute(
+                "SELECT communication_target FROM context_reset_receipts WHERE request_id='original-reset'"
+            ).fetchone()[0]
+            == "chat:one"
+        )

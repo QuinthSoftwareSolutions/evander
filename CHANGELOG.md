@@ -2,9 +2,9 @@
 
 ## 2026-10-21 - Reset assistant conversation context before the next turn (0.115.0)
 
-- Add a scoped, idempotent workflow reset effect with durable conversation generations. Preserve active and queued work, prevent stale thread callbacks from reversing resets, and start the next turn with a fresh provider thread.
+- Add a scoped, idempotent, communication-provider-neutral workflow reset effect with durable conversation generations. Preserve active and queued work, prevent stale thread callbacks from reversing resets, and start the next turn with a fresh provider thread.
 - Apply context history boundaries to workflow classification and agent Teams reads while retaining stored messages, files, preferences and persistent memory.
-- Provide an offline workflow transformation for English/Swedish reset intent, exact !RESET commands, localized host confirmations, combined model/reset/task requests and revision-checked activation.
+- Provide an offline workflow transformation for English/Swedish reset intent, exact !RESET commands, localized host confirmations, combined model/reset/task requests and revision-checked activation. Validate Teams conversation bindings at the communication boundary before invoking the generic reset effect.
 - Rebind queued requests to the current context after confirmed worker preflight rejections, while preserving accepted or uncertain launch receipts and delivery identities.
 - Refresh queue-recovery fixtures with standard message metadata so batching and recovery during VM inventory failures reach their existing assertions.
 

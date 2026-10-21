@@ -1381,9 +1381,8 @@ class SessionResetContextEffectDefinition(EffectDefinition):
     target: ConfigValue
     conversation_key: ConfigValue
     request_id: ConfigValue
-    communication_target_id: ConfigValue
 
-    @field_validator("target", "conversation_key", "request_id", "communication_target_id")
+    @field_validator("target", "conversation_key", "request_id")
     @classmethod
     def require_nonempty_value(cls, value: ConfigValue) -> ConfigValue:
         if not isinstance(value, str) or not value.strip():

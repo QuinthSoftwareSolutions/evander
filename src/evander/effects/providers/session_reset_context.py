@@ -8,7 +8,7 @@ class SessionResetContextEffectProvider(EffectProviderBase):
         effect = self.effect_definition
         payload = {
             key: getattr(effect, key)
-            for key in ("target", "conversation_key", "request_id", "communication_target_id")
+            for key in ("target", "conversation_key", "request_id")
         }
         payload.update(resolved_config or {})
         context = self.runtime_context

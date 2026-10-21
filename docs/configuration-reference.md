@@ -3318,12 +3318,14 @@ The managed Admin Web Caddy role discovers the optional browser relay through ev
 
 ## Conversation context reset
 
-`effect:session:reset-context` accepts `target`, `conversation_key`, `request_id`
-and `communication_target_id`. The conversation key must identify the selected
-session's exact configured Teams target. Reuse the source-message request ID for
-retries. Context generations and receipts are stored in
-`runtime/agent-message-deliveries.db`; no host configuration flag or worker
-protocol change is needed.
+`effect:session:reset-context` accepts `target`, `conversation_key` and
+`request_id`. The conversation key is opaque and scoped to the selected session;
+the effect requires no communication-provider configuration. Calling workflows
+or adapters authorize the incoming conversation binding separately. The prepared
+Teams workflow does so through its bound `query:communication:messages` node.
+Reuse the source-message request ID for retries. Context generations and receipts
+are stored in `runtime/agent-message-deliveries.db`; no host configuration flag or
+worker protocol change is needed.
 
 `query:communication:messages` accepts optional `context_session_id` and
 `conversation_key` bindings together to apply a Teams conversation's

@@ -342,6 +342,17 @@ def prepare_context_reset_pack(
     ir["edges"].remove(outgoing[0])
     edge(request_context_id, route)
 
+    binding = node(
+        "binding",
+        "query:communication:messages",
+        {
+            "communication_target_id": communication_target_id_binding,
+            "context_session_id": session_id_binding,
+            "conversation_key": conversation_key_binding,
+            "limit": 1,
+        },
+        {"success": "boolean"},
+    )
     reset = node(
         "record",
         "effect:session:reset-context",
@@ -349,11 +360,11 @@ def prepare_context_reset_pack(
             "target": session_id_binding,
             "conversation_key": conversation_key_binding,
             "request_id": request_id_binding,
-            "communication_target_id": communication_target_id_binding,
         },
         {"success": "boolean", "pending": "boolean", "generation": "integer"},
     )
-    edge(route, reset, "reset")
+    edge(route, binding, "reset")
+    edge(binding, reset)
     checked = node(
         "verify",
         "gate:switch",
@@ -394,6 +405,7 @@ def prepare_context_reset_pack(
     failure_merge = node("failure-merge", "gate:merge", {})
     edge(checked, failure_merge, "failed")
     edge(reset, failure_merge, "error")
+    edge(binding, failure_merge, "error")
     edge(failure_merge, failed_language)
     acknowledged = node("acknowledged", "gate:merge", {})
     messages = {

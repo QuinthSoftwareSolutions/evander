@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from evander.conversation_context import ConversationContextStore, teams_conversation_key
-from evander.messaging.targets import load_communication_targets_config
-from evander.services import normalize_teams_target
+from evander.conversation_context import ConversationContextStore
 
 
 class ConversationContextAdminService:
@@ -19,7 +17,6 @@ class ConversationContextAdminService:
         target,
         conversation_key,
         request_id,
-        communication_target_id,
         directory_path="root",
     ):
         session = self.runtime.session_repository.resolve_session_target(target)
@@ -30,24 +27,13 @@ class ConversationContextAdminService:
             raise ValueError("Session is outside workflow directory scope")
         if not str(request_id or "").strip():
             raise ValueError("Context reset requires a stable request_id")
-        targets = load_communication_targets_config(
-            runtime_dir=self.runtime.config.runtime_dir,
-            directory_store=self.runtime.directories,
-            directory_path=session.directory_path,
-        ).by_id()
-        communication = targets.get(communication_target_id)
-        if communication is None or communication.provider != "teams":
-            raise ValueError("Context reset requires a configured Teams communication target")
-        normalized_target = normalize_teams_target(communication.address)
-        self.runtime.policy.require_teams_channel_target(session, normalized_target)
-        if conversation_key != teams_conversation_key(normalized_target):
-            raise ValueError("Conversation key does not match communication target")
+        if not isinstance(conversation_key, str) or not conversation_key.strip():
+            raise ValueError("Context reset requires a non-empty conversation_key")
         with self.store.lock(session.session_id, conversation_key):
             result = self.store.request_reset(
                 session_id=session.session_id,
                 conversation_key=conversation_key,
                 request_id=request_id,
-                communication_target=normalized_target,
             )
             # Retrying an old request must never clear a newer accepted thread.
             current = self.store.get(session.session_id, conversation_key)

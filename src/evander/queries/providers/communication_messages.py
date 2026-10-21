@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
-from evander.conversation_context import ConversationContextStore, teams_conversation_key
+from evander.conversation_context import ConversationContextStore
+from evander.integration_services.teams import teams_conversation_key
 from evander.config import GatewayConfig, MailboxConfig
 from evander.directories import DirectoryStore
 from evander.email.providers import EmailMessageSummary
@@ -30,7 +31,7 @@ from evander.services import (
 )
 from evander.storage import JsonStore
 
-from .base import QueryProviderBase
+from .base import QueryProviderBase, scoped_query_directory_path
 
 
 class CommunicationMessagesQueryProvider(QueryProviderBase):
@@ -78,14 +79,23 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         if self._context_session_id:
             if target.provider != "teams":
                 raise ValueError("Conversation context history currently supports Teams targets")
-            info = self._context().session_context_reader.session_context_query(
-                target=self._context_session_id
-            )
-            session_directory = info["directory_path"]
+            directory_path = scoped_query_directory_path(self._context(), directory_path)
+            runtime = getattr(self._context().admin_service, "runtime", None)
+            if runtime is None:
+                raise RuntimeError("Conversation history binding requires the host session policy")
+            session = runtime.session_repository.resolve_session_target(self._context_session_id)
+            if session is None:
+                raise ValueError("Unknown conversation context session")
+            session_directory = session.directory_path
             if session_directory != directory_path and not session_directory.startswith(
                 directory_path + "/"
             ):
                 raise ValueError("History context session is outside query directory scope")
+            normalized_target = normalize_teams_target(target.address)
+            if self._conversation_key != teams_conversation_key(normalized_target):
+                raise ValueError("History conversation key does not match communication target")
+            runtime.policy.require_teams_channel_target(session, normalized_target)
+            self._context_session_id = session.session_id
         thread_id = self._normalize_optional_string(payload.get("thread_id"))
         if target.provider == "teams":
             result = self._teams_messages(
@@ -222,8 +232,6 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
             ]
 
         if self._context_session_id:
-            if self._conversation_key != teams_conversation_key(normalized_target):
-                raise ValueError("History conversation key does not match communication target")
             target_messages = ConversationContextStore(runtime_dir).filter_history(
                 target_messages, session_id=self._context_session_id,
                 conversation_key=self._conversation_key, classification=True,

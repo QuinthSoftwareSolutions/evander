@@ -32,16 +32,18 @@ class ConversationContextStore:
     def _initialize(self):
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
+            # Keep the legacy origin columns for existing databases and receipts.
+            # Reset identity and authorization use only the session/conversation.
             db.execute("""CREATE TABLE IF NOT EXISTS conversation_contexts(
                 session_id TEXT NOT NULL, conversation_key TEXT NOT NULL,
                 generation INTEGER NOT NULL, pending INTEGER NOT NULL,
-                thread_id TEXT, communication_target TEXT NOT NULL,
+                thread_id TEXT, communication_target TEXT NOT NULL DEFAULT '',
                 history_after TEXT, launch_dispatch_id TEXT,
                 requested_at TEXT NOT NULL,
                 PRIMARY KEY(session_id, conversation_key))""")
             db.execute("""CREATE TABLE IF NOT EXISTS context_reset_receipts(
                 session_id TEXT NOT NULL, conversation_key TEXT NOT NULL,
-                request_id TEXT NOT NULL, communication_target TEXT NOT NULL,
+                request_id TEXT NOT NULL, communication_target TEXT NOT NULL DEFAULT '',
                 generation INTEGER NOT NULL,
                 PRIMARY KEY(session_id, conversation_key, request_id))""")
             db.execute("""CREATE TABLE IF NOT EXISTS context_launch_receipts(
@@ -77,7 +79,7 @@ class ConversationContextStore:
             ).fetchone()
             return dict(row) if row is not None else None
 
-    def request_reset(self, *, session_id, conversation_key, request_id, communication_target):
+    def request_reset(self, *, session_id, conversation_key, request_id):
         self._initialize()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -86,8 +88,6 @@ class ConversationContextStore:
                 (session_id, conversation_key, request_id),
             ).fetchone()
             if receipt:
-                if receipt["communication_target"] != communication_target:
-                    raise ValueError("Context reset request identity conflict")
                 return {
                     "success": True,
                     "session_id": session_id,
@@ -108,13 +108,12 @@ class ConversationContextStore:
                 VALUES(?,?,?,1,NULL,?,?)
                 ON CONFLICT(session_id,conversation_key) DO UPDATE SET
                 generation=excluded.generation,pending=1,thread_id=NULL,
-                communication_target=excluded.communication_target,
                 launch_dispatch_id=NULL,requested_at=excluded.requested_at""",
-                (session_id, conversation_key, generation, communication_target, now),
+                (session_id, conversation_key, generation, "", now),
             )
             db.execute(
                 "INSERT INTO context_reset_receipts VALUES(?,?,?,?,?)",
-                (session_id, conversation_key, request_id, communication_target, generation),
+                (session_id, conversation_key, request_id, "", generation),
             )
         return {
             "success": True,
@@ -191,10 +190,6 @@ class ConversationContextStore:
             if created_at is not None and created_at > cutoff:
                 result.append(message)
         return result
-
-
-def teams_conversation_key(target: str) -> str:
-    return f"teams:{target}:agent_thread_id"
 
 
 def execution_context_generation(record: Any) -> int:

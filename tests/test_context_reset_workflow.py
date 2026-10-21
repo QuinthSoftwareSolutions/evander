@@ -360,7 +360,7 @@ def test_exact_reset_projects_control_state_from_the_guaranteed_model_baseline()
 
 
 def trace_control_actions(
-    pack, *, content, answers=None, fail_reset=False, fail_confirmation=False
+    pack, *, content, answers=None, fail_reset=False, fail_confirmation=False, fail_binding=False
 ):
     """Replay the artifact's routes using the production binding/predicate engine."""
     nodes = {n["id"]: n for n in pack["ir"]["nodes"]}
@@ -383,6 +383,8 @@ def trace_control_actions(
             output = dict(incoming)
         elif kind == "query:communication:messages":
             output = {"messages": [], "success": True}
+            if current == "conversation-reset-binding" and fail_binding:
+                port = "error"
         elif kind == "query:classification:evaluate":
             assert answers is not None, "Exact host commands must bypass model evaluation"
             output = {"answers": answers, "success": True}
@@ -507,3 +509,18 @@ def test_reset_failure_blocks_task_but_confirmation_failure_retains_it(failed, e
     )
     assert actions == expected
     assert len(tasks) == expected.count("enqueue")
+
+
+@pytest.mark.parametrize("content", ["!RESET", "Reset context and explain this"])
+def test_communication_binding_failure_prevents_reset_and_task(content):
+    actions, tasks = trace_control_actions(
+        prepared(),
+        content=content,
+        fail_binding=True,
+        answers={
+            "requested_level": {"choice": "unchanged"},
+            "reset_context": {"value": True, "probability_true": 0.99},
+            "has_additional_task": {"value": True, "probability_true": 0.99},
+        },
+    )
+    assert actions == ["reset-failed"] and tasks == []

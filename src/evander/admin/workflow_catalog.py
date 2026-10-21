@@ -4274,7 +4274,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Session target", "string", required=True, bindable=True),
             _field("conversation_key", "Conversation key", "string", required=True, bindable=True),
             _field("request_id", "Stable request ID", "string", required=True, bindable=True),
-            _field("communication_target_id", "Communication target", "string", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

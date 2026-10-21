@@ -752,7 +752,7 @@ def test_reset_does_not_steer_into_old_turn_and_reconciles_uncertain_receipt(tmp
     assert deliver(service)["delivery_status"] == "delivery_unknown"
     store = ConversationContextStore(tmp_path)
     store.request_reset(session_id="session-1", conversation_key="teams:chat-1",
-                        request_id="reset", communication_target="chat:one")
+                        request_id="reset")
     # A lost acknowledgement is still reconciled against the original worker.
     assert deliver(service)["delivery_status"] == "steered"
     assert len(c.calls) == 1
@@ -783,7 +783,6 @@ def test_reset_rejects_a_never_sent_old_generation_receipt(tmp_path, legacy_rece
         service.store.save("session-1", "message-1", fingerprint, saved)
     ConversationContextStore(tmp_path).request_reset(
         session_id="session-1", conversation_key="teams:chat-1", request_id="reset",
-        communication_target="chat:one",
     )
     assert deliver(service) is None
     assert c.calls == []
@@ -830,8 +829,7 @@ def test_busy_reset_preserves_queue_and_launches_fresh_then_resumes(tmp_path, mo
         assert provider.execute()["queued"]
     queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
     store = ConversationContextStore(tmp_path)
-    store.request_reset(session_id="session-1", conversation_key=key, request_id="reset",
-                        communication_target="chat:one")
+    store.request_reset(session_id="session-1", conversation_key=key, request_id="reset")
     assert len(queue.read_all()) == 2 and b.repository.get("exec-1").last_status == "running"
     b.repository.put(b.repository.get("exec-1").model_copy(update={"last_status": "exited"}))
     provider.initialize(first, context)
@@ -862,7 +860,7 @@ def test_reset_launch_recovers_native_thread_after_uncertain_host_acceptance(tmp
     b, c = backend(tmp_path)
     store = ConversationContextStore(tmp_path)
     store.request_reset(session_id="session-1", conversation_key="teams:chat-1",
-                        request_id="reset", communication_target="chat:one")
+                        request_id="reset")
     launch_context(tmp_path, "session-1", "teams:chat-1", "message-1")
     record = b.repository.get("exec-1")
     record.metadata.update(dispatch_id="message-1", context_generation=1)
@@ -909,7 +907,8 @@ def test_rejected_launch_rebinds_queued_delivery_after_reset_and_restart(
     from datetime import UTC, datetime, timedelta
 
     from evander.codex_auth import CodexSubscriptionDeferral
-    from evander.conversation_context import ConversationContextStore, teams_conversation_key
+    from evander.conversation_context import ConversationContextStore
+    from evander.integration_services.teams import teams_conversation_key
     from evander.daemons.effect_orchestrator import SqliteExecutionStore
     from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
     from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
@@ -1000,7 +999,6 @@ def test_rejected_launch_rebinds_queued_delivery_after_reset_and_restart(
         session_id="session-1",
         conversation_key=key,
         request_id="reset-one",
-        communication_target="chat:one",
     )
 
     def replay_after_restart():
@@ -1039,7 +1037,6 @@ def test_rejected_launch_rebinds_queued_delivery_after_reset_and_restart(
         session_id="session-1",
         conversation_key=key,
         request_id="reset-two",
-        communication_target="chat:one",
     )
     retry_started = datetime.now(UTC)
     b.start = lambda handle: handle

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from evander.conversation_context import ConversationContextStore, teams_conversation_key
+from evander.conversation_context import ConversationContextStore
+from evander.integration_services.teams import teams_conversation_key
 
 import base64
 from dataclasses import dataclass
