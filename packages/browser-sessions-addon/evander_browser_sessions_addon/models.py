@@ -204,7 +204,7 @@ class RunRequest(Contract):
     goal: str = Field(
         min_length=1,
         max_length=4000,
-        description="Short, concrete UI objective. Resolve domain choices and author all text before calling; put every text literal in values. Completion requires your verification.",
+        description="Short, concrete UI objective using observed control names, explicit ordering dependencies and the expected result. Resolve domain choices and author all text before calling; put every text literal in values. Completion requires your verification.",
     )
     values: dict[str, RunValue] = Field(
         default_factory=dict,

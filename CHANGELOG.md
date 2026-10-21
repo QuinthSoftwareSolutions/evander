@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 - Keep browser decisions focused on page state and the next action (0.114.2)
+
+- Exclude random observation receipts, document epochs and command receipt IDs from decision-model evidence. Preserve current element references, values, context, action outcomes, browser fences, returned observations and usage attribution.
+- Ask for the next unfinished action and its target using current field state and the task's ordering dependencies. Clarify ordered objectives and observed control names in the shared agent guide and request schema, without application-specific selectors or workflows.
+- Publish Browser Sessions server package 0.8.2. Chrome extension and native helper versions are unchanged.
+
 ## 2026-10-21 - Preserve valid browser decisions and publish agent operating guidance (0.114.1)
 
 - Offer explicit no-key/no-scroll choices for irrelevant batched decision questions, avoiding refusals caused by missing applicable answers. Keep probability thresholds and provider validation, and reject missing keys/directions before issuing input.

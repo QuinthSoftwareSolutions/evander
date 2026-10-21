@@ -95,6 +95,14 @@ text yourself first. The decision model chooses intermediate actions and inputs;
 it cannot compose instructions, invent missing data or generate text from a goal.
 Split large tasks into concrete objectives.
 
+Use the current page's visible control names and state to describe the objective.
+State ordering dependencies explicitly: update the requested fields first, then
+submit once, and describe the expected resulting page. The model chooses the
+next unfinished action; a field already containing the desired value usually
+needs no further replacement. Keep these instructions specific to the current
+task, without preparing site-specific workflows or assuming every form has the
+same controls.
+
 Every text entry must have a named entry in `request.values`, even if that text
 also appears in the goal. Include an empty-string literal when clearing a field.
 Describe each value's intended field or purpose, and mark private literals

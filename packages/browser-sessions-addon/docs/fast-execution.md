@@ -9,7 +9,7 @@ application-specific prepared workflow or extra support agent is required.
 
 ## Enable after qualification
 
-Deploy Browser Sessions 0.8.1 for the updated decision questions and operating
+Deploy Browser Sessions 0.8.2 for the updated decision questions and operating
 guide. Fast execution requires a hosted controller supporting capability version
 1, Chrome extension 0.5.0 or later, or native helper 0.4.0 or later when selected.
 This server-side correction does not require an extension or helper update.
@@ -46,6 +46,12 @@ run budget and provider timeout. Automatic provider retries are disabled.
 The selected option's probability must meet the threshold for every relevant
 choice; vendor confidence fields do not override that check.
 
+Decision evidence contains semantic page state, current element references and
+completed action outcomes. Random observation/command receipt IDs and document
+epochs stay in the execution and accounting paths rather than the model input.
+The original observation IDs, generations and target checks still fence every
+browser command.
+
 ## Agent guidance
 
 The add-on packages its complete [shared browser operating guide](../evander_browser_sessions_addon/agent-guide.md).
@@ -57,6 +63,9 @@ omits it. No personal-assistant workflow or AGENTS.md prompt is required.
 Use this tool automatically for a short objective needing several UI actions.
 Use the existing direct tools for a single known click or entry. Split larger
 requests into bounded objectives, retaining domain context in the owning agent.
+Use current visible control names, explicit ordering dependencies and the expected
+result. Describe the next local objective, letting the model select intermediate
+actions from current page state; no prepared application workflow is required.
 Resolve domain choices and author text, such as form instructions, before calling.
 Supply every exact literal in `request.values`, with meaningful descriptions;
 text in `goal` alone cannot be entered. Include an empty-string literal to clear
