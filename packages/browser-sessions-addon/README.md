@@ -25,7 +25,7 @@ The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual 
 3. Prepare a repo-local .evander/preview.json; call browser_session_create with a fresh request ID, approved profile and opaque workspace reference.
 4. Poll browser_session_status and send its viewer URL in the existing Teams/Discord conversation.
 5. Observe before acting. Use current element references and generation. Human takeover fences agent input. Observe again after an unknown action outcome instead of replaying it.
-6. Viewer feedback resumes the authoring task. Answer with browser_session_reply and its message ID. Source edits stay normal repository edits.
+6. Viewer feedback resumes the authoring task. Send progress updates and replies with browser_session_reply and the original message ID, as often as needed. Give each outgoing reply a fresh request_id and reuse it only when retrying the identical reply. Source edits stay normal repository edits.
 7. Close to release resources before removing the owning checkout.
 
 For local support, create mode user_hosted and call browser_session_invite. The user opens their app tab and extension, pastes the invitation and approves the control-plane connection. It starts in observe mode. Only that host grants input, approves another origin or stops sharing. The agent that creates the session observes and interacts with it using its existing context and browser tool grants. Extension chat resumes that same agent and its originating thread; replies remain in the extension transcript. No separate support agent is created.

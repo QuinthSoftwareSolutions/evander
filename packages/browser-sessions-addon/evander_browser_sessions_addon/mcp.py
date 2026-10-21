@@ -2,6 +2,9 @@
 
 import json
 import uuid
+from typing import Annotated
+
+from pydantic import Field
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
@@ -10,7 +13,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from evander.addons import AddonMcpTool
 from evander.gateway.session_context import _resolve_session_id_from_context
 
-from .models import BrowserCommand, BrowserError, CreateRequest
+from .models import IDENTIFIER, BrowserCommand, BrowserError, CreateRequest
 from .service import Service
 
 TOOLS = {
@@ -22,7 +25,7 @@ TOOLS = {
     "browser_session_observe": "Observe the current approved page: screenshot and accessible element references. Does not save a recording.",
     "browser_session_act": "Perform a bounded browser action using a fresh observation and control generation. Use type for character keystrokes (including scanner input), fill to replace a referenced text field, and key for Enter or other supported keys. Never replay an action whose outcome is unknown.",
     "browser_session_highlight": "Show the agent's pointer at an observed element or point without taking control.",
-    "browser_session_reply": "Reply to a browser-chat message in its original transcript. Use the supplied message_id.",
+    "browser_session_reply": "Send progress updates and replies to a browser-chat message in its original transcript, as often as needed. Use the supplied message_id. Give each outgoing reply a fresh request_id; reuse it only to retry that identical reply to the same message. Omitting request_id deduplicates identical text for that message.",
     "browser_session_save_screenshot": "Explicitly retain one current screenshot as a normal expiring artifact.",
     "browser_session_close": "Close this agent's preview and release its dependent resources.",
 }
@@ -145,14 +148,20 @@ def register_mcp_tools(server, context):
 
     @server.tool(description=TOOLS["browser_session_reply"])
     def browser_session_reply(
-        browser_session_id: str, message_id: str, body: str, ctx: Context
+        browser_session_id: str,
+        message_id: str,
+        body: str,
+        ctx: Context,
+        request_id: Annotated[str, Field(pattern=IDENTIFIER)] | None = None,
     ) -> dict:
         if not body or len(body) > 16000:
             raise ToolError("Reply must contain between 1 and 16000 characters")
         return invoke(
             ctx,
             "browser_session_reply",
-            lambda agent: service.reply(agent, browser_session_id, message_id, body),
+            lambda agent: service.reply(
+                agent, browser_session_id, message_id, body, request_id=request_id
+            ),
         )
 
     @server.tool(description=TOOLS["browser_session_save_screenshot"])

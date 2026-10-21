@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 - Allow browser-chat follow-ups and prevent duplicate display (0.112.0)
+
+- Let the creating agent send any number of progress updates and replies to a browser message. Give outgoing replies their own retry identities, retaining session/channel authorization and compatibility with existing callers and stored replies.
+- Serialize hosted-viewer and legacy voice-page transcript refreshes, and follow an in-flight poll with a fresh read after Send. Render each message ID once while preserving delivery-status updates.
+- Publish Browser Sessions server package 0.6.0. The Chrome extension remains 0.4.1.
+
 ## 2026-10-21 - Stream shared-browser speech and simplify the viewer (0.111.0)
 
 - Fill the hosted viewer with its browser, compact toolbar and chat sidebar. Move session details into the toolbar, indicate control ownership with one takeover/handback button, and add a saved light/dark toggle for standalone viewers.
