@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
+from evander.conversation_context import ConversationContextStore, launch_context, thread_write_guard
 from evander.agent_threads import usable_agent_thread_id
 from evander.cost_categories import dispatch_with_cost_context, freeze_prompt_cost_category
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
@@ -470,6 +471,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 **capacity_admission.output_metadata(),
             }
 
+        state = launch_context(
+            resolve_runtime_dir(context), effective_session_id,
+            payload.get("conversation_key") or resume_thread_metadata_key, dispatch_id,
+            resume_thread_id=effective_resume_thread_id, resume_mode=resume_mode or "new_context",
+        )
+        self._context_generation = int(state["generation"]) if state else 0
+        if state:
+            effective_resume_thread_id = state["thread_id"]
+            resume_mode = state["resume_mode"]
         dispatch_method = getattr(context.agent_resumer, "dispatch_agent_prompt", None)
         if not callable(dispatch_method):
             dispatch_method = context.agent_resumer.resume_agent
@@ -616,6 +626,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
         outputs = {
             "dispatch_id": dispatch_id,
+            "context_generation": self._context_generation,
             "resume_mode": effective_resume_mode,
             "success": bool(result.success),
             "queued": False,
@@ -690,6 +701,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             harness=agent_harness,
             route=effective_config.model_provider_mode,
         )
+        conversation_key = payload.get("conversation_key") or resume_thread_metadata_key or ""
+        self._delivery_metadata.setdefault("conversation_key", conversation_key)
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -910,6 +923,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 **capacity_admission.output_metadata(),
             }
+        state = launch_context(
+            effective_config.runtime_dir, session_id, conversation_key, dispatch_id,
+            resume_thread_id=effective_resume_thread_id, resume_mode=resume_mode or "new_context",
+        )
+        self._context_generation = int(state["generation"]) if state else 0
+        self._delivery_metadata["context_generation"] = str(self._context_generation)
+        if state:
+            effective_resume_thread_id = state["thread_id"]
+            resume_mode = state["resume_mode"]
         backend = container_backend(context, effective_config)
         execution_id = (
             "agent-msg-" + hashlib.sha256(f"{session_id}:{dispatch_id}".encode()).hexdigest()[:32]
@@ -1150,6 +1172,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "queued": False,
             "output_mode": "on_completion",
             "conversation_key": self._delivery_metadata.get("conversation_key"),
+            "context_generation": self._context_generation,
             "vm_name": target_name,
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
@@ -1408,6 +1431,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         session_id: str | None,
         session: Any | None,
     ) -> str | None:
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None and session_id and resume_thread_metadata_key:
+            state = ConversationContextStore(runtime_dir).get(session_id, resume_thread_metadata_key)
+            if state is not None:
+                return self._usable_resume_thread_id(state["thread_id"])
         explicit = self._usable_resume_thread_id(resume_thread_id)
         if explicit:
             return explicit
@@ -1471,7 +1499,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         if not metadata:
             return
         try:
-            update_fn(target=session_id or target, metadata=metadata)
+            with thread_write_guard(
+                resolve_runtime_dir(context), session_id, key,
+                getattr(self, "_context_generation", 0), value,
+            ) as accepted:
+                if accepted:
+                    update_fn(target=session_id or target, metadata=metadata)
         except Exception:
             pass
 

@@ -707,6 +707,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.SessionRevokeMcpToolApprovalLeaseEffectDefinition
         ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
+        "effect:session:reset-context": provider_models.SessionResetContextEffectDefinition,
         "effect:website-session:ensure-profile": provider_models.WebsiteSessionEnsureProfileEffectDefinition,
         "effect:session:set-image-generation-enabled": (
             provider_models.SessionSetImageGenerationEnabledEffectDefinition

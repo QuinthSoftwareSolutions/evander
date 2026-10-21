@@ -134,6 +134,7 @@ class EffectProviderFactory:
             session_lookup=self._provider_runtime_ports.session_lookup,
             issue_updater=self._provider_runtime_ports.issue_updater,
             session_metadata_updater=self._provider_runtime_ports.session_metadata_updater,
+            session_context_resetter=self._provider_runtime_ports.session_context_resetter,
             session_image_generation_policy_updater=(
                 self._provider_runtime_ports.session_image_generation_policy_updater
             ),

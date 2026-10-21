@@ -23,6 +23,7 @@ from evander.provider_runtime.contracts import (
     SessionLookup,
     SessionImageGenerationPolicyUpdater,
     SessionMetadataUpdater,
+    SessionContextResetter,
     VmFrontendBootstrapper,
     VmPythonBootstrapper,
     VmCreator,
@@ -70,6 +71,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     session_lookup: SessionLookup | None = None
     issue_updater: IssueUpdater | None = None
     session_metadata_updater: SessionMetadataUpdater | None = None
+    session_context_resetter: SessionContextResetter | None = None
     session_image_generation_policy_updater: SessionImageGenerationPolicyUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
     git_branch_pusher: GitBranchPusher | None = None
@@ -96,6 +98,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
             ("issue_updater", "update_issue"),
             ("issue_updater", "update_issue_metadata"),
             ("session_metadata_updater", "session_update_metadata"),
+            ("session_context_resetter", "session_reset_context"),
             (
                 "session_image_generation_policy_updater",
                 "session_set_image_generation_enabled",

@@ -939,6 +939,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "copied_paths": {"type": "array"},
     },
     "effect:agent:prompt": {
+        "context_generation": {"type": ["integer", "string"]},
         "fast_mode": {"anyOf": [{"type": "boolean"}, {"const": "ultrafast"}]},
         "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
@@ -969,6 +970,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
+        "context_generation": {"type": ["integer", "string"]},
         "conversation_key": {"type": ["string", "null"]},
         "delivery_status": {"type": "string"},
         "steered_into_dispatch_id": {"type": ["string", "null"]},
@@ -1444,6 +1446,14 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "success": {"type": "boolean"},
         "profile_id": {"type": "string"},
         "created": {"type": "boolean"},
+    },
+    "effect:session:reset-context": {
+        "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "conversation_key": {"type": "string"},
+        "generation": {"type": "integer"},
+        "pending": {"type": "boolean"},
+        "duplicate": {"type": "boolean"},
     },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},

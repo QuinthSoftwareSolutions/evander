@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.conversation_context import ConversationContextStore, teams_conversation_key
+
 import base64
 from dataclasses import dataclass
 from typing import Any
@@ -71,6 +73,11 @@ def _filter_teams_messages_for_session(
     messages: list[dict[str, Any]] = []
     denied_count = 0
     next_cursor = raw_messages[-1].cursor if raw_messages else args.get("since_cursor")
+    if args.get("channel_target"):
+        channel_target = normalize_teams_target(str(args["channel_target"]).strip())
+        raw_messages = ConversationContextStore(context.config.runtime_dir).filter_history(
+            raw_messages, session_id=session_id, conversation_key=teams_conversation_key(channel_target)
+        )
     for message in raw_messages:
         try:
             context.policy.require_teams_message_source(session, message)

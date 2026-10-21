@@ -15,6 +15,12 @@ from evander.agent_context_retry import (
     context_retry_max_attempts,
     context_retry_target_chars,
 )
+from evander.conversation_context import (
+    ConversationContextStore,
+    execution_context_generation,
+    launch_context,
+    thread_write_guard,
+)
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.codex_auth import CodexSubscriptionDeferral
 from evander.config import GatewayConfig
@@ -417,6 +423,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "model_provider_mode": effective_config.model_provider_mode,
                 **capacity_admission.output_metadata(),
             }
+        state = launch_context(
+            runtime_dir, session_id, resume_thread_metadata_key, dispatch_id,
+            resume_thread_id=effective_resume_thread_id,
+        )
+        self._context_generation = int(state["generation"]) if state else 0
+        if state:
+            effective_resume_thread_id = state["thread_id"]
         with maintain_local_inference_launch(runtime_dir, capacity_admission.slot_id):
             result = dispatch_with_cost_context(
                 lambda: context.agent_resumer.resume_agent(
@@ -428,6 +441,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     vm_user=vm_user,
                     dispatch_id=dispatch_id,
                     resume_thread_id=effective_resume_thread_id,
+                    **({"resume_mode": "new_context"} if state and state["generation"] > 0 and state["pending"] else {}),
                     persist_thread_id=resume_thread_metadata_key is None,
                     mcp_gateway_url=self._mcp_gateway_url(
                         config=effective_config,
@@ -548,6 +562,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
+            "context_generation": self._context_generation,
             "success": bool(result.success),
             "queued": False,
             "session_id": getattr(result, "session_id", None) or session_id,
@@ -704,6 +719,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "model_provider_mode": effective_config.model_provider_mode,
                 **capacity_admission.output_metadata(),
             }
+        state = launch_context(
+            effective_config.runtime_dir, session_id, resume_thread_metadata_key, dispatch_id,
+            resume_thread_id=effective_resume_thread_id,
+        )
+        self._context_generation = int(state["generation"]) if state else 0
+        queue_metadata["context_generation"] = str(self._context_generation)
+        if state:
+            effective_resume_thread_id = state["thread_id"]
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
         mcp_gateway_url = gateway_url_with_session_context(
@@ -757,6 +780,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
                                 codex_turn=codex_turn,
                                 metadata={
                                     "effect_type": self.node_type(),
+                                    "context_generation": self._context_generation,
+                                    "conversation_key": resume_thread_metadata_key,
                                     "dispatch_id": dispatch_id,
                                     "resume_thread_id": effective_resume_thread_id,
                                     "agent_provider": agent_harness,
@@ -877,6 +902,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "dispatch_id": dispatch_id,
             "thread_id": None,
             "native_thread_id": None,
+            "context_generation": self._context_generation,
             "resume_thread_id": effective_resume_thread_id,
             "success": True,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
@@ -1571,7 +1597,19 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
 
     @classmethod
-    def _persist_container_session_thread_id(
+    def _persist_container_session_thread_id(cls, *, worker, record, session_id, thread_id):
+        key = cls._resume_thread_metadata_key_from_record(record)
+        with thread_write_guard(
+            resolve_runtime_dir(worker), session_id, key,
+            execution_context_generation(record), thread_id,
+        ) as accepted:
+            if accepted:
+                cls._persist_container_session_thread_id_unchecked(
+                    worker=worker, record=record, session_id=session_id, thread_id=thread_id
+                )
+
+    @classmethod
+    def _persist_container_session_thread_id_unchecked(
         cls,
         *,
         worker: Any,
@@ -2873,6 +2911,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         session_id: str | None,
         session: Any | None,
     ) -> str | None:
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None and session_id and resume_thread_metadata_key:
+            state = ConversationContextStore(runtime_dir).get(session_id, resume_thread_metadata_key)
+            if state is not None:
+                return self._usable_resume_thread_id(state["thread_id"])
         explicit = self._usable_resume_thread_id(resume_thread_id)
         if explicit:
             return explicit
@@ -2917,7 +2960,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not metadata:
             return
         try:
-            update_fn(target=session_id or target, metadata=metadata)
+            with thread_write_guard(
+                resolve_runtime_dir(context), session_id, key,
+                getattr(self, "_context_generation", 0), value,
+            ) as accepted:
+                if accepted:
+                    update_fn(target=session_id or target, metadata=metadata)
         except Exception:
             pass
 

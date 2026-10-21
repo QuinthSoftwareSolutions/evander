@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 - Reset assistant conversation context before the next turn (0.115.0)
+
+- Add a scoped, idempotent workflow reset effect with durable conversation generations. Preserve active and queued work, prevent stale thread callbacks from reversing resets, and start the next turn with a fresh provider thread.
+- Apply context history boundaries to workflow classification and agent Teams reads while retaining stored messages, files, preferences and persistent memory.
+- Provide an offline workflow transformation for English/Swedish reset intent, exact !RESET commands, localized host confirmations, combined model/reset/task requests and revision-checked activation.
+
+
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
 - Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, lossless boundaries between bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.

@@ -84,6 +84,7 @@ from evander.effects.providers.semantic_ensure_collection import (
 )
 from evander.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
 from evander.effects.providers.state_update import StateUpdateEffectProvider
+from evander.effects.providers.session_reset_context import SessionResetContextEffectProvider
 from evander.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
@@ -323,6 +324,7 @@ def register_providers() -> dict[str, dict[str, type]]:
                 SessionRevokeMcpToolApprovalLeaseEffectProvider
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:session:reset-context": SessionResetContextEffectProvider,
             "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectProvider,
             "effect:session:set-image-generation-enabled": (
                 SessionSetImageGenerationEnabledEffectProvider

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from evander.admin.services.git_submission_service import GitSubmissionService
+from evander.admin.services.conversation_context_service import ConversationContextAdminService
 
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
 from evander.admin.services.classification_admin_service import ClassificationAdminService
@@ -290,6 +291,7 @@ class AdminRuntimeComponents:
     issue_git_support: IssueGitAdminSupport
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
+    conversation_context_admin: ConversationContextAdminService
     managed_git_admin: ManagedGitAdminService
     git_submission_admin: GitSubmissionService
     repository_index_admin: RepositoryIndexService
@@ -979,6 +981,7 @@ def _build_admin_runtime_components(
         issue_git_support=issue_git_support,
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
+        conversation_context_admin=ConversationContextAdminService(runtime, issue_git_admin),
         managed_git_admin=managed_git_admin,
         git_submission_admin=git_submission_admin,
         repository_index_admin=repository_index_admin,

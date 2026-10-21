@@ -463,9 +463,13 @@ class IssueGitAdminService:
     ) -> dict[str, Any]:
         session_repository = self._session_repository()
         session_id, manifest = self._resolve_session_target(target)
-        merged_metadata = session_helpers.deep_merge_mapping(manifest.metadata, metadata)
-        updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
-        session_repository.upsert_session(updated_manifest)
+        patch = getattr(session_repository, "patch_metadata", None)
+        if callable(patch):
+            updated_manifest = patch(session_id, dict(metadata))
+        else:
+            merged_metadata = session_helpers.deep_merge_mapping(manifest.metadata, metadata)
+            updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
+            session_repository.upsert_session(updated_manifest)
         return {
             "success": True,
             "action": "session_update_metadata",

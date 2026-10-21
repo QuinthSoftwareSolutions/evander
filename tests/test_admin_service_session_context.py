@@ -69,3 +69,24 @@ def test_admin_service_session_context_query_returns_generic_fields(tmp_path: Pa
     assert unavailable_tools["get_workflow_snapshot"]["reason"] == (
         "Tool get_workflow_snapshot is not allowed for session session-1"
     )
+
+
+def test_metadata_patch_preserves_fields_changed_after_target_resolution(tmp_path, monkeypatch):
+    service = build_admin_runtime(tmp_path / "runtime")
+    repository = service.runtime.session_repository
+    original = SessionManifest(
+        session_id="session-1", allowed_tools=[], expires_at="2099-01-01T00:00:00Z",
+        metadata={"personal_assistant_model": "first", "agent_thread_ids": {"conversation": "old"}},
+    )
+    repository.upsert_session(original)
+    service.issue_git_admin.session_update_metadata(
+        target="session-1", metadata={"personal_assistant_model": "selected"}
+    )
+    # A reset's target lookup can finish before a concurrent model update.
+    monkeypatch.setattr(service.issue_git_admin, "_resolve_session_target", lambda _: ("session-1", original))
+    service.issue_git_admin.session_update_metadata(
+        target="session-1", metadata={"agent_thread_ids": {"conversation": None}}
+    )
+    stored = repository.get_session("session-1")
+    assert stored.metadata["personal_assistant_model"] == "selected"
+    assert stored.metadata["agent_thread_ids"]["conversation"] is None

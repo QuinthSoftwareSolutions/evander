@@ -3314,3 +3314,19 @@ Optional shared-browser voice settings and host credential setup are described i
 Optional [multi-step decision execution](../packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
 
 The managed Admin Web Caddy role discovers the optional browser relay through evander_admin_web_browser_relay_environment_file (default /etc/evander/browser-relay.env). evander_admin_web_browser_relay_enabled overrides discovery; evander_admin_web_browser_relay_upstream_host and evander_admin_web_browser_relay_upstream_port select the private upstream (default 127.0.0.1:11890).
+
+
+## Conversation context reset
+
+`effect:session:reset-context` accepts `target`, `conversation_key`, `request_id`
+and `communication_target_id`. The conversation key must identify the selected
+session's exact configured Teams target. Reuse the source-message request ID for
+retries. Context generations and receipts are stored in
+`runtime/agent-message-deliveries.db`; no host configuration flag or worker
+protocol change is needed.
+
+`query:communication:messages` accepts optional `context_session_id` and
+`conversation_key` bindings together to apply a Teams conversation's
+classification history boundary before pagination and limits. Existing queries
+without these bindings retain their behavior. See
+[conversation context reset](conversation-context-reset.md).

@@ -741,3 +741,162 @@ def test_cancellation_waits_for_an_inflight_send_receipt(tmp_path):
         assert first.result(timeout=10)["delivery_status"] == "steered"
         assert cancelled.result(timeout=10)["delivery_status"] == "steered"
     assert len(c.calls) == 1
+
+
+def test_reset_does_not_steer_into_old_turn_and_reconciles_uncertain_receipt(tmp_path):
+    from evander.conversation_context import ConversationContextStore
+
+    b, c = backend(tmp_path)
+    service = ConversationDeliveryService(tmp_path, b)
+    c.lose_response = True
+    assert deliver(service)["delivery_status"] == "delivery_unknown"
+    store = ConversationContextStore(tmp_path)
+    store.request_reset(session_id="session-1", conversation_key="teams:chat-1",
+                        request_id="reset", communication_target="chat:one")
+    # A lost acknowledgement is still reconciled against the original worker.
+    assert deliver(service)["delivery_status"] == "steered"
+    assert len(c.calls) == 1
+    assert service.try_steer(session_id="session-1", delivery_id="next",
+        prompt="Next request", conversation_key="teams:chat-1") is None
+    assert len(c.calls) == 1
+
+
+@pytest.mark.parametrize("legacy_receipt", [False, True])
+def test_reset_rejects_a_never_sent_old_generation_receipt(tmp_path, legacy_receipt):
+    from evander.conversation_context import ConversationContextStore
+    import hashlib
+    import json
+
+    b, c = backend(tmp_path)
+    service = ConversationDeliveryService(tmp_path, b)
+    fingerprint = hashlib.sha256(json.dumps(["session-1", "teams:chat-1", None, "Move button"]).encode()).hexdigest()
+    service.store.save("session-1", "message-1", fingerprint, {
+        "delivery_status": "pending", "dispatch_id": "message-1", "execution_id": "exec-1",
+        "worker_job_id": "job-1", "worker_url": "http://worker",
+        "conversation_key": "teams:chat-1", "context_generation": 0,
+        "thread_id": "thread-1", "turn_id": "turn-1",
+    })
+    if legacy_receipt:
+        saved = service.store.get("session-1", "message-1")
+        saved.pop("conversation_key")
+        saved.pop("context_generation")
+        service.store.save("session-1", "message-1", fingerprint, saved)
+    ConversationContextStore(tmp_path).request_reset(
+        session_id="session-1", conversation_key="teams:chat-1", request_id="reset",
+        communication_target="chat:one",
+    )
+    assert deliver(service) is None
+    assert c.calls == []
+
+
+def test_busy_reset_preserves_queue_and_launches_fresh_then_resumes(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from evander.conversation_context import ConversationContextStore
+    from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+    from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+    from evander.effects.providers.base import EffectRuntimeContext
+    from evander.effects.providers.schemas import AgentEnqueuePromptEffectDefinition
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+    b, c = backend(tmp_path)
+    c.capability = 0
+    config = b.config
+    key = "teams:chat-1"
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(SessionManifest(
+        session_id="session-1", allowed_tools=[], model="fixture",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"execution_backend": "container_worker_vm", "agent_thread_ids": {key: "thread-1"}},
+    ))
+    resolver = SimpleNamespace(resolve_for_directory=lambda _: config, resolve_for_session_id=lambda _: config)
+    context = EffectRuntimeContext(resolved_config=config, provider_config_resolver=resolver)
+    monkeypatch.setattr("evander.effects.providers.agent_enqueue_prompt.container_backend", lambda *args: b)
+    launched = []
+    def prepare(spec):
+        launched.append(spec)
+        return SimpleNamespace(execution_id=spec.target_name)
+    b.prepare, b.start = prepare, lambda handle: handle
+    provider = AgentEnqueuePromptEffectProvider()
+    first = AgentEnqueuePromptEffectDefinition(
+        id="enqueue", display_name="Chat", type="effect:agent:enqueue-prompt",
+        session_id="session-1", prompt="First task", dispatch_id="first",
+        delivery_mode="steer_if_running", conversation_key=key,
+        resume_thread_metadata_key=key, resume_mode="same_context",
+    )
+    second = first.model_copy(update={"prompt": "Second task", "dispatch_id": "second"})
+    for effect in (first, second):
+        provider.initialize(effect, context)
+        assert provider.execute()["queued"]
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    store = ConversationContextStore(tmp_path)
+    store.request_reset(session_id="session-1", conversation_key=key, request_id="reset",
+                        communication_target="chat:one")
+    assert len(queue.read_all()) == 2 and b.repository.get("exec-1").last_status == "running"
+    b.repository.put(b.repository.get("exec-1").model_copy(update={"last_status": "exited"}))
+    provider.initialize(first, context)
+    result = provider.execute()
+    assert not result["queued"] and result["context_generation"] == 1
+    assert launched[0].metadata["resume_thread_id"] is None
+    assert "resume --last" not in launched[0].command and "--last" not in launched[0].command
+    assert store.get("session-1", key)["pending"]
+    assert [(r.dispatch_id, r.prompt) for r in queue.read_all().values()] == [("second", "Second task")]
+
+    admin = SimpleNamespace(runtime=SimpleNamespace(session_repository=sessions))
+    worker = SimpleNamespace(config=config, provider_factory=SimpleNamespace(admin_service=admin))
+    record = SimpleNamespace(resolved_config={"resume_thread_metadata_key": key},
+                             input_payload={}, outputs=result)
+    AgentPromptEffectProvider._persist_container_session_thread_id(
+        worker=worker, record=record, session_id="session-1", thread_id="fresh-thread",
+    )
+    assert store.get("session-1", key)["thread_id"] == "fresh-thread"
+    provider.initialize(second, context)
+    assert not provider.execute()["queued"]
+    assert len(launched) == 2 and launched[1].metadata["resume_thread_id"] == "fresh-thread"
+    assert queue.read_all() == {} and c.calls == []
+
+
+def test_reset_launch_recovers_native_thread_after_uncertain_host_acceptance(tmp_path):
+    from evander.conversation_context import ConversationContextStore, launch_context
+
+    b, c = backend(tmp_path)
+    store = ConversationContextStore(tmp_path)
+    store.request_reset(session_id="session-1", conversation_key="teams:chat-1",
+                        request_id="reset", communication_target="chat:one")
+    launch_context(tmp_path, "session-1", "teams:chat-1", "message-1")
+    record = b.repository.get("exec-1")
+    record.metadata.update(dispatch_id="message-1", context_generation=1)
+    b.repository.put(record)
+    result = deliver(ConversationDeliveryService(tmp_path, b))
+    assert result["delivery_status"] == "started"
+    assert not store.get("session-1", "teams:chat-1")["pending"]
+    assert store.get("session-1", "teams:chat-1")["thread_id"] == "thread-1"
+    assert c.calls == []
+
+
+def test_fresh_subscription_turn_starts_a_thread_and_later_turn_resumes_that_thread(tmp_path):
+    class ThreadProcess:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, params):
+            self.calls.append((method, params))
+            if method == "thread/list":
+                return {"data": [{"id": "old-native-thread"}]}
+            if method == "thread/start":
+                return {"thread": {"id": "fresh-native-thread"}}
+            if method == "thread/resume":
+                return {"thread": {"id": params["threadId"]}}
+            raise AssertionError(method)
+
+    process = ThreadProcess()
+    fresh = runner(tmp_path)
+    fresh.turn = fresh.turn.model_copy(update={"resume_mode": "new_context", "resume_thread_id": None})
+    thread_id = fresh._open_thread(process)
+    assert thread_id == "fresh-native-thread"
+    assert [method for method, _ in process.calls] == ["thread/start"]
+    later = runner(tmp_path)
+    later.turn = later.turn.model_copy(update={"resume_mode": "same_context", "resume_thread_id": thread_id})
+    assert later._open_thread(process) == "fresh-native-thread"
+    assert [method for method, _ in process.calls] == ["thread/start", "thread/resume"]
+    assert process.calls[-1][1]["threadId"] == "fresh-native-thread"

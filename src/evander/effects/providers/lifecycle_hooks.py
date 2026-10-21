@@ -7,6 +7,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from evander.conversation_context import (
+    execution_context_generation,
+    launch_context,
+    thread_write_guard,
+)
 from evander.agent_threads import usable_agent_thread_id
 from evander.cost_categories import dispatch_with_cost_context
 from evander.effects.providers.agent_session import (
@@ -89,6 +94,7 @@ _RECONCILED_QUEUE_EXECUTION_STATUSES = {
     "skipped",
 }
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
+    "context_generation",
     "conversation_key",
     "cost_category_snapshot",
     "workflow_run_id",
@@ -957,6 +963,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record=record,
             session=session,
         )
+        state = launch_context(
+            config.runtime_dir, session_id,
+            delivery_metadata.get("conversation_key") or self._resume_thread_metadata_key(record),
+            dispatch_id,
+            resume_thread_id=effective_resume_thread_id,
+            resume_mode=getattr(record, "resume_mode", None) or "new_context",
+        )
+        record.metadata["context_generation"] = str(state["generation"] if state else 0)
+        if state:
+            effective_resume_thread_id = state["thread_id"]
+            record.resume_mode = state["resume_mode"]
         from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 
         agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
@@ -1032,6 +1049,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                 codex_turn=codex_turn,
                                 metadata={
                                     "effect_type": "effect:agent:enqueue-prompt",
+                                    "context_generation": int(record.metadata["context_generation"]),
                                     "conversation_key": delivery_metadata.get("conversation_key"),
                                     "mcp_tool_approval_lease_id": mcp_tool_approval_lease_id,
                                     "dispatch_id": dispatch_id,
@@ -1928,7 +1946,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             )
         )
 
-    def _persist_resume_thread_metadata_key(
+    def _persist_resume_thread_metadata_key(self, *, worker, record, thread_id):
+        with thread_write_guard(
+            resolve_runtime_dir(worker), getattr(record, "session_id", None),
+            self._resume_thread_metadata_key(record), execution_context_generation(record), thread_id,
+        ) as accepted:
+            if accepted:
+                self._persist_resume_thread_metadata_key_unchecked(
+                    worker=worker, record=record, thread_id=thread_id
+                )
+
+    def _persist_resume_thread_metadata_key_unchecked(
         self,
         *,
         worker: Any,
@@ -2619,6 +2647,16 @@ class _LibvirtQueuedPromptReplay:
         return True
 
     def _submit_prompt(self) -> Any:
+        state = launch_context(
+            resolve_runtime_dir(self.worker), self.session_id,
+            self.hook._resume_thread_metadata_key(self.record), self.dispatch_id,
+            resume_thread_id=self.effective_resume_thread_id,
+            resume_mode=getattr(self.record, "resume_mode", None) or "new_context",
+        )
+        self.record.metadata["context_generation"] = str(state["generation"] if state else 0)
+        if state:
+            self.effective_resume_thread_id = state["thread_id"]
+            self.record.resume_mode = state["resume_mode"]
         with maintain_local_inference_launch(
             resolve_runtime_dir(self.worker),
             self.capacity_admission.slot_id,
