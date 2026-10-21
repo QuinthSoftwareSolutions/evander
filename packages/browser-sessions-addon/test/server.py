@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.user_store import AdminWebUserStore
 from evander.admin.web.app import AuthMiddleware
+from evander.classification.models import ClassificationSettings
 from evander_browser_sessions_addon.models import Session, Settings, BrowserCommand, BrowserError, RunRequest
 from evander_browser_sessions_addon.service import Service, Parent
 from evander_browser_sessions_addon.relay import create_app as relay_app, error
@@ -37,7 +38,6 @@ os.environ.update(EVANDER_BROWSER_RELAY_TOKEN="fixture-relay-token",
                   EVANDER_ADMIN_WEB_SESSION_SECRET="fixture-session-signing-secret",
                   EVANDER_BROWSER_VOICE_API_KEY="fixture-speech-secret")
 
-from evander.classification.models import ClassificationSettings
 
 class FixtureClassifier:
     secret_resolver = staticmethod(lambda _: "synthetic-decision-key")
@@ -50,14 +50,18 @@ class FixtureClassifier:
         if state["goal"]=="Wait until stopped":
             time.sleep(1)
             action="wait"
-        elif field and field.get("value")!=value: action="fill"
-        elif value+" added" not in state["page"].get("text",""): action="click"
-        else: action="done"
+        elif field and field.get("value")!=value:
+            action="fill"
+        elif value+" added" not in state["page"].get("text",""):
+            action="click"
+        else:
+            action="done"
         selected={"action":action,"target":field["ref"] if action=="fill" else button["ref"] if button else "_none","input":"v0","key":"Enter","direction":"down"}
         answers={}
         for name,question in payload["questions"].items():
             choice=selected[name]
-            if choice not in question["criteria"]: choice=next(iter(question["criteria"]))
+            if choice not in question["criteria"]:
+                choice=next(iter(question["criteria"]))
             answers[name]={"type":"choice","choice":choice,"probabilities":{key:int(key==choice) for key in question["criteria"]}}
         return {"answers":answers}
 

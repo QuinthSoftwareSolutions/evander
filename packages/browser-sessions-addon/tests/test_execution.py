@@ -401,7 +401,8 @@ def test_waits_are_bounded_by_no_progress_detection(execution, monkeypatch):
     assert len(e.state["provider_calls"]) == 5
 
 
-def test_pending_command_restart_recovers_without_replaying(execution):
+@pytest.mark.parametrize("action", ["observe", "click"])
+def test_pending_command_restart_recovers_without_replaying(execution, action):
     from evander_browser_sessions_addon.state import Store
 
     e = execution
@@ -412,20 +413,40 @@ def test_pending_command_restart_recovers_without_replaying(execution):
         e.session.id, "agent:agent-a", request, "fingerprint", seconds=1, max_steps=1
     )
     command = BrowserCommand(
-        id="save-on-wire",
+        id="command-on-wire",
         generation=e.session.control_generation,
-        action="click",
-        observation_id="observation",
-        ref="node-2",
+        action=action,
+        observation_id="observation" if action == "click" else None,
+        ref="node-2" if action == "click" else None,
     )
     e.service.store.record_command(e.session.id, "agent:agent-a", command, run_id=run["id"])
     restarted = Store(e.service.runtime_dir, now=lambda: run["deadline_at"] + 1)
     receipt = restarted.run_get(e.session.id, run["id"])
-    assert receipt["status"] == "outcome_unknown"
-    assert receipt["steps"] == [
-        {"command_id": "save-on-wire", "action": "click", "ref": "node-2", "outcome": "unknown"}
-    ]
+    assert receipt["status"] == ("outcome_unknown" if action == "click" else "needs_pa")
+    assert receipt["steps"] == (
+        [{"command_id": "command-on-wire", "action": "click", "ref": "node-2", "outcome": "unknown"}]
+        if action == "click"
+        else []
+    )
     assert not e.state["commands"]
+    with restarted.connect() as db:
+        assert db.execute("SELECT state FROM commands WHERE id=?", (command.id,)).fetchone()[0] == "unknown"
+    assert restarted.claim_run(
+        e.session.id, "agent:agent-a", request, "fingerprint", seconds=1, max_steps=1
+    ) == (receipt, False)
+
+    # A human can inspect the state and renew control for a fresh objective.
+    e.service.store, e.service.now = restarted, restarted.now
+    e.service.control(e.session.id, "user:operator", "pause")
+    e.service.control(e.session.id, "user:operator", "handback")
+    result = e.run(
+        request_id="after-inspection",
+        generation=restarted.get(e.session.id).control_generation,
+    )
+    assert result["status"] == "needs_verification"
+    assert result["id"] != run["id"]
+    assert restarted.run_get(e.session.id, run["id"]) == receipt
+    assert all(c["id"] != command.id for c in e.state["commands"])
 
 
 def test_command_completion_survives_restart_before_loop_progress(execution):
@@ -519,8 +540,16 @@ def test_legacy_command_migration_is_concurrent_and_preserves_receipts(tmp_path)
         db.execute(
             "INSERT INTO commands VALUES('legacy-command','session','agent:a','unknown',0,'fingerprint')"
         )
+    from threading import Barrier
+
+    barrier = Barrier(6)
+
+    def initialize(_):
+        barrier.wait(timeout=5)
+        return Store(tmp_path)
+
     with ThreadPoolExecutor(max_workers=6) as pool:
-        stores = list(pool.map(lambda _: Store(tmp_path), range(6)))
+        stores = list(pool.map(initialize, range(6)))
     with stores[0].connect() as db:
         assert (
             db.execute("SELECT state FROM commands WHERE id='legacy-command'").fetchone()[0]
@@ -589,3 +618,39 @@ def test_ui_stop_targets_active_run_and_fences_a_later_start(execution):
             seconds=30,
             max_steps=1,
         )
+
+
+def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, monkeypatch):
+    from evander_browser_sessions_addon.service import HttpPeer
+
+    e = execution
+    original = e.service.peer_factory
+    attempts = []
+    monkeypatch.setenv("BROWSER_TEST_TOKEN", "synthetic-relay-token")
+
+    def peer(base, token):
+        def relay(request):
+            payload = json.loads(request.content) if request.content else None
+            if request.url.path.endswith("/command") and payload["command"]["action"] != "observe":
+                attempts.append(payload["command"])
+                return httpx.Response(409, json={"code": "stale_target", "error": "private-peer-detail"})
+            return httpx.Response(
+                200, json=original(base, token).call(request.method, request.url.path, payload)
+            )
+        return HttpPeer(base, "BROWSER_TEST_TOKEN", transport=httpx.MockTransport(relay))
+
+    e.service.peer_factory = peer
+    result = e.run()
+    assert result["status"] == "needs_pa"
+    assert result["reason"].startswith("stale_target:")
+    assert not result["observation_current"]  # The PA must observe the changed page.
+    assert len(attempts) == len(e.state["provider_calls"]) == 1
+    assert result["steps"] == [
+        {"command_id": attempts[0]["id"], "action": "fill", "ref": "node-1", "outcome": "not_applied"}
+    ]
+    assert e.state["value"] == ""
+    assert "private-peer-detail" not in json.dumps(result)
+    with e.service.store.connect() as db:
+        assert db.execute("SELECT state FROM commands WHERE id=?", (attempts[0]["id"],)).fetchone()[0] == "not_applied"
+    assert e.run()["id"] == result["id"]
+    assert len(attempts) == 1

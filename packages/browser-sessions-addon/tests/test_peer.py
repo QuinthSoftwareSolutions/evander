@@ -6,7 +6,7 @@ from evander_browser_sessions_addon.service import HttpPeer
 
 
 @pytest.mark.parametrize(
-    "code", ["invalid_coordinates", "stale_observation", "stale_control", "disconnected",
+    "code", ["invalid_coordinates", "stale_observation", "stale_target", "stale_control", "disconnected",
              "unsupported_target", "compatibility_unsupported", "capture_unavailable"]
 )
 def test_browser_action_conflict_preserves_safe_code_without_peer_details(monkeypatch, code):

@@ -60,6 +60,13 @@ class RunStore:
                 value["steps"].append(
                     {**json.loads(command["action_metadata"] or "{}"), "outcome": "unknown"}
                 )
+        # Retire pending receipts with the run, preserving their unknown outcome
+        # and identity. Already-issued input may still finish, but must never be
+        # replayed or block a later authorized objective.
+        db.execute(
+            "UPDATE commands SET state='unknown' WHERE run_id=? AND state='submitted'",
+            (value["id"],),
+        )
         value["step_count"] = len(value["steps"])
         value.update(
             status="outcome_unknown" if pending else status, reason=reason, finished_at=self.now()

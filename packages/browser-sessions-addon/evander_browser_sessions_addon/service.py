@@ -221,6 +221,7 @@ ACTION_CONFLICTS = {
     "capture_unavailable": "Shared tab video is unavailable; reconnect the sharing session",
     "invalid_coordinates": "The target is outside the visible page; scroll it into view and observe again",
     "stale_observation": "The page changed; observe it again before interacting",
+    "stale_target": "The target changed before input; observe the page again before interacting",
     "stale_control": "Browser control changed; read session status and observe again",
     "control_required": "Browser control has not been granted",
     "origin_denied": "The page is outside the approved application; the local host must approve its origin",

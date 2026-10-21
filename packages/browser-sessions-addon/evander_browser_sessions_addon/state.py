@@ -25,7 +25,17 @@ class Store(RunStore):
         self.path = self.root / "state.db"
         self.now = now
         with self.connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            # Switching a legacy database to WAL can return SQLITE_BUSY even
+            # with busy_timeout set when another process initializes it too.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS settings(directory TEXT PRIMARY KEY, revision INTEGER, payload TEXT);
                 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, directory TEXT, owner TEXT,
