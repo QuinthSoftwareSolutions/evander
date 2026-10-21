@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 from evander.addons import AddonContext
 from evander_browser_sessions_addon import register_addon
-from evander_browser_sessions_addon.models import BrowserError
+from evander_browser_sessions_addon.models import BrowserError, LaunchManifest, RunRequest
 from evander_browser_sessions_addon.providers import BrowserEffect, Definition
 from evander_browser_sessions_addon.service import Bindings
 
@@ -34,6 +34,64 @@ def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
     serialized = json.dumps(action.inputSchema)
     assert "observation_id" in serialized and "generation" in serialized
     assert "evaluate" not in serialized
+    run = next(tool for tool in tools if tool.name == "browser_session_run")
+    schema = run.inputSchema["$defs"]["RunRequest"]["properties"]
+    assert {
+        "request_id",
+        "generation",
+        "goal",
+        "values",
+        "max_steps",
+        "timeout_seconds",
+    } <= schema.keys()
+    assert all(schema[field].get("description") for field in schema)
+    for example in schema["values"]["examples"]:
+        request = RunRequest(
+            request_id="schema-example", generation=0, goal="Check a filter", values=example
+        )
+        assert any(value.value == "" for value in request.values.values())
+    status = next(tool for tool in tools if tool.name == "browser_session_status")
+    assert status.inputSchema["properties"]["include_guidance"]["default"] is False
+
+
+def test_any_owning_agent_can_discover_packaged_guidance_without_a_pa_prompt(domain, monkeypatch):
+    import re
+    from mcp.server.fastmcp.exceptions import ToolError
+    from evander_browser_sessions_addon import mcp
+
+    service, bindings, _ = domain
+    monkeypatch.setattr(mcp, "Service", lambda *args: service)
+    monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-a")
+    server = FastMCP("generic-browser-agent")
+    mcp.register_mcp_tools(server, SimpleNamespace(runtime_dir=service.runtime_dir, service=None))
+
+    def call(name, **payload):
+        return asyncio.run(server._tool_manager.call_tool(name, payload))
+
+    profiles = call("browser_session_profiles")
+    created = call("browser_session_create", request={"mode": "user_hosted", "request_id": "share"})
+    status = call("browser_session_status", browser_session_id=created["id"], include_guidance=True)
+    assert profiles["agent_guidance"] == created["agent_guidance"] == status["agent_guidance"]
+    guidance = status["agent_guidance"]
+    assert guidance["instructions"]
+    assert guidance["launch_manifest_schema"]["required"] == ["command"]
+    # Published instructions must contain usable examples of the actual public contracts.
+    manifest, objective = re.findall(r"```json\n(.*?)\n```", guidance["instructions"], re.S)
+    LaunchManifest.model_validate_json(manifest)
+    request = RunRequest.model_validate_json(objective)
+    assert any(value.value == "" for value in request.values.values())
+    compact = call("browser_session_status", browser_session_id=created["id"])
+    assert "agent_guidance" not in compact
+    assert compact["last_activity_at"] == created["last_activity_at"]
+
+    # Adding the guide must preserve ownership and tool-grant checks.
+    monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-b")
+    with pytest.raises(ToolError):
+        call("browser_session_status", browser_session_id=created["id"], include_guidance=True)
+    bindings.denied.add("agent-a")
+    monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-a")
+    with pytest.raises(ToolError):
+        call("browser_session_status", browser_session_id=created["id"], include_guidance=True)
 
 
 def test_workflow_cannot_launch_for_an_agent_in_another_directory(domain):
@@ -60,7 +118,9 @@ def test_workflow_cannot_launch_for_an_agent_in_another_directory(domain):
 
 
 @pytest.mark.parametrize("legacy_support", [None, "legacy-support-agent"])
-def test_message_dispatch_uses_bound_owner_thread_and_channel_instructions(tmp_path, legacy_support):
+def test_message_dispatch_uses_bound_owner_thread_and_channel_instructions(
+    tmp_path, legacy_support
+):
     calls = []
     admin = SimpleNamespace(
         enqueue_agent_prompt=lambda *args, **kwargs: (
@@ -99,7 +159,9 @@ def test_built_extension_and_python_assets_are_complete():
         manifest = json.loads(bundle.read("manifest.json"))
         assert manifest["manifest_version"] == 3 and manifest["minimum_chrome_version"] == "125"
         assert {"debugger", "tabCapture", "offscreen"} <= set(manifest["permissions"])
-        assert {"microphone.html", "microphone.js", "capture.html", "capture.js"} <= set(bundle.namelist())
+        assert {"microphone.html", "microphone.js", "capture.html", "capture.js"} <= set(
+            bundle.namelist()
+        )
         assert not manifest.get("externally_connectable")
         assert manifest["background"]["service_worker"] in bundle.namelist()
         assert manifest["side_panel"]["default_path"] in bundle.namelist()
