@@ -40,6 +40,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, session_id TEXT, actor TEXT,
                     state TEXT, at REAL, fingerprint TEXT);
                 CREATE TABLE IF NOT EXISTS dispatches(message_id TEXT PRIMARY KEY, state TEXT, lease_until REAL);
+                CREATE TABLE IF NOT EXISTS delivery_poll_state(id INTEGER PRIMARY KEY, after_seq INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS private_sessions(session_id TEXT PRIMARY KEY, payload TEXT);
                 CREATE TABLE IF NOT EXISTS voice_requests(session_id TEXT, actor TEXT, request_id TEXT,
                     kind TEXT, fingerprint TEXT, state TEXT, at REAL, lease_until REAL, result TEXT,
@@ -47,6 +48,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS voice_requests_active ON voice_requests(state,lease_until);
 
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if "delivery_status" not in {
+                row[1] for row in db.execute("PRAGMA table_info(messages)")
+            }:
+                db.execute("ALTER TABLE messages ADD COLUMN delivery_status TEXT DEFAULT 'pending'")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -315,6 +321,35 @@ class Store:
                     (session_id, channel, after),
                 )
             ]
+
+    def message_updates(self, session_id, channel="viewer"):
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT id,status,delivery_status FROM messages WHERE session_id=? AND channel=? AND reply_to IS NULL ORDER BY seq DESC LIMIT 50",
+                    (session_id, channel),
+                )
+            ]
+
+    def message_delivery_batch(self, limit=50):
+        """Claim a bounded rotating page, including across poller restarts."""
+        with self.connect(write=True) as db:
+            cursor = db.execute("SELECT after_seq FROM delivery_poll_state WHERE id=1").fetchone()
+            after = cursor[0] if cursor else 0
+            query = """SELECT * FROM messages WHERE status='dispatched' AND reply_to IS NULL
+                       AND delivery_status IN ('queued','pending','delivery_unknown')"""
+            rows = db.execute(query + " AND seq>? ORDER BY seq LIMIT ?", (after, limit)).fetchall()
+            if after and len(rows) < limit:
+                rows.extend(db.execute(
+                    query + " AND seq<=? ORDER BY seq LIMIT ?", (after, limit - len(rows))
+                ).fetchall())
+            if rows:
+                db.execute(
+                    "INSERT INTO delivery_poll_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET after_seq=excluded.after_seq",
+                    (rows[-1]["seq"],),
+                )
+            return rows
 
     def record_command(self, session_id, actor, command):
         fingerprint = digest(command.model_dump_json())

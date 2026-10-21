@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 from pathlib import Path
@@ -108,6 +109,13 @@ class WorkerJobStore:
                         finished_at TEXT,
                         payload_json TEXT NOT NULL
                     );
+                    CREATE TABLE IF NOT EXISTS worker_steering (
+                        job_id TEXT NOT NULL,
+                        delivery_id TEXT NOT NULL,
+                        fingerprint TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        PRIMARY KEY(job_id, delivery_id)
+                    );
                     CREATE INDEX IF NOT EXISTS idx_worker_jobs_session_status_started_job
                         ON worker_jobs(session_id, status, started_at, job_id);
                     CREATE INDEX IF NOT EXISTS idx_worker_jobs_session_started_job
@@ -120,6 +128,76 @@ class WorkerJobStore:
                         ON worker_jobs(status, cleanup_status);
                     """
                 )
+
+    def recover_steering(self) -> None:
+        """A crashed sender cannot prove whether app-server accepted its write."""
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT job_id,delivery_id,payload_json FROM worker_steering"
+            ).fetchall()
+            for row in rows:
+                receipt = json.loads(row["payload_json"])
+                if receipt["status"] == "sending":
+                    receipt.update(status="delivery_unknown", reason="worker_restarted")
+                    db.execute(
+                        "UPDATE worker_steering SET payload_json=? WHERE job_id=? AND delivery_id=?",
+                        (_json_dumps(receipt), row["job_id"], row["delivery_id"]),
+                    )
+
+    def claim_steering(self, job_id: str, request: Any) -> tuple[dict[str, Any], bool]:
+        fingerprint = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT fingerprint,payload_json FROM worker_steering WHERE job_id=? AND delivery_id=?",
+                (job_id, request.delivery_id),
+            ).fetchone()
+            if row:
+                if row["fingerprint"] != fingerprint:
+                    raise ValueError("Steering delivery identity conflict")
+                return json.loads(row["payload_json"]), False
+            receipt = {
+                "job_id": job_id,
+                "delivery_id": request.delivery_id,
+                "session_id": request.session_id,
+                "thread_id": request.expected_thread_id,
+                "turn_id": request.expected_turn_id,
+                "status": "sending",
+            }
+            db.execute(
+                "INSERT INTO worker_steering VALUES(?,?,?,?)",
+                (job_id, request.delivery_id, fingerprint, _json_dumps(receipt)),
+            )
+            return receipt, True
+
+    def steering(self, job_id: str, delivery_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT payload_json FROM worker_steering WHERE job_id=? AND delivery_id=?",
+                (job_id, delivery_id),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def finish_steering(
+        self, job_id: str, delivery_id: str, status: str, reason: str = ""
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT payload_json FROM worker_steering WHERE job_id=? AND delivery_id=?",
+                (job_id, delivery_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown steering delivery")
+            receipt = json.loads(row[0])
+            # An acknowledgement wins over a racing timeout or connection close.
+            if receipt["status"] not in {"accepted", "rejected"}:
+                receipt.update(status=status, reason=reason)
+                db.execute(
+                    "UPDATE worker_steering SET payload_json=? WHERE job_id=? AND delivery_id=?",
+                    (_json_dumps(receipt), job_id, delivery_id),
+                )
+            return receipt
 
     def get(self, job_id: str) -> WorkerJobRecord | None:
         normalized_job_id = str(job_id or "").strip()
@@ -170,6 +248,8 @@ class WorkerJobStore:
                 )
 
     def delete(self, job_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute("DELETE FROM worker_steering WHERE job_id=?", (job_id,))
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
             return

@@ -1,4 +1,5 @@
 import { VoiceControls, voiceJson } from "./voice-controls.js";
+import { messageDelivery } from "./message-delivery.js";
 export {};
 const base = "/api/addons/browser-sessions-addon";
 const $ = (id: string) => document.getElementById(id)!;
@@ -114,9 +115,12 @@ async function messages() {
     const name = document.createElement("strong");
     name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
     item.append(name, document.createTextNode(message.body)); $("messages").append(item);
+    if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
     after = Math.max(after, message.seq);
   }
   voice?.messages(result.messages);
+  messageDelivery($("messages"), [...result.messages, ...(result.message_updates ?? [])],
+    id => void api("/sessions/" + sessionId + "/retry-message", {message_id:id,request_id:crypto.randomUUID()}).then(messages).catch(showError));
   if (result.messages.length) $("messages").scrollTop = $("messages").scrollHeight;
 }
 $("chat-form").addEventListener("submit", async (event) => {

@@ -17,6 +17,43 @@ from evander.orchestration.agent_prompt_activity import AgentPromptActivityRunti
 
 
 class VmAgentPromptMixin:
+    def agent_message_delivery(self, target: str, dispatch_id: str) -> dict[str, Any]:
+        from evander.admin.services.conversation_delivery_service import ConversationDeliveryStore
+        from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+        session = self.runtime.session_repository.get_session(target)
+        if session is None:
+            raise ValueError(f"Unknown session: {target}")
+        receipt = ConversationDeliveryStore(self.config.runtime_dir).get(
+            session.session_id, dispatch_id
+        )
+        if receipt and receipt["delivery_status"] not in {"pending", "delivery_unknown", "queued"}:
+            return receipt
+        for item in (
+            AgentPromptQueueStore(self.config.runtime_dir / "queued-agent-prompts.json")
+            .read_all()
+            .values()
+        ):
+            if item.session_id == session.session_id and item.dispatch_id == dispatch_id:
+                return receipt or {"delivery_status": "queued"}
+        return receipt or {"delivery_status": "pending"}
+
+    def cancel_agent_message(self, target: str, dispatch_id: str) -> dict[str, Any]:
+        from evander.admin.services.conversation_delivery_service import ConversationDeliveryStore
+        from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+        session = self.runtime.session_repository.get_session(target)
+        if session is None:
+            raise ValueError(f"Unknown session: {target}")
+        receipt = ConversationDeliveryStore(self.config.runtime_dir).cancel(
+            session.session_id, dispatch_id
+        )
+        queue = AgentPromptQueueStore(self.config.runtime_dir / "queued-agent-prompts.json")
+        for item in queue.read_all().values():
+            if item.session_id == session.session_id and item.dispatch_id == dispatch_id:
+                queue.delete_if_dispatch_id(item.queue_key, dispatch_id)
+        return receipt
+
     def enqueue_agent_prompt(
         self,
         target: str,
@@ -31,6 +68,8 @@ class VmAgentPromptMixin:
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        delivery_mode: str = "queue",
+        conversation_key: str | None = None,
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> Any:
@@ -61,6 +100,8 @@ class VmAgentPromptMixin:
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
                 "resume_mode": resume_mode,
+                "delivery_mode": delivery_mode,
+                "conversation_key": conversation_key,
             },
         )
         from evander.models import VmActionResult
@@ -140,7 +181,14 @@ class VmAgentPromptMixin:
         else:
             raise ValueError(f"Unknown agent backend: {backend}")
 
-        if session is not None and session_id is not None:
+        reconcile_before_start = (payload.get("delivery_mode", "queue") == "queue"
+                                  or backend != "container_worker_vm")
+        if not reconcile_before_start and session is not None and session_id is not None:
+            active = self.container_worker_backend(
+                session_id=session_id, directory_path=directory_path
+            ).repository.list_active_by_session(session_id, {"created", "starting", "running"})
+            reconcile_before_start = not active
+        if session is not None and session_id is not None and reconcile_before_start:
             session = self._reconcile_managed_git_remote_before_dispatch(
                 session_id=session_id,
                 session=session,
@@ -160,6 +208,8 @@ class VmAgentPromptMixin:
             session_id=session_id,
             vm_name=target_name,
             prompt=prompt,
+            delivery_mode=payload.get("delivery_mode", "queue"),
+            conversation_key=payload.get("conversation_key"),
             model=model,
             cost_category=payload.get("cost_category"),
             reasoning_effort=reasoning_effort,

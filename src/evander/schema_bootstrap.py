@@ -969,6 +969,9 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
+        "conversation_key": {"type": ["string", "null"]},
+        "delivery_status": {"type": "string"},
+        "steered_into_dispatch_id": {"type": ["string", "null"]},
         "fast_mode": {"anyOf": [{"type": "boolean"}, {"const": "ultrafast"}]},
         "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
@@ -1650,6 +1653,7 @@ _QUERY_OUTPUT_SCHEMAS = {
         "groups": {"type": "object"},
     },
     "query:session-context": {
+        "activity": {"type": "object"},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},
         "directory_path": {"type": "string"},

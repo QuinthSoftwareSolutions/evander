@@ -4406,3 +4406,66 @@ See [Git submission through MCP](git-remotes.md#submitting-committed-work-throug
 The [Browser Sessions Add-on](../packages/browser-sessions-addon/README.md) provides authenticated hosted Chrome previews, development feedback in the same browser, and an invitation-based Chrome extension for user-hosted tabs. Install and configure it separately. Its private worker supervisor and relay do not add default guest firewall ports. Hosted viewers require Admin UI sign-in and directory-scoped browser permissions.
 
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](../packages/browser-sessions-addon/docs/voice.md).
+
+## Conversation steering from Teams and shared browsers
+
+`effect:agent:enqueue-prompt` accepts `delivery_mode: steer_if_running`. The default
+is `queue`, preserving existing automations. Supply a stable `dispatch_id` for each
+source message and a `conversation_key`, or an explicit `resume_thread_id`. Teams
+conversation keys should include the exact target and, for channel conversations,
+the reply thread. Browser feedback retains the sharing session's creating native
+conversation. Replies belong to each message's channel, including when several
+channels contribute input to one active turn.
+
+A compatible container-worker Codex subscription runner appends input using
+`turn/steer`, pinned to the existing job, thread and turn. A `steered` output means
+that input was accepted; the original job alone owns its `started`/`completed`
+lifecycle, capacity and usage. This is not confirmation that the agent acted on
+that input. Steering waits for the agent's next opportunity to process input and
+does not cancel commands. Changed model settings require a subsequent turn.
+Other runners and older workers queue messages without interrupting them.
+
+Messages are persisted before dispatch, with separate queue entries and replay
+identities. `agent-message-deliveries.db` stores control-plane delivery identities,
+hashes and original job pointers; `worker-jobs.db` stores worker acknowledgement
+receipts without message bodies. An HTTP timeout is reconciled against the same
+worker receipt. An unresolved send never automatically becomes a fresh prompt.
+The browser displays uncertain delivery and asks the user to check with the
+assistant before using Retry message. This explicitly cancels the old pending
+request and submits a new message; it cannot undo input already received. Retain uncertain receipts until resolved;
+retain terminal receipts with the corresponding job/audit history. Include the
+control-plane delivery database in runtime backups.
+
+Browser status snapshots are additive to message polling: clients update existing
+message entries by ID even when their original sequence is behind the cursor.
+Closing a sharing session cancels browser requests that have not started. Existing
+pause, browser-control leases and origin permissions continue to govern actions.
+Teams adds no routine platform delivery notices.
+
+### Enable a personal-assistant workflow
+
+Deploy workers first and verify the loaded deployment revision and health
+capability `codex_native_steering: 1`, then deploy the control plane and Browser
+Sessions 0.4.0. Existing extension builds can send steering messages; extension
+0.4.0 displays their delivery status. No runner image change or new network port
+is required for an installed Codex version supporting `turn/steer`.
+
+Prepare a local candidate with
+`evander.workflow.conversation_steering.prepare_conversation_steering_pack`.
+It takes a workflow pack plus explicit enqueue-node IDs, the entry node before
+reasoning/preparation, trusted session/conversation/message bindings and a
+per-message reply prompt. It preserves the idle preparation route and adds an
+activity query and busy route before it. `query:session-context` exposes the
+activity summary only when `include_activity: true` is requested. Keep existing
+model-selection commands before this branch. Give ordinary follow-ups steering
+instructions that preserve the ongoing task unless the user clearly replaces it.
+
+Validate the candidate and compare diagnostics with its baseline. Save through
+`WorkflowConfigAdminService.save_workflow_editor_document(expected_revision=...)`,
+then reread the saved revision and confirm orchestrator reload. Never write the
+live pack file directly. Keep operator-specific packs, bindings and evidence
+outside the repository. Initially opt in personal assistants and browser chats;
+other Teams workflows retain queueing. Roll back new traffic by restoring their
+`delivery_mode` to `queue`, while retaining receipt reconciliation for sends
+already in progress. Explicit Admin Web operator steering remains a separate
+control with its existing interruption behavior.

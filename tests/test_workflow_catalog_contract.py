@@ -569,6 +569,8 @@ def test_workflow_catalog_effect_agent_enqueue_prompt(catalog_payload) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
     )
     assert [field["key"] for field in agent_enqueue_prompt["fields"]] == [
+        "delivery_mode",
+        "conversation_key",
         "target",
         "session_id",
         "vm_name",
@@ -587,6 +589,11 @@ def test_workflow_catalog_effect_agent_enqueue_prompt(catalog_payload) -> None:
         "queue_key",
     ]
     assert agent_enqueue_prompt["output_ports"] == [
+        {
+            "key": "steered",
+            "label": "Steered",
+            "description": "Input was accepted by an existing turn; this is not job completion.",
+        },
         {
             "key": "started",
             "label": "Started",

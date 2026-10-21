@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -129,6 +131,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 AGENT_PROMPT_ERROR_PORT,
                 AGENT_PROMPT_STARTED_PORT,
                 AGENT_PROMPT_COMPLETED_PORT,
+                "steered",
             }
         ),
     )
@@ -159,6 +162,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "prompt": effect.prompt,
+            "delivery_mode": effect.delivery_mode,
+            "conversation_key": effect.conversation_key,
             "model": effect.model,
             "reasoning_effort": effect.reasoning_effort,
             "fast_mode": effect.fast_mode,
@@ -204,6 +209,27 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             payload.get("resume_thread_metadata_collection")
         )
         queue_key = self._normalize_optional_string(payload.get("queue_key"))
+        self._delivery_metadata = {}
+        if payload.get("delivery_mode", "queue") not in {"queue", "steer_if_running"}:
+            raise ValueError("Invalid delivery_mode")
+        if payload.get("delivery_mode") == "steer_if_running":
+            if not dispatch_id:
+                raise ValueError("steer_if_running requires a stable dispatch_id")
+            self._delivery_metadata = {
+                "delivery_mode": "steer_if_running",
+                "conversation_key": payload.get("conversation_key")
+                or resume_thread_metadata_key
+                or "",
+                "steering_model": model or "",
+                "steering_settings": json.dumps(
+                    {
+                        k: payload[k]
+                        for k in ("reasoning_effort", "fast_mode")
+                        if payload.get(k) is not None
+                    }
+                ),
+            }
+            queue_key = f"message:{target}:{dispatch_id}"
         mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
             payload=payload,
             execution_context=execution_context,
@@ -675,7 +701,68 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
         dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect_id)
         owner_id = self._current_idempotency_key(execution_context) or dispatch_id
-        if self._container_session_is_busy(
+        delivery_mode = payload.get("delivery_mode", "queue")
+        delivery = None
+        if delivery_mode == "steer_if_running":
+            from evander.admin.services.conversation_delivery_service import (
+                ConversationDeliveryService,
+            )
+
+            if not payload.get("dispatch_id"):
+                raise ValueError("steer_if_running requires a stable dispatch_id")
+            conversation_key = self._delivery_metadata.get("conversation_key") or None
+            queue_key = f"message:{session_id}:{dispatch_id}"
+            self._queue_prompt(
+                target=target,
+                vm_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=resolved_model,
+                **reasoning.fields(),
+                **speed.fields(),
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect_id,
+                queue_key=queue_key,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
+            )
+            delivery_service = ConversationDeliveryService(
+                resolve_runtime_dir(context), container_backend(context, effective_config)
+            )
+            delivery = delivery_service.try_steer(
+                session_id=session_id,
+                delivery_id=dispatch_id,
+                prompt=prompt,
+                conversation_key=conversation_key,
+                thread_id=resume_thread_id,
+                model=payload.get("model"),
+                approval_lease_id=mcp_tool_approval_lease_id,
+                turn_settings=json.loads(self._delivery_metadata["steering_settings"]),
+                allow_native=resume_mode != "new_context",
+            )
+            if delivery and delivery["delivery_status"] in {"steered", "started", "cancelled"}:
+                from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+                AgentPromptQueueStore(
+                    effective_config.runtime_dir / "queued-agent-prompts.json"
+                ).delete_if_dispatch_id(queue_key, dispatch_id)
+                return {
+                    **delivery,
+                    "success": True,
+                    "queued": False,
+                    "session_id": session_id,
+                    "execution_backend": "container_worker_vm",
+                }
+        if (delivery is not None) or self._container_session_is_busy(
             context=context,
             config=effective_config,
             session_id=session_id,
@@ -715,6 +802,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "retry_count": record.retry_count,
                 "max_retries": record.max_retries,
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "dispatch_id": dispatch_id,
+                "delivery_status": delivery["delivery_status"] if delivery else "queued",
             }
 
         prompt_lock_claim = self._claim_enqueue_prompt(
@@ -822,7 +911,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 **capacity_admission.output_metadata(),
             }
         backend = container_backend(context, effective_config)
-        execution_id = safe_effect_execution_id("agent", session_id)
+        execution_id = (
+            "agent-msg-" + hashlib.sha256(f"{session_id}:{dispatch_id}".encode()).hexdigest()[:32]
+            if delivery_mode == "steer_if_running"
+            else safe_effect_execution_id("agent", session_id)
+        )
         mcp_gateway_url = gateway_url_with_session_context(
             container_worker_guest_gateway_url(effective_config),
             session_id=session_id,
@@ -880,6 +973,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                 codex_turn=codex_turn,
                                 metadata={
                                     "effect_type": self.node_type(),
+                                    **self._delivery_metadata,
+                                    "mcp_tool_approval_lease_id": mcp_tool_approval_lease_id,
                                     "dispatch_id": dispatch_id,
                                     "resume_thread_id": effective_resume_thread_id,
                                     "agent_provider": agent_harness,
@@ -1032,6 +1127,20 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             target_name=target_name,
             execution_id=handle.execution_id,
         )
+        if delivery_mode == "steer_if_running":
+            delivery_service.mark_started(
+                session_id=session_id,
+                delivery_id=dispatch_id,
+                prompt=prompt,
+                conversation_key=conversation_key,
+                thread_id=resume_thread_id,
+                execution_id=handle.execution_id,
+            )
+            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+            AgentPromptQueueStore(
+                effective_config.runtime_dir / "queued-agent-prompts.json"
+            ).delete_if_dispatch_id(queue_key, dispatch_id)
         return {
             "dispatch_id": dispatch_id,
             "thread_id": None,
@@ -1040,6 +1149,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "success": True,
             "queued": False,
             "output_mode": "on_completion",
+            "conversation_key": self._delivery_metadata.get("conversation_key"),
             "vm_name": target_name,
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
@@ -1057,6 +1167,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         record = kwargs.get("record")
         outputs = kwargs.get("outputs")
         if record is None or not isinstance(outputs, Mapping):
+            return False
+        if outputs.get("delivery_status") in {"steered", "started", "cancelled"}:
             return False
         if outputs.get("queued") is True or outputs.get("success") is False:
             return False
@@ -1617,6 +1729,19 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             if value
         }
         metadata.update(self._context_retry_metadata(context_retry_metadata))
+        metadata.update(getattr(self, "_delivery_metadata", {}))
+        if metadata.get("delivery_mode") == "steer_if_running":
+            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+            queue_key = f"message:{session_id or target}:{dispatch_id}"
+            existing = AgentPromptQueueStore(
+                context.resolved_config.runtime_dir / "queued-agent-prompts.json"
+            ).get(queue_key)
+            if existing and existing.dispatch_id == dispatch_id:
+                if existing.prompt != prompt:
+                    raise ValueError("Message delivery identity conflict")
+                if not capacity_deferral and not queue_reason:
+                    return existing
         max_retries = self._agent_prompt_queue_max_retries()
         try:
             return enqueue_agent_prompt(

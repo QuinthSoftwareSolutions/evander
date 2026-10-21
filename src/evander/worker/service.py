@@ -282,6 +282,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
         self.store = WorkerJobStore(runtime_dir / "worker-jobs.db")
+        self.store.recover_steering()
         self.allowed_git_source_prefixes = tuple(
             prefix.strip() for prefix in (allowed_git_source_prefixes or ()) if str(prefix).strip()
         )
@@ -977,6 +978,27 @@ class WorkerDaemon(GitWorkspaceOperations):
         record.metadata = sanitize_metadata(metadata)
         self.store.put(record)
         return record
+
+    def steer_job(self, record, request):
+        if record.session_id != request.session_id:
+            raise ValueError("Steering session does not match job")
+        receipt, claimed = self.store.claim_steering(record.job_id, request)
+        if not claimed:
+            return receipt
+
+        def acknowledge(status, reason):
+            return self.store.finish_steering(record.job_id, request.delivery_id, status, reason)
+
+        with self._codex_subscription_runners_lock:
+            runner = self._codex_subscription_runners.get(record.job_id)
+        if runner is None:
+            acknowledge("rejected", "runner_unavailable")
+        else:
+            try:
+                runner.steer(request, acknowledge)
+            except Exception:
+                acknowledge("delivery_unknown", "runner_unavailable")
+        return self.store.steering(record.job_id, request.delivery_id)
 
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
         self._shutdown_codex_subscription_runner(record.job_id)

@@ -2881,14 +2881,27 @@ class EffectOrchestratorWorker:
             self._finish_completion_bookkeeping(record)
             return int(record.published_event_id is not None)
 
+        delivery_port = (
+            "steered"
+            if record.effect_type == "effect:agent:enqueue-prompt"
+            and outputs.get("delivery_status") == "steered"
+            else None
+        )
         published_event_id = self._publish_effect_completion_event_or_mark_pending(
-            record=record, outputs=outputs, pending_status="succeeded", finished_at=finished_at,
+            record=record,
+            outputs=outputs,
+            pending_status="succeeded",
+            finished_at=finished_at,
+            branch_port=delivery_port,
         )
         if published_event_id is None:
             return 0
         self._finalize_effect_completion_publication(
-            record=record, outputs=outputs, published_event_id=published_event_id,
+            record=record,
+            outputs=outputs,
+            published_event_id=published_event_id,
             finished_at=finished_at,
+            branch_port=delivery_port,
         )
         return 1
 

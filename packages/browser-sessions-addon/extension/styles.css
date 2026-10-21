@@ -5,3 +5,5 @@ details{border-top:1px solid #d5dfe5;padding:10px 0;margin-top:10px}summary{curs
 .voice-replies{display:flex;align-items:center;gap:6px;margin:4px 0;width:100%}.voice-replies input{width:auto;margin:0}
 [data-voice-status],.voice-controls small{flex-basis:100%;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
 button:disabled{cursor:default;opacity:.55}[data-voice-talk][aria-pressed="true"]{background:#a43a35}
+
+.message-delivery{display:block;margin-top:.25rem;opacity:.75;font-size:.8em}

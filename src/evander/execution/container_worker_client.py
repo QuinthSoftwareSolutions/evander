@@ -442,6 +442,24 @@ class ContainerWorkerClient:
         response = self._request("POST", f"/v1/jobs/{job_id}/stop")
         return WorkerJobRecord.model_validate(self._json_dict(response, operation="stop job"))
 
+    def steer(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._json_dict(
+            self._request("POST", f"/v1/jobs/{job_id}/steer", json=payload), operation="steer job"
+        )
+
+    def steering_receipt(self, job_id: str, delivery_id: str) -> dict[str, Any] | None:
+        from urllib.parse import quote
+
+        try:
+            response = self._request(
+                "GET", f"/v1/jobs/{job_id}/steering/{quote(delivery_id, safe='')}"
+            )
+        except ContainerWorkerClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return self._json_dict(response, operation="steering receipt")
+
     def interrupt_active_tool(
         self,
         job_id: str,

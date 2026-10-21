@@ -497,9 +497,11 @@ class IssueGitAdminService:
             "image_generation_enabled": updated_manifest.image_generation_enabled,
         }
 
-    def session_context_query(self, *, target: str) -> dict[str, Any]:
+    def session_context_query(
+        self, *, target: str, include_activity: bool = False
+    ) -> dict[str, Any]:
         session_id, manifest = self._resolve_session_target(target)
-        return {
+        result = {
             "session_id": session_id,
             "vm_name": manifest.vm_id,
             "directory_path": manifest.directory_path,
@@ -509,6 +511,38 @@ class IssueGitAdminService:
             "expires_at": manifest.expires_at.isoformat(),
             "model": manifest.model,
         }
+        if include_activity:
+            from evander.admin.services.conversation_delivery_service import active_conversation
+            from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+
+            result["activity"] = {"active": False}
+            if manifest.metadata.get("execution_backend") == "container_worker_vm":
+                try:
+                    resolver = getattr(self._deps.runtime, "provider_config", None)
+                    config = (
+                        resolver.resolve_for_session_id(session_id)
+                        if resolver
+                        else self._deps.config
+                    )
+                    backend = ContainerWorkerVmExecutionBackend(config=config)
+                    record = active_conversation(backend, session_id)
+                    if not record and backend.repository.list_active_by_session(
+                        session_id, {"created", "starting", "running"}
+                    ):
+                        result["activity"] = {"active": True, "available": False}
+                    if record:
+                        meta = record.metadata
+                        result["activity"] = {
+                            "active": True,
+                            "execution_id": record.execution_id,
+                            "dispatch_id": meta.get("dispatch_id"),
+                            "conversation_key": meta.get("conversation_key"),
+                            "thread_id": meta.get("codex_subscription_thread_id"),
+                            "turn_id": meta.get("codex_subscription_turn_id"),
+                        }
+                except Exception:
+                    result["activity"] = {"active": True, "available": False}
+        return result
 
     def list_local_issues(
         self,

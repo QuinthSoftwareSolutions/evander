@@ -18,7 +18,15 @@ from evander.models import DirectoryPath
 from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
 from evander.session_dependencies import SessionDependencies
 
-from .models import BrowserCommand, BrowserError, CreateRequest, Session, TERMINAL, origin
+from .models import (
+    BrowserCommand,
+    BrowserError,
+    CreateRequest,
+    MessageRequest,
+    Session,
+    TERMINAL,
+    origin,
+)
 from .protocol import authorize_command
 from .state import Store
 
@@ -167,10 +175,25 @@ class Bindings:
             dispatch_id="browser:" + message["id"],
             resume_thread_id=session.native_thread_id,
             resume_mode="same_context",
+            delivery_mode="steer_if_running",
         )
         if not (getattr(result, "queued", False) or getattr(result, "success", False)):
             raise BrowserError("Agent message was not accepted", "dispatch_unavailable", 503)
-        return True
+        return {
+            "delivery_status": (getattr(result, "provider_details", {}) or {}).get(
+                "delivery_status", "queued" if getattr(result, "queued", False) else "started"
+            )
+        }
+
+    def delivery(self, session, message):
+        return self.admin().agent_message_delivery(
+            session.agent_session_id, "browser:" + message["id"]
+        )
+
+    def cancel_message(self, session, message):
+        return self.admin().cancel_agent_message(
+            session.agent_session_id, "browser:" + message["id"]
+        )
 
 
 # Only endpoint-defined codes cross the private relay boundary. Never relay raw
@@ -691,6 +714,87 @@ class Service:
             )
         return result
 
+    def retry_message(self, session_id, actor, message_id, request_id):
+        session = self.store.get(session_id)
+        self.store.active(session)
+        request_id = MessageRequest(request_id=request_id, body="Retry").request_id
+        with self.store.connect() as db:
+            original = db.execute(
+                "SELECT * FROM messages WHERE id=? AND session_id=? AND actor=? AND reply_to IS NULL",
+                (message_id, session_id, actor),
+            ).fetchone()
+            existing = db.execute(
+                "SELECT * FROM messages WHERE id=?", ("browser-msg-" + request_id,)
+            ).fetchone()
+        if original is None:
+            raise BrowserError("Message is unavailable", "forbidden", 403)
+        if existing:
+            if (
+                existing["session_id"] != session_id
+                or existing["actor"] != actor
+                or existing["body"] != original["body"]
+            ):
+                raise BrowserError("Retry identity conflict", "message_conflict", 409)
+            return dict(existing)
+        if original["status"] != "dispatched" or original["delivery_status"] != "delivery_unknown":
+            raise BrowserError("Only uncertain deliveries can be retried", "message_conflict", 409)
+        status = self.bindings.delivery(session, dict(original))
+        if status.get("delivery_status") in {"steered", "started"}:
+            raise BrowserError("This message was already delivered", "message_conflict", 409)
+        cancelled = self.bindings.cancel_message(session, dict(original))
+        if isinstance(cancelled, dict) and cancelled.get("delivery_status") in {"steered", "started"}:
+            raise BrowserError("This message was already delivered", "message_conflict", 409)
+        with self.store.connect(write=True) as db:
+            existing = db.execute(
+                "SELECT * FROM messages WHERE id=?", ("browser-msg-" + request_id,)
+            ).fetchone()
+            if existing:
+                if (
+                    existing["session_id"] != session_id
+                    or existing["actor"] != actor
+                    or existing["body"] != original["body"]
+                ):
+                    raise BrowserError("Retry identity conflict", "message_conflict", 409)
+                return dict(existing)
+            claimed = db.execute(
+                "UPDATE messages SET status='cancelled',delivery_status='cancelled' WHERE id=? AND status='dispatched' AND delivery_status='delivery_unknown'",
+                (message_id,),
+            )
+            if claimed.rowcount != 1:
+                raise BrowserError(
+                    "Message delivery changed; refresh before retrying", "message_conflict", 409
+                )
+            recent = db.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id=? AND actor=? AND at>?",
+                (session_id, actor, self.now() - 60),
+            ).fetchone()[0]
+            if recent >= 20:
+                raise BrowserError(
+                    "Message queue is full; wait before retrying", "message_limit", 429
+                )
+            db.execute(
+                "INSERT INTO messages(id,session_id,channel,actor,body,at,status,annotation) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    "browser-msg-" + request_id,
+                    session_id,
+                    original["channel"],
+                    actor,
+                    original["body"],
+                    self.now(),
+                    "queued",
+                    original["annotation"],
+                ),
+            )
+            result = dict(
+                db.execute(
+                    "SELECT * FROM messages WHERE id=?", ("browser-msg-" + request_id,)
+                ).fetchone()
+            )
+        self.store.mutate(
+            session_id, actor, lambda value: setattr(value, "last_activity_at", self.now())
+        )
+        return result
+
     def close(self, session_id, actor="system", *, expired=False):
         session = self.store.get(session_id)
         if session.state in TERMINAL:
@@ -703,6 +807,7 @@ class Service:
         session = self.store.mutate(session_id, actor, closing, kind="closing")
         self.store.revoke_capabilities(session_id)
         try:
+            self._cancel_messages(session)
             private = self.store.private(session_id)
             if session.worker_id and private.get("connection"):
                 connection = private["connection"]
@@ -768,6 +873,7 @@ class Service:
         self.store.prune()
 
     def dispatch_messages(self):
+        self._refresh_message_deliveries()
         with self.store.connect() as db:
             # Apply retry/claim leases before the batch limit so unavailable
             # agents cannot occupy every slot and starve other sessions.
@@ -789,7 +895,7 @@ class Service:
                     continue
                 with self.store.connect(write=True) as db:
                     db.execute(
-                        "UPDATE messages SET status='cancelled' WHERE id=? AND status='queued'",
+                        "UPDATE messages SET status='cancelled',delivery_status='cancelled' WHERE id=? AND status='queued'",
                         (message["id"],),
                     )
                     db.execute("DELETE FROM dispatches WHERE message_id=?", (message["id"],))
@@ -812,11 +918,16 @@ class Service:
                         (message["id"], "dispatching", self.now() + 60),
                     )
                 session = self.bind_conversation(session, required=True)
-                self.bindings.enqueue(session, message)
+                delivery = self.bindings.enqueue(session, message)
+                state = (
+                    delivery.get("delivery_status", "started")
+                    if isinstance(delivery, dict)
+                    else "started"
+                )
                 with self.store.connect(write=True) as db:
                     db.execute(
-                        "UPDATE messages SET status='dispatched' WHERE id=? AND status='queued'",
-                        (message["id"],),
+                        "UPDATE messages SET status='dispatched',delivery_status=? WHERE id=? AND status='queued'",
+                        (state, message["id"]),
                     )
                     db.execute(
                         "UPDATE dispatches SET state='dispatched' WHERE message_id=?",
@@ -824,4 +935,62 @@ class Service:
                     )
             except Exception:
                 # Remains queued, with a bounded backoff. No raw prompts or provider failures in logs.
+                continue
+
+    def _cancel_messages(self, session):
+        with self.store.connect() as db:
+            messages = db.execute(
+                "SELECT * FROM messages WHERE session_id=? AND reply_to IS NULL AND status IN ('queued','dispatched')",
+                (session.id,),
+            ).fetchall()
+        cancel = getattr(self.bindings, "cancel_message", None)
+        for row in messages:
+            if row["delivery_status"] in {"steered", "started"}:
+                continue
+            outcome = cancel(session, dict(row)) if callable(cancel) else None
+            delivered = (
+                outcome.get("delivery_status") if isinstance(outcome, dict) else None
+            )
+            with self.store.connect(write=True) as db:
+                db.execute(
+                    """UPDATE messages SET status=?,delivery_status=? WHERE id=?
+                       AND status IN ('queued','dispatched')
+                       AND delivery_status NOT IN ('steered','started')""",
+                    (
+                        "dispatched" if delivered in {"steered", "started"} else "cancelled",
+                        delivered if delivered in {"steered", "started"} else "cancelled",
+                        row["id"],
+                    ),
+                )
+
+    def _refresh_message_deliveries(self):
+        callback = getattr(self.bindings, "delivery", None)
+        if not callable(callback):
+            return
+        messages = self.store.message_delivery_batch()
+        for row in messages:
+            try:
+                session = self.store.get(row["session_id"])
+                self.store.active(session)
+                status = callback(session, dict(row)).get("delivery_status", "pending")
+                if status not in {
+                    "steered",
+                    "started",
+                    "queued",
+                    "pending",
+                    "delivery_unknown",
+                    "cancelled",
+                    "failed",
+                }:
+                    continue
+                with self.store.connect(write=True) as db:
+                    db.execute(
+                        """UPDATE messages SET delivery_status=? WHERE id=?
+                           AND status='dispatched' AND delivery_status=?""",
+                        (status, row["id"], row["delivery_status"]),
+                    )
+            except BrowserError as exc:
+                if exc.status in {404, 410}:
+                    self._cancel_messages(self.store.get(row["session_id"]))
+            except Exception:
                 continue

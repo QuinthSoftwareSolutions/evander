@@ -343,6 +343,7 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             if action == "state" and request.method == "GET":
                 result = {
                     "session": service.receipt(session),
+                    "message_updates": service.store.message_updates(session.id),
                     "messages": service.store.messages(
                         session.id, "viewer", int(request.query_params.get("after", 0))
                     ),
@@ -362,6 +363,15 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             elif request.method == "POST" and action == "message":
                 payload = MessageRequest.model_validate(await read_json(request))
                 result = service.enqueue_message(session.id, capability["principal"], payload)
+            elif request.method == "POST" and action == "retry-message":
+                payload = await read_json(request)
+                result = await asyncio.to_thread(
+                    service.retry_message,
+                    session.id,
+                    capability["principal"],
+                    payload["message_id"],
+                    payload["request_id"],
+                )
             elif request.method == "POST" and action == "voice":
                 result = service.voice_invite(session.id, capability["principal"])
             elif request.method == "POST" and action == "origin":
@@ -404,6 +414,7 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             elif request.method == "GET" and action == "state":
                 result = {
                     "session": service.receipt(session),
+                    "message_updates": service.store.message_updates(session.id),
                     "messages": service.store.messages(
                         session.id, "viewer", int(request.query_params.get("after", 0))
                     ),

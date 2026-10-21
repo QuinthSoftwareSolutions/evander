@@ -55,3 +55,17 @@ Chrome sharing automatically uses compatibility mode if a password manager or an
 
 
 For native input while keeping other extensions enabled, select **Installed helper — full browser control** after installing the optional standalone companion. The helper uses Chrome 144+ consent-based debugging; the sidebar remains the interface for sharing, chat and voice. See [helper installation, packaging and boundaries](docs/helper.md). Helper packages must be built and included in the deployment bundle before the download page offers them.
+
+### Follow-up delivery
+
+Browser chat automatically steers an active compatible Codex conversation. Typed
+messages, sidebar voice transcripts and page annotations share this path. Idle
+assistants start a normal turn; unsupported runners queue the request. The hosted
+viewer and Chrome sidebar show whether each message is pending, queued, added to
+the active turn, or uncertain. A delivery acknowledgement does not mean the agent
+has acted; its reply still appears in this browser chat. Closing the sharing
+session cancels requests still waiting to start.
+
+Deploy the core worker before the control plane and this add-on. See
+[conversation steering operations](../../docs/operations.md#conversation-steering-from-teams-and-shared-browsers)
+for capability checks, receipt recovery and Teams workflow activation.

@@ -6,6 +6,7 @@ import { chromium } from "playwright";
 
 test("hosted viewer keeps text feedback usable when voice is disabled", async () => {
   const received = [], messages = [];
+  let deliveryStatus = "queued";
   const state = { id: "browser-test", title: "Station material preview", state: "paused", revision: 1,
     controller: null, control_generation: 1, current_url: "http://preview-app:4200/station",
     expires_at: Date.now()/1000+3600 };
@@ -19,10 +20,10 @@ test("hosted viewer keeps text feedback usable when voice is disabled", async ()
       if (request.method === "POST") {
         let body = ""; for await (const chunk of request) body += chunk;
         received.push({ url: request.url, payload: JSON.parse(body) });
-        if (request.url.endsWith("/messages")) messages.push({ seq: 1, actor: "user:operator", body: JSON.parse(body).body });
+        if (request.url.endsWith("/messages")) messages.push({ id: "message-1", seq: 1, delivery_status: "queued", actor: "user:operator", body: JSON.parse(body).body });
         response.end(JSON.stringify(state)); return;
       }
-      response.end(JSON.stringify(request.url.includes("/messages") ? { messages: request.url.includes("after=0") ? messages : [] } : state)); return;
+      response.end(JSON.stringify(request.url.includes("/messages") ? { messages: request.url.includes("after=0") ? messages : [], message_updates: [{id:"message-1",delivery_status:deliveryStatus}] } : state)); return;
     }
     const file = request.url.endsWith(".js") ? "viewer.js" : request.url.endsWith(".css") ? "styles.css" : "index.html";
     response.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html");
@@ -45,6 +46,19 @@ test("hosted viewer keeps text feedback usable when voice is disabled", async ()
     await page.getByRole("log").getByText("Move the button to the right.").waitFor();
     assert.equal(received[0].payload.body, "Move the button to the right.");
     assert.ok(received[0].url.endsWith("/messages"));
+    await page.locator('[data-delivery="queued"]').waitFor();
+    deliveryStatus = "steered";
+    await page.locator('[data-delivery="steered"]').waitFor();
+    assert.equal(await page.locator('[data-message-id="message-1"]').count(), 1);
+    deliveryStatus = "delivery_unknown";
+    await page.getByRole("button", {name:"Retry message",exact:true}).waitFor();
+    const retried = page.waitForResponse(response => response.url().endsWith("/retry-message"));
+    await page.getByRole("button", {name:"Retry message",exact:true}).click();
+    await retried;
+    assert.equal(received[1].payload.message_id, "message-1");
+    assert.equal(typeof received[1].payload.request_id, "string");
+    deliveryStatus = "steered";
+    await page.locator('[data-delivery="steered"]').waitFor();
     assert.deepEqual(errors, []);
     await page.screenshot({ path: "test-output/viewer.png", fullPage: true });
   } finally {

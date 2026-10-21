@@ -74,6 +74,46 @@ class CodexSubscriptionTurnRunner:
         self._log_lock = threading.Lock()
         self._metadata_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._steering_lock = threading.Lock()
+
+    def steer(self, request, acknowledge) -> None:
+        """Append input without interrupting tools, changing settings, or starting a turn."""
+        with self._steering_lock:
+            with self._lifecycle_lock:
+                process = self._process
+                ready = (
+                    process is not None
+                    and not self._completed.is_set()
+                    and not self._cancelled.is_set()
+                    and self._thread_id == request.expected_thread_id
+                    and self._turn_id == request.expected_turn_id
+                )
+            if not ready:
+                acknowledge("rejected", "turn_not_active")
+                return
+
+            def observed(response):
+                if response.get("transportClosed"):
+                    acknowledge("delivery_unknown", "connection_closed")
+                elif "error" in response:
+                    acknowledge("rejected", "native_rejected")
+                elif (response.get("result") or {}).get("turnId") == request.expected_turn_id:
+                    acknowledge("accepted", "")
+                else:
+                    acknowledge("delivery_unknown", "invalid_acknowledgement")
+
+            try:
+                process.request(
+                    "turn/steer",
+                    {
+                        "threadId": request.expected_thread_id,
+                        "expectedTurnId": request.expected_turn_id,
+                        "input": [{"type": "text", "text": request.prompt}],
+                    },
+                    response_observer=observed,
+                )
+            except (CodexAppServerError, OSError):
+                acknowledge("delivery_unknown", "native_response_unavailable")
 
     def start(self) -> None:
         with self._lifecycle_lock:
