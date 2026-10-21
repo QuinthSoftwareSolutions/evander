@@ -60,7 +60,7 @@ export function applicationDOM(method: string, params: any, origin: string): any
   try {
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main", url: location.href } } };
     if (method === "Page.getLayoutMetrics") return { cssVisualViewport: {
-      clientWidth: innerWidth, clientHeight: innerHeight,
+      clientWidth: innerWidth, clientHeight: innerHeight, pageX:scrollX, pageY:scrollY,
     } };
     if (method === "Accessibility.getFullAXTree") {
       state.nodes.clear();
@@ -90,10 +90,29 @@ export function applicationDOM(method: string, params: any, origin: string): any
           let id = state.ids.get(node);
           if (!id) { id = state.next++; state.ids.set(node, id); }
           state.nodes.set(id, new WeakRef(node));
-          nodes.push({ backendDOMNodeId: id, role: { value: role }, name: { value: name(node) } });
+          const properties: any[] = [];
+          const prop = (key: string, value: any) => { if (value !== undefined && value !== null) properties.push({name:key,value:{value}}); };
+          for (const key of ["checked","selected","expanded","disabled","readonly","required"])
+            prop(key,node.getAttribute("aria-"+key) === null ? undefined : node.getAttribute("aria-"+key) === "true");
+          prop("focused",active(true) === node);
+          prop("disabled",node.matches(":disabled") || node.getAttribute("aria-disabled") === "true");
+          prop("readonly",node.hasAttribute("readonly") || node.getAttribute("aria-readonly") === "true");
+          if (node instanceof HTMLInputElement && ["checkbox","radio"].includes(node.type)) prop("checked",node.checked);
+          if (node instanceof HTMLOptionElement) prop("selected",node.selected);
+          prop("editable",(node instanceof HTMLInputElement && !["checkbox","radio","button","submit","reset","hidden"].includes(node.type)) || node instanceof HTMLTextAreaElement || (node as HTMLElement).isContentEditable);
+          const context: any[] = [];
+          let parent = node.parentElement;
+          while (parent && context.length<3) {
+            const parentRole = parent.getAttribute("role") ?? ({tr:"row",form:"form",dialog:"dialog",fieldset:"group"} as Record<string,string>)[parent.tagName.toLowerCase()];
+            if (["row","form","dialog","group","region"].includes(parentRole)) context.push({role:parentRole,name:name(parent).slice(0,200),text:(parent.textContent ?? "").replace(/\s+/g," ").trim().slice(0,600)});
+            parent = parent.parentElement;
+          }
+          const value = node instanceof HTMLInputElement && node.type==="password" ? "[redacted]" :
+            node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement ? node.value : "";
+          nodes.push({ backendDOMNodeId: id, role: { value: role }, name: { value: name(node) }, value:{value:value.slice(0,1000)}, properties, evanderContext:context });
         }
       };
-      walk(document); return { nodes };
+      walk(document); return { nodes, title:document.title, text:(document.body?.innerText ?? "").slice(0,12000), truncated:nodes.length>=600 };
     }
     if (method === "DOM.scrollIntoViewIfNeeded") {
       element(params.backendNodeId).scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" }); return {};
@@ -141,6 +160,12 @@ export function applicationDOM(method: string, params: any, origin: string): any
         const items = Array.from(document.querySelectorAll<HTMLElement>('a[href],button,input,textarea,select,[tabindex]'))
           .filter(node => !node.matches(":disabled,[hidden]") && node.tabIndex >= 0 && node.getClientRects().length);
         items[(items.indexOf(target) + 1) % items.length]?.focus();
+      } else if (target instanceof HTMLSelectElement && ["ArrowDown","ArrowUp"].includes(params.key)) {
+        const next = Math.max(0,Math.min(target.options.length-1,target.selectedIndex+(params.key==="ArrowDown" ? 1 : -1)));
+        if (!target.options[next]?.disabled && next!==target.selectedIndex) {
+          target.selectedIndex=next;
+          target.dispatchEvent(new Event("input",{bubbles:true})); target.dispatchEvent(new Event("change",{bubbles:true}));
+        }
       } else if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
         const start = target.selectionStart, end = target.selectionEnd;
         if (start !== null && end !== null) {

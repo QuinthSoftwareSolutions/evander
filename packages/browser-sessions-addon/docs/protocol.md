@@ -59,3 +59,24 @@ Compatibility DOM access runs a fixed adapter in Chrome's isolated world, restri
 
 
 Optional helper mode keeps the same sidebar and command engine but replaces `chrome.debugger` transport with Chrome Native Messaging to a per-user executable. The helper discovers Chrome's consent-based loopback endpoint from its local user-data directory, attaches the exact selected page target and independently fences origin, controller, generation, document epoch and expiry. It accepts only the engine's fixed CDP method set, forwards selected-tab events and bounded JPEGs, and receives no Truman or provider credentials. Closing its native port disconnects its CDP client without closing Chrome. [Helper details](helper.md) cover installation and release packaging.
+
+## Bounded decision execution
+
+Endpoint authentication optionally advertises `features: {"fast_execution": 1}`.
+The extension advertises it in helper mode only after a native `ping` reports the
+same capability. Legacy endpoints remain protocol version 1 and support their
+existing direct tools. Fast runs require the capability before observing a page.
+
+Additive command fields are `include_image` (default true), `revalidate` (default
+false), and `deadline_at` (optional absolute Unix seconds). Fast observations
+omit image capture, retain bounded state and page context, and flag truncation.
+Fast input references the endpoint's own preceding snapshot; semantic identity,
+context, values and availability are rechecked before input. Subsequent characters
+allow the command's own field changes while preserving identity/authority checks.
+
+Control-plane and relay enforce a durable run lease independently. Internal
+command envelopes carry the owning `run_id`; callers of direct tools cannot join
+an active lease. Native commands carry deadlines outside CDP parameters; the
+helper checks them immediately before dispatch. This adds no CDP methods or
+arbitrary execution permissions. Helper observations remain below native-message
+limits and report truncation rather than silently omitting targets.

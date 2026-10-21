@@ -102,7 +102,7 @@ async function connectEndpoint() {
   socket = endpointSocket;
   endpointSocket.addEventListener("open", () => {
     if (connection === current && socket === endpointSocket)
-      endpointSocket.send(JSON.stringify({ kind: "authenticate", version: 1, token: current.endpoint_token }));
+      endpointSocket.send(JSON.stringify({ kind: "authenticate", version: 1, token: current.endpoint_token, features:(!native || native.fastExecution) ? {fast_execution:1} : {} }));
   });
   endpointSocket.addEventListener("error", () => endpointSocket.close());
   endpointSocket.addEventListener("message", (event) => {
@@ -130,6 +130,7 @@ async function connectEndpoint() {
       chain = chain.then(async () => {
         try {
           if (connection !== current || engine !== endpoint) throw new Error("disconnected");
+          if (native) native.commandDeadline = message.command.deadline_at;
           const result = await endpoint!.execute(message.command, message.actor);
           if (connection !== current) return;
           send({ kind: "result", id: message.command.id, result });
@@ -137,7 +138,7 @@ async function connectEndpoint() {
           if (connection !== current) return;
           send({ kind: "result", id: message.command.id, error: true,
             code: /^[a-z_]+$/.test(error.message) ? error.message : "browser_error" });
-        }
+        } finally { if (native) native.commandDeadline = undefined; }
       });
     }
   });
@@ -363,6 +364,11 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, respond: any) 
           expected_generation: connection.session.control_generation });
         update(result); return { session: result };
       } catch (error) { granted = false; throw error; }
+    }
+    if (message.kind === "cancel-run") {
+      granted=false;
+      if (connection) update({...connection.session,controller:null});
+      return {run:await api("cancel-run",{})};
     }
     if (message.kind === "message") return api("message", { request_id: crypto.randomUUID(), body: message.body });
     if (message.kind === "retry-message") return api("retry-message", {request_id:message.request_id,message_id:message.message_id});

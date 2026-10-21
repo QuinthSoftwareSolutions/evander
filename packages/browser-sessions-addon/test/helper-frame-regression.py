@@ -2,6 +2,8 @@
 import asyncio
 import base64
 import json
+import io
+from PIL import Image
 from pathlib import Path
 import shutil
 import struct
@@ -10,6 +12,7 @@ import tempfile
 import time
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 
 async def regression(source):
@@ -27,25 +30,31 @@ async def regression(source):
         hold = False
         pending_fence = None
         acknowledgements = set()
+        capture_sizes = []
 
         async def peer(connection):
             nonlocal socket, pending_fence
             socket = connection
-            async for raw in connection:
-                command = json.loads(raw)
-                result = {}
-                if command["method"] == "Target.getTargetInfo":
-                    result = {"targetInfo": {"type": "page", "url": approved}}
-                elif command["method"] == "Target.attachToTarget":
-                    result = {"sessionId": selected}
-                elif command["method"] == "Page.getFrameTree":
-                    if hold and pending_fence is None:
-                        pending_fence = command
-                        continue
-                    result = {"frameTree": {"frame": {"id": "main", "url": approved}}}
-                elif command["method"] == "Page.screencastFrameAck":
-                    acknowledgements.add(command["params"]["sessionId"])
-                await connection.send(json.dumps({"id": command["id"], "result": result}))
+            try:
+                async for raw in connection:
+                    command = json.loads(raw)
+                    result = {}
+                    if command["method"] == "Target.getTargetInfo":
+                        result = {"targetInfo": {"type": "page", "url": approved}}
+                    elif command["method"] == "Target.attachToTarget":
+                        result = {"sessionId": selected}
+                    elif command["method"] == "Page.getFrameTree":
+                        if hold and pending_fence is None:
+                            pending_fence = command
+                            continue
+                        result = {"frameTree": {"frame": {"id": "main", "url": approved}}}
+                    elif command["method"] == "Page.screencastFrameAck":
+                        acknowledgements.add(command["params"]["sessionId"])
+                    elif command["method"] == "Page.startScreencast":
+                        capture_sizes.append(command["params"]["maxWidth"])
+                    await connection.send(json.dumps({"id": command["id"], "result": result}))
+            except ConnectionClosed:
+                pass
 
         async with websockets.serve(peer, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
@@ -133,6 +142,27 @@ async def regression(source):
                 await wait_for(lambda: 5 in acknowledgements)
                 await resume()
                 await wait_for(lambda: 4 in acknowledgements)
+                # Several full-size frames can already be queued while the
+                # first one is being checked. They must cause only one downgrade.
+                pending_fence = None
+                hold = True
+                await frame(20, b"x" * 700000)
+                await wait_for(lambda: pending_fence is not None)
+                await frame(21, b"x" * 700000)
+                await frame(22, b"x" * 700000)
+                await asyncio.sleep(0.05)
+                await resume()
+                await wait_for(lambda: {20,21,22}.issubset(acknowledgements))
+                assert capture_sizes == [1280], capture_sizes
+                # A previously encoded full-HD frame may arrive only after the
+                # new stream setting is active. Its dimensions still identify it.
+                output = io.BytesIO()
+                Image.effect_noise((1920,1080),100).convert("RGB").save(output,"JPEG",quality=95)
+                oversized=output.getvalue()
+                assert len(base64.b64encode(oversized))>800000
+                await frame(23,oversized)
+                await wait_for(lambda: 23 in acknowledgements)
+                assert capture_sizes == [1280], capture_sizes
             finally:
                 process.stdin.close()
                 try:

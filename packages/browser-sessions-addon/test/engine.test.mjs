@@ -120,3 +120,67 @@ for (const interruption of ["pause", "origin"]) {
     });
   }
 }
+
+test("fast observations omit screenshots and stale semantic targets never receive input", async () => {
+  const state={id:"b",controller:"agent:a",control_generation:1,allowed_origins:["https://application.test"],expires_at:Date.now()/1000+60};
+  let name="Save", captures=0;
+  const inputs=[];
+  const send=async(method,params)=>{
+    if(method==="Page.getFrameTree")return {frameTree:{frame:{url:"https://application.test/"}}};
+    if(method==="Accessibility.getFullAXTree")return {nodes:[{backendDOMNodeId:10,role:{value:"button"},name:{value:name}}]};
+    if(method==="Page.captureScreenshot"){captures++;return {data:"jpeg"};}
+    if(method==="Page.getLayoutMetrics")return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
+    if(method.startsWith("Input.") || method.startsWith("DOM.")) inputs.push(method);
+    return {};
+  };
+  const engine=new BrowserEngine(send,state,()=>{});
+  const observation=await engine.execute({action:"observe",generation:1,include_image:false},"agent:a");
+  assert.equal(captures,0);assert.equal(observation.image,undefined);
+  name="Delete";
+  await assert.rejects(engine.execute({action:"click",generation:1,revalidate:true,ref:"node-10",observation_id:observation.observation_id},"agent:a"),/stale_target/);
+  assert.deepEqual(inputs,[]);
+});
+
+test("expiry during character input stops remaining characters",async()=>{
+  const state={id:"b",controller:"agent:a",control_generation:1,allowed_origins:["https://application.test"],expires_at:Date.now()/1000+60};
+  const inputs=[];
+  let command;
+  const send=async(method,params)=>{
+    if(method==="Page.getFrameTree")return {frameTree:{frame:{url:"https://application.test/"}}};
+    if(method==="Accessibility.getFullAXTree")return {nodes:[]};
+    if(method==="Page.getLayoutMetrics")return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
+    if(method.startsWith("Input.")){inputs.push(params);command.deadline_at=Date.now()/1000-1;}
+    return {};
+  };
+  const engine=new BrowserEngine(send,state,()=>{});
+  const o=await engine.execute({action:"observe",generation:1,include_image:false},"agent:a");
+  command={action:"type",generation:1,observation_id:o.observation_id,text:"AB",deadline_at:Date.now()/1000+60};
+  await assert.rejects(engine.execute(command,"agent:a"),/run_deadline/);
+  assert.deepEqual(inputs.map(p=>p.key),["A"]);
+});
+
+test("a late state update cannot restore input after a newer takeover",async()=>{
+  const initial={id:"b",controller:"agent:a",control_generation:1,allowed_origins:["https://application.test"],expires_at:Date.now()/1000+60};
+  const engine=new BrowserEngine(async()=>{throw new Error("No browser call expected");},initial,()=>{});
+  engine.update({...initial,controller:"user:operator",control_generation:2});
+  engine.update(initial);
+  await assert.rejects(engine.execute({action:"type",generation:1,text:"must not type"},"agent:a"),/stale_control/);
+});
+
+test("a changed form selection invalidates an otherwise unchanged Save button",async()=>{
+  const state={id:"b",controller:"agent:a",control_generation:1,allowed_origins:["https://application.test"],expires_at:Date.now()/1000+60};
+  let selection="Account A";const inputs=[];
+  const send=async(method,params)=>{
+    if(method==="Page.getFrameTree")return {frameTree:{frame:{url:"https://application.test/"}}};
+    if(method==="Accessibility.getFullAXTree")return {nodes:[{backendDOMNodeId:1,role:{value:"combobox"},name:{value:"Account"},value:{value:selection}},
+      {backendDOMNodeId:2,role:{value:"button"},name:{value:"Save"}}]};
+    if(method==="Page.getLayoutMetrics")return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
+    if(method.startsWith("Input.") || method.startsWith("DOM.")) inputs.push(method);
+    return {};
+  };
+  const engine=new BrowserEngine(send,state,()=>{});
+  const o=await engine.execute({action:"observe",generation:1,include_image:false},"agent:a");
+  selection="Account B";
+  await assert.rejects(engine.execute({action:"click",generation:1,revalidate:true,ref:"node-2",observation_id:o.observation_id},"agent:a"),/stale_target/);
+  assert.deepEqual(inputs,[]);
+});

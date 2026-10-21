@@ -90,7 +90,7 @@ static class Installer
         if (OperatingSystem.IsWindows())
         {
             using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\EvanderBrowserHelper");
-            key.SetValue("DisplayName", "Evander Browser Helper"); key.SetValue("DisplayVersion", "0.3.0");
+            key.SetValue("DisplayName", "Evander Browser Helper"); key.SetValue("DisplayVersion", "0.4.0");
             key.SetValue("UninstallString", "\"" + binary + "\" --uninstall"); key.SetValue("NoModify", 1); key.SetValue("NoRepair", 1);
         }
         Console.WriteLine("Installed for your user. Enable chrome://inspect/#remote-debugging, select Installed helper in the Evander sidebar, and approve Chrome's prompt.");

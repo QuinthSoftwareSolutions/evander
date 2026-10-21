@@ -2,6 +2,59 @@
 import { readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 
+// shared/observation.ts
+var roles = /* @__PURE__ */ new Set(["button", "link", "textbox", "combobox", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row"]);
+var roleOf = (node) => ({ LayoutTableRow: "row", LayoutTableCell: "gridcell", cell: "gridcell", rowheader: "gridcell", columnheader: "gridcell" })[node.role?.value] ?? node.role?.value;
+var states = ["checked", "selected", "expanded", "disabled", "readonly", "focused", "editable", "required"];
+function accessibleElements(nodes) {
+  const byId = new Map(nodes.map((node) => [String(node.nodeId), node]));
+  const elements = [];
+  const signature = (node) => {
+    const properties = Object.fromEntries((node.properties ?? []).filter((p) => states.includes(p.name)).map((p) => [p.name, p.value?.value]));
+    return {
+      role: roleOf(node),
+      name: String(node.name?.value ?? "").slice(0, 400),
+      value: String(node.value?.value ?? "").slice(0, 1e3),
+      ...properties
+    };
+  };
+  for (const node of nodes) {
+    if (node.ignored || !node.backendDOMNodeId || !roles.has(roleOf(node))) continue;
+    const context2 = node.evanderContext ?? [];
+    let parent = node, depth = 0;
+    while (!node.evanderContext && parent && depth++ < 16) {
+      parent = byId.get(String(parent.parentId));
+      if (parent && ["row", "dialog", "form", "group", "region"].includes(roleOf(parent))) {
+        const children = (parent.childIds ?? []).slice(0, 24).map((id) => byId.get(String(id))).filter(Boolean).map((child) => String(child.name?.value ?? "")).filter(Boolean).join(" ").slice(0, 600);
+        context2.push({ role: roleOf(parent), name: String(parent.name?.value ?? "").slice(0, 200), text: children });
+      }
+      if (context2.length === 3) break;
+    }
+    const data = { ...signature(node), context: context2 };
+    elements.push({ ref: "node-" + node.backendDOMNodeId, ...data });
+    if (elements.length === 600) break;
+  }
+  return { elements, truncated: nodes.filter((n) => !n.ignored && n.backendDOMNodeId && roles.has(roleOf(n))).length > 600 };
+}
+function targetSignature(value) {
+  if (!value) return "";
+  const { ref, focused, ...semantic } = value;
+  return JSON.stringify(semantic);
+}
+function pageSignature(elements) {
+  return JSON.stringify(elements.filter((item) => ["textbox", "combobox", "checkbox", "radio", "heading", "dialog", "alert"].includes(item.role)).map((item) => ({
+    ref: item.ref,
+    role: item.role,
+    name: item.name,
+    value: item.value,
+    checked: item.checked,
+    selected: item.selected,
+    expanded: item.expanded,
+    disabled: item.disabled,
+    readonly: item.readonly
+  })));
+}
+
 // shared/engine.ts
 var BrowserEngine = class {
   constructor(send2, state2, emit) {
@@ -12,8 +65,10 @@ var BrowserEngine = class {
   observation = "";
   refs = /* @__PURE__ */ new Map();
   epoch = 0;
+  signatures = /* @__PURE__ */ new Map();
+  pageContext = "";
   update(state2) {
-    this.state = state2;
+    if (state2.id === this.state.id && state2.control_generation >= this.state.control_generation) this.state = state2;
   }
   navigate() {
     this.epoch += 1;
@@ -25,6 +80,7 @@ var BrowserEngine = class {
     return tree.frameTree.frame.url;
   }
   guard(command, actor, epoch) {
+    if (command.deadline_at && Date.now() / 1e3 >= command.deadline_at) throw new Error("run_deadline");
     if (Date.now() / 1e3 >= this.state.expires_at) throw new Error("session_expired");
     if (command.generation !== this.state.control_generation) throw new Error("stale_control");
     if (!["observe", "highlight"].includes(command.action) && this.state.controller !== actor)
@@ -40,10 +96,32 @@ var BrowserEngine = class {
       if (!this.state.allowed_origins.includes(new URL(current).origin)) throw new Error("origin_denied");
       return current;
     };
+    let edited = false, inputStarted = false;
+    const validateTarget = async () => {
+      if (!command.revalidate || !command.ref) return;
+      const { nodes } = await this.send("Accessibility.getFullAXTree");
+      const elements = accessibleElements(nodes ?? []).elements;
+      const fresh = elements.find((item) => item.ref === command.ref);
+      if (!edited && pageSignature(elements) !== this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      const saved = this.signatures.get(command.ref);
+      if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
+      if (edited) for (const key of ["value", "checked", "selected", "expanded"]) {
+        delete before[key];
+        delete after[key];
+      }
+      if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+    };
     const input = async (method, params = {}) => {
+      await validateTarget();
       await fence();
       this.guard(command, actor, epoch);
-      return this.send(method, params);
+      try {
+        inputStarted = true;
+        return await this.send(method, params);
+      } finally {
+        if (method === "Input.insertText" || method === "Input.dispatchKeyEvent" && params.type === "keyDown") edited = true;
+      }
     };
     const press = async (key, text, code, keyCode) => {
       const identity = {
@@ -61,35 +139,18 @@ var BrowserEngine = class {
     const url = await fence();
     if (command.action === "observe") {
       const before = this.epoch;
-      const { nodes } = await this.send("Accessibility.getFullAXTree");
+      const tree = await this.send("Accessibility.getFullAXTree");
+      const nodes = tree.nodes;
       this.refs.clear();
-      const elements = [];
-      const roles = /* @__PURE__ */ new Set([
-        "button",
-        "link",
-        "textbox",
-        "combobox",
-        "checkbox",
-        "radio",
-        "tab",
-        "menuitem",
-        "option",
-        "heading",
-        "dialog",
-        "alert",
-        "gridcell",
-        "row"
-      ]);
-      for (const node of nodes ?? []) {
-        if (elements.length >= 600) break;
-        const role = node.role?.value;
-        if (node.ignored || !node.backendDOMNodeId || !roles.has(role)) continue;
-        const ref = "node-" + node.backendDOMNodeId;
-        this.refs.set(ref, node.backendDOMNodeId);
-        elements.push({ ref, role, name: String(node.name?.value ?? "").slice(0, 400) });
+      this.signatures.clear();
+      const { elements, truncated } = accessibleElements(nodes ?? []);
+      this.pageContext = pageSignature(elements);
+      for (const element of elements) {
+        this.refs.set(element.ref, Number(element.ref.slice(5)));
+        this.signatures.set(element.ref, targetSignature(element));
       }
       let screenshot;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; command.include_image !== false && attempt < 3; attempt++) {
         try {
           screenshot = await this.send("Page.captureScreenshot", {
             format: "jpeg",
@@ -104,14 +165,20 @@ var BrowserEngine = class {
       }
       await fence();
       if (before !== this.epoch) throw new Error("stale_observation");
+      const metrics2 = await this.send("Page.getLayoutMetrics");
+      const viewport2 = metrics2.cssVisualViewport ?? metrics2.visualViewport;
+      await fence();
       this.observation = crypto.randomUUID();
       return {
         observation_id: this.observation,
         page_epoch: String(this.epoch),
         url,
         elements,
-        image: screenshot.data,
-        mime_type: "image/jpeg"
+        text: tree.text ?? (nodes ?? []).filter((n) => n.role?.value === "StaticText").map((n) => n.name?.value ?? "").join(" ").slice(0, 12e3),
+        title: String(tree.title ?? (nodes ?? []).find((n) => n.role?.value === "RootWebArea")?.name?.value ?? "").slice(0, 400),
+        viewport: viewport2 ? { x: viewport2.pageX ?? 0, y: viewport2.pageY ?? 0 } : void 0,
+        truncated: truncated || tree.truncated === true,
+        ...screenshot ? { image: screenshot.data, mime_type: "image/jpeg" } : {}
       };
     }
     if (!["navigate", "reload"].includes(command.action) && command.observation_id !== this.observation)
@@ -127,11 +194,12 @@ var BrowserEngine = class {
       this.navigate();
       return { success: true };
     }
+    await validateTarget();
     let x = command.x, y = command.y;
-    if (command.ref && ["click", "hover", "highlight"].includes(command.action)) {
+    if (command.ref && ["click", "hover", "highlight", "scroll"].includes(command.action)) {
       const backendNodeId = this.refs.get(command.ref);
       if (!backendNodeId) throw new Error("stale_observation");
-      if (command.action !== "highlight") {
+      if (!["highlight", "scroll"].includes(command.action)) {
         await input("DOM.scrollIntoViewIfNeeded", { backendNodeId });
         await fence();
       }
@@ -163,6 +231,7 @@ var BrowserEngine = class {
       this.guard(command, actor);
       await input("Input.insertText", { text: command.text ?? "" });
     } else if (command.action === "type") {
+      if (command.revalidate && command.ref) await input("DOM.focus", { backendNodeId: this.refs.get(command.ref) });
       for (const character of (command.text ?? "").replace(/\r\n/g, "\n")) {
         const newline = character === "\n" || character === "\r";
         await press(
@@ -173,6 +242,7 @@ var BrowserEngine = class {
         );
       }
     } else if (command.action === "key") {
+      if (command.revalidate && command.ref) await input("DOM.focus", { backendNodeId: this.refs.get(command.ref) });
       const keys = {
         Enter: 13,
         Tab: 9,
@@ -288,7 +358,7 @@ var streaming = false;
 async function join() {
   streaming = false;
   socket = new WebSocket(config.relay_url.replace(/^http/, "ws"));
-  socket.addEventListener("open", () => send({ kind: "authenticate", version: 1, token: config.endpoint_token }));
+  socket.addEventListener("open", () => send({ kind: "authenticate", version: 1, token: config.endpoint_token, features: { fast_execution: 1 } }));
   socket.addEventListener("error", () => socket?.close());
   socket.addEventListener("message", (event) => {
     let message;

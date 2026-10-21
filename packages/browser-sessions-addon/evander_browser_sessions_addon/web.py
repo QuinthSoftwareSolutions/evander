@@ -159,6 +159,7 @@ def admin_api_routes(context):
                     )
                 else:
                     result = {
+                        "session": service.receipt(service.store.get(session.id)),
                         "message_updates": service.store.message_updates(session.id),
                         "messages": service.store.messages(
                             session.id, "viewer", int(request.query_params.get("after", 0))
@@ -172,6 +173,10 @@ def admin_api_routes(context):
                     str(payload["action"]),
                     revision=payload.get("expected_revision"),
                     generation=payload.get("expected_generation"),
+                )
+            elif action == "cancel-run":
+                result = await run_in_threadpool(
+                    service.cancel_run, session.id, actor, payload.get("run_id")
                 )
             elif action == "command":
                 command = BrowserCommand.model_validate(payload)

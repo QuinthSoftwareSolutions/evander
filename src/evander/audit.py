@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,33 @@ class AuditLogger:
         if not self.path.exists():
             self.path.touch()
         self._index = ToolCallAuditIndex.for_audit_log(self.path)
+        self._metadata_only_tools: frozenset[str] = frozenset()
+
+    def omit_tool_payloads(self, tool_names) -> None:
+        """Trusted tool registrations may narrow persistence, never disable auditing."""
+        self._metadata_only_tools = self._metadata_only_tools.union(tool_names)
 
     def log(self, event: AuditEvent) -> None:
+        if event.event_type == "tool_call" and event.tool_name in self._metadata_only_tools:
+            updates = {"args": {}, "result": {"audit_payloads_omitted": True}, "reason": None}
+            # Some gateway correlation extractors inspect nested payloads. Keep
+            # identifiers, never a stringified input object mistaken for an ID.
+            for name in (
+                "session_id",
+                "vm_id",
+                "request_id",
+                "correlation_id",
+                "approval_request_id",
+                "mcp_tool_approval_lease_id",
+                "workflow_run_id",
+                "trace_id",
+            ):
+                value = getattr(event, name)
+                if value is not None and not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}", value
+                ):
+                    updates[name] = None
+            event = event.model_copy(update=updates)
         payload = event.model_dump(mode="json")
         try:
             previous_stat = self.path.stat()

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander-browser-sessions-addon"
-version = "0.6.0"
+version = "0.7.0"
 description = "Shared hosted and user-owned Chrome sessions for Evander."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["evander>=0.110.0", "httpx>=0.28.1", "pydantic>=2.8.0", "starlette>=0.52.0", "uvicorn>=0.42.0", "websockets>=15.0.1"]
+dependencies = ["evander>=0.113.0", "httpx>=0.28.1", "pydantic>=2.8.0", "starlette>=0.52.0", "uvicorn>=0.42.0", "websockets>=15.0.1"]
 
 [project.entry-points."evander.addons"]
 browser_sessions = "evander_browser_sessions_addon:register_addon"

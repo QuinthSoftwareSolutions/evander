@@ -158,6 +158,47 @@ class VoiceSettings(Contract):
         return value.rstrip("/")
 
 
+class FastExecutionSettings(Contract):
+    enabled: bool = False
+    max_steps: int = Field(default=20, ge=1, le=40)
+    timeout_seconds: float = Field(default=30, ge=1, le=60, allow_inf_nan=False)
+    min_probability: dict[Literal["jev", "openai_decisions"], float] = Field(
+        default_factory=lambda: {"jev": 0.8, "openai_decisions": 0.8}
+    )
+
+    @field_validator("min_probability")
+    @classmethod
+    def probabilities(cls, values):
+        import math
+
+        if any(not math.isfinite(v) or not 0 <= v <= 1 for v in values.values()):
+            raise ValueError("Probabilities must be between zero and one")
+        return values
+
+
+class RunValue(Contract):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    description: str = Field(min_length=1, max_length=400)
+    value: str = Field(max_length=16384)
+    sensitive: bool = False
+
+
+class RunRequest(Contract):
+    request_id: str = Field(pattern=IDENTIFIER)
+    generation: int = Field(ge=0)
+    goal: str = Field(min_length=1, max_length=4000)
+    values: dict[str, RunValue] = Field(default_factory=dict, max_length=200)
+    max_steps: int | None = Field(default=None, ge=1, le=40)
+    timeout_seconds: float | None = Field(default=None, ge=1, le=60, allow_inf_nan=False)
+
+    @field_validator("values")
+    @classmethod
+    def value_ids(cls, values):
+        if any(not re.fullmatch(IDENTIFIER, key) for key in values):
+            raise ValueError("Input value IDs must be identifiers")
+        return values
+
+
 class Settings(Contract):
     enabled: bool = False
     public_base_url: str = ""
@@ -165,6 +206,7 @@ class Settings(Contract):
     relay_token_env: str = "EVANDER_BROWSER_RELAY_TOKEN"
     guest_enabled: bool = True
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    fast_execution: FastExecutionSettings = Field(default_factory=FastExecutionSettings)
     lifetime_seconds: int = Field(default=14400, ge=300, le=86400)
     idle_seconds: int = Field(default=1800, ge=60, le=14400)
     invitation_seconds: int = Field(default=600, ge=60, le=1800)
@@ -319,6 +361,9 @@ class BrowserCommand(Contract):
     delta_x: float = Field(default=0, ge=-20000, le=20000)
     delta_y: float = Field(default=0, ge=-20000, le=20000)
     accept: bool = False
+    include_image: bool = True
+    revalidate: bool = False
+    deadline_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     def audit(self):
         return {"command_id": self.id, "action": self.action, "ref": self.ref}

@@ -60,7 +60,7 @@ sealed class Cdp : IAsyncDisposable
     {
         // The endpoint always comes from a local Chrome profile's port file.
         if (endpoint.Scheme != "ws" || endpoint.Host != "127.0.0.1") throw new Denied("invalid_request");
-        socket.Options.SetRequestHeader("User-Agent", "Evander Browser Helper/0.3.0");
+        socket.Options.SetRequestHeader("User-Agent", "Evander Browser Helper/0.4.0");
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
         socket.Options.KeepAliveTimeout = TimeSpan.FromSeconds(10);
         await socket.ConnectAsync(endpoint, token);

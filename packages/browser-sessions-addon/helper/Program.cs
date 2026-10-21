@@ -37,9 +37,9 @@ try
             try
             {
                 object result = new { };
-                if (kind == "ping") result = new { version = "0.3.0" };
+                if (kind == "ping") result = new { version = "0.4.0", features = new { fast_execution = 1 } };
                 else if (kind == "open") await browser.Open(message["target_id"]!.GetValue<string>(), message["state"]!.AsObject(), lifetime.Token);
-                else if (kind == "command") result = await browser.Command(message["method"]!.GetValue<string>(), message["params"]?.AsObject() ?? [], message["generation"]!.GetValue<long>(), message["epoch"]!.GetValue<long>());
+                else if (kind == "command") result = await browser.Command(message["method"]!.GetValue<string>(), message["params"]?.AsObject() ?? [], message["generation"]!.GetValue<long>(), message["epoch"]!.GetValue<long>(), message["deadline_at"]?.GetValue<double>());
                 else throw new Denied("unsupported_action");
                 await Wire.Write(new { id, ok = true, epoch = browser.Epoch, result }, lifetime.Token);
             }

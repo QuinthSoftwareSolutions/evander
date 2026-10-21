@@ -936,6 +936,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
     addon_mcp_tool_names: list[str] = []
     addon_base_dir = context.config.runtime_dir.parent
     addon_catalog = load_addons(context.config.addon_loader, base_dir=addon_base_dir)
+    metadata_only_tools = {
+        tool.name
+        for addon in addon_catalog.registrations
+        for tool in addon.mcp_tool_catalog
+        if tool.audit_metadata_only
+    }
+    if metadata_only_tools:
+        context.audit.omit_tool_payloads(metadata_only_tools)
     for addon in addon_catalog.registrations:
         addon_context = AddonContext(
             addon_id=addon.addon_id,

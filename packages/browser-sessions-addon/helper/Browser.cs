@@ -157,31 +157,58 @@ sealed class Browser : IAsyncDisposable
     }
     static JsonObject Accessibility(JsonObject tree)
     {
+        static string? Role(JsonObject node) => node["role"]?["value"]?.GetValue<string>() switch { "LayoutTableRow" => "row", "LayoutTableCell" or "cell" or "rowheader" or "columnheader" => "gridcell", var value => value };
         var roles = new HashSet<string> { "button", "link", "textbox", "combobox", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row" };
-        var nodes = new JsonArray();
-        foreach (var value in tree["nodes"]?.AsArray() ?? [])
+        var stateNames = new HashSet<string> { "checked", "selected", "expanded", "disabled", "readonly", "focused", "editable", "required" };
+        var all = tree["nodes"]!.AsArray().Select(n => n!.AsObject()).ToArray();
+        var byId = all.Where(n => n["nodeId"] is not null).ToDictionary(n => n["nodeId"]!.GetValue<string>());
+        static string Text(JsonNode? value, int maximum) { var text = value?.GetValue<string>() ?? ""; return text[..Math.Min(text.Length,maximum)]; }
+        var nodes = new JsonArray(); int bytes = 0; bool truncated = false;
+        foreach (var node in all)
         {
-            if (nodes.Count == 600) break;
-            var node = value!.AsObject();
-            string? role = node["role"]?["value"]?.GetValue<string>();
+            string? role = Role(node);
             if (node["ignored"]?.GetValue<bool>() == true || node["backendDOMNodeId"] is null || role is null || !roles.Contains(role)) continue;
-            string name = node["name"]?["value"]?.GetValue<string>() ?? "";
-            if (name.Length > 400) name = name[..400];
-            var compact = new JsonObject { ["backendDOMNodeId"] = node["backendDOMNodeId"]!.DeepClone(),
-                ["role"] = new JsonObject { ["value"] = role }, ["name"] = new JsonObject { ["value"] = name } };
-            // Account for JSON escaping as well as UTF-8, retaining all 600
-            // supported controls without sending Chrome's unused AX metadata.
-            while (JsonSerializer.SerializeToUtf8Bytes(compact).Length > 1200)
+            if (nodes.Count == 600) { truncated = true; break; }
+            var context = new JsonArray(); var parent = node; int depth = 0;
+            while (parent["parentId"] is JsonNode parentId && byId.TryGetValue(parentId.GetValue<string>(), out parent) && depth++<16 && context.Count<3)
             {
-                name = name[..Math.Max(0, name.Length - 32)];
-                compact["name"]!["value"] = name;
+                string? parentRole = Role(parent);
+                if (parentRole is not ("row" or "dialog" or "form" or "group" or "region")) continue;
+                string children = string.Join(" ",(parent["childIds"]?.AsArray() ?? []).Take(24)
+                    .Select(id => byId.TryGetValue(id!.GetValue<string>(),out var child) ? Text(child["name"]?["value"],200) : ""));
+                context.Add(new JsonObject { ["role"] = parentRole, ["name"] = Text(parent["name"]?["value"],200), ["text"] = children[..Math.Min(children.Length,600)] });
             }
+            var properties = new JsonArray();
+            foreach (var property in node["properties"]?.AsArray() ?? [])
+                if (stateNames.Contains(property?["name"]?.GetValue<string>() ?? "")) properties.Add(property!.DeepClone());
+            var compact = new JsonObject { ["backendDOMNodeId"] = node["backendDOMNodeId"]!.DeepClone(),
+                ["role"] = new JsonObject { ["value"] = role }, ["name"] = new JsonObject { ["value"] = Text(node["name"]?["value"],400) },
+                ["value"] = new JsonObject { ["value"] = Text(node["value"]?["value"],1000) }, ["properties"] = properties, ["evanderContext"] = context };
+            // Keep all 600 references within the native envelope even for labels
+            // that JSON escapes heavily. Flag semantic truncation for the fast loop.
+            while (JsonSerializer.SerializeToUtf8Bytes(compact).Length>1100)
+            {
+                truncated=true;
+                if (context.Count>0) { context.RemoveAt(context.Count-1); continue; }
+                string value=compact["value"]!["value"]!.GetValue<string>();
+                string name=compact["name"]!["value"]!.GetValue<string>();
+                if (value.Length>0) compact["value"]!["value"]=value[..Math.Max(0,value.Length-32)];
+                else if (name.Length>0) compact["name"]!["value"]=name[..Math.Max(0,name.Length-32)];
+                else break;
+            }
+            bytes += JsonSerializer.SerializeToUtf8Bytes(compact).Length;
+            if (bytes>700000) { truncated = true; break; }
             nodes.Add(compact);
         }
-        return new() { ["nodes"] = nodes };
+        string text = string.Join(" ",all.Where(n => n["role"]?["value"]?.GetValue<string>()=="StaticText").Select(n => Text(n["name"]?["value"],1000)));
+        return new() { ["nodes"] = nodes, ["truncated"] = truncated,
+            ["text"] = text[..Math.Min(text.Length,12000)],
+            ["title"] = Text(all.FirstOrDefault(n => n["role"]?["value"]?.GetValue<string>()=="RootWebArea")?["name"]?["value"],400) };
     }
-    public async Task<JsonObject> Command(string method, JsonObject parameters, long generation, long expectedEpoch)
+    public async Task<JsonObject> Command(string method, JsonObject parameters, long generation, long expectedEpoch, double? commandDeadline = null)
     {
+        void Deadline() { if (commandDeadline is double time && (!double.IsFinite(time) || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()/1000d >= time)) throw new Denied("run_deadline"); }
+        Deadline();
         if (!Methods.TryGetValue(method, out var allowed) || parameters.Any(item => !allowed.Contains(item.Key))) throw new Denied("unsupported_action");
         if (parameters.ToJsonString().Length > 65536) throw new Denied("invalid_request");
         // Acknowledgement only releases the selected target's local frame buffer.
@@ -206,9 +233,11 @@ sealed class Browser : IAsyncDisposable
         JsonObject result;
         for (int attempt = 0; ; attempt++)
         {
+            Deadline();
             Guard(generation, input, document);
             result = await cdp!.Call(method, parameters, session, authorityLock, () =>
             {
+                Deadline();
                 Guard(generation, input, document);
                 if (Origin(currentUrl) != state!.Origin) throw new Denied("origin_denied");
             });
@@ -249,7 +278,7 @@ sealed class Browser : IAsyncDisposable
         lock (authorityLock)
         {
             events.Writer.TryWrite(new JsonObject { ["method"] = method, ["params"] = parameters.DeepClone(),
-                ["epoch"] = Epoch, ["url"] = currentUrl });
+                ["epoch"] = Epoch, ["url"] = currentUrl, ["capture_size"] = Volatile.Read(ref streamSize) });
         }
     }
     async Task Acknowledge(JsonObject message)
@@ -258,6 +287,30 @@ sealed class Browser : IAsyncDisposable
         if (browser is null || selected is null) return;
         try { await browser.Call("Page.screencastFrameAck", new() { ["sessionId"] = message["params"]!["sessionId"]!.DeepClone() }, selected); }
         catch (Exception error) when (error is Denied or ObjectDisposedException or System.Net.WebSockets.WebSocketException) { }
+    }
+    static (int Width, int Height)? JpegSize(string pixels)
+    {
+        // Inspect only a bounded JPEG header; never decode page imagery.
+        byte[] data;
+        try { data = Convert.FromBase64String(pixels[..Math.Min(pixels.Length,16384)]); }
+        catch (FormatException) { return null; }
+        if (data.Length<4 || data[0]!=255 || data[1]!=216) return null;
+        int offset=2;
+        while (offset+4<data.Length)
+        {
+            if (data[offset++]!=255) return null;
+            int marker=data[offset++];
+            while (marker==255 && offset<data.Length) marker=data[offset++];
+            if (marker is 217 or 218) return null;
+            if (marker is 216 or 1 || marker is >=208 and <=215) continue;
+            if (offset+2>data.Length) return null;
+            int length=(data[offset]<<8)|data[offset+1];
+            if (length<2 || offset+length>data.Length) return null;
+            if (length>=7 && marker is >=192 and <=207 && marker is not (196 or 200 or 204))
+                return ((data[offset+5]<<8)|data[offset+6], (data[offset+3]<<8)|data[offset+4]);
+            offset+=length;
+        }
+        return null;
     }
     async Task Pump()
     {
@@ -271,6 +324,12 @@ sealed class Browser : IAsyncDisposable
                     long document = message["epoch"]!.GetValue<long>();
                     try
                     {
+                        // Queued frames retain the setting used when received.
+                        // One oversized batch must cause only one downgrade.
+                        if (message["capture_size"]!.GetValue<int>() != Volatile.Read(ref streamSize))
+                        {
+                            await Acknowledge(message); continue;
+                        }
                         Guard(document: document);
                         if (Origin(message["url"]!.GetValue<string>()) != state!.Origin || Origin(await Location()) != state!.Origin) throw new Denied("origin_denied");
                         Guard(document: document);
@@ -278,6 +337,10 @@ sealed class Browser : IAsyncDisposable
                         {
                             await Acknowledge(message);
                             int previous = Volatile.Read(ref streamSize);
+                            var dimensions=JpegSize(message["params"]!["data"]!.GetValue<string>());
+                            // An in-flight frame can arrive after reconfiguration.
+                            // Its old dimensions must not lower the new setting again.
+                            if (dimensions is { } size && (size.Width>ImageSizes[previous].Width || size.Height>ImageSizes[previous].Height)) continue;
                             if (previous + 1 < ImageSizes.Length && Interlocked.CompareExchange(ref streamSize, previous + 1, previous) == previous)
                             {
                                 await cdp!.Call("Page.stopScreencast", session: session);
