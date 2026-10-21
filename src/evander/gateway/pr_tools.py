@@ -1462,7 +1462,19 @@ def register_pr_tools(
         repo: str,
         pr_id: str,
         body_text: str,
-        event: str | None = None,
+        event: Annotated[
+            str | None,
+            PydanticField(
+                description=(
+                    "Omit or use COMMENT to publish without changing a vote. Azure DevOps also "
+                    "supports APPROVE, APPROVE_WITH_SUGGESTIONS, WAITING_FOR_AUTHOR, and RESET "
+                    "(no vote); REQUEST_CHANGES means Waiting for author. Azure voting requires "
+                    "a session-bound PR and the authenticated host identity already assigned as "
+                    "a reviewer. Reject is unsupported. GitHub supports COMMENT, APPROVE, "
+                    "and REQUEST_CHANGES."
+                )
+            ),
+        ] = None,
         comments: list[dict[str, Any]] | None = None,
         mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
@@ -1485,6 +1497,13 @@ def register_pr_tools(
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.SUBMIT_PR_REVIEW)
+            if (
+                request.provider == "azure_devops"
+                and (request.event or "COMMENT").upper() != "COMMENT"
+            ):
+                context.policy.require_pr_feedback_stream(
+                    session, provider=request.provider, repo=request.repo, pr_id=request.pr_id
+                )
             summary_artifacts = ado_artifacts_for_ids(session, request.artifact_ids)
             comment_payloads: list[dict[str, Any]] = []
             comment_artifact_ids: list[str] = []
@@ -1532,6 +1551,10 @@ def register_pr_tools(
                 "review_url": result.get("review_url"),
                 "comment_count": len(result.get("comment_ids") or []),
             }
+            if result.get("vote") is not None:
+                audit_result.update(
+                    {"reviewer_id": result.get("reviewer_id"), "vote": result["vote"]}
+                )
             if result.get("resolved_mentions"):
                 audit_result["resolved_mentions"] = result.get("resolved_mentions")
             inline_resolved_mentions = result.get("inline_resolved_mentions") or []
