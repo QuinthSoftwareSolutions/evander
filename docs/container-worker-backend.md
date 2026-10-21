@@ -700,11 +700,14 @@ Creation, rename, enable/disable, login, cancellation, logout, and reset redempt
 worker operations; ownership of a child directory is insufficient. Mutations are audited without
 recording tokens.
 
-The profile list shows **7-day remaining** and **Banked resets**. Reset counts come from the
-provider's authoritative available count; **Unavailable** means the provider did not return a
-valid count, rather than zero. Expand an enabled, signed-in profile and choose **Redeem one
-reset** to consume one available earned reset after confirmation. Evander rereads limits and
-reset counts after redemption. **Retry reset redemption** checks the same attempt after a
+The profile list shows **7-day remaining**, **Banked resets**, and **Credits**. Credits show the
+provider-reported remaining balance or **Unlimited** when reported. A reported absence of credits
+shows **0**; a missing or invalid balance shows **Unavailable**. Credits use the Codex bucket when
+available, with the legacy single-bucket telemetry as a fallback.
+Reset counts come from the provider's authoritative available count; **Unavailable** means the
+provider did not return a valid count, rather than zero. Expand an enabled, signed-in profile and
+choose **Redeem one reset** to consume one available earned reset after confirmation. Evander
+rereads limits and reset counts after redemption. **Retry reset redemption** checks the same attempt after a
 transport error, retaining its idempotency key so a completed redemption cannot consume twice.
 Unresolved attempts are saved in the browser before submission, scoped by worker, profile, and
 account. They survive tab changes and reloads, and are removed only after a definitive response.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-21 - Show subscription credit balances (0.115.0)
+
+- Show provider-reported credits beside seven-day remaining usage and banked resets on the Subscriptions page, including zero, unlimited, and unavailable balances.
+- Carry only the approved credit fields through worker telemetry, and keep the profile list readable on narrow screens.
+
 ## 2026-10-21 - Keep browser decisions focused on page state and the next action (0.114.2)
 
 - Exclude random observation receipts, document epochs and command receipt IDs from decision-model evidence. Preserve current element references, values, context, action outcomes, browser fences, returned observations and usage attribution.

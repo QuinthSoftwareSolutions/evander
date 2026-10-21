@@ -928,7 +928,10 @@ a profile and starting or ending login require unlocked privileged operations an
 not to a directory. Profile IDs are immutable lowercase slugs, display names are editable, and
 the first successful login permanently pins the OpenAI account ID. Use a new profile for a
 different account. The profile list shows the percentage remaining in the worker-reported Codex
-Codex seven-day rate-limit window; it shows "Unavailable" when no seven-day window is reported.
+seven-day rate-limit window; it shows "Unavailable" when no seven-day window is reported.
+It also shows banked resets and the provider-reported credit balance. Credits show "Unlimited"
+when reported, "0" when the provider explicitly reports no credits, and "Unavailable" when a
+balance is missing or invalid. These credits are separate from earned rate-limit resets.
 
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
