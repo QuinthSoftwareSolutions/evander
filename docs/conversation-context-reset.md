@@ -34,9 +34,12 @@ worker acceptance without a native thread, failed launches and restarts do not
 consume it. An uncertain steering delivery is reconciled against its original
 worker receipt rather than sent again into a new thread. Admitted launches have
 durable context receipts, including generation zero before a conversation's
-first reset. A launch already admitted when reset arrives counts as current
-work; an uncertain acceptance keeps that launch's original generation and
-resume settings across retries.
+first reset. Accepted or uncertain launches keep their original generation and
+resume settings across retries. A structured worker subscription preflight
+rejection confirms no job was created: release that launch's context binding
+before releasing admission claims. Its queued request keeps the same delivery
+identity and binds to the current generation on retry, capturing a new history
+cutoff if a reset is pending. Generic failures and timeouts retain their binding.
 
 ## History
 

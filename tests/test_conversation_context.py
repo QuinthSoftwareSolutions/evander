@@ -12,6 +12,7 @@ from evander.admin.composition import build_admin_runtime
 from evander.conversation_context import (
     ConversationContextStore,
     launch_context,
+    reject_launch_context,
     teams_conversation_key,
 )
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
@@ -418,3 +419,29 @@ def test_uncertain_admitted_launch_keeps_its_generation_across_a_later_reset(tmp
     following = launch_context(tmp_path, "session-1", KEY, "following")
     assert following["generation"] == 1 and following["thread_id"] is None
     assert following["resume_mode"] == "new_context"
+
+
+def test_confirmed_rejection_recaptures_history_and_cannot_release_a_newer_generation(tmp_path):
+    store = ConversationContextStore(tmp_path)
+    reset(store)
+    first = launch_context(tmp_path, "session-1", KEY, "queued")
+    assert reject_launch_context(tmp_path, "session-1", KEY, "queued", generation=1)
+    rejected = ConversationContextStore(tmp_path).get("session-1", KEY)
+    assert rejected["pending"] and rejected["launch_dispatch_id"] is None
+    # No job started, so a late callback cannot consume this pending reset.
+    assert not store.accept_thread("session-1", KEY, 1, "never-started")
+    retry_started = datetime.now(UTC)
+    rebound = launch_context(tmp_path, "session-1", KEY, "queued")
+    assert rebound["generation"] == 1 and rebound["resume_mode"] == "new_context"
+    assert rebound["thread_id"] is None
+    assert rebound["history_after"] != first["history_after"]
+    assert datetime.fromisoformat(rebound["history_after"]) >= retry_started
+    assert reject_launch_context(tmp_path, "session-1", KEY, "queued", generation=1)
+    reset(store, "another-reset")
+    current = launch_context(tmp_path, "session-1", KEY, "queued")
+    assert current["generation"] == 2
+    assert not reject_launch_context(tmp_path, "session-1", KEY, "queued", generation=1)
+    recovered = launch_context(tmp_path, "session-1", KEY, "queued")
+    assert recovered["generation"] == 2 and recovered["history_after"] == current["history_after"]
+    assert store.accept_thread("session-1", KEY, 2, "fresh-thread")
+    assert launch_context(tmp_path, "session-1", KEY, "next")["thread_id"] == "fresh-thread"

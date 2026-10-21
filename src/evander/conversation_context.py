@@ -1,7 +1,8 @@
 """Durable conversation reset boundaries shared by dispatch and message history.
 
 Only explicitly reset conversations have a canonical context row. Admitted
-launches also retain immutable receipts so retries keep their original context.
+launches retain receipts so accepted or uncertain retries keep their original
+context.
 Context generations, rather than manifest snapshots, own the resume pointer
 after the first reset.
 """
@@ -215,9 +216,9 @@ def launch_context(
 ):
     """Pin an admitted launch before sending it; retries retain its original context.
 
-    An admitted launch counts as current work. A later reset must not rebind an
-    uncertain worker request to another generation, even if the host lost the
-    acceptance response before saving its worker mapping.
+    A later reset must not rebind an uncertain worker request to another
+    generation, even if the host lost the acceptance response before saving its
+    worker mapping. Only a confirmed no-job rejection can release this binding.
     """
     if runtime_dir is None or not session_id or not conversation_key:
         return None
@@ -262,6 +263,38 @@ def launch_context(
             "resume_mode": resume_mode,
             "pending": resume_mode == "new_context",
         }
+
+
+def reject_launch_context(runtime_dir, session_id, conversation_key, dispatch_id, *, generation):
+    """Release a binding only after the worker confirms it created no job.
+
+    Call before releasing launch admission claims. Accepted or uncertain launches
+    must keep their receipt. The generation check prevents an older rejection
+    from releasing a later reset's launch; the delivery identity is unchanged.
+    """
+    if runtime_dir is None or not session_id or not conversation_key or generation is None:
+        return False
+    store = ConversationContextStore(runtime_dir)
+    if not store.path.exists():
+        return False
+    with store.lock(session_id, conversation_key):
+        with store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            deleted = db.execute(
+                """DELETE FROM context_launch_receipts
+                WHERE session_id=? AND conversation_key=? AND dispatch_id=? AND generation=?""",
+                (session_id, conversation_key, dispatch_id, generation),
+            ).rowcount
+            if deleted:
+                # No turn started. Capture the effective cutoff again at retry,
+                # without clearing a newer reset or an already observed thread.
+                db.execute(
+                    """UPDATE conversation_contexts SET launch_dispatch_id=NULL
+                    WHERE session_id=? AND conversation_key=? AND generation=?
+                    AND pending=1 AND launch_dispatch_id=?""",
+                    (session_id, conversation_key, generation, dispatch_id),
+                )
+            return bool(deleted)
 
 
 @contextmanager

@@ -19,6 +19,7 @@ from evander.conversation_context import (
     ConversationContextStore,
     execution_context_generation,
     launch_context,
+    reject_launch_context,
     thread_write_guard,
 )
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
@@ -820,8 +821,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     execution_backend="container_worker_vm",
                 )
         except Exception as exc:
-            if runtime_dir is not None:
-                local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
+            try:
+                if isinstance(exc, CodexSubscriptionDeferredClientError):
+                    reject_launch_context(
+                        effective_config.runtime_dir, session_id, resume_thread_metadata_key, dispatch_id,
+                        generation=state["generation"] if state else None,
+                    )
+            finally:
+                if runtime_dir is not None:
+                    local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
             if isinstance(exc, CodexSubscriptionDeferredClientError):
                 deferral = exc.deferral
                 record = enqueue_agent_prompt(

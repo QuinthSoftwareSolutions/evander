@@ -10,6 +10,7 @@ from typing import Any
 from evander.conversation_context import (
     execution_context_generation,
     launch_context,
+    reject_launch_context,
     thread_write_guard,
 )
 from evander.agent_threads import usable_agent_thread_id
@@ -963,9 +964,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record=record,
             session=session,
         )
+        conversation_key = delivery_metadata.get("conversation_key") or self._resume_thread_metadata_key(record)
         state = launch_context(
-            config.runtime_dir, session_id,
-            delivery_metadata.get("conversation_key") or self._resume_thread_metadata_key(record),
+            config.runtime_dir, session_id, conversation_key,
             dispatch_id,
             resume_thread_id=effective_resume_thread_id,
             resume_mode=getattr(record, "resume_mode", None) or "new_context",
@@ -1091,11 +1092,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     execution_backend="container_worker_vm",
                 )
         except Exception as exc:
-            self._release_local_inference_capacity(
-                worker=worker,
-                admission=capacity_admission,
-            )
-            self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
+            try:
+                if isinstance(exc, CodexSubscriptionDeferredClientError):
+                    reject_launch_context(
+                        config.runtime_dir, session_id, conversation_key, dispatch_id,
+                        generation=state["generation"] if state else None,
+                    )
+            finally:
+                self._release_local_inference_capacity(
+                    worker=worker,
+                    admission=capacity_admission,
+                )
+                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             if isinstance(exc, CodexSubscriptionDeferredClientError):
                 try:
                     record.subscription_profile_id = exc.deferral.profile_id

@@ -900,3 +900,164 @@ def test_fresh_subscription_turn_starts_a_thread_and_later_turn_resumes_that_thr
     assert later._open_thread(process) == "fresh-native-thread"
     assert [method for method, _ in process.calls] == ["thread/start", "thread/resume"]
     assert process.calls[-1][1]["threadId"] == "fresh-native-thread"
+
+
+@pytest.mark.parametrize("effect_type", ["effect:agent:enqueue-prompt", "effect:agent:prompt"])
+def test_rejected_launch_rebinds_queued_delivery_after_reset_and_restart(
+    tmp_path, monkeypatch, effect_type
+):
+    from datetime import UTC, datetime, timedelta
+
+    from evander.codex_auth import CodexSubscriptionDeferral
+    from evander.conversation_context import ConversationContextStore, teams_conversation_key
+    from evander.daemons.effect_orchestrator import SqliteExecutionStore
+    from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+    from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+    from evander.effects.providers.base import EffectRuntimeContext
+    from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+    from evander.effects.providers.schemas import (
+        AgentEnqueuePromptEffectDefinition,
+        AgentPromptEffectDefinition,
+    )
+    from evander.execution.container_worker_client import CodexSubscriptionDeferredClientError
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+    b, client = backend(tmp_path)
+    b.repository.put(b.repository.get("exec-1").model_copy(update={"last_status": "exited"}))
+    config = b.config
+    key = teams_conversation_key("chat:one")
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            model="fixture",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_thread_ids": {key: "old-thread"},
+            },
+        )
+    )
+    resolver = SimpleNamespace(
+        resolve_for_directory=lambda _: config, resolve_for_session_id=lambda _: config
+    )
+    context = EffectRuntimeContext(resolved_config=config, provider_config_resolver=resolver)
+    provider_module = (
+        "agent_enqueue_prompt" if effect_type.endswith("enqueue-prompt") else "agent_prompt"
+    )
+    monkeypatch.setattr(
+        f"evander.effects.providers.{provider_module}.container_backend", lambda *args: b
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend", lambda *args, **kw: b
+    )
+    launches = []
+
+    def prepare(spec):
+        launches.append(spec)
+        return SimpleNamespace(execution_id=spec.target_name)
+
+    def rejected(_):
+        # The worker preflight rejects this request before creating any job.
+        raise CodexSubscriptionDeferredClientError(
+            "No job accepted",
+            status_code=429,
+            deferral=CodexSubscriptionDeferral(profile_id="default", reason="rate_limited"),
+        )
+
+    b.prepare, b.start = prepare, rejected
+    fields = dict(
+        id="enqueue",
+        display_name="Chat",
+        type=effect_type,
+        session_id="session-1",
+        prompt="Keep this queued task",
+        resume_thread_metadata_key=key,
+    )
+    if effect_type.endswith("enqueue-prompt"):
+        effect = AgentEnqueuePromptEffectDefinition(
+            **fields,
+            dispatch_id="queued-one",
+            delivery_mode="steer_if_running",
+            conversation_key=key,
+            resume_mode="same_context",
+        )
+        provider = AgentEnqueuePromptEffectProvider()
+    else:
+        effect = AgentPromptEffectDefinition(**fields)
+        provider = AgentPromptEffectProvider()
+    provider.initialize(effect, context)
+    result = provider.execute()
+    assert result["queued"] and result["queue_reason"] == "subscription_rate_limited"
+    assert int(launches[0].metadata["context_generation"]) == 0
+    assert launches[0].metadata["resume_thread_id"] == "old-thread"
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    [original] = queue.read_all().values()
+    store = ConversationContextStore(tmp_path)
+    store.request_reset(
+        session_id="session-1",
+        conversation_key=key,
+        request_id="reset-one",
+        communication_target="chat:one",
+    )
+
+    def replay_after_restart():
+        # Reopen persisted stores and use the production queue-drain hook.
+        queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+        [row] = queue.read_all().values()
+        assert row.dispatch_id == original.dispatch_id == result["dispatch_id"]
+        assert row.prompt == "Keep this queued task" and row.created_at == original.created_at
+        queue.make_subscription_profile_ready("default")
+        [row] = queue.read_all().values()
+        worker = SimpleNamespace(
+            config=config,
+            execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
+            provider_config_resolver=resolver,
+            provider_factory=SimpleNamespace(
+                admin_service=SimpleNamespace(
+                    runtime=SimpleNamespace(
+                        session_repository=JsonSessionManifestRepository(config.session_store_path)
+                    ),
+                )
+            ),
+        )
+        return AgentEnqueuePromptQueueDispatchHook()._dispatch_container_record_if_idle(
+            worker=worker,
+            queue_store=queue,
+            queue_key=row.queue_key,
+            record=row,
+        ), worker
+
+    # A known rejection during queue replay must also release its context binding.
+    assert not replay_after_restart()[0]
+    assert launches[-1].metadata["context_generation"] == 1
+    assert launches[-1].metadata["resume_thread_id"] is None
+    first_boundary = store.get("session-1", key)["history_after"]
+    store.request_reset(
+        session_id="session-1",
+        conversation_key=key,
+        request_id="reset-two",
+        communication_target="chat:one",
+    )
+    retry_started = datetime.now(UTC)
+    b.start = lambda handle: handle
+    delivered, worker = replay_after_restart()
+    assert delivered
+    spec = launches[-1]
+    assert spec.metadata["context_generation"] == 2
+    assert spec.metadata["resume_thread_id"] is None
+    assert "old-thread" not in spec.command and "--last" not in spec.command
+    assert spec.metadata["dispatch_id"] == original.dispatch_id
+    if effect_type.endswith("enqueue-prompt"):
+        assert len({spec.target_name for spec in launches}) == 1
+    [execution] = worker.execution_store.read_all().values()
+    assert execution.outputs["dispatch_id"] == original.dispatch_id
+    assert int(execution.outputs["context_generation"]) == 2
+    assert execution.input_payload["prompt"] == "Keep this queued task"
+    assert queue.read_all() == {} and client.calls == []
+    current = ConversationContextStore(tmp_path).get("session-1", key)
+    assert current["pending"] and current["thread_id"] is None
+    assert current["history_after"] != first_boundary
+    assert datetime.fromisoformat(current["history_after"]) >= retry_started

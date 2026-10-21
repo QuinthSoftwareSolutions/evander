@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from evander.conversation_context import ConversationContextStore, launch_context, thread_write_guard
+from evander.conversation_context import (
+    ConversationContextStore,
+    launch_context,
+    reject_launch_context,
+    thread_write_guard,
+)
 from evander.agent_threads import usable_agent_thread_id
 from evander.cost_categories import dispatch_with_cost_context, freeze_prompt_cost_category
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
@@ -1035,8 +1040,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     execution_backend="container_worker_vm",
                 )
         except Exception as exc:
-            self._release_local_inference_capacity(capacity_admission)
-            self._release_enqueue_prompt(prompt_lock_claim)
+            try:
+                if isinstance(exc, CodexSubscriptionDeferredClientError):
+                    reject_launch_context(
+                        effective_config.runtime_dir, session_id, conversation_key, dispatch_id,
+                        generation=state["generation"] if state else None,
+                    )
+            finally:
+                self._release_local_inference_capacity(capacity_admission)
+                self._release_enqueue_prompt(prompt_lock_claim)
             if isinstance(exc, CodexSubscriptionDeferredClientError):
                 deferral = exc.deferral
                 record = self._queue_prompt(
