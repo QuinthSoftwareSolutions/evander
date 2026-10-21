@@ -3428,8 +3428,9 @@ Reject is unsupported. A voting call requires a matching provider/repository/PR 
 session's `metadata.pr_feedback_streams`. The directory-scoped PR credential's authenticated
 identity must already be assigned as a reviewer, optional or required. The caller cannot select
 another reviewer's identity. The host publishes the summary and inline comments before updating
-the vote, verifies the provider's returned identity and vote, and includes `reviewer_id` and
-`vote` in the response and audit. Use the same `idempotency_key` only for retries of the same
+the vote. Positive votes include `isReapprove: true` so an unchanged approval can apply to a
+new PR iteration. The host verifies the provider's returned identity and vote, and includes
+`reviewer_id` and `vote` in the response and audit. Use the same `idempotency_key` only for retries of the same
 submission. If voting fails after comments were published, inspect the PR before retrying to
 avoid duplicate comments. Existing tool grants, argument policies, and approval requirements
 still apply. GitHub retains its existing `COMMENT`, `APPROVE`, and `REQUEST_CHANGES` events.

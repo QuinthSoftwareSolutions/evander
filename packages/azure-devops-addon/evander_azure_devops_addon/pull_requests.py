@@ -1529,11 +1529,14 @@ class AzureDevOpsPrPublishProvider:
                 uploaded_attachments.extend(summary_result.get("uploaded_attachments") or [])
 
             if vote is not None:
+                vote_request = {"id": reviewer_id, "vote": vote}
+                if vote > 0:
+                    vote_request["isReapprove"] = True
                 vote_response = client.put(
                     reviewer_url,
                     params={"api-version": "7.1"},
                     auth=("", self.pat),
-                    json={"id": reviewer_id, "vote": vote},
+                    json=vote_request,
                 )
                 vote_response.raise_for_status()
                 vote_payload = vote_response.json()

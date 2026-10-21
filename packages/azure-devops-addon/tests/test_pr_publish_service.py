@@ -44,11 +44,17 @@ def test_azure_review_votes_as_the_assigned_host_identity_and_deduplicates_retri
             return httpx.Response(200, json={"authenticatedUser": {"id": reviewer_id}})
         assert request.url.params["api-version"] == "7.1"
         if request.method == "GET" and request.url.path == reviewer_path:
-            return httpx.Response(200, json={"id": reviewer_id, "isRequired": is_required})
+            return httpx.Response(
+                200,
+                json={"id": reviewer_id, "isRequired": is_required, "vote": expected_vote},
+            )
         if request.method == "POST" and request.url.path.endswith("/pullRequests/17/threads"):
             return httpx.Response(201, json={"id": 44, "comments": [{"id": 10}]})
         if request.method == "PUT" and request.url.path == reviewer_path:
-            assert json.loads(request.content) == {"id": reviewer_id, "vote": expected_vote}
+            expected_payload = {"id": reviewer_id, "vote": expected_vote}
+            if expected_vote in {5, 10}:
+                expected_payload["isReapprove"] = True
+            assert json.loads(request.content) == expected_payload
             return httpx.Response(200, json={"id": reviewer_id, "vote": expected_vote})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
@@ -150,7 +156,11 @@ def test_azure_review_does_not_vote_before_publication_or_report_unconfirmed_vot
             success = {"id": 44, "comments": [{"id": 10}]}
         elif request.method == "PUT" and request.url.path.endswith(f"/reviewers/{reviewer_id}"):
             current_stage = "vote"
-            assert json.loads(request.content) == {"id": reviewer_id, "vote": 10}
+            assert json.loads(request.content) == {
+                "id": reviewer_id,
+                "vote": 10,
+                "isReapprove": True,
+            }
             success = {"id": reviewer_id, "vote": 10}
         else:
             raise AssertionError(f"unexpected request: {request.method} {request.url}")
