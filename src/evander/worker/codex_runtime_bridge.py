@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 import tomllib
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from evander.cyber_access import CyberAccessProgram, CYBER_ACCESS_PROGRAM_RPC
@@ -35,6 +35,7 @@ class CodexRuntimeProfile(BaseModel):
     codex_path: str = "/usr/local/bin/codex"
     max_processes: int = Field(default=12, ge=1, le=64)
     default_cyber_access_program: CyberAccessProgram | None = None
+    sandbox_policy: Literal["native", "container"] = "native"
 
 
 def load_runtime_profiles(path: str | None) -> dict[str, CodexRuntimeProfile]:
@@ -321,13 +322,17 @@ class CodexRuntimeBridge:
         on_drained=None,
         usage_recorder_factory=None,
         default_cyber_access_program=None,
+        sandbox_policy="native",
     ):
+        if sandbox_policy not in {"native", "container"}:
+            raise ValueError("Unsupported runtime sandbox policy")
         self.path = path
         self.command_factory = command_factory
         self.diagnostics = diagnostics
         self.on_drained = on_drained
         self.usage_recorder_factory = usage_recorder_factory
         self.default_cyber_access_program = default_cyber_access_program
+        self.sandbox_policy = sandbox_policy
         self.native_tokens = placeholder_tokens(tokens)
         self.http_relay = CodexRuntimeHttpRelay(
             path=path.with_name("models.sock"),
@@ -493,6 +498,17 @@ class CodexRuntimeBridge:
                 exit_code = 0
                 return
             mode, cwd, config, model, prompt = parse_arguments(argv, cwd)
+            if self.sandbox_policy == "container":
+                # This opt-in comes only from the worker-owned runtime profile.
+                # Docker still enforces the job's mounts, UID, capabilities and
+                # egress. Native nested namespaces are unavailable on some workers.
+                config["default_permissions"] = "evander_worker_container"
+                config["permissions"] = {
+                    "evander_worker_container": {
+                        "filesystem": {":root": "write"},
+                        "network": {"enabled": True},
+                    }
+                }
             if self.usage_recorder_factory is not None:
                 usage_recorder = self.usage_recorder_factory(model)
             record(
@@ -501,6 +517,7 @@ class CodexRuntimeBridge:
                 cwd=cwd,
                 model=model,
                 reasoning_effort=config.get("model_reasoning_effort"),
+                sandbox_policy=self.sandbox_policy,
                 requested_cyber_access_program=config.get(
                     "_cyber_access_program", self.default_cyber_access_program
                 ),

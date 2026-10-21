@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import socket
 import threading
+import tomllib
 from types import SimpleNamespace
 import time
 
@@ -637,6 +638,95 @@ def test_operator_runtime_profile_validates_cyber_access_program(tmp_path, progr
             load_runtime_profiles(str(path))
     else:
         assert load_runtime_profiles(str(path))["scan"].default_cyber_access_program == program
+
+
+@pytest.mark.parametrize("policy", [None, "native", "container", "unknown"])
+def test_operator_runtime_profile_validates_sandbox_policy(tmp_path, policy):
+    path = tmp_path / "profiles.json"
+    profile = {"command_prefix": ["scanner"]}
+    if policy is not None:
+        profile["sandbox_policy"] = policy
+    path.write_text(json.dumps({"scan": profile}))
+    path.chmod(0o600)
+    if policy == "unknown":
+        with pytest.raises(ValueError, match="sandbox_policy"):
+            load_runtime_profiles(str(path))
+    else:
+        assert load_runtime_profiles(str(path))["scan"].sandbox_policy == (policy or "native")
+
+
+@pytest.mark.parametrize("policy", ["native", "container"])
+@pytest.mark.parametrize("invocation", ["exec", "resume", "preflight"])
+def test_worker_sandbox_policy_controls_sdk_process_and_thread_permissions(
+    broker, policy, invocation
+):
+    bridge, processes = broker
+    bridge.sandbox_policy = policy
+    mode = "app-server" if invocation == "preflight" else "exec"
+    argv = [
+        mode,
+        "--config",
+        'default_permissions="codex_security_sdk_scan"',
+        "--config",
+        'permissions.codex_security_sdk_scan.filesystem={":root"="read",":workspace_roots"="write"}',
+        "--config",
+        'model_reasoning_effort="high"',
+    ]
+    if invocation == "resume":
+        argv += ["resume", "existing-thread"]
+    if invocation != "preflight":
+        argv += ["scan"]
+    frames = exchange(
+        bridge,
+        {"argv": argv, "cwd": "/artifacts/scan"},
+        *([{"id": 1, "method": "config/read", "params": {}}] if mode == "app-server" else []),
+    )
+    if mode == "app-server":
+        assert json.loads(frames[-1]["text"]) == {"id": 1, "result": {"ok": True}}
+    else:
+        assert frames[-1] == {"exit_code": 0}
+    config = {}
+    for option in processes[0].command[1:]:
+        config.update(tomllib.loads(option))
+    assert config["model_reasoning_effort"] == "high"
+    if policy == "container":
+        assert config["default_permissions"] == "evander_worker_container"
+        assert config["permissions"] == {
+            "evander_worker_container": {
+                "filesystem": {":root": "write"},
+                "network": {"enabled": True},
+            }
+        }
+    else:
+        assert config["default_permissions"] == "codex_security_sdk_scan"
+        assert config["permissions"]["codex_security_sdk_scan"]["filesystem"] == {
+            ":root": "read",
+            ":workspace_roots": "write",
+        }
+    if mode == "exec":
+        thread = next(
+            p for method, p in processes[0].calls if method in {"thread/start", "thread/resume"}
+        )
+        assert thread["permissions"] == config["default_permissions"]
+        assert thread["config"]["permissions"] == config["permissions"]
+        assert thread["approvalPolicy"] == "never"
+        if invocation == "resume":
+            assert thread["threadId"] == "existing-thread"
+
+
+def test_runtime_client_cannot_select_worker_sandbox_policy():
+    with pytest.raises(ValueError, match="Unsupported brokered Codex configuration"):
+        parse_arguments(["exec", "-c", 'sandbox_policy="container"', "scan"], "/home/agent")
+    with pytest.raises(ValueError, match="Unsupported Codex runtime environment"):
+        validate_request(
+            {
+                "argv": ["exec", "scan"],
+                "cwd": "/home/agent",
+                "environment": {"EVANDER_SANDBOX_POLICY": "container"},
+            }
+        )
+    with pytest.raises(ValueError, match="sandbox_policy"):
+        CodexRuntimeSpec(profile_id="scan", sandbox_policy="container")
 
 
 @pytest.mark.parametrize("resumed", [False, True])

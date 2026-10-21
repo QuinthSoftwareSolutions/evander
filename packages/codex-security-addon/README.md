@@ -73,6 +73,16 @@ example profile file (owned by the worker operator; not group/world writable).
 Restart the worker after installing the profile. Existing subscription profiles,
 the worker's restricted Codex egress proxy, and account access must already work.
 
+If Docker supplies scan isolation and the worker cannot create nested Linux
+namespaces, set `sandbox_policy: container` on this worker-owned runtime profile
+and restart the worker. The SDK creates its own native permission profile, so an
+image-only `configure.mjs` override does not select this policy for scoped SDK
+reviews. The broker applies the operator's policy before native startup and on
+resumed reviews. Leave the field omitted for native sandboxing. See
+[runtime sandbox policy](../../docs/container-worker-backend.md#codex-runtime-access-programs)
+for the isolation requirements. Qualify a bounded tracked-coverage scan before
+enabling it in an operator workflow.
+
 For accounts approved for Daybreak, set `default_cyber_access_program` on the
 worker-owned `codex-security` runtime profile to `daybreak_blue` or `daybreak_red`,
 as supported by the selected model and account. `standard` explicitly selects

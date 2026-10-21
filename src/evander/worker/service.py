@@ -790,6 +790,7 @@ class WorkerDaemon(GitWorkspaceOperations):
                     ),
                     http_client=http_client,
                     max_processes=runtime_profile.max_processes,
+                    sandbox_policy=runtime_profile.sandbox_policy,
                     default_cyber_access_program=(
                         request.codex_runtime.cyber_access_program
                         or runtime_profile.default_cyber_access_program

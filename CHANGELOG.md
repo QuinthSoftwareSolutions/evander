@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-21 - Respect container isolation for brokered SDK reviews (0.110.2)
+
+- Let an operator-owned Codex runtime profile select `sandbox_policy: container` when Docker already provides the execution boundary and nested native namespaces are unavailable. Apply that policy to SDK exec and preflight processes, including resumed reviews, while keeping native sandboxing as the default.
+- Keep subscription routing, worker-held credentials, container privileges, mounts and egress restrictions unchanged. Record the selected sandbox policy in private runtime diagnostics.
+
 ## 2026-10-21 - Keep shared browser views focused and follow Admin Web themes (0.110.1)
 
 - Apply the shared Admin Web light/dark palette to hosted browser viewers, session lists, settings, chat, voice controls and status/error surfaces. Follow live host theme changes and the saved or system preference in standalone viewers.
