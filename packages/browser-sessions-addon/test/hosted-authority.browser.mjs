@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createServer} from "node:http";
 import {once} from "node:events";
-import {spawn} from "node:child_process";
+import {spawn,execFileSync} from "node:child_process";
 import {mkdtemp,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -50,12 +50,16 @@ test("hosted authentication is cancelled by a fenced human takeover",{timeout:30
     const send=(id,actor,action)=>relay.send(JSON.stringify({kind:"command",actor,command:{id,action,target_alias:"ui",generation:state.control_generation}}));
     send("old-login","agent:agent-a","authenticate");
     await until(()=>loginStarted,"host login pending");
-    state={...state,controller:"user:operator",control_generation:1};
-    const claim=await fetch("http://127.0.0.1:"+controlPort+"/control",{method:"POST",headers:{Authorization:"Bearer worker-proof"},body:JSON.stringify({session:state}),signal:AbortSignal.timeout(12000)});
-    assert.equal(claim.status,200);assert.equal((await claim.json()).fenced,true);
+    const claim=JSON.parse(execFileSync(process.env.EVANDER_TEST_PYTHON??"python3",["-B","test/control-service.py",JSON.stringify(state),"http://127.0.0.1:"+controlPort],{env:{...process.env,PYTHONDONTWRITEBYTECODE:"1",PYTHONPATH:"../../src:../../tests:.:../application-environments-addon"},encoding:"utf8",timeout:15000}));
+    state=claim.session;
+    assert.equal(state.controller,"user:operator");
+    assert.equal(claim.calls.some(path=>path.endsWith("/fence")),true);
     releaseLogin();
     const rejected=await until(()=>results.get("old-login"),"interrupted login result");
     assert.equal(rejected.error,true);assert.equal(rejected.code,"stale_control");
+    // Relay delivery is intentionally absent during claim; the acknowledged
+    // worker fence must have cancelled login before this later state refresh.
+    relay.send(JSON.stringify({kind:"state",session:state}));
     send("pages-after-claim","user:operator","pages");
     const pages=(await until(()=>results.get("pages-after-claim"),"retained pages")).result.pages;
     assert.equal(pages.length,1);assert.equal(pages[0].url,origin+"/original");

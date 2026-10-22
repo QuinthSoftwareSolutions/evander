@@ -190,6 +190,10 @@ def test_takeover_fences_in_flight_actions_and_only_one_human_controls(domain, h
         private["profile"]["playwright_enabled"] = True
         service.store.set_private(hosted.id, private)
     service.control(hosted.id, "user:alice", "claim", revision=hosted.revision)
+    fences = [call for call in peers.calls if call[3].endswith("/fence")]
+    assert len(fences) == 1
+    assert fences[0][4]["session"]["controller"] is None
+    assert fences[0][4]["session"]["state"] == "paused"
     with pytest.raises(BrowserError, match="Another participant"):
         service.control(hosted.id, "user:bob", "claim")
     before = len(peers.calls)
@@ -490,3 +494,27 @@ def test_typed_actions_cannot_bypass_the_managed_login_tool_grant(domain, hosted
             agent=True,
         )
     assert checked == ["browser_session_authenticate"] and len(peers.calls) == before
+
+
+@pytest.mark.parametrize("playwright", [False, True])
+@pytest.mark.parametrize("failure", ["unavailable", "unconfirmed"])
+def test_hosted_takeover_keeps_control_paused_until_worker_acknowledges(domain, hosted, playwright, failure):
+    service, _, peers = domain
+    private = service.store.private(hosted.id)
+    private["profile"]["playwright_enabled"] = playwright
+    service.store.set_private(hosted.id, private)
+    original = peers.call
+
+    def call(base, token, method, path, payload):
+        if path.endswith("/fence"):
+            if failure == "unavailable":
+                raise BrowserError("Worker unavailable", "peer_unavailable", 503)
+            return {"fenced": False}
+        return original(base, token, method, path, payload)
+
+    peers.call = call
+    with pytest.raises(BrowserError):
+        service.control(hosted.id, "user:operator", "claim")
+    paused = service.store.get(hosted.id)
+    assert paused.controller is None and paused.state == "paused"
+    assert paused.control_generation > hosted.control_generation

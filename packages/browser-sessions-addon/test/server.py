@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, Mount
 import uvicorn
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
@@ -41,6 +42,7 @@ port = sock.getsockname()[1]
 base = "http://127.0.0.1:" + str(port)
 os.environ.update(
     EVANDER_BROWSER_RELAY_TOKEN="fixture-relay-token",
+    EVANDER_BROWSER_FIXTURE_WORKER_TOKEN="fixture-worker-token",
     EVANDER_ADMIN_WEB_AUTH_MODE="local_password",
     EVANDER_ADMIN_WEB_USERNAME="operator",
     EVANDER_ADMIN_WEB_PASSWORD="fixture-password",
@@ -155,7 +157,29 @@ async def setup(request):
         result["endpoint_token"] = service.store.capability(
             session.id, "hosted_endpoint", "worker:test", 600
         )
+        with socket.socket() as control_probe:
+            control_probe.bind(("127.0.0.1", 0))
+            result["control_port"] = control_probe.getsockname()[1]
+        service.store.set_private(session.id, {
+            "profile": {"playwright_enabled": False},
+            "connection": {"base_url": base, "token_env": "EVANDER_BROWSER_FIXTURE_WORKER_TOKEN"},
+            "controller_port": result["control_port"],
+            "controller_proof": result["endpoint_token"],
+        })
     return JSONResponse(result)
+
+
+async def worker_fence(request):
+    if request.headers.get("authorization") != "Bearer fixture-worker-token":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    private = service.store.private(request.path_params["id"])
+    async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+        response = await client.post(
+            f"http://127.0.0.1:{private['controller_port']}/control",
+            json=await request.json(),
+            headers={"Authorization": "Bearer " + private["controller_proof"]},
+        )
+    return JSONResponse(response.json(), status_code=response.status_code)
 
 
 async def test_operation(request):
@@ -268,6 +292,7 @@ app = Starlette(
         Route("/test/voice/events", speech_events),
         Route("/test/provider/audio/{action}", speech_provider, methods=["POST"]),
         Route("/test/setup", setup, methods=["POST"]),
+        Route("/v1/sessions/{id}/fence", worker_fence, methods=["POST"]),
         Route("/test/{id}/{action}", test_operation, methods=["GET", "POST"]),
         Route("/application", application),
         Route("/position", position),

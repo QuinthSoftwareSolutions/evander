@@ -664,24 +664,25 @@ class Service:
             raise BrowserError("Browser control changed; refresh and retry", "stale_control", 409)
         if session.mode == "hosted" and action != "touch":
             private = self.store.private(session_id)
-            profile = private.get("profile", {})
-            if profile.get("playwright_enabled"):
+            def pause_for_fence(value):
+                value.controller = None
+                value.state = "paused"
+                value.control_generation += 1
 
-                def pause_for_fence(value):
-                    value.controller = None
-                    value.state = "paused"
-                    value.control_generation += 1
-
-                paused = self.store.mutate(
-                    session_id, actor, pause_for_fence, revision=revision, kind="automation_revoked"
-                )
-                connection = private["connection"]
-                self.peer_factory(connection["base_url"], connection["token_env"]).call(
-                    "POST",
-                    "/v1/sessions/" + session_id + "/fence",
-                    {"session": paused.model_dump()},
-                )
-                generation, revision = paused.control_generation, paused.revision
+            paused = self.store.mutate(
+                session_id, actor, pause_for_fence,
+                revision=None if action == "pause" else revision,
+                kind="automation_revoked",
+            )
+            connection = private["connection"]
+            result = self.peer_factory(connection["base_url"], connection["token_env"]).call(
+                "POST",
+                "/v1/sessions/" + session_id + "/fence",
+                {"session": paused.model_dump()},
+            )
+            if result.get("fenced") is not True:
+                raise BrowserError("Browser control fence is unconfirmed", "fence_unconfirmed", 503)
+            generation, revision = paused.control_generation, paused.revision
 
         def update(value):
             if (

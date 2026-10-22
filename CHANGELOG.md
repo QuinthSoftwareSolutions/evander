@@ -6,7 +6,7 @@
 - Make hosted Browser Sessions target approved external sites or leased application endpoints without requiring application recipes or hosting.
 - Add explicitly granted Playwright connections, retained browser contexts, managed-login tools and shared page selection with generation-fenced human takeover.
 - Supply independent deployment assets and a read-only coordinated migration checker; legacy creation calls must migrate after existing hosted previews drain.
-- Confirm expired application cleanup before reusing quota, require a fresh connection credential after browser detach, and drain or cancel hosted login commands before granting human control.
+- Confirm expired application cleanup before reusing quota, require a fresh connection credential after browser detach, and drain or cancel hosted login commands before granting human control in every hosted profile, including when Playwright is disabled.
 
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 

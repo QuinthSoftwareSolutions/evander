@@ -52,6 +52,8 @@ class Peers:
             raise BrowserError("cleanup failed")
         if path == "/healthz":
             return {"capabilities": {"browser_sessions": 1}}
+        if path.endswith("/fence"):
+            return {"fenced": True}
         if method == "POST" and path.startswith("/v1/sessions"):
             return {"allowed_origins": payload["session"]["allowed_origins"], "state": "accepted"}
         return {"released": True, "state": "running", "success": True}
