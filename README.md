@@ -16,7 +16,6 @@ Git, and HTTP surfaces.
 | Install a host or troubleshoot services | [Operations](docs/operations.md) and [Ansible deployment](ansible/README.md) |
 | Use the operator interface | [Admin Web manual](docs/admin-ui-user-manual.md) |
 | Start a common workflow | [Workflow starters](docs/workflow-starters.md) |
-| Reset an assistant conversation | [Context reset](docs/conversation-context-reset.md) |
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
@@ -1588,3 +1587,5 @@ The [Browser Sessions Add-on](packages/browser-sessions-addon/README.md) provide
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](packages/browser-sessions-addon/docs/voice.md).
 
 Optional [multi-step decision execution](packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
+
+Assistant workflows can [start a fresh conversation context](docs/conversation-context-reset.md) with the existing prompt enqueue operation.

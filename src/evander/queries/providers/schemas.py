@@ -360,8 +360,6 @@ class PullRequestFeedbackQueryDefinition(QueryDefinition):
 
 class CommunicationMessagesQueryDefinition(QueryDefinition):
     type: Literal["query:communication:messages"]
-    context_session_id: ConfigValue | None = None
-    conversation_key: ConfigValue | None = None
     communication_target_id: str
     limit: ConfigValue | None = None
     cursor: ConfigValue | None = None
@@ -379,8 +377,6 @@ class CommunicationMessagesQueryDefinition(QueryDefinition):
 
     @model_validator(mode="after")
     def validate_cursor_filters(self) -> "CommunicationMessagesQueryDefinition":
-        if (self.context_session_id is None) != (self.conversation_key is None):
-            raise ValueError("context_session_id and conversation_key must be supplied together")
         if (
             self.cursor is not None
             and self.before_cursor is not None

@@ -862,7 +862,6 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
-    "effect:session:reset-context": "Reset one conversation before its next turn while retaining current work.",
     "effect:website-session:ensure-profile": (
         "Create or reuse an exact-origin website login from a host-approved template. "
         "Returns a profile ID without exposing credentials or performing a login."
@@ -4268,16 +4267,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
-        type="effect:session:reset-context",
-        label="Reset conversation context",
-        fields=[
-            _field("target", "Session target", "string", required=True, bindable=True),
-            _field("conversation_key", "Conversation key", "string", required=True, bindable=True),
-            _field("request_id", "Stable request ID", "string", required=True, bindable=True),
-        ],
-    ),
-    WorkflowEditorNodeCatalogEntry(
-        kind="effect",
         type="effect:session:update-metadata",
         label="Session update metadata",
         fields=[
@@ -5215,8 +5204,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:communication:messages",
         label="Communication messages",
         fields=[
-            _field("context_session_id", "Conversation session", "string", bindable=True),
-            _field("conversation_key", "Conversation key", "string", bindable=True),
             _field(
                 "communication_target_id",
                 "Communication target",

@@ -14,9 +14,6 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from evander.agent_threads import usable_agent_thread_id
-from evander.conversation_context import ConversationContextStore, execution_context_generation
-
 ACTIVE = {"created", "starting", "running"}
 DELIVERED = {"steered", "started"}
 TERMINAL_DELIVERY = DELIVERED | {"cancelled"}
@@ -136,8 +133,6 @@ class ConversationDeliveryService:
             if saved["delivery_status"] in {"steered", "started", "cancelled"}:
                 return saved
             if saved.get("worker_job_id"):
-                saved.setdefault("conversation_key", conversation_key)
-                saved.setdefault("context_generation", 0)
                 return self._deliver(session_id, delivery_id, fingerprint, saved, prompt)
         from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
@@ -166,25 +161,13 @@ class ConversationDeliveryService:
             for r in queued.values()
         ):
             return {"delivery_status": "queued", "dispatch_id": delivery_id}
-        state = ConversationContextStore(self.store.path.parent).get(session_id, conversation_key)
-        if not allow_native and state is None:
+        if not allow_native:
             return None
         record = active_conversation(self.backend, session_id)
         if record is None:
             return None
         meta = record.metadata
         if meta.get("dispatch_id") == delivery_id:
-            # Recover a launch whose worker acceptance outlived the host reply.
-            # This is already-running work, even if another reset has arrived.
-            native = usable_agent_thread_id(
-                meta.get("codex_subscription_thread_id"), record.execution_id, meta.get("dispatch_id")
-            )
-            if state and native:
-                contexts = ConversationContextStore(self.store.path.parent)
-                with contexts.lock(session_id, conversation_key):
-                    contexts.accept_thread(
-                        session_id, conversation_key, execution_context_generation(record), native
-                    )
             return self.mark_started(
                 session_id=session_id,
                 delivery_id=delivery_id,
@@ -193,10 +176,6 @@ class ConversationDeliveryService:
                 thread_id=thread_id,
                 execution_id=record.execution_id,
             )
-        if not allow_native or (state and (
-            state["pending"] or execution_context_generation(record) != state["generation"]
-        )):
-            return None
         native_thread = meta.get("codex_subscription_thread_id")
         native_turn = meta.get("codex_subscription_turn_id")
         same = (
@@ -227,8 +206,6 @@ class ConversationDeliveryService:
                 "worker_url": record.worker_url.rstrip("/"),
                 "steered_into_dispatch_id": meta.get("dispatch_id"),
                 "thread_id": native_thread,
-                "conversation_key": conversation_key,
-                "context_generation": execution_context_generation(record),
                 "turn_id": native_turn,
             },
             claim=True,
@@ -265,23 +242,16 @@ class ConversationDeliveryService:
             result = dict(saved)
             try:
                 if receipt is None:
-                    contexts = ConversationContextStore(self.store.path.parent)
-                    key = saved.get("conversation_key") or ""
-                    with contexts.lock(session_id, key):
-                        state = contexts.get(session_id, key)
-                        if state and (state["pending"] or int(saved.get("context_generation", 0)) != state["generation"]):
-                            receipt = {"status": "rejected"}
-                        else:
-                            receipt = client.steer(
-                                record.worker_job_id,
-                                {
-                                    "session_id": session_id,
-                                    "delivery_id": wire_id,
-                                    "prompt": prompt,
-                                    "expected_thread_id": saved["thread_id"],
-                                    "expected_turn_id": saved["turn_id"],
-                                },
-                            )
+                    receipt = client.steer(
+                        record.worker_job_id,
+                        {
+                            "session_id": session_id,
+                            "delivery_id": wire_id,
+                            "prompt": prompt,
+                            "expected_thread_id": saved["thread_id"],
+                            "expected_turn_id": saved["turn_id"],
+                        },
+                    )
                 result["delivery_status"] = {
                     "accepted": "steered",
                     "rejected": "queued",

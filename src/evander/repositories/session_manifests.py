@@ -31,8 +31,6 @@ class SessionManifestRepository(Protocol):
 
     def upsert_session(self, manifest: SessionManifest) -> None: ...
 
-    def patch_metadata(self, session_id: str, metadata: dict[str, Any]) -> SessionManifest: ...
-
     def delete_session(self, session_id: str) -> bool: ...
 
     def read_all(self) -> dict[str, SessionManifest]: ...
@@ -118,17 +116,6 @@ class JsonSessionManifestRepository:
             payload[manifest.session_id] = manifest.model_dump(mode="json")
 
         self._store.update_object(_upsert)
-
-    def patch_metadata(self, session_id: str, metadata: dict[str, Any]) -> SessionManifest:
-        def update(payload):
-            if session_id not in payload:
-                raise ValueError("Unknown session target")
-            manifest = SessionManifest.model_validate(payload[session_id])
-            updated = _manifest_metadata_patch(manifest, metadata)
-            payload[session_id] = updated.model_dump(mode="json")
-            return updated
-
-        return self._store.update_object(update)
 
     def put(self, session_id: str, manifest: SessionManifest) -> None:
         resolved_manifest = manifest
@@ -237,26 +224,6 @@ class SessionManifestStoreAdapter:
 
     def upsert_session(self, manifest: SessionManifest) -> None:
         self._store.put(manifest.session_id, manifest)
-
-    def patch_metadata(self, session_id: str, metadata: dict[str, Any]) -> SessionManifest:
-        def update(payload):
-            if session_id not in payload:
-                raise ValueError("Unknown session target")
-            updated = _manifest_metadata_patch(payload[session_id], metadata)
-            payload[session_id] = updated
-            return updated
-
-        atomic_update = getattr(self._store, "update_all", None)
-        if callable(atomic_update):
-            return atomic_update(update)
-        # Preserve adapters for legacy get/put stores. Native JSON stores use
-        # the atomic path above to merge against the current saved manifest.
-        manifest = self._store.get(session_id)
-        if manifest is None:
-            raise ValueError("Unknown session target")
-        updated = _manifest_metadata_patch(manifest, metadata)
-        self._store.put(session_id, updated)
-        return updated
 
     def put(self, session_id: str, manifest: SessionManifest) -> None:
         self._store.put(session_id, manifest)
@@ -458,16 +425,3 @@ def _known_tool_name_mapping(value: object) -> tuple[dict[str, object], bool]:
             continue
         filtered[tool.value] = raw_settings
     return filtered, changed
-
-
-def _manifest_metadata_patch(manifest: SessionManifest, patch: dict[str, Any]) -> SessionManifest:
-    def merge(base, changes):
-        result = dict(base)
-        for key, value in changes.items():
-            if isinstance(value, dict) and isinstance(result.get(key), dict):
-                result[key] = merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-
-    return manifest.model_copy(update={"metadata": merge(manifest.metadata, patch)})

@@ -110,10 +110,6 @@ class IssueUpdater(Protocol):
     def update_issue_metadata(self, **kwargs: Any) -> Any: ...
 
 
-class SessionContextResetter(Protocol):
-    def session_reset_context(self, **kwargs: Any) -> Any: ...
-
-
 class SessionMetadataUpdater(Protocol):
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any: ...
 
@@ -175,7 +171,6 @@ class ProviderRuntimePorts:
     session_lookup: SessionLookup | None = None
     issue_updater: IssueUpdater | None = None
     session_metadata_updater: SessionMetadataUpdater | None = None
-    session_context_resetter: SessionContextResetter | None = None
     session_image_generation_policy_updater: SessionImageGenerationPolicyUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
     pull_request_creator: PullRequestCreator | None = None

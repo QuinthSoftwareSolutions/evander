@@ -1376,20 +1376,6 @@ class WebsiteSessionEnsureProfileEffectDefinition(EffectDefinition):
         return value if "${{" in value else profile_origin(value)
 
 
-class SessionResetContextEffectDefinition(EffectDefinition):
-    type: Literal["effect:session:reset-context"]
-    target: ConfigValue
-    conversation_key: ConfigValue
-    request_id: ConfigValue
-
-    @field_validator("target", "conversation_key", "request_id")
-    @classmethod
-    def require_nonempty_value(cls, value: ConfigValue) -> ConfigValue:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("context reset fields must be non-empty strings or bindings")
-        return value
-
-
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     type: Literal["effect:session:update-metadata"]
     target: ConfigValue | None = None

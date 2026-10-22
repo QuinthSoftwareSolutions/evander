@@ -572,11 +572,6 @@ def normalize_teams_target(target: str) -> str:
     return f"{team_id}/{channel_id}"
 
 
-def teams_conversation_key(target: str) -> str:
-    """Bind Teams message history to the host's session conversation namespace."""
-    return f"teams:{normalize_teams_target(target)}:agent_thread_id"
-
-
 def _normalize_teams_allowlist_targets(
     value: list[str] | None,
     *,

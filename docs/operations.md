@@ -4471,14 +4471,3 @@ other Teams workflows retain queueing. Roll back new traffic by restoring their
 `delivery_mode` to `queue`, while retaining receipt reconciliation for sends
 already in progress. Explicit Admin Web operator steering remains a separate
 control with its existing interruption behavior.
-
-
-## Reset a personal-assistant conversation
-
-Use the host-owned `effect:session:reset-context` workflow effect to record a reset
-for the next turn while preserving active and queued work. The operator workflow
-can recognize English/Swedish requests and exact `!RESET` commands. Deploy the
-compatible control-plane code before enabling the route, and apply workflow
-changes through the editor's revision and lock checks. See
-[conversation context reset](conversation-context-reset.md) for interfaces,
-offline candidate preparation, verification and rollback.

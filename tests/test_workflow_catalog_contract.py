@@ -1525,22 +1525,17 @@ def test_workflow_catalog_query_communication_messages(catalog_payload) -> None:
     communication_messages = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:communication:messages"
     )
-    assert {field["key"] for field in communication_messages["fields"]} == {
+    assert [field["key"] for field in communication_messages["fields"]] == [
         "communication_target_id",
         "limit",
         "cursor",
         "before_cursor",
         "thread_id",
         "directory_path",
-        "context_session_id",
-        "conversation_key",
-    }
+    ]
     communication_messages_fields = {
         field["key"]: field for field in communication_messages["fields"]
     }
-    for key in ("context_session_id", "conversation_key"):
-        field = communication_messages_fields[key]
-        assert field["kind"] == "string" and field["bindable"] and not field["required"]
     assert communication_messages_fields["communication_target_id"]["kind"] == "enum"
     assert (
         "read-capable Teams or Discord"
@@ -1551,19 +1546,6 @@ def test_workflow_catalog_query_communication_messages(catalog_payload) -> None:
     assert (
         "Discord targets reject thread_id"
         in communication_messages_fields["thread_id"]["description"]
-    )
-
-
-
-def test_workflow_catalog_effect_session_reset_context(catalog_payload) -> None:
-    reset = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "effect:session:reset-context"
-    )
-    fields = {field["key"]: field for field in reset["fields"]}
-    assert set(fields) == {"target", "conversation_key", "request_id"}
-    assert all(
-        field["kind"] == "string" and field["bindable"] and field["required"]
-        for field in fields.values()
     )
 
 
