@@ -39,6 +39,7 @@ from evander.codex_auth import (
     DEFAULT_SUBSCRIPTION_PROFILE_ID,
     CodexAuthMode,
     CodexRateLimitResetRequest,
+    normalize_subscription_profile_id,
 )
 from evander.managed_sections import merge_managed_section
 from evander.session_artifacts import (
@@ -583,6 +584,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         return profile
 
     def delete_codex_auth_profile(self, profile_id: str) -> dict[str, Any]:
+        profile_id = str(normalize_subscription_profile_id(profile_id, allow_none=False))
         return self.codex_auth_profiles.delete_profile(
             profile_id,
             has_active_jobs=lambda: self._active_subscription_jobs_for_profile(profile_id) > 0,

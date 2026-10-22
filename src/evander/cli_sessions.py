@@ -21,6 +21,7 @@ from evander.provider_config import (
     normalize_model_provider_mode_override,
 )
 from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 from . import cli_app, cli_common, cli_runtime, cli_session_support
 
@@ -271,8 +272,13 @@ def renew_session(
     duration = cli_session_support._parse_session_extension(extension)
     base_time = datetime.now(cli_common.UTC)
     previous_expires_at = manifest.expires_at
-    manifest.expires_at = base_time + duration
-    session_repository.upsert_session(manifest)
+    manifest = manifest.model_copy(update={"expires_at": base_time + duration})
+    save_session_with_subscription_profile(
+        config=cfg,
+        repository=session_repository,
+        session=manifest,
+        provider_config=runtime.provider_config,
+    )
     typer.echo(
         f"Renewed session {session_id} "
         f"(previous_expires_at={previous_expires_at.isoformat()} "

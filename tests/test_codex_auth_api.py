@@ -231,7 +231,10 @@ def test_worker_codex_auth_profile_endpoints_and_default_aliases(tmp_path: Path)
     assert registry.closed is True
 
 
-def test_worker_profile_deletion_refuses_inflight_jobs_and_preserves_the_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile_path", ["team-a", "%20team-a%20"])
+def test_worker_profile_deletion_refuses_inflight_jobs_and_preserves_the_profile(
+    tmp_path: Path, profile_path: str,
+) -> None:
     from evander.worker.models import WorkerJobRecord
     from evander.worker.service import WorkerDaemon
 
@@ -249,7 +252,7 @@ def test_worker_profile_deletion_refuses_inflight_jobs_and_preserves_the_profile
     )
     daemon.store.put(record)
     with TestClient(daemon.create_app()) as client:
-        path = "/v1/codex-auth/profiles/team-a"
+        path = f"/v1/codex-auth/profiles/{profile_path}"
         headers = {"Authorization": "Bearer worker-secret"}
         response = client.delete(path, headers=headers)
         assert response.status_code == 409

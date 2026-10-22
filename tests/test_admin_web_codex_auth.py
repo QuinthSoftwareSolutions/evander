@@ -214,10 +214,10 @@ def test_admin_codex_auth_requires_privileged_unlock() -> None:
     assert response.json() == {"error": "Privileged operations are locked."}
 
 
-def test_delete_profile_requires_unlock_expected_worker_and_audits_success() -> None:
+def test_delete_profile_requires_unlock_expected_worker_and_audits_success(tmp_path: Path) -> None:
     worker = FakeWorkerClient()
     auth = FakeAuth(privileged=False)
-    service = _service(worker)
+    service = _service(worker, runtime_dir=tmp_path)
     app = Starlette(routes=codex_auth_module.codex_auth_routes(service, auth))
     path = "/api/admin/codex-subscriptions/team-a?directory_path=engineering"
     with TestClient(app) as client:
@@ -238,7 +238,7 @@ def test_delete_profile_requires_unlock_expected_worker_and_audits_success() -> 
     (False, False, False), (False, False, True), (True, False, False), (False, True, False),
 ])
 def test_delete_profile_guards_unexpired_bindings_across_directories(
-    expired: bool, other_worker: bool, legacy: bool,
+    tmp_path: Path, expired: bool, other_worker: bool, legacy: bool,
 ) -> None:
     profile_id = "default" if legacy else "team-a"
     session = SessionManifest(
@@ -248,7 +248,7 @@ def test_delete_profile_guards_unexpired_bindings_across_directories(
         expires_at=datetime.now(UTC) + timedelta(days=-1 if expired else 1),
     )
     worker = FakeWorkerClient()
-    service = _service(worker, sessions=[session], session_worker_urls={
+    service = _service(worker, runtime_dir=tmp_path, sessions=[session], session_worker_urls={
         "bound": "http://another-worker.test" if other_worker else "http://worker.test",
     })
     app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
@@ -278,7 +278,8 @@ def test_delete_profile_refuses_queued_work_and_worker_active_job_conflicts(tmp_
     def active(_profile_id):
         raise ContainerWorkerClientError("active jobs", status_code=409)
     worker.delete_codex_auth_profile = active
-    service = _service(worker)
+    queue.store.delete("queued")
+    service = _service(worker, runtime_dir=tmp_path)
     app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
     with TestClient(app) as client:
         response = client.request("DELETE", "/api/admin/codex-subscriptions/team-a",

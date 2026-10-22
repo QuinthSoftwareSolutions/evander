@@ -25,6 +25,7 @@ from evander.admin.services.vm_agent.common import (
     vm_helpers,
 )
 from evander.session_auth import ensure_session_mcp_auth_token, session_mcp_auth_token
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 
 class VmAgentChatAssistantMixin:
@@ -398,7 +399,12 @@ class VmAgentChatAssistantMixin:
                 }
             )
             manifest, _mcp_session_token = ensure_session_mcp_auth_token(manifest)
-            repository.upsert_session(manifest)
+            save_session_with_subscription_profile(
+                config=self.config,
+                repository=repository,
+                session=manifest,
+                provider_config=self.runtime.provider_config,
+            )
             return
 
         manifest = SessionManifest(

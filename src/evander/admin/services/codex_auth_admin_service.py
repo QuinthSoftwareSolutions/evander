@@ -23,6 +23,7 @@ from evander.codex_auth import (
 )
 from evander.models import AuditEvent
 from evander.repositories.session_manifests import SessionManifestRepository
+from evander.subscription_profile_bindings import subscription_profile_binding_lock
 
 
 class CodexAuthProviderConfigPort(Protocol):
@@ -238,6 +239,18 @@ class CodexAuthAdminService:
         worker_url = self._normalize_worker_url(config.container_worker_base_url)
         if worker_url != self._normalize_worker_url(expected_worker):
             raise CodexSubscriptionProfileConflict("Worker changed; refresh subscriptions before deleting")
+        if self._deps.runtime_dir is None:
+            raise CodexSubscriptionProfileConflict("Runtime directory is unavailable")
+        with subscription_profile_binding_lock(self._deps.runtime_dir, worker_url, profile_id):
+            return self._delete_unused_profile(
+                directory_path, profile_id, config=config, actor_user_id=actor_user_id
+            )
+
+    def _delete_unused_profile(
+        self, directory_path: str, profile_id: str, *, config: GatewayConfig,
+        actor_user_id: str | None,
+    ) -> dict[str, Any]:
+        worker_url = self._normalize_worker_url(config.container_worker_base_url)
         repository = self._deps.session_repository
         if repository is None:
             raise CodexSubscriptionProfileConflict("Session inventory is unavailable")

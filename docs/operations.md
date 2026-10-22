@@ -953,6 +953,10 @@ The Admin API is `DELETE /api/admin/codex-subscriptions/{profile_id}?directory_p
 with JSON body `{"expected_worker_url":"http://worker.example.test:11888"}`. The worker API is
 `DELETE /v1/codex-auth/profiles/{profile_id}` and requires its bearer token. Both deletions are
 idempotent. Upgrade the worker before enabling the Admin Web deletion action.
+Deletion and the final validation/save of a subscription session share a per-profile lock across
+control-plane processes. If deletion wins while worker preparation is running, creation fails
+without saving a binding to the removed profile. Profile reassignment and expired-session renewal
+use the same check; updates retaining an existing unexpired binding can still use a disabled profile.
 
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
