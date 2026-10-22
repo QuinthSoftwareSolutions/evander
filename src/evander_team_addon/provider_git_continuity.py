@@ -156,13 +156,48 @@ def _execute(
     return result
 
 
+def validate_handoff_writers(preparation: Any, state: Any) -> None:
+    """Recheck historical writers at both inspection and context commit."""
+    p = preparation
+    if p.dependency_composition_mode != "automatic":
+        return
+    contexts = [
+        c
+        for c in state.git_work_contexts.values()
+        if c.task_id == p.task_id and c.worktree_path and c.agent_id != p.batch.agent_id
+    ]
+    if not contexts:
+        return
+    owners = {c.agent_id for c in contexts}
+    receipts = [
+        a
+        for a in state.git_preparation_attempts.values()
+        if a.task_id == p.task_id
+        and a.agent_id in owners
+        and a.state == TeamGitPreparationAttemptState.COMMITTED
+    ]
+    sessions = {a.session_id for a in receipts}
+    dispatch_ids = {c.dispatch_id for c in contexts} | {a.latest_dispatch_id for a in receipts}
+    if any(
+        d.status in (TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED)
+        and (d.agent_id in owners or d.session_id in sessions)
+        and (p.task_id in d.task_ids or d.id in dispatch_ids)
+        for d in state.dispatches.values()
+    ):
+        raise DependencyGitPreparationError(
+            task_id=p.task_id,
+            cause="policy_conflict",
+            message="A previous owner has an active task dispatch; wait for it to finish before handoff.",
+        )
+
+
 def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
     """Select and persist an exact source before any target checkout is changed."""
 
     p = preparation
     state = p.batch.state
     attempt = state.git_preparation_attempts[p.preparation_attempt_id]
-    if attempt.retained_work is not None or attempt.state != TeamGitPreparationAttemptState.PENDING:
+    if attempt.state == TeamGitPreparationAttemptState.COMMITTED:
         return attempt.retained_work
     if p.dependency_composition_mode != "automatic":
         return None  # Explicit reviewed recovery already supplies its own exact source.
@@ -173,6 +208,10 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
         and c.worktree_path is not None
         and (c.agent_branch, c.worktree_path) != (p.agent_branch, p.expected_worktree_path)
     ]
+    if attempt.retained_work is not None or attempt.state != TeamGitPreparationAttemptState.PENDING:
+        # Reuse the exact owned-work pin after interruption, but verify foreign
+        # checkouts again: their emptiness has no immutable Git receipt.
+        contexts = [c for c in contexts if c.agent_id != p.batch.agent_id]
     sources = {}
     for context in sorted(contexts, key=lambda item: (item.created_at, item.updated_at, item.id)):
         matches = [
@@ -226,26 +265,12 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
                 evidence=evidence,
                 message="Prior task work has no authoritative preparation base.",
             )
-        if foreign and (
-            previous.head_commit_sha != previous.base_commit_sha
-            or any(
-                dispatch.status in (TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED)
-                and (
-                    dispatch.agent_id == context.agent_id
-                    or dispatch.session_id == previous.session_id
-                )
-                and (
-                    p.task_id in dispatch.task_ids
-                    or dispatch.id in (context.dispatch_id, previous.latest_dispatch_id)
-                )
-                for dispatch in state.dispatches.values()
-            )
-        ):
+        if foreign and previous.head_commit_sha != previous.base_commit_sha:
             raise DependencyGitPreparationError(
                 task_id=p.task_id,
                 cause="policy_conflict",
                 evidence=evidence,
-                message="A previous owner has retained work or an active task dispatch; explicit recovery is required before handoff.",
+                message="A previous owner's receipt contains retained work; explicit recovery is required before handoff.",
             )
         source_root = (
             context.dependency_composition_manifest.base_commit_sha
@@ -274,7 +299,8 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
             "compatible": compatible,
         }
     if not sources:
-        return None
+        return attempt.retained_work
+    validate_handoff_writers(p, state)
     if len(sources) > 32:
         raise DependencyGitPreparationError(
             task_id=p.task_id,
@@ -301,7 +327,7 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
             )
     owned_sources = by_session.get(p.batch.session_id)
     if not owned_sources:
-        return None
+        return attempt.retained_work
     selected = _execute(
         p,
         "probe",

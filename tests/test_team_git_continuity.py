@@ -30,7 +30,12 @@ from evander_team_addon.provider_git_errors import DependencyGitPreparationError
 from evander_team_addon.provider_prompts import _build_prompt
 from evander_team_addon.repository import TeamStateConflictError
 from evander_team_addon.services.admin_service import TeamAdminService
-from team_runtime_support import _seed_team, _local_agent_python_transport
+from team_runtime_support import (
+    _seed_team,
+    _local_agent_python_transport,
+    _team_agent_action_service,
+    _team_runtime_service,
+)
 
 
 def git(path, *args):
@@ -723,6 +728,113 @@ def test_handoff_rejects_receipted_work_even_if_checkout_was_reset(continuity):
         h.run("lead")
     assert failure.value.cause == "policy_conflict"
     assert len(h.requests) == count
+
+
+def test_interrupted_empty_handoff_rechecks_previous_owner_before_retry(continuity, monkeypatch):
+    h = continuity
+    _, old = h.run()
+    h.handoff("lead")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            TeamAdminService,
+            "create_git_work_context_with_id",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("interrupted before context commit")
+            ),
+        )
+        with pytest.raises(RuntimeError, match="interrupted before context commit"):
+            h.run("lead")
+    state = h.repo.read()
+    assert any(
+        a.agent_id == "lead" and a.state == TeamGitPreparationAttemptState.PREPARED
+        for a in state.git_preparation_attempts.values()
+    )
+    commit = h.commit(h.physical(old), "old owner advanced while preparation was interrupted\n")
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
+    assert git(h.physical(old), "rev-parse", "HEAD") == commit
+    assert not any(c.agent_id == "lead" for c in h.repo.read().git_work_contexts.values())
+
+
+def test_pinned_owned_work_retry_still_rechecks_foreign_checkout(continuity, monkeypatch):
+    h = continuity
+    _, owned = h.run()
+    h.handoff("lead")
+    _, foreign = h.run("lead")
+    h.handoff("backend")
+    owned_commit = h.commit(h.physical(owned))
+    h.edit()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "evander_team_addon.provider_git_contexts.apply_retained_task_work",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("interrupted before apply")
+            ),
+        )
+        with pytest.raises(RuntimeError, match="interrupted before apply"):
+            h.run()
+    state = h.repo.read()
+    assert any(
+        a.state == TeamGitPreparationAttemptState.PENDING
+        and a.retained_work is not None
+        and a.retained_work.commit_sha == owned_commit
+        for a in state.git_preparation_attempts.values()
+    )
+    foreign_commit = h.commit(h.physical(foreign), "foreign work after the empty proof\n")
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run()
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
+    assert git(h.physical(owned), "rev-parse", "HEAD") == owned_commit
+    assert git(h.physical(foreign), "rev-parse", "HEAD") == foreign_commit
+
+
+def test_handoff_context_commit_rechecks_old_writer_after_ownership_round_trip(
+    continuity, monkeypatch
+):
+    h = continuity
+    _, old = h.run()
+    h.handoff("lead")
+    execute = AgentExecEffectProvider.execute
+    dispatch_ids = []
+    commits = []
+
+    def assign(owner):
+        _, result = _team_agent_action_service(h.repo).apply_agent_action(
+            action={
+                "agent_id": "manager",
+                "task_updates": [{"task_id": "task", "owner_agent_id": owner}],
+            }
+        )
+        assert result["success"]
+
+    def race(self, **kwargs):
+        result = execute(self, **kwargs)
+        if self._effect().command[3] == "probe" and self._effect().session_id == "session-backend":
+            assign("backend")
+            runtime = _team_runtime_service(h.repo)
+            _, leases = runtime.lease_due_agents(
+                agent_id="backend", respect_wake_interval=False, defer_activation=True
+            )
+            assert len(leases) == 1
+            dispatch_ids.append(leases[0]["dispatch_id"])
+            runtime.activate_delivered_agent_dispatch(dispatch_id=dispatch_ids[0])
+            assign("lead")
+            commits.append(h.commit(h.physical(old), "work after the empty probe\n"))
+        return result
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", race)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    state = h.repo.read()
+    assert state.dispatches[dispatch_ids[0]].status == TeamDispatchStatus.LEASED
+    assert git(h.physical(old), "rev-parse", "HEAD") == commits[0]
+    assert not any(c.agent_id == "lead" for c in state.git_work_contexts.values())
 
 
 @pytest.mark.parametrize("pinned", [False, True])
