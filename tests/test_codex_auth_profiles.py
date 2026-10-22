@@ -10,7 +10,7 @@ import pytest
 
 from evander.codex_auth import CodexRateLimitResetRequest, CodexSubscriptionDeferredError
 from evander.worker.codex_auth_broker import CodexAuthBrokerError, CodexExternalAuthTokens
-from evander.worker.codex_auth_profiles import CodexAuthBrokerRegistry
+from evander.worker.codex_auth_profiles import CodexAuthBrokerRegistry, CodexAuthProfileInUseError
 
 
 class FakeProfileBroker:
@@ -90,6 +90,7 @@ def test_profile_registry_preserves_legacy_default_home_and_never_stores_tokens(
 ) -> None:
     registry, brokers = _registry(tmp_path)
     try:
+        registry.create_profile({"profile_id": "default", "display_name": "Legacy account"})
         created = registry.create_profile(
             {"profile_id": "example-plus", "display_name": "Example Plus"}
         )
@@ -111,6 +112,98 @@ def test_profile_registry_preserves_legacy_default_home_and_never_stores_tokens(
         assert "refresh_token" not in serialized
         assert "access-secret" not in serialized
         assert set(registry_payload) == {"default", "example-plus"}
+    finally:
+        registry.close()
+
+
+def test_fresh_worker_does_not_create_an_empty_default_profile(tmp_path: Path) -> None:
+    for _ in range(2):
+        registry, _brokers = _registry(tmp_path)
+        try:
+            assert registry.list_profiles() == {"profiles": []}
+        finally:
+            registry.close()
+
+
+def test_legacy_login_is_migrated_and_can_be_deleted_without_removing_named_accounts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "worker" / "codex-auth"
+    home.mkdir(parents=True)
+    (home / "auth.json").write_text('{"tokens": {"account_id": "legacy-account"}}')
+    registry, _ = _registry(tmp_path)
+    try:
+        assert registry.profiles.require("default").display_name == "Default"
+        registry.create_profile({"profile_id": "keep", "display_name": "Keep"})
+        named_home = registry.auth_home("keep")
+        named_home.mkdir(parents=True)
+        (named_home / "auth.json").write_text("named credentials")
+        registry.delete_profile("default", has_active_jobs=lambda: False)
+        assert not (home / "auth.json").exists()
+        assert (named_home / "auth.json").read_text() == "named credentials"
+        assert [r.profile_id for r in registry.profiles.list()] == ["keep"]
+    finally:
+        registry.close()
+    reopened, _ = _registry(tmp_path)
+    try:
+        assert [r.profile_id for r in reopened.profiles.list()] == ["keep"]
+    finally:
+        reopened.close()
+
+
+def test_profile_deletion_closes_broker_removes_credentials_and_survives_restart(tmp_path: Path) -> None:
+    registry, _ = _registry(tmp_path)
+    registry.create_profile({"profile_id": "remove", "display_name": "Remove"})
+    broker = registry.broker("remove")
+    broker.auth_home.mkdir(parents=True, exist_ok=True)
+    (broker.auth_home / "auth.json").write_text("saved credentials")
+    try:
+        assert registry.delete_profile("remove", has_active_jobs=lambda: False) == {
+            "profile_id": "remove", "deleted": True,
+        }
+        assert broker.closed
+        assert not broker.auth_home.exists()
+        assert registry.list_profiles() == {"profiles": []}
+        assert registry.delete_profile("remove", has_active_jobs=lambda: False)["deleted"]
+    finally:
+        registry.close()
+    reopened, _ = _registry(tmp_path)
+    try:
+        assert reopened.list_profiles() == {"profiles": []}
+    finally:
+        reopened.close()
+
+
+def test_deletion_rejects_active_and_admitting_jobs_without_blocking_other_profiles(tmp_path: Path) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        for profile in ["busy", "idle"]:
+            registry.create_profile({"profile_id": profile, "display_name": profile})
+        with pytest.raises(CodexAuthProfileInUseError):
+            registry.delete_profile("busy", has_active_jobs=lambda: True)
+        with registry.use_profile("busy"):
+            with pytest.raises(CodexAuthProfileInUseError):
+                registry.delete_profile("busy", has_active_jobs=lambda: False)
+            assert registry.delete_profile("idle", has_active_jobs=lambda: False)["deleted"]
+        assert registry.delete_profile("busy", has_active_jobs=lambda: False)["deleted"]
+    finally:
+        registry.close()
+
+
+def test_failed_credential_cleanup_retains_profile_for_retry(tmp_path: Path, monkeypatch) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        registry.create_profile({"profile_id": "retry", "display_name": "Retry"})
+        home = registry.auth_home("retry")
+        home.mkdir(parents=True)
+        with monkeypatch.context() as patcher:
+            def fail_cleanup(_path):
+                raise OSError("filesystem unavailable")
+            patcher.setattr("evander.worker.codex_auth_profiles.shutil.rmtree", fail_cleanup)
+            with pytest.raises(OSError, match="filesystem unavailable"):
+                registry.delete_profile("retry", has_active_jobs=lambda: False)
+        assert registry.profiles.require("retry").profile_id == "retry"
+        assert registry.delete_profile("retry", has_active_jobs=lambda: False)["deleted"]
     finally:
         registry.close()
 

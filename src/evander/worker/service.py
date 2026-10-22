@@ -582,6 +582,12 @@ class WorkerDaemon(GitWorkspaceOperations):
         profile["active_job_count"] = self._active_subscription_jobs_for_profile(profile_id)
         return profile
 
+    def delete_codex_auth_profile(self, profile_id: str) -> dict[str, Any]:
+        return self.codex_auth_profiles.delete_profile(
+            profile_id,
+            has_active_jobs=lambda: self._active_subscription_jobs_for_profile(profile_id) > 0,
+        )
+
     def start_codex_profile_device_login(self, profile_id: str) -> dict[str, Any]:
         return self.codex_auth_profiles.start_device_login(profile_id)
 
@@ -619,6 +625,18 @@ class WorkerDaemon(GitWorkspaceOperations):
         return counts
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
+        profile_id = None
+        if request.codex_runtime is not None:
+            profile_id = request.codex_runtime.subscription_profile_id
+        elif _worker_request_uses_codex_subscription(request):
+            assert request.codex_turn is not None
+            profile_id = request.codex_turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+        if profile_id is not None:
+            with self.codex_auth_profiles.use_profile(profile_id):
+                return self._admit_job(request)
+        return self._admit_job(request)
+
+    def _admit_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         if request.job_id and request.metadata.get("idempotent_start") is True:
             fingerprint_payload = request.model_dump(mode="json")
             # Preserve replay receipts created before optional Cyber selection existed.

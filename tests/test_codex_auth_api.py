@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import nullcontext
 
 import pytest
 from starlette.testclient import TestClient
@@ -62,6 +63,16 @@ class FakeProfileRegistry:
     def list_profiles(self):
         return {"profiles": list(self.profiles.values())}
 
+    def use_profile(self, profile_id):
+        return nullcontext()
+
+    def delete_profile(self, profile_id, *, has_active_jobs):
+        from evander.worker.codex_auth_profiles import CodexAuthProfileInUseError
+        if has_active_jobs():
+            raise CodexAuthProfileInUseError("Subscription profile has active jobs")
+        self.profiles.pop(profile_id, None)
+        return {"profile_id": profile_id, "deleted": True}
+
     def create_profile(self, payload):
         profile_id = payload["profile_id"]
         record = {
@@ -74,6 +85,8 @@ class FakeProfileRegistry:
         return dict(record)
 
     def profile_status(self, profile_id):
+        if profile_id not in self.profiles:
+            raise CodexAuthBrokerError("Codex subscription profile not found")
         return dict(self.profiles[profile_id])
 
     def patch_profile(self, profile_id, payload):
@@ -205,9 +218,45 @@ def test_worker_codex_auth_profile_endpoints_and_default_aliases(tmp_path: Path)
             ]
             is False
         )
-        assert client.delete("/v1/codex-auth/profiles/team-a", headers=headers).status_code == 405
+        assert client.delete("/v1/codex-auth/profiles/team-a").status_code == 401
+        deleted = client.delete("/v1/codex-auth/profiles/team-a", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json() == {"profile_id": "team-a", "deleted": True}
+        assert [p["profile_id"] for p in client.get(
+            "/v1/codex-auth/profiles", headers=headers
+        ).json()["profiles"]] == ["default"]
+        assert client.delete("/v1/codex-auth/profiles/default", headers=headers).status_code == 200
+        assert client.get("/v1/codex-auth", headers=headers).status_code == 404
 
     assert registry.closed is True
+
+
+def test_worker_profile_deletion_refuses_inflight_jobs_and_preserves_the_profile(tmp_path: Path) -> None:
+    from evander.worker.models import WorkerJobRecord
+    from evander.worker.service import WorkerDaemon
+
+    registry = FakeProfileRegistry()
+    registry.create_profile({"profile_id": "team-a", "display_name": "Team A"})
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime", worker_root=tmp_path / "worker",
+        container_runtime=object(), codex_auth_registry=registry, token="worker-secret",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1", session_id="session-1", image="runner", command=["true"],
+        container_name="job-1", status="starting", agent_home_path="/home/agent",
+        repo_root_path="/repo", artifacts_path="/artifacts", logs_path="/logs",
+        metadata={"codex_auth_mode": "chatgpt_subscription", "subscription_profile_id": "team-a"},
+    )
+    daemon.store.put(record)
+    with TestClient(daemon.create_app()) as client:
+        path = "/v1/codex-auth/profiles/team-a"
+        headers = {"Authorization": "Bearer worker-secret"}
+        response = client.delete(path, headers=headers)
+        assert response.status_code == 409
+        assert "team-a" in registry.profiles
+        daemon.store.put(record.model_copy(update={"status": "exited"}))
+        assert client.delete(path, headers=headers).status_code == 200
+        assert "team-a" not in registry.profiles
 
 
 def test_worker_profile_device_login_returns_actionable_gateway_error(tmp_path: Path) -> None:

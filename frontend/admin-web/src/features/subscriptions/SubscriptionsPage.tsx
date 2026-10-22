@@ -213,6 +213,33 @@ export function SubscriptionsPage() {
     }
   }
 
+  async function deleteProfile(profile: CodexSubscriptionProfile) {
+    if (!window.confirm(`Delete subscription profile “${profile.display_name}”? Its saved login will be removed from the worker.`)) return;
+    const generation = refreshGeneration.current;
+    setBusy(`delete:${profile.profile_id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await fetchJson(`/api/admin/codex-subscriptions/${encodeURIComponent(profile.profile_id)}${query()}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_worker_url: workerUrl }),
+      });
+      if (generation !== refreshGeneration.current) return;
+      setPendingLogins((current) => {
+        const next = { ...current };
+        delete next[profile.profile_id];
+        return next;
+      });
+      setNotice(`Deleted subscription profile “${profile.display_name}”.`);
+      await refresh();
+    } catch (reason: unknown) {
+      if (generation === refreshGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function startLogin(profile: CodexSubscriptionProfile) {
     setBusy(`login:${profile.profile_id}`);
     try {
@@ -424,6 +451,15 @@ export function SubscriptionsPage() {
                     >
                       Reconnect account
                     </button> : null}
+                    <button
+                      className="admin-action-button compact danger"
+                      type="button"
+                      disabled={!privilegedUnlocked || !workerUrl || loading || busy !== null || profile.active_job_count > 0 || profile.queued_prompt_count > 0}
+                      title={profile.active_job_count > 0 || profile.queued_prompt_count > 0 ? "Finish active jobs and drain queued prompts before deleting" : "Remove this profile and its saved login"}
+                      onClick={() => void deleteProfile(profile)}
+                    >
+                      {busy === `delete:${profile.profile_id}` ? "Deleting…" : "Delete"}
+                    </button>
                     <button
                       className="admin-action-button compact danger"
                       type="button"

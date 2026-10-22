@@ -796,6 +796,7 @@ def _build_admin_runtime_components(
         CodexAuthAdminDependencies(
             provider_config=runtime.provider_config,
             audit=runtime.audit,
+            session_repository=runtime.session_repository,
             runtime_dir=config.runtime_dir,
             wake_reconciliation=lambda: notify_wake_socket_for_lock(
                 config.runtime_dir / "effect-orchestrator.lock"

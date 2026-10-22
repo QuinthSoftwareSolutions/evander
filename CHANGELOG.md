@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Delete unused subscription profiles (0.118.0)
+
+- Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.
+- Stop creating an empty Default profile on worker startup. Preserve existing legacy logins, allow their profile to be deleted, and retain other profiles and recorded usage history.
+
 ## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
 
 - Stop safely if older coverage evidence is missing or corrupt: prevent further reviews, continue worker cleanup, and hold the repository reservation until cleanup is confirmed. Report the archive as unavailable without publishing unverifiable evidence, and retain the failure details in private host logs.
