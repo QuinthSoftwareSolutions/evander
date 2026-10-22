@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from evander.models import utc_now
@@ -84,6 +85,397 @@ from ..domain.task_replacement import (
     queue_rebound_integration_preparation_recovery,
 )
 from ..domain.wake import _append_agent_wake_requested_event
+
+
+@dataclass
+class _TaskCancellationApplication:
+    """Validate, cancel and reconcile a task as one command transaction."""
+
+    state_model: TeamState
+    resolved: _ResolvedTeamCommandContext
+    task_id: str
+    reason_code: str
+    reason: str
+    successor_task_id: str | None
+    rebind_dependents: bool
+    expected_dependent_task_ids: tuple[str, ...] | None
+
+    def apply(self) -> TeamCommandApplyResult:
+        self.actor = _require_command_agent(self.resolved, "team_cancel_task")
+        self.task = self.state_model.tasks.get(self.task_id)
+        if self.task is None:
+            raise TeamCommandValidationError(
+                code="task_not_found",
+                message=f"task {self.task_id} does not exist",
+            )
+        self._validate_cancellation()
+        self._plan_replacement()
+        self._cancel_and_rebind()
+        self._reconcile_cancelled_work()
+        self._record_replacement_recovery()
+        return self._command_result()
+
+    def _validate_cancellation(self) -> None:
+        self._validate_mutation_authority()
+        self._validate_resolution_boundary()
+        self._validate_successor()
+
+    def _validate_mutation_authority(self) -> None:
+        if (
+            self.task.mutation_policy is not None
+            and not self.task.mutation_policy.allow_agent_cancellation
+        ):
+            raise TeamCommandValidationError(
+                code="task_mutation_policy_cancellation_locked",
+                message=(
+                    f"task {self.task.id} is workflow-managed and cannot be cancelled "
+                    "through an agent dispatch"
+                ),
+                correction_context={
+                    "task_id": self.task.id,
+                    "policy": self.task.mutation_policy.model_dump(mode="json"),
+                    "recommended_action": (
+                        "reassign and complete the same task, or request an audited "
+                        "operator disposition"
+                    ),
+                },
+            )
+        parent = self.state_model.tasks.get(self.task.parent_task_id or "")
+        project = self.state_model.projects.get(self.task.project_id)
+        team_manager_allowed = (
+            project is not None
+            and self.actor.team_id == project.team_id
+            and _is_team_manager(self.state_model, self.actor)
+        )
+        authorized = (
+            self.task.owner_agent_id == self.actor.id
+            or (self.task.owner_agent_id is None and self.task.created_by_agent_id == self.actor.id)
+            or (parent is not None and parent.owner_agent_id == self.actor.id)
+            or _is_project_lead_for(self.state_model, self.actor.id, self.task.project_id)
+            or team_manager_allowed
+        )
+        if not authorized:
+            raise TeamCommandValidationError(
+                code="task_cancellation_not_permitted",
+                message=f"agent {self.actor.id} cannot cancel task {self.task.id}",
+                correction_context={
+                    "task_id": self.task.id,
+                    "owner_agent_id": self.task.owner_agent_id,
+                    "parent_owner_agent_id": (
+                        parent.owner_agent_id if parent is not None else None
+                    ),
+                },
+            )
+        if self.rebind_dependents and not (
+            _is_project_lead_for(self.state_model, self.actor.id, self.task.project_id)
+            or team_manager_allowed
+        ):
+            raise TeamCommandValidationError(
+                code="task_replacement_not_permitted",
+                message=(
+                    "replacing task dependencies requires the task's project lead "
+                    "or a Team manager"
+                ),
+                correction_context={
+                    "task_id": self.task.id,
+                    "project_id": self.task.project_id,
+                    "actor_agent_id": self.actor.id,
+                    "recommended_action": (
+                        "cancel without rebind_dependents, or ask the project lead "
+                        "or Team manager to replace the task in the graph"
+                    ),
+                },
+            )
+
+    def _validate_resolution_boundary(self) -> None:
+        if self.task.state not in {
+            *_NON_TERMINAL_TASK_STATES,
+            TeamTaskState.REJECTED,
+        }:
+            raise TeamCommandValidationError(
+                code="task_cancellation_terminal",
+                message=f"task {self.task.id} is already {self.task.state.value}",
+            )
+        assessment = assess_task(self.state_model, self.task.id)
+        if assessment.unresolved_descendant_ids:
+            raise TeamCommandValidationError(
+                code="task_cancellation_unresolved_descendants",
+                message=(
+                    f"task {self.task.id} cannot be cancelled while descendants remain unresolved"
+                ),
+                correction_context={
+                    "task_id": self.task.id,
+                    "unresolved_descendant_ids": list(assessment.unresolved_descendant_ids),
+                },
+            )
+        (
+            blocking_acceptance_ids,
+            blocking_review_request_ids,
+        ) = task_cancellation_blocking_handoff_ids(
+            self.state_model,
+            acceptance_ids=assessment.active_acceptance_ids,
+            review_request_ids=assessment.active_review_request_ids,
+        )
+        if blocking_acceptance_ids or blocking_review_request_ids:
+            raise TeamCommandValidationError(
+                code="task_cancellation_active_handoff",
+                message=(
+                    f"task {self.task.id} cannot be cancelled while acceptance or review "
+                    "handoffs remain active"
+                ),
+                correction_context={
+                    "task_id": self.task.id,
+                    "active_acceptance_ids": blocking_acceptance_ids,
+                    "active_review_request_ids": blocking_review_request_ids,
+                },
+            )
+
+    def _validate_successor(self) -> None:
+        if self.successor_task_id is not None:
+            successor = self.state_model.tasks.get(self.successor_task_id)
+            if successor is None:
+                raise TeamCommandValidationError(
+                    code="task_cancellation_successor_not_found",
+                    message=f"successor task {self.successor_task_id} does not exist",
+                )
+            if successor.id == self.task.id or successor.project_id != self.task.project_id:
+                raise TeamCommandValidationError(
+                    code="task_cancellation_successor_invalid",
+                    message=(
+                        "a cancellation successor must be a different task in "
+                        f"project {self.task.project_id}"
+                    ),
+                    correction_context={
+                        "task_id": self.task.id,
+                        "successor_task_id": successor.id,
+                        "successor_project_id": successor.project_id,
+                    },
+                )
+        if self.rebind_dependents and self.successor_task_id is None:
+            raise TeamCommandValidationError(
+                code="task_replacement_successor_required",
+                message="rebind_dependents requires a same-project successor task",
+                correction_context={"task_id": self.task.id},
+            )
+
+    def _plan_replacement(self) -> None:
+        self.replacement_plan = None
+        self.preparation_generations_before: dict[str, str] = {}
+        self.readiness_before: dict[str, str] = {}
+        if self.rebind_dependents and self.successor_task_id is not None:
+            try:
+                self.replacement_plan = plan_task_dependency_rebinding(
+                    self.state_model,
+                    predecessor_task_id=self.task.id,
+                    successor_task_id=self.successor_task_id,
+                )
+                assert self.expected_dependent_task_ids is not None
+                if (
+                    self.replacement_plan.dependent_task_ids
+                    != self.expected_dependent_task_ids
+                ):
+                    raise TaskDependencyRebindingError(
+                        "task replacement affected set changed; expected "
+                        f"{list(self.expected_dependent_task_ids)!r}, current "
+                        f"{list(self.replacement_plan.dependent_task_ids)!r}",
+                        code="task_replacement_affected_set_mismatch",
+                        affected_task_ids=self.replacement_plan.dependent_task_ids,
+                    )
+            except TaskDependencyRebindingError as exc:
+                raise TeamCommandValidationError(
+                    code=exc.code,
+                    message=str(exc),
+                    correction_context={
+                        "task_id": self.task.id,
+                        "successor_task_id": self.successor_task_id,
+                        "dependent_task_id": exc.dependent_task_id,
+                        "current_dependent_task_ids": list(
+                            exc.affected_task_ids
+                        ),
+                    },
+                ) from None
+            self.preparation_generations_before = {
+                dependent_id: task_preparation_generation(self.state_model, dependent_id)
+                for dependent_id in self.replacement_plan.dependent_task_ids
+            }
+            self.readiness_before = {
+                dependent_id: assess_task(self.state_model, dependent_id).readiness.value
+                for dependent_id in self.replacement_plan.dependent_task_ids
+            }
+
+    def _cancel_and_rebind(self) -> None:
+        self.now = utc_now()
+        self.before_event_ids = set(self.state_model.blocker_events)
+        self.rebound_dependent_task_ids = (
+            apply_task_dependency_rebinding(
+                self.state_model,
+                plan=self.replacement_plan,
+                now=self.now,
+            )
+            if self.replacement_plan is not None
+            else []
+        )
+        self.invalidated_git_context_ids_by_task = (
+            invalidate_rebound_integration_git_contexts(
+                self.state_model,
+                plan=self.replacement_plan,
+                now=self.now,
+            )
+            if self.replacement_plan is not None
+            else {}
+        )
+        self.affected_integration_boundary_task_ids = (
+            list(self.replacement_plan.affected_integration_boundary_task_ids)
+            if self.replacement_plan is not None
+            else []
+        )
+        self.invalidated_git_work_context_ids = sorted(
+            context_id
+            for context_ids in self.invalidated_git_context_ids_by_task.values()
+            for context_id in context_ids
+        )
+        self.task.cancellation = TaskCancellation(
+            reason_code=self.reason_code,
+            reason=self.reason,
+            actor_kind="agent",
+            actor_id=self.actor.id,
+            successor_task_id=self.successor_task_id,
+            rebind_dependents=self.rebind_dependents,
+            rebound_dependent_task_ids=self.rebound_dependent_task_ids,
+            rebound_integration_boundary_task_ids=(
+                self.affected_integration_boundary_task_ids
+            ),
+            invalidated_git_work_context_ids=self.invalidated_git_work_context_ids,
+            cancelled_at=self.now,
+        )
+        _set_task_state(self.task, TeamTaskState.CANCELLED, now=self.now)
+        self.task.updated_at = self.now
+        git_context_finalization = finalize_active_git_work_contexts_for_task(
+            self.state_model,
+            task_id=self.task.id,
+            now=self.now,
+        )
+        self.result: dict[str, Any] = {
+            "task_id": self.task.id,
+            "cancelled_task_ids": [self.task.id],
+            "successor_task_id": self.successor_task_id,
+            "rebind_dependents": self.rebind_dependents,
+            "expected_dependent_task_ids": (
+                list(self.expected_dependent_task_ids or ())
+            ),
+            "rebound_dependent_task_ids": self.rebound_dependent_task_ids,
+            "affected_integration_boundary_task_ids": (
+                self.affected_integration_boundary_task_ids
+            ),
+            "invalidated_git_work_context_ids": self.invalidated_git_work_context_ids,
+            "invalidated_git_context_ids_by_task": self.invalidated_git_context_ids_by_task,
+            "resolved_blocker_ids": [],
+            "git_context_finalization": git_context_finalization,
+            "progress_made": True,
+        }
+
+    def _reconcile_cancelled_work(self) -> None:
+        released_recovery = release_dependency_composition_recovery_after_task_cancellation(
+            self.state_model,
+            task_id=self.task.id,
+            actor_agent_id=self.actor.id,
+            dispatch_id=self.resolved.dispatch_id,
+            now=self.now,
+        )
+        if released_recovery is not None:
+            self.result["released_dependency_composition_recovery_id"] = released_recovery.id
+        reconcile_task_blockers_after_cancellation(
+            self.state_model,
+            task_id=self.task.id,
+            actor_agent_id=self.actor.id,
+            dispatch_id=self.resolved.dispatch_id,
+            result=self.result,
+            now=self.now,
+        )
+        queue_parent_resolution_transitions(
+            self.state_model,
+            child_task_id=self.task.id,
+            sender_agent_id=self.actor.id,
+            result=self.result,
+            now=self.now,
+        )
+        self.blocker_event_ids = [
+            event_id
+            for event_id in self.state_model.blocker_events
+            if event_id not in self.before_event_ids
+        ]
+        self.result["blocker_event_ids"] = self.blocker_event_ids
+
+    def _record_replacement_recovery(self) -> None:
+        if self.replacement_plan is not None:
+            self.result["dependency_rebindings"] = [
+                {
+                    "dependent_task_id": dependent_id,
+                    "predecessor_task_id": self.task.id,
+                    "successor_task_id": self.successor_task_id,
+                    "dependency_task_ids": list(
+                        self.state_model.tasks[dependent_id].dependency_task_ids
+                    ),
+                }
+                for dependent_id in sorted(
+                    self.replacement_plan.dependency_task_ids_by_dependent
+                )
+            ]
+            self.result["required_contribution_rebindings"] = [
+                {
+                    "integration_task_id": integration_task_id,
+                    "predecessor_task_id": self.task.id,
+                    "successor_task_id": self.successor_task_id,
+                    "required_contribution_task_ids": list(contribution_ids),
+                }
+                for integration_task_id, contribution_ids in (
+                    self.replacement_plan.required_contribution_task_ids_by_integration_task.items()
+                )
+            ]
+            self.result["preparation_generation_changes"] = {
+                dependent_id: {
+                    "before": self.preparation_generations_before[dependent_id],
+                    "after": task_preparation_generation(self.state_model, dependent_id),
+                }
+                for dependent_id in self.rebound_dependent_task_ids
+            }
+            self.result["newly_actionable_dependent_task_ids"] = [
+                dependent_id
+                for dependent_id in self.rebound_dependent_task_ids
+                if self.readiness_before[dependent_id] != "actionable"
+                and assess_task(self.state_model, dependent_id).readiness.value == "actionable"
+            ]
+            queue_rebound_integration_preparation_recovery(
+                self.state_model,
+                plan=self.replacement_plan,
+                invalidated_git_context_ids_by_task=(
+                    self.invalidated_git_context_ids_by_task
+                ),
+                preparation_generations_before=self.preparation_generations_before,
+                sender_agent_id=self.actor.id,
+                result=self.result,
+                now=self.now,
+            )
+
+    def _command_result(self) -> TeamCommandApplyResult:
+        _maybe_mark_idle_context_rotation_due(
+            self.state_model,
+            agent_id=self.task.owner_agent_id,
+            now=self.now,
+            result=self.result,
+        )
+        _recalculate_project_status(self.state_model, self.task.project_id)
+        return TeamCommandApplyResult(
+            response_payload=self.result,
+            created_domain_ids=[
+                self.task.id,
+                *self.rebound_dependent_task_ids,
+                *self.invalidated_git_work_context_ids,
+                *list(self.result.get("created_preparation_recovery_inbox_item_ids") or []),
+                *self.blocker_event_ids,
+            ],
+            created_event_ids=self.blocker_event_ids,
+        )
 
 
 class TeamTaskUpdateCommandService(TeamCommandExecutor):
@@ -421,355 +813,16 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             state_model: TeamState,
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
-            actor = _require_command_agent(resolved, "team_cancel_task")
-            task = state_model.tasks.get(normalized_task_id)
-            if task is None:
-                raise TeamCommandValidationError(
-                    code="task_not_found",
-                    message=f"task {normalized_task_id} does not exist",
-                )
-            if (
-                task.mutation_policy is not None
-                and not task.mutation_policy.allow_agent_cancellation
-            ):
-                raise TeamCommandValidationError(
-                    code="task_mutation_policy_cancellation_locked",
-                    message=(
-                        f"task {task.id} is workflow-managed and cannot be cancelled "
-                        "through an agent dispatch"
-                    ),
-                    correction_context={
-                        "task_id": task.id,
-                        "policy": task.mutation_policy.model_dump(mode="json"),
-                        "recommended_action": (
-                            "reassign and complete the same task, or request an audited "
-                            "operator disposition"
-                        ),
-                    },
-                )
-            parent = state_model.tasks.get(task.parent_task_id or "")
-            project = state_model.projects.get(task.project_id)
-            team_manager_allowed = (
-                project is not None
-                and actor.team_id == project.team_id
-                and _is_team_manager(state_model, actor)
-            )
-            authorized = (
-                task.owner_agent_id == actor.id
-                or (task.owner_agent_id is None and task.created_by_agent_id == actor.id)
-                or (parent is not None and parent.owner_agent_id == actor.id)
-                or _is_project_lead_for(state_model, actor.id, task.project_id)
-                or team_manager_allowed
-            )
-            if not authorized:
-                raise TeamCommandValidationError(
-                    code="task_cancellation_not_permitted",
-                    message=f"agent {actor.id} cannot cancel task {task.id}",
-                    correction_context={
-                        "task_id": task.id,
-                        "owner_agent_id": task.owner_agent_id,
-                        "parent_owner_agent_id": (
-                            parent.owner_agent_id if parent is not None else None
-                        ),
-                    },
-                )
-            if normalized_rebind_dependents and not (
-                _is_project_lead_for(state_model, actor.id, task.project_id)
-                or team_manager_allowed
-            ):
-                raise TeamCommandValidationError(
-                    code="task_replacement_not_permitted",
-                    message=(
-                        "replacing task dependencies requires the task's project lead "
-                        "or a Team manager"
-                    ),
-                    correction_context={
-                        "task_id": task.id,
-                        "project_id": task.project_id,
-                        "actor_agent_id": actor.id,
-                        "recommended_action": (
-                            "cancel without rebind_dependents, or ask the project lead "
-                            "or Team manager to replace the task in the graph"
-                        ),
-                    },
-                )
-            if task.state not in {
-                *_NON_TERMINAL_TASK_STATES,
-                TeamTaskState.REJECTED,
-            }:
-                raise TeamCommandValidationError(
-                    code="task_cancellation_terminal",
-                    message=f"task {task.id} is already {task.state.value}",
-                )
-            assessment = assess_task(state_model, task.id)
-            if assessment.unresolved_descendant_ids:
-                raise TeamCommandValidationError(
-                    code="task_cancellation_unresolved_descendants",
-                    message=(
-                        f"task {task.id} cannot be cancelled while descendants remain unresolved"
-                    ),
-                    correction_context={
-                        "task_id": task.id,
-                        "unresolved_descendant_ids": list(assessment.unresolved_descendant_ids),
-                    },
-                )
-            (
-                blocking_acceptance_ids,
-                blocking_review_request_ids,
-            ) = task_cancellation_blocking_handoff_ids(
-                state_model,
-                acceptance_ids=assessment.active_acceptance_ids,
-                review_request_ids=assessment.active_review_request_ids,
-            )
-            if blocking_acceptance_ids or blocking_review_request_ids:
-                raise TeamCommandValidationError(
-                    code="task_cancellation_active_handoff",
-                    message=(
-                        f"task {task.id} cannot be cancelled while acceptance or review "
-                        "handoffs remain active"
-                    ),
-                    correction_context={
-                        "task_id": task.id,
-                        "active_acceptance_ids": blocking_acceptance_ids,
-                        "active_review_request_ids": blocking_review_request_ids,
-                    },
-                )
-            if normalized_successor_id is not None:
-                successor = state_model.tasks.get(normalized_successor_id)
-                if successor is None:
-                    raise TeamCommandValidationError(
-                        code="task_cancellation_successor_not_found",
-                        message=f"successor task {normalized_successor_id} does not exist",
-                    )
-                if successor.id == task.id or successor.project_id != task.project_id:
-                    raise TeamCommandValidationError(
-                        code="task_cancellation_successor_invalid",
-                        message=(
-                            "a cancellation successor must be a different task in "
-                            f"project {task.project_id}"
-                        ),
-                        correction_context={
-                            "task_id": task.id,
-                            "successor_task_id": successor.id,
-                            "successor_project_id": successor.project_id,
-                        },
-                    )
-            if normalized_rebind_dependents and normalized_successor_id is None:
-                raise TeamCommandValidationError(
-                    code="task_replacement_successor_required",
-                    message="rebind_dependents requires a same-project successor task",
-                    correction_context={"task_id": task.id},
-                )
-
-            replacement_plan = None
-            preparation_generations_before: dict[str, str] = {}
-            readiness_before: dict[str, str] = {}
-            if normalized_rebind_dependents and normalized_successor_id is not None:
-                try:
-                    replacement_plan = plan_task_dependency_rebinding(
-                        state_model,
-                        predecessor_task_id=task.id,
-                        successor_task_id=normalized_successor_id,
-                    )
-                    assert normalized_expected_dependent_ids is not None
-                    if (
-                        replacement_plan.dependent_task_ids
-                        != normalized_expected_dependent_ids
-                    ):
-                        raise TaskDependencyRebindingError(
-                            "task replacement affected set changed; expected "
-                            f"{list(normalized_expected_dependent_ids)!r}, current "
-                            f"{list(replacement_plan.dependent_task_ids)!r}",
-                            code="task_replacement_affected_set_mismatch",
-                            affected_task_ids=replacement_plan.dependent_task_ids,
-                        )
-                except TaskDependencyRebindingError as exc:
-                    raise TeamCommandValidationError(
-                        code=exc.code,
-                        message=str(exc),
-                        correction_context={
-                            "task_id": task.id,
-                            "successor_task_id": normalized_successor_id,
-                            "dependent_task_id": exc.dependent_task_id,
-                            "current_dependent_task_ids": list(
-                                exc.affected_task_ids
-                            ),
-                        },
-                    ) from None
-                preparation_generations_before = {
-                    dependent_id: task_preparation_generation(state_model, dependent_id)
-                    for dependent_id in replacement_plan.dependent_task_ids
-                }
-                readiness_before = {
-                    dependent_id: assess_task(state_model, dependent_id).readiness.value
-                    for dependent_id in replacement_plan.dependent_task_ids
-                }
-            now = utc_now()
-            before_event_ids = set(state_model.blocker_events)
-            rebound_dependent_task_ids = (
-                apply_task_dependency_rebinding(
-                    state_model,
-                    plan=replacement_plan,
-                    now=now,
-                )
-                if replacement_plan is not None
-                else []
-            )
-            invalidated_git_context_ids_by_task = (
-                invalidate_rebound_integration_git_contexts(
-                    state_model,
-                    plan=replacement_plan,
-                    now=now,
-                )
-                if replacement_plan is not None
-                else {}
-            )
-            affected_integration_boundary_task_ids = (
-                list(replacement_plan.affected_integration_boundary_task_ids)
-                if replacement_plan is not None
-                else []
-            )
-            invalidated_git_work_context_ids = sorted(
-                context_id
-                for context_ids in invalidated_git_context_ids_by_task.values()
-                for context_id in context_ids
-            )
-            task.cancellation = TaskCancellation(
+            return _TaskCancellationApplication(
+                state_model=state_model,
+                resolved=resolved,
+                task_id=normalized_task_id,
                 reason_code=normalized_reason_code,
                 reason=normalized_reason,
-                actor_kind="agent",
-                actor_id=actor.id,
                 successor_task_id=normalized_successor_id,
                 rebind_dependents=normalized_rebind_dependents,
-                rebound_dependent_task_ids=rebound_dependent_task_ids,
-                rebound_integration_boundary_task_ids=(
-                    affected_integration_boundary_task_ids
-                ),
-                invalidated_git_work_context_ids=invalidated_git_work_context_ids,
-                cancelled_at=now,
-            )
-            _set_task_state(task, TeamTaskState.CANCELLED, now=now)
-            task.updated_at = now
-            git_context_finalization = finalize_active_git_work_contexts_for_task(
-                state_model,
-                task_id=task.id,
-                now=now,
-            )
-            result: dict[str, Any] = {
-                "task_id": task.id,
-                "cancelled_task_ids": [task.id],
-                "successor_task_id": normalized_successor_id,
-                "rebind_dependents": normalized_rebind_dependents,
-                "expected_dependent_task_ids": (
-                    list(normalized_expected_dependent_ids or ())
-                ),
-                "rebound_dependent_task_ids": rebound_dependent_task_ids,
-                "affected_integration_boundary_task_ids": (
-                    affected_integration_boundary_task_ids
-                ),
-                "invalidated_git_work_context_ids": invalidated_git_work_context_ids,
-                "invalidated_git_context_ids_by_task": invalidated_git_context_ids_by_task,
-                "resolved_blocker_ids": [],
-                "git_context_finalization": git_context_finalization,
-                "progress_made": True,
-            }
-            released_recovery = release_dependency_composition_recovery_after_task_cancellation(
-                state_model,
-                task_id=task.id,
-                actor_agent_id=actor.id,
-                dispatch_id=resolved.dispatch_id,
-                now=now,
-            )
-            if released_recovery is not None:
-                result["released_dependency_composition_recovery_id"] = released_recovery.id
-            reconcile_task_blockers_after_cancellation(
-                state_model,
-                task_id=task.id,
-                actor_agent_id=actor.id,
-                dispatch_id=resolved.dispatch_id,
-                result=result,
-                now=now,
-            )
-            queue_parent_resolution_transitions(
-                state_model,
-                child_task_id=task.id,
-                sender_agent_id=actor.id,
-                result=result,
-                now=now,
-            )
-            blocker_event_ids = [
-                event_id
-                for event_id in state_model.blocker_events
-                if event_id not in before_event_ids
-            ]
-            result["blocker_event_ids"] = blocker_event_ids
-            if replacement_plan is not None:
-                result["dependency_rebindings"] = [
-                    {
-                        "dependent_task_id": dependent_id,
-                        "predecessor_task_id": task.id,
-                        "successor_task_id": normalized_successor_id,
-                        "dependency_task_ids": list(
-                            state_model.tasks[dependent_id].dependency_task_ids
-                        ),
-                    }
-                    for dependent_id in sorted(
-                        replacement_plan.dependency_task_ids_by_dependent
-                    )
-                ]
-                result["required_contribution_rebindings"] = [
-                    {
-                        "integration_task_id": integration_task_id,
-                        "predecessor_task_id": task.id,
-                        "successor_task_id": normalized_successor_id,
-                        "required_contribution_task_ids": list(contribution_ids),
-                    }
-                    for integration_task_id, contribution_ids in (
-                        replacement_plan.required_contribution_task_ids_by_integration_task.items()
-                    )
-                ]
-                result["preparation_generation_changes"] = {
-                    dependent_id: {
-                        "before": preparation_generations_before[dependent_id],
-                        "after": task_preparation_generation(state_model, dependent_id),
-                    }
-                    for dependent_id in rebound_dependent_task_ids
-                }
-                result["newly_actionable_dependent_task_ids"] = [
-                    dependent_id
-                    for dependent_id in rebound_dependent_task_ids
-                    if readiness_before[dependent_id] != "actionable"
-                    and assess_task(state_model, dependent_id).readiness.value == "actionable"
-                ]
-                queue_rebound_integration_preparation_recovery(
-                    state_model,
-                    plan=replacement_plan,
-                    invalidated_git_context_ids_by_task=(
-                        invalidated_git_context_ids_by_task
-                    ),
-                    preparation_generations_before=preparation_generations_before,
-                    sender_agent_id=actor.id,
-                    result=result,
-                    now=now,
-                )
-            _maybe_mark_idle_context_rotation_due(
-                state_model,
-                agent_id=task.owner_agent_id,
-                now=now,
-                result=result,
-            )
-            _recalculate_project_status(state_model, task.project_id)
-            return TeamCommandApplyResult(
-                response_payload=result,
-                created_domain_ids=[
-                    task.id,
-                    *rebound_dependent_task_ids,
-                    *invalidated_git_work_context_ids,
-                    *list(result.get("created_preparation_recovery_inbox_item_ids") or []),
-                    *blocker_event_ids,
-                ],
-                created_event_ids=blocker_event_ids,
-            )
+                expected_dependent_task_ids=normalized_expected_dependent_ids,
+            ).apply()
 
         return self._execute_team_command(
             context=context,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Decompose control-plane orchestration (0.117.5)
+
+- Separate worker reference checkout, task worktree preparation, and dependency composition into per-invocation stages while retaining Git validation, recovery, locking, and persistence order.
+- Give workflow binding resolution, active-run snapshots, and graph activity reporting explicit invocation state and focused stages, preserving reference traces, report projections, and SQLite read budgets.
+- Separate Team blocker updates, task cancellation, and dispatch activity finalization into ordered applications inside their existing command and repository transactions.
+- Extract relay HTTP routing and provider request preparation, and share Azure/OpenAI-compatible forwarding while preserving request policy, streaming, steering delivery and retry, and usage accounting.
+
 ## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.117.4)
 
 - Let the existing Team deliverable handoff publish retained failed or incomplete verification artifacts with `evidence_only=true`, returning immutable receipts and notifying the superior and task requesters while preserving task blockers, Git work contexts, acceptance, review, and release gates.

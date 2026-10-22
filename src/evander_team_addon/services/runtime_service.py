@@ -157,6 +157,359 @@ class AgentDispatchNativeThreadReceipt:
     missing_thread: bool = False
 
 
+@dataclass
+class _DispatchActivityFinalization:
+    """Own one activity-based finalization within its command transaction."""
+
+    service: TeamRuntimeService
+    state: TeamState
+    tx: TeamStateSqliteCommandTransaction
+    session_id: str
+    dispatch_id: str
+    agent_id: str | None
+    expected_revision: int | None
+    mcp_capability_observation: Mapping[str, Any] | None
+    native_thread_receipt: AgentDispatchNativeThreadReceipt | None
+
+    def apply(self) -> tuple[TeamState, dict[str, Any]]:
+        failure = self._resolve_dispatch()
+        if failure is not None:
+            return failure
+        self._read_activity()
+        self._observe_mcp_capability()
+        self._finalize_chat_delivery()
+        self._complete_dispatch_work()
+        self._update_runtime_progress()
+        self._queue_follow_up_work()
+        return self._persist_finalization()
+
+    def _failure(
+        self,
+        state: TeamState,
+        *,
+        code: str,
+        message: str,
+        resolved_agent_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        return state, {
+            "success": False,
+            "finalized": False,
+            "applied": False,
+            "progress_made": False,
+            "session_id": self.session_id,
+            "agent_id": resolved_agent_id or self.agent_id,
+            "dispatch_id": self.dispatch_id,
+            "revision": state.revision,
+            "activity_count": 0,
+            "successful_activity_count": 0,
+            "failed_activity_count": 0,
+            "context_activity": False,
+            "events": [],
+            "errors": [{"code": code, "message": message}],
+        }
+
+    def _resolve_dispatch(self) -> tuple[TeamState, dict[str, Any]] | None:
+        if self.expected_revision is not None and self.state.revision != self.expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=self.expected_revision,
+                current_revision=self.state.revision,
+            )
+        try:
+            self.agent = _agent_for_session(self.state, session_id=self.session_id)
+        except ValueError as exc:
+            return self._failure(self.state, code="unknown_session", message=str(exc))
+        if self.agent_id is not None and self.agent.id != self.agent_id:
+            return self._failure(
+                self.state,
+                code="agent_session_mismatch",
+                message=(
+                    f"session {self.session_id} belongs to agent "
+                    f"{self.agent.id}, not {self.agent_id}"
+                ),
+                resolved_agent_id=self.agent.id,
+            )
+        self.runtime = self.state.agent_runtimes.get(self.agent.id)
+        if self.runtime is None or self.runtime.active_dispatch_id != self.dispatch_id:
+            active_dispatch_id = self.runtime.active_dispatch_id if self.runtime is not None else None
+            return self._failure(
+                self.state,
+                code="dispatch_mismatch",
+                message=(
+                    f"dispatch_id {self.dispatch_id} does not match active "
+                    f"Team dispatch {active_dispatch_id or 'none'}"
+                ),
+                resolved_agent_id=self.agent.id,
+            )
+        self.durable_dispatch = self.state.dispatches.get(self.dispatch_id)
+        if (
+            self.durable_dispatch is not None
+            and self.durable_dispatch.status != TeamDispatchStatus.LEASED
+        ):
+            return self._failure(
+                self.state,
+                code="dispatch_not_leased",
+                message=(
+                    f"dispatch {self.dispatch_id} is "
+                    f"{self.durable_dispatch.status.value}, not leased"
+                ),
+                resolved_agent_id=self.agent.id,
+            )
+
+        if self.native_thread_receipt is not None:
+            if (
+                self.native_thread_receipt.session_id != self.session_id
+                or self.native_thread_receipt.dispatch_id != self.dispatch_id
+                or self.durable_dispatch is None
+                or self.durable_dispatch.session_id != self.session_id
+            ):
+                return self._failure(
+                    self.state, code="native_thread_receipt_mismatch",
+                    message="Native thread receipt does not belong to the finalizing dispatch",
+                    resolved_agent_id=self.agent.id,
+                )
+            self.service._apply_dispatch_native_thread_receipt(
+                self.state, dispatch=self.durable_dispatch, receipt=self.native_thread_receipt, now=utc_now()
+            )
+
+    def _read_activity(self) -> None:
+        self.all_activities = self.tx.list_dispatch_activity(dispatch_id=self.dispatch_id)
+        self.activities = [
+            activity
+            for activity in self.all_activities
+            if activity.agent_id == self.agent.id
+            and activity.caller_session_id == self.session_id
+            and activity.governance_group_id is None
+            and activity.assignment_id is None
+        ]
+        self.successful_activities = [
+            activity
+            for activity in self.activities
+            if activity.status == TeamDispatchActivityStatus.SUCCESS
+        ]
+        self.failed_activities = [
+            activity
+            for activity in self.activities
+            if activity.status == TeamDispatchActivityStatus.FAILURE
+        ]
+        self.progress_made = any(
+            _dispatch_activity_counts_as_progress(activity)
+            for activity in self.successful_activities
+        )
+        self.context_activity = any(
+            _dispatch_activity_counts_for_context_rotation(activity)
+            for activity in self.successful_activities
+        )
+        self.completed_at = utc_now()
+        self.result: dict[str, Any] = {
+            "success": True,
+            "finalized": True,
+            "applied": True,
+            "progress_made": self.progress_made,
+            "session_id": self.session_id,
+            "agent_id": self.agent.id,
+            "dispatch_id": self.dispatch_id,
+            "activity_count": len(self.activities),
+            "successful_activity_count": len(self.successful_activities),
+            "failed_activity_count": len(self.failed_activities),
+            "ignored_activity_count": len(self.all_activities) - len(self.activities),
+            "context_activity": self.context_activity,
+            "activity_ids": [activity.id for activity in self.activities],
+            "successful_activity_ids": [activity.id for activity in self.successful_activities],
+            "failed_activity_ids": [activity.id for activity in self.failed_activities],
+            "replied_chat_message_ids": [],
+            "failed_chat_message_ids": [],
+            "events": [],
+            "errors": [],
+        }
+
+    def _observe_mcp_capability(self) -> None:
+        self.capability_missing = False
+        self.capability_error: str | None = None
+        self.receipt = (
+            self.durable_dispatch.mcp_capability_receipt if self.durable_dispatch is not None else None
+        )
+        if self.receipt is not None and self.mcp_capability_observation is not None:
+            receipt_payload = self.receipt.model_dump(mode="json")
+            receipt_payload.update(
+                {
+                    key: self.mcp_capability_observation[key]
+                    for key in (
+                        "verification_status",
+                        "observed_transport_session_id",
+                        "observed_at",
+                        "observed_tool_fingerprint",
+                        "missing_tool_names",
+                        "diagnostic",
+                    )
+                    if key in self.mcp_capability_observation
+                }
+            )
+            self.receipt = TeamDispatchMcpCapabilityReceipt.model_validate(receipt_payload)
+            self.durable_dispatch.mcp_capability_receipt = self.receipt
+            self.result["mcp_capability_receipt"] = self.receipt.model_dump(mode="json")
+            self.capability_missing = (
+                self.receipt.verification_status == TeamDispatchMcpCapabilityStatus.MISSING
+            )
+            if self.capability_missing:
+                self.capability_error = "Required review MCP tool unavailable: " + ", ".join(
+                    self.receipt.missing_tool_names or self.receipt.required_tool_names
+                )
+
+    def _finalize_chat_delivery(self) -> None:
+        chat_dispatch = self.runtime.wake_reason == "team_chat" or self.dispatch_id.startswith(
+            "team-chat:"
+        )
+        self.chat_terminal_error: str | None = None
+        if chat_dispatch:
+            successful_reply = next(
+                (
+                    activity
+                    for activity in self.successful_activities
+                    if activity.tool_name == "team_reply_to_chat"
+                ),
+                None,
+            )
+            if successful_reply is not None:
+                replied_ids = _mark_chat_dispatch_message_replied_from_activity(
+                    self.state,
+                    dispatch_id=self.dispatch_id,
+                )
+                self.result["replied_chat_message_ids"].extend(replied_ids)
+            else:
+                self.chat_terminal_error = _chat_dispatch_finalization_error(self.failed_activities)
+                failed_ids = _mark_chat_dispatch_message_failed(
+                    self.state,
+                    dispatch_id=self.dispatch_id,
+                    error=self.chat_terminal_error,
+                )
+                self.result["failed_chat_message_ids"].extend(failed_ids)
+
+    def _complete_dispatch_work(self) -> None:
+        complete_blocker_dispatches(
+            self.state,
+            agent_id=self.agent.id,
+            dispatch_id=self.dispatch_id,
+            result=self.result,
+            now=self.completed_at,
+        )
+        finalize_active_git_work_contexts_for_dispatch(
+            self.state,
+            agent_id=self.agent.id,
+            dispatch_id=self.dispatch_id,
+            now=self.completed_at,
+        )
+        _mark_dispatch_terminal(
+            self.state,
+            dispatch_id=self.dispatch_id,
+            status=(
+                TeamDispatchStatus.FAILED
+                if self.chat_terminal_error is not None or self.capability_error is not None
+                else TeamDispatchStatus.COMPLETED
+            ),
+            completed_at=self.completed_at,
+            error=self.chat_terminal_error or self.capability_error,
+        )
+        self.runtime.active_dispatch_id = None
+        self.runtime.wake_leased_until = None
+        self.runtime.wake_reason = None
+        if (
+            self.durable_dispatch is not None
+            and self.durable_dispatch.cause_kind == "context_handoff"
+            and self.runtime.context_handoff_preparation_pending
+        ):
+            self.runtime.context_handoff_preparation_pending = False
+            self.runtime.context_handoff_preparation_status = "failed"
+            self.runtime.next_wake_at = self.completed_at
+
+    def _update_runtime_progress(self) -> None:
+        if not self.capability_missing:
+            if self.progress_made:
+                if not _agent_has_open_execution_stall(
+                    self.state,
+                    agent_id=self.agent.id,
+                ):
+                    self.runtime.no_progress_count = 0
+            else:
+                self.runtime.no_progress_count += 1
+        if self.context_activity:
+            self.runtime.last_progress_at = self.completed_at
+        self.runtime.updated_at = self.completed_at
+
+    def _queue_follow_up_work(self) -> None:
+        _maybe_mark_idle_context_rotation_due(
+            self.state,
+            agent_id=self.agent.id,
+            now=self.runtime.updated_at,
+            result=self.result,
+        )
+        _append_pending_chat_message_queued_event_for_agent(
+            self.state,
+            agent=self.agent,
+            completed_dispatch_id=self.dispatch_id,
+            result=self.result,
+        )
+        if self.capability_missing and self.receipt is not None:
+            _route_or_retry_review_mcp_capability_failure(
+                self.state,
+                agent_id=self.agent.id,
+                dispatch=self.durable_dispatch,
+                receipt=self.receipt,
+                diagnostic=self.receipt.diagnostic or self.capability_error or "",
+                result=self.result,
+                now=self.completed_at,
+            )
+        else:
+            _append_follow_up_agent_wake_requested_event(
+                self.state,
+                agent_id=self.agent.id,
+                result=self.result,
+                now=self.completed_at,
+                completed_dispatch_id=self.dispatch_id,
+                progress_made=self.progress_made,
+            )
+        append_role_queue_wake_events(
+            self.state,
+            result=self.result,
+            now=self.completed_at,
+            team_id=self.agent.team_id,
+        )
+
+    def _persist_finalization(self) -> tuple[TeamState, dict[str, Any]]:
+        stored_outbox_records = [
+            self.tx.enqueue_outbox_record(record)
+            for record in _team_event_outbox_records(self.result.get("events") or [])
+        ]
+        if stored_outbox_records:
+            self.result["outbox_record_ids"] = [record.id for record in stored_outbox_records]
+
+        self.state.revision += 1
+        self.state.updated_at = self.completed_at
+        finalized_runtime = self.state.agent_runtimes[self.agent.id]
+        self.result["revision"] = self.state.revision
+        self.result["no_progress_count"] = finalized_runtime.no_progress_count
+        self.result["last_progress_at"] = (
+            finalized_runtime.last_progress_at.isoformat()
+            if finalized_runtime.last_progress_at is not None
+            else None
+        )
+        self.result["context_rotation_pending"] = finalized_runtime.context_rotation_pending
+        self.tx.append_dispatch_activity(
+            TeamDispatchActivity(
+                id=f"activity-{uuid4().hex}",
+                tool_name="team_dispatch_finished",
+                caller_session_id=self.session_id,
+                caller_identity=f"agent:{self.agent.id}",
+                agent_id=self.agent.id,
+                dispatch_id=self.dispatch_id,
+                status=TeamDispatchActivityStatus.SUCCESS,
+                progress_classification=("progress" if self.progress_made else "none"),
+                created_at=self.completed_at,
+                updated_at=self.completed_at,
+            )
+        )
+        return self.state, self.result
+
+
 class TeamRuntimeService:
     def __init__(
         self,
@@ -1801,323 +2154,21 @@ class TeamRuntimeService:
             else None
         )
 
-        def _failure(
-            state: TeamState,
-            *,
-            code: str,
-            message: str,
-            resolved_agent_id: str | None = None,
-        ) -> tuple[TeamState, dict[str, Any]]:
-            return state, {
-                "success": False,
-                "finalized": False,
-                "applied": False,
-                "progress_made": False,
-                "session_id": normalized_session_id,
-                "agent_id": resolved_agent_id or normalized_agent_id,
-                "dispatch_id": normalized_dispatch_id,
-                "revision": state.revision,
-                "activity_count": 0,
-                "successful_activity_count": 0,
-                "failed_activity_count": 0,
-                "context_activity": False,
-                "events": [],
-                "errors": [{"code": code, "message": message}],
-            }
-
         def _transaction(
             state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> tuple[TeamState, dict[str, Any]]:
-            if expected_revision is not None and state.revision != expected_revision:
-                raise TeamStateConflictError(
-                    expected_revision=expected_revision,
-                    current_revision=state.revision,
-                )
-            try:
-                agent = _agent_for_session(state, session_id=normalized_session_id)
-            except ValueError as exc:
-                return _failure(state, code="unknown_session", message=str(exc))
-            if normalized_agent_id is not None and agent.id != normalized_agent_id:
-                return _failure(
-                    state,
-                    code="agent_session_mismatch",
-                    message=(
-                        f"session {normalized_session_id} belongs to agent "
-                        f"{agent.id}, not {normalized_agent_id}"
-                    ),
-                    resolved_agent_id=agent.id,
-                )
-            runtime = state.agent_runtimes.get(agent.id)
-            if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
-                active_dispatch_id = runtime.active_dispatch_id if runtime is not None else None
-                return _failure(
-                    state,
-                    code="dispatch_mismatch",
-                    message=(
-                        f"dispatch_id {normalized_dispatch_id} does not match active "
-                        f"Team dispatch {active_dispatch_id or 'none'}"
-                    ),
-                    resolved_agent_id=agent.id,
-                )
-            durable_dispatch = state.dispatches.get(normalized_dispatch_id)
-            if (
-                durable_dispatch is not None
-                and durable_dispatch.status != TeamDispatchStatus.LEASED
-            ):
-                return _failure(
-                    state,
-                    code="dispatch_not_leased",
-                    message=(
-                        f"dispatch {normalized_dispatch_id} is "
-                        f"{durable_dispatch.status.value}, not leased"
-                    ),
-                    resolved_agent_id=agent.id,
-                )
-
-            if native_thread_receipt is not None:
-                if (
-                    native_thread_receipt.session_id != normalized_session_id
-                    or native_thread_receipt.dispatch_id != normalized_dispatch_id
-                    or durable_dispatch is None
-                    or durable_dispatch.session_id != normalized_session_id
-                ):
-                    return _failure(
-                        state, code="native_thread_receipt_mismatch",
-                        message="Native thread receipt does not belong to the finalizing dispatch",
-                        resolved_agent_id=agent.id,
-                    )
-                self._apply_dispatch_native_thread_receipt(
-                    state, dispatch=durable_dispatch, receipt=native_thread_receipt, now=utc_now()
-                )
-
-            all_activities = tx.list_dispatch_activity(dispatch_id=normalized_dispatch_id)
-            activities = [
-                activity
-                for activity in all_activities
-                if activity.agent_id == agent.id
-                and activity.caller_session_id == normalized_session_id
-                and activity.governance_group_id is None
-                and activity.assignment_id is None
-            ]
-            successful_activities = [
-                activity
-                for activity in activities
-                if activity.status == TeamDispatchActivityStatus.SUCCESS
-            ]
-            failed_activities = [
-                activity
-                for activity in activities
-                if activity.status == TeamDispatchActivityStatus.FAILURE
-            ]
-            progress_made = any(
-                _dispatch_activity_counts_as_progress(activity)
-                for activity in successful_activities
-            )
-            context_activity = any(
-                _dispatch_activity_counts_for_context_rotation(activity)
-                for activity in successful_activities
-            )
-            completed_at = utc_now()
-            result: dict[str, Any] = {
-                "success": True,
-                "finalized": True,
-                "applied": True,
-                "progress_made": progress_made,
-                "session_id": normalized_session_id,
-                "agent_id": agent.id,
-                "dispatch_id": normalized_dispatch_id,
-                "activity_count": len(activities),
-                "successful_activity_count": len(successful_activities),
-                "failed_activity_count": len(failed_activities),
-                "ignored_activity_count": len(all_activities) - len(activities),
-                "context_activity": context_activity,
-                "activity_ids": [activity.id for activity in activities],
-                "successful_activity_ids": [activity.id for activity in successful_activities],
-                "failed_activity_ids": [activity.id for activity in failed_activities],
-                "replied_chat_message_ids": [],
-                "failed_chat_message_ids": [],
-                "events": [],
-                "errors": [],
-            }
-
-            capability_missing = False
-            capability_error: str | None = None
-            receipt = (
-                durable_dispatch.mcp_capability_receipt if durable_dispatch is not None else None
-            )
-            if receipt is not None and normalized_mcp_capability_observation is not None:
-                receipt_payload = receipt.model_dump(mode="json")
-                receipt_payload.update(
-                    {
-                        key: normalized_mcp_capability_observation[key]
-                        for key in (
-                            "verification_status",
-                            "observed_transport_session_id",
-                            "observed_at",
-                            "observed_tool_fingerprint",
-                            "missing_tool_names",
-                            "diagnostic",
-                        )
-                        if key in normalized_mcp_capability_observation
-                    }
-                )
-                receipt = TeamDispatchMcpCapabilityReceipt.model_validate(receipt_payload)
-                durable_dispatch.mcp_capability_receipt = receipt
-                result["mcp_capability_receipt"] = receipt.model_dump(mode="json")
-                capability_missing = (
-                    receipt.verification_status == TeamDispatchMcpCapabilityStatus.MISSING
-                )
-                if capability_missing:
-                    capability_error = "Required review MCP tool unavailable: " + ", ".join(
-                        receipt.missing_tool_names or receipt.required_tool_names
-                    )
-
-            chat_dispatch = runtime.wake_reason == "team_chat" or normalized_dispatch_id.startswith(
-                "team-chat:"
-            )
-            chat_terminal_error: str | None = None
-            if chat_dispatch:
-                successful_reply = next(
-                    (
-                        activity
-                        for activity in successful_activities
-                        if activity.tool_name == "team_reply_to_chat"
-                    ),
-                    None,
-                )
-                if successful_reply is not None:
-                    replied_ids = _mark_chat_dispatch_message_replied_from_activity(
-                        state,
-                        dispatch_id=normalized_dispatch_id,
-                    )
-                    result["replied_chat_message_ids"].extend(replied_ids)
-                else:
-                    chat_terminal_error = _chat_dispatch_finalization_error(failed_activities)
-                    failed_ids = _mark_chat_dispatch_message_failed(
-                        state,
-                        dispatch_id=normalized_dispatch_id,
-                        error=chat_terminal_error,
-                    )
-                    result["failed_chat_message_ids"].extend(failed_ids)
-
-            complete_blocker_dispatches(
-                state,
-                agent_id=agent.id,
+            return _DispatchActivityFinalization(
+                service=self,
+                state=state,
+                tx=tx,
+                session_id=normalized_session_id,
                 dispatch_id=normalized_dispatch_id,
-                result=result,
-                now=completed_at,
-            )
-            finalize_active_git_work_contexts_for_dispatch(
-                state,
-                agent_id=agent.id,
-                dispatch_id=normalized_dispatch_id,
-                now=completed_at,
-            )
-            _mark_dispatch_terminal(
-                state,
-                dispatch_id=normalized_dispatch_id,
-                status=(
-                    TeamDispatchStatus.FAILED
-                    if chat_terminal_error is not None or capability_error is not None
-                    else TeamDispatchStatus.COMPLETED
-                ),
-                completed_at=completed_at,
-                error=chat_terminal_error or capability_error,
-            )
-            runtime.active_dispatch_id = None
-            runtime.wake_leased_until = None
-            runtime.wake_reason = None
-            if (
-                durable_dispatch is not None
-                and durable_dispatch.cause_kind == "context_handoff"
-                and runtime.context_handoff_preparation_pending
-            ):
-                runtime.context_handoff_preparation_pending = False
-                runtime.context_handoff_preparation_status = "failed"
-                runtime.next_wake_at = completed_at
-            if not capability_missing:
-                if progress_made:
-                    if not _agent_has_open_execution_stall(
-                        state,
-                        agent_id=agent.id,
-                    ):
-                        runtime.no_progress_count = 0
-                else:
-                    runtime.no_progress_count += 1
-            if context_activity:
-                runtime.last_progress_at = completed_at
-            runtime.updated_at = completed_at
-            _maybe_mark_idle_context_rotation_due(
-                state,
-                agent_id=agent.id,
-                now=runtime.updated_at,
-                result=result,
-            )
-            _append_pending_chat_message_queued_event_for_agent(
-                state,
-                agent=agent,
-                completed_dispatch_id=normalized_dispatch_id,
-                result=result,
-            )
-            if capability_missing and receipt is not None:
-                _route_or_retry_review_mcp_capability_failure(
-                    state,
-                    agent_id=agent.id,
-                    dispatch=durable_dispatch,
-                    receipt=receipt,
-                    diagnostic=receipt.diagnostic or capability_error or "",
-                    result=result,
-                    now=completed_at,
-                )
-            else:
-                _append_follow_up_agent_wake_requested_event(
-                    state,
-                    agent_id=agent.id,
-                    result=result,
-                    now=completed_at,
-                    completed_dispatch_id=normalized_dispatch_id,
-                    progress_made=progress_made,
-                )
-            append_role_queue_wake_events(
-                state,
-                result=result,
-                now=completed_at,
-                team_id=agent.team_id,
-            )
-            stored_outbox_records = [
-                tx.enqueue_outbox_record(record)
-                for record in _team_event_outbox_records(result.get("events") or [])
-            ]
-            if stored_outbox_records:
-                result["outbox_record_ids"] = [record.id for record in stored_outbox_records]
-
-            state.revision += 1
-            state.updated_at = completed_at
-            finalized_runtime = state.agent_runtimes[agent.id]
-            result["revision"] = state.revision
-            result["no_progress_count"] = finalized_runtime.no_progress_count
-            result["last_progress_at"] = (
-                finalized_runtime.last_progress_at.isoformat()
-                if finalized_runtime.last_progress_at is not None
-                else None
-            )
-            result["context_rotation_pending"] = finalized_runtime.context_rotation_pending
-            tx.append_dispatch_activity(
-                TeamDispatchActivity(
-                    id=f"activity-{uuid4().hex}",
-                    tool_name="team_dispatch_finished",
-                    caller_session_id=normalized_session_id,
-                    caller_identity=f"agent:{agent.id}",
-                    agent_id=agent.id,
-                    dispatch_id=normalized_dispatch_id,
-                    status=TeamDispatchActivityStatus.SUCCESS,
-                    progress_classification=("progress" if progress_made else "none"),
-                    created_at=completed_at,
-                    updated_at=completed_at,
-                )
-            )
-            return state, result
+                agent_id=normalized_agent_id,
+                expected_revision=expected_revision,
+                mcp_capability_observation=normalized_mcp_capability_observation,
+                native_thread_receipt=native_thread_receipt,
+            ).apply()
 
         if self._repository.maintenance:
             from .prepared_finalization import commit_prepared_dispatch_finalization

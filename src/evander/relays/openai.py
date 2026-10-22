@@ -386,6 +386,333 @@ class OpenAIRelay(OpenAIUsageAccounting):
             )
         return JSONResponse(response_payload)
 
+    async def _proxy_http_request(self, request: Request) -> Response:
+        try:
+            request_context = await run_in_threadpool(self._resolve_request_context, request)
+        except SessionExpiredError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except PrivacyDispatchDenied as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=401)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        upstream_path = request.path_params["path"]
+        try:
+            canonical_upstream_path = _canonical_relay_path(
+                upstream_path,
+                field_name="OpenAI relay path",
+            )
+        except ValueError:
+            canonical_upstream_path = ""
+        if canonical_upstream_path == "alpha/search" and request.method == "POST":
+            return await self._proxy_standalone_web_search(request, request_context)
+        is_direct_image_request = (
+            request.method.upper(),
+            canonical_upstream_path,
+        ) in OPENAI_IMAGE_HTTP_ENDPOINTS
+        if is_direct_image_request and not request_context.image_generation_enabled:
+            self._log_image_generation_denied(
+                session_id=request_context.session_id,
+                request_kind="http",
+                path=request.url.path,
+            )
+            return self._image_generation_disabled_response()
+        if is_direct_image_request:
+            return await self._proxy_openai_image_http(
+                request=request,
+                request_context=request_context,
+                upstream_path=canonical_upstream_path,
+            )
+
+        request_body = await request.body()
+        if (
+            not request_context.web_search_enabled
+            and self._request_body_declares_hosted_web_search(request_body)
+        ):
+            self._log_hosted_web_search_denied(
+                session_id=request_context.session_id,
+                request_kind="http",
+                path=request.url.path,
+            )
+            return JSONResponse(
+                {
+                    "error": (
+                        "Hosted web search is disabled for this session. "
+                        "Set session.web_search_enabled=true to allow Responses web_search tools."
+                    )
+                },
+                status_code=403,
+            )
+        if (
+            not request_context.image_generation_enabled
+            and self._request_body_declares_image_generation(request_body)
+        ):
+            self._log_image_generation_denied(
+                session_id=request_context.session_id,
+                request_kind="http",
+                path=request.url.path,
+            )
+            return self._image_generation_disabled_response()
+
+        if request_context.config.model_provider_mode == "openrouter":
+            return await self._proxy_openrouter_http(
+                request=request,
+                request_context=request_context,
+                upstream_path=upstream_path,
+                request_body=request_body,
+            )
+
+        if request_context.config.model_provider_mode == "anthropic":
+            return await self._proxy_anthropic_http(
+                request=request,
+                request_context=request_context,
+                upstream_path=upstream_path,
+                request_body=request_body,
+            )
+
+        if request_context.config.model_provider_mode == "azure_openai":
+            return await self._proxy_azure_openai_http(
+                request=request,
+                request_context=request_context,
+                upstream_path=upstream_path,
+                request_body=request_body,
+            )
+        return await self._proxy_openai_compatible_http(
+            request=request,
+            request_context=request_context,
+            upstream_path=upstream_path,
+            request_body=request_body,
+        )
+
+    async def _proxy_azure_openai_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> Response:
+        if request.method != "POST" or upstream_path != "responses":
+            return JSONResponse(
+                {
+                    "error": (
+                        "Azure OpenAI relay currently supports only POST /v1/responses"
+                    )
+                },
+                status_code=501,
+            )
+
+        api_key_env = request_context.config.azure_openai_api_key_env
+        api_key = os.environ.get(api_key_env) if api_key_env else None
+        if not api_key:
+            return JSONResponse(
+                {"error": (f"Host environment variable {api_key_env} is not set.")},
+                status_code=503,
+            )
+
+        try:
+            request_body = self._rewrite_azure_openai_request_body(
+                request_body,
+                model_deployments=request_context.config.azure_openai_model_deployments,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
+            session_id=request_context.session_id,
+            method=request.method,
+            provider_name="openai",
+            upstream_path=upstream_path,
+            request_body=request_body,
+        )
+        request_body = steering_injection.request_body
+
+        upstream_url = self._azure_upstream_http_url(
+            endpoint=request_context.config.azure_openai_endpoint or "",
+            upstream_path=upstream_path,
+            query_items=request.query_params.multi_items(),
+            api_version=request_context.config.azure_openai_api_version,
+        )
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        }
+        headers["accept-encoding"] = "identity"
+        headers["api-key"] = api_key
+
+        return await self._forward_openai_http(
+            request=request,
+            request_context=request_context,
+            upstream_path=upstream_path,
+            upstream_url=upstream_url,
+            headers=headers,
+            request_body=request_body,
+            steering_injection=steering_injection,
+            provider_name="openai",
+        )
+
+    async def _proxy_openai_compatible_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> Response:
+        try:
+            upstream_path = self._supported_openai_compatible_http_path(
+                method=request.method,
+                upstream_path=upstream_path,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=501)
+
+        openai_compatible_upstream = self._openai_compatible_upstream(request_context.config)
+        if not openai_compatible_upstream.api_key:
+            return JSONResponse(
+                {
+                    "error": (
+                        "Host environment variable "
+                        f"{openai_compatible_upstream.api_key_source} is not set."
+                    )
+                },
+                status_code=503,
+            )
+
+        upstream_url = self._upstream_http_url(
+            base_url=openai_compatible_upstream.base_url,
+            upstream_path=upstream_path,
+            query_items=request.query_params.multi_items(),
+        )
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        }
+        headers["accept-encoding"] = "identity"
+        headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
+            session_id=request_context.session_id,
+            method=request.method,
+            provider_name=openai_compatible_upstream.provider_name,
+            upstream_path=upstream_path,
+            request_body=request_body,
+        )
+        request_body = steering_injection.request_body
+        local_openai_tool_compatibility: LocalOpenAIToolCompatibility | None = None
+        if request_context.config.model_provider_mode == "local_openai":
+            local_openai_tool_compatibility = self._local_openai_tool_adapter.prepare_request(
+                method=request.method,
+                upstream_path=upstream_path,
+                request_body=request_body,
+            )
+            request_body = local_openai_tool_compatibility.request_body
+
+        return await self._forward_openai_http(
+            request=request,
+            request_context=request_context,
+            upstream_path=upstream_path,
+            upstream_url=upstream_url,
+            headers=headers,
+            request_body=request_body,
+            steering_injection=steering_injection,
+            provider_name=openai_compatible_upstream.provider_name,
+            local_openai_tool_compatibility=local_openai_tool_compatibility,
+        )
+
+    async def _forward_openai_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        upstream_url: str,
+        headers: dict[str, str],
+        request_body: bytes,
+        steering_injection: OperatorSteeringInjection,
+        provider_name: str,
+        local_openai_tool_compatibility: LocalOpenAIToolCompatibility | None = None,
+    ) -> Response:
+        if "text/event-stream" in request.headers.get("accept", ""):
+            return await self._stream_response(
+                request=request,
+                session_id=request_context.session_id,
+                upstream_path=upstream_path,
+                upstream_url=upstream_url,
+                headers=headers,
+                request_body=request_body,
+                timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                provider_name=provider_name,
+                operator_steering_note=steering_injection.note,
+                local_openai_tool_compatibility=local_openai_tool_compatibility,
+                privacy_context=request_context,
+            )
+
+        async with httpx.AsyncClient(
+            timeout=request_context.config.openai_relay_timeout_seconds,
+            transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+            event_hooks={"request": [self._privacy_request_hook(request_context)]},
+        ) as client:
+            started_at = time.perf_counter()
+            try:
+                upstream_response = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=request_body,
+                )
+            except Exception as exc:
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
+                    steering_injection.note,
+                    error=f"upstream request failed before delivery: {exc}",
+                )
+                raise
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                steering_injection.note,
+                provider_name=provider_name,
+                provider_endpoint=upstream_path,
+            )
+            try:
+                await run_in_threadpool(
+                    self._record_model_usage_event,
+                    usage_snapshot=request_context.usage_snapshot if request_context else None,
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                    upstream_response=upstream_response,
+                    duration_ms=self._duration_ms_since(started_at),
+                    provider_name=provider_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                    request_context.session_id,
+                    request.url.path,
+                    exc.__class__.__name__,
+                    str(exc),
+                )
+            response_content = upstream_response.content
+            if local_openai_tool_compatibility is not None:
+                response_content = self._local_openai_tool_adapter.rewrite_response(
+                    response_content,
+                    compatibility=local_openai_tool_compatibility,
+                )
+            return Response(
+                content=response_content,
+                status_code=upstream_response.status_code,
+                headers=self._response_headers(upstream_response),
+                media_type=upstream_response.headers.get("content-type"),
+            )
+
+
     def create_app(self) -> Starlette:
         relay = self
 
@@ -407,335 +734,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
             )
 
         async def proxy(request: Request) -> Response:
-            try:
-                request_context = await run_in_threadpool(relay._resolve_request_context, request)
-            except SessionExpiredError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=403)
-            except PrivacyDispatchDenied as exc:
-                return JSONResponse({"error": str(exc)}, status_code=403)
-            except PermissionError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=401)
-            except ValueError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-
-            upstream_path = request.path_params["path"]
-            try:
-                canonical_upstream_path = _canonical_relay_path(
-                    upstream_path,
-                    field_name="OpenAI relay path",
-                )
-            except ValueError:
-                canonical_upstream_path = ""
-            if canonical_upstream_path == "alpha/search" and request.method == "POST":
-                return await relay._proxy_standalone_web_search(request, request_context)
-            is_direct_image_request = (
-                request.method.upper(),
-                canonical_upstream_path,
-            ) in OPENAI_IMAGE_HTTP_ENDPOINTS
-            if is_direct_image_request and not request_context.image_generation_enabled:
-                relay._log_image_generation_denied(
-                    session_id=request_context.session_id,
-                    request_kind="http",
-                    path=request.url.path,
-                )
-                return relay._image_generation_disabled_response()
-            if is_direct_image_request:
-                return await relay._proxy_openai_image_http(
-                    request=request,
-                    request_context=request_context,
-                    upstream_path=canonical_upstream_path,
-                )
-
-            request_body = await request.body()
-            if (
-                not request_context.web_search_enabled
-                and relay._request_body_declares_hosted_web_search(request_body)
-            ):
-                relay._log_hosted_web_search_denied(
-                    session_id=request_context.session_id,
-                    request_kind="http",
-                    path=request.url.path,
-                )
-                return JSONResponse(
-                    {
-                        "error": (
-                            "Hosted web search is disabled for this session. "
-                            "Set session.web_search_enabled=true to allow Responses web_search tools."
-                        )
-                    },
-                    status_code=403,
-                )
-            if (
-                not request_context.image_generation_enabled
-                and relay._request_body_declares_image_generation(request_body)
-            ):
-                relay._log_image_generation_denied(
-                    session_id=request_context.session_id,
-                    request_kind="http",
-                    path=request.url.path,
-                )
-                return relay._image_generation_disabled_response()
-
-            if request_context.config.model_provider_mode == "openrouter":
-                return await relay._proxy_openrouter_http(
-                    request=request,
-                    request_context=request_context,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                )
-
-            if request_context.config.model_provider_mode == "anthropic":
-                return await relay._proxy_anthropic_http(
-                    request=request,
-                    request_context=request_context,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                )
-
-            if request_context.config.model_provider_mode == "azure_openai":
-                if request.method != "POST" or upstream_path != "responses":
-                    return JSONResponse(
-                        {
-                            "error": (
-                                "Azure OpenAI relay currently supports only POST /v1/responses"
-                            )
-                        },
-                        status_code=501,
-                    )
-
-                api_key_env = request_context.config.azure_openai_api_key_env
-                api_key = os.environ.get(api_key_env) if api_key_env else None
-                if not api_key:
-                    return JSONResponse(
-                        {"error": (f"Host environment variable {api_key_env} is not set.")},
-                        status_code=503,
-                    )
-
-                try:
-                    request_body = relay._rewrite_azure_openai_request_body(
-                        request_body,
-                        model_deployments=request_context.config.azure_openai_model_deployments,
-                    )
-                except ValueError as exc:
-                    return JSONResponse({"error": str(exc)}, status_code=400)
-                steering_injection = await run_in_threadpool(
-                    relay._operator_steering_injection,
-                    session_id=request_context.session_id,
-                    method=request.method,
-                    provider_name="openai",
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                )
-                request_body = steering_injection.request_body
-
-                upstream_url = relay._azure_upstream_http_url(
-                    endpoint=request_context.config.azure_openai_endpoint or "",
-                    upstream_path=upstream_path,
-                    query_items=request.query_params.multi_items(),
-                    api_version=request_context.config.azure_openai_api_version,
-                )
-                headers = {
-                    key: value
-                    for key, value in request.headers.items()
-                    if key.lower() not in HOP_BY_HOP_HEADERS
-                }
-                headers["accept-encoding"] = "identity"
-                headers["api-key"] = api_key
-
-                if "text/event-stream" in request.headers.get("accept", ""):
-                    return await relay._stream_response(
-                        request=request,
-                        session_id=request_context.session_id,
-                        upstream_path=upstream_path,
-                        upstream_url=upstream_url,
-                        headers=headers,
-                        request_body=request_body,
-                        timeout_seconds=request_context.config.openai_relay_timeout_seconds,
-                        provider_name="openai",
-                        operator_steering_note=steering_injection.note,
-                        privacy_context=request_context,
-                    )
-
-                async with httpx.AsyncClient(
-                    timeout=request_context.config.openai_relay_timeout_seconds,
-                    transport=relay.transport,
-                    trust_env=False,
-                    follow_redirects=False,
-                    event_hooks={"request": [relay._privacy_request_hook(request_context)]},
-                ) as client:
-                    started_at = time.perf_counter()
-                    try:
-                        upstream_response = await client.request(
-                            method=request.method,
-                            url=upstream_url,
-                            headers=headers,
-                            content=request_body,
-                        )
-                    except Exception as exc:
-                        await run_in_threadpool(
-                            relay._release_operator_steering_note,
-                            steering_injection.note,
-                            error=f"upstream request failed before delivery: {exc}",
-                        )
-                        raise
-                    await run_in_threadpool(
-                        relay._mark_operator_steering_delivered,
-                        steering_injection.note,
-                        provider_name="openai",
-                        provider_endpoint=upstream_path,
-                    )
-                    try:
-                        await run_in_threadpool(
-                            relay._record_model_usage_event,
-                            usage_snapshot=request_context.usage_snapshot
-                            if request_context
-                            else None,
-                            session_id=request_context.session_id,
-                            upstream_path=upstream_path,
-                            request_body=request_body,
-                            upstream_response=upstream_response,
-                            duration_ms=relay._duration_ms_since(started_at),
-                            provider_name="openai",
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
-                            request_context.session_id,
-                            request.url.path,
-                            exc.__class__.__name__,
-                            str(exc),
-                        )
-                    return Response(
-                        content=upstream_response.content,
-                        status_code=upstream_response.status_code,
-                        headers=relay._response_headers(upstream_response),
-                        media_type=upstream_response.headers.get("content-type"),
-                    )
-
-            try:
-                upstream_path = relay._supported_openai_compatible_http_path(
-                    method=request.method,
-                    upstream_path=upstream_path,
-                )
-            except ValueError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=501)
-
-            openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
-            if not openai_compatible_upstream.api_key:
-                return JSONResponse(
-                    {
-                        "error": (
-                            "Host environment variable "
-                            f"{openai_compatible_upstream.api_key_source} is not set."
-                        )
-                    },
-                    status_code=503,
-                )
-
-            upstream_url = relay._upstream_http_url(
-                base_url=openai_compatible_upstream.base_url,
-                upstream_path=upstream_path,
-                query_items=request.query_params.multi_items(),
-            )
-            headers = {
-                key: value
-                for key, value in request.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS
-            }
-            headers["accept-encoding"] = "identity"
-            headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
-            steering_injection = await run_in_threadpool(
-                relay._operator_steering_injection,
-                session_id=request_context.session_id,
-                method=request.method,
-                provider_name=openai_compatible_upstream.provider_name,
-                upstream_path=upstream_path,
-                request_body=request_body,
-            )
-            request_body = steering_injection.request_body
-            local_openai_tool_compatibility: LocalOpenAIToolCompatibility | None = None
-            if request_context.config.model_provider_mode == "local_openai":
-                local_openai_tool_compatibility = relay._local_openai_tool_adapter.prepare_request(
-                    method=request.method,
-                    upstream_path=upstream_path,
-                    request_body=request_body,
-                )
-                request_body = local_openai_tool_compatibility.request_body
-
-            if "text/event-stream" in request.headers.get("accept", ""):
-                return await relay._stream_response(
-                    request=request,
-                    session_id=request_context.session_id,
-                    upstream_path=upstream_path,
-                    upstream_url=upstream_url,
-                    headers=headers,
-                    request_body=request_body,
-                    timeout_seconds=request_context.config.openai_relay_timeout_seconds,
-                    provider_name=openai_compatible_upstream.provider_name,
-                    operator_steering_note=steering_injection.note,
-                    local_openai_tool_compatibility=local_openai_tool_compatibility,
-                    privacy_context=request_context,
-                )
-
-            async with httpx.AsyncClient(
-                timeout=request_context.config.openai_relay_timeout_seconds,
-                transport=relay.transport,
-                trust_env=False,
-                follow_redirects=False,
-                event_hooks={"request": [relay._privacy_request_hook(request_context)]},
-            ) as client:
-                started_at = time.perf_counter()
-                try:
-                    upstream_response = await client.request(
-                        method=request.method,
-                        url=upstream_url,
-                        headers=headers,
-                        content=request_body,
-                    )
-                except Exception as exc:
-                    await run_in_threadpool(
-                        relay._release_operator_steering_note,
-                        steering_injection.note,
-                        error=f"upstream request failed before delivery: {exc}",
-                    )
-                    raise
-                await run_in_threadpool(
-                    relay._mark_operator_steering_delivered,
-                    steering_injection.note,
-                    provider_name=openai_compatible_upstream.provider_name,
-                    provider_endpoint=upstream_path,
-                )
-                try:
-                    await run_in_threadpool(
-                        relay._record_model_usage_event,
-                        usage_snapshot=request_context.usage_snapshot if request_context else None,
-                        session_id=request_context.session_id,
-                        upstream_path=upstream_path,
-                        request_body=request_body,
-                        upstream_response=upstream_response,
-                        duration_ms=relay._duration_ms_since(started_at),
-                        provider_name=openai_compatible_upstream.provider_name,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
-                        request_context.session_id,
-                        request.url.path,
-                        exc.__class__.__name__,
-                        str(exc),
-                    )
-                response_content = upstream_response.content
-                if local_openai_tool_compatibility is not None:
-                    response_content = relay._local_openai_tool_adapter.rewrite_response(
-                        response_content,
-                        compatibility=local_openai_tool_compatibility,
-                    )
-                return Response(
-                    content=response_content,
-                    status_code=upstream_response.status_code,
-                    headers=relay._response_headers(upstream_response),
-                    media_type=upstream_response.headers.get("content-type"),
-                )
+            return await relay._proxy_http_request(request)
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
