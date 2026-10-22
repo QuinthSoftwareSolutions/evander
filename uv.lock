@@ -199,7 +199,7 @@ wheels = [
 
 [[package]]
 name = "evander"
-version = "0.121.0"
+version = "0.121.1"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
@@ -243,7 +243,7 @@ requires-dist = [
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.1.6" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "markdown-it-py", specifier = ">=3.0.0" },
-    { name = "mcp", specifier = ">=1.30.0" },
+    { name = "mcp", specifier = ">=1.30.0,<2" },
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
