@@ -1,10 +1,33 @@
 # Changelog
 
-## 2026-10-22 - Simplify control-plane ownership boundaries (0.119.1)
+## 2026-10-22 - Simplify control-plane ownership boundaries (0.120.3)
 
 - Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
 - Run workflow workers directly, distinguish empty provider catalogs from omitted defaults, and centralize managed tool audit emission while preserving summaries, cancellation handling, durable ordering, and legacy Team action compatibility.
 - Consolidate workflow inspector draft state and split pricing and Teams authentication out of the configuration screen, preserving incomplete drafts, revision checks, and navigation behavior.
+
+## 2026-10-22 - Update vulnerable dependencies and toolchains (0.120.2)
+
+- Raise Python runtime, development and build dependency security floors across the core and independent add-ons, and refresh the Python and affected npm lockfiles.
+- Update Node to 24.22.1, the code-index .NET SDK to 10.0.113, Nexus to 3.97.1 and Qdrant to 1.19.2 across deployment defaults, bootstrap paths and toolchain metadata.
+- Preserve existing container session Node paths and guest profile upgrades and make Nexus mandatory telemetry acknowledgement an explicit operator setting.
+- Synchronize the hosted tab-viewing regression with the live tab picker before waiting for selection responses.
+
+## 2026-10-22 - Allow clean task ownership handoffs (0.120.1)
+
+- Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
+- Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+- Give existing checkout-preparation blockers one corrected retry after deployment without changing checkout identities, accepted recoveries or composition-conflict bindings. Suppress a persistent failure again after that attempt.
+
+## 2026-10-22 - Configure persistent reasoning controls in workflows (0.120.0)
+
+- Add a directory-scoped workflow effect for setting or clearing an existing session's native reasoning default, using the existing provider/model validation and preserving running turns and other session settings.
+- Expose the saved default in session-context queries and publish the node in the workflow editor, so operator-owned chat commands can override automatic routing until explicitly reset without hard-coded command syntax.
+
+## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
+
+- Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
+- Publish Browser Sessions 0.9.4 with the corrected hosted controller and regression coverage for tab viewing and control handover.
 
 ## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 

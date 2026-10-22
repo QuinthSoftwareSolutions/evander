@@ -33,11 +33,37 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const button=observed.elements.find(e=>e.role==="button");
     const pointers = await f.api(path+"/command", command(state,"highlight",{observation_id:observed.observation_id,ref:button.ref}));
     assert.equal(pointers.success,true);
+    await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,
+      ref:observed.elements.find(e=>e.role==="link"&&e.name==="Open shared tab").ref}));
+    const tabs=await until(async()=>{
+      const result=await f.api(path+"/command",command(state,"pages"));
+      return result.pages.length===2&&result.pages;
+    },"shared tabs");
+    const original=tabs.find(tab=>tab.url===config.entry_url);
+    const second=tabs.find(tab=>tab.url===f.base+"/position");
+    assert.ok(original&&second);
     browser = await chromium.launch({headless:true,args:["--no-sandbox"]});
     const viewer = await browser.newPage({viewport:{width:1600,height:1000}});
     await viewer.request.post(f.base+"/api/auth/login");
     await viewer.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,{waitUntil:"domcontentloaded"});
     await viewer.locator("#empty").waitFor({state:"hidden"});
+    await viewer.locator("#pages").waitFor({state:"visible"});
+    await viewer.waitForFunction(ids=>ids.every(id=>
+      [...document.getElementById("pages").options].some(option=>option.value===id)),
+      [second.id,original.id]);
+    for (const tab of [second, original]) {
+      const [response]=await Promise.all([
+        viewer.waitForResponse(response=>response.url().endsWith("/select-page")),
+        viewer.locator("#pages").selectOption(tab.id),
+      ]);
+      assert.equal(response.status(),200,await response.text());
+      await until(async()=>(await observe()).url===tab.url,"selected shared tab");
+      await viewer.waitForFunction(url=>document.getElementById("application-url").textContent===url,tab.url);
+      assert.equal(await viewer.locator("#error").isHidden(),true,"Viewing another tab must not request browser control");
+      const current=await f.api(path+"/state");
+      assert.equal(current.controller,state.controller);
+      assert.equal(current.control_generation,state.control_generation);
+    }
     await viewer.getByLabel("Shared application", {exact:true}).click({position:{x:40,y:40}});
     await viewer.getByRole("button", {name:"Dismiss notification",exact:true}).waitFor();
     const notice = await viewer.locator("#error").boundingBox();

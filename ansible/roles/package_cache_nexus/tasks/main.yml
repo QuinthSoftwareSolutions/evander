@@ -253,6 +253,9 @@
       when: not (evander_nexus_community_eula_status.json.accepted | default(false) | bool)
       no_log: true
 
+    - name: Reconcile Nexus required base telemetry acknowledgement
+      ansible.builtin.include_tasks: telemetry.yml
+
     - name: Enable anonymous read access in Nexus
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/security/anonymous"

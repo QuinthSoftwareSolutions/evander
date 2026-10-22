@@ -285,10 +285,10 @@ def test_node_bootstraps_preserve_home_bin_precedence() -> None:
     playwright = (ROOT / "scripts" / "bootstrap_playwright_vm.sh").read_text(encoding="utf-8")
     frontend = (ROOT / "scripts" / "bootstrap_frontend_deps_vm.sh").read_text(encoding="utf-8")
 
-    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"' in playwright
-    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
-    assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in playwright
-    assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
+    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"' in playwright
+    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"' in frontend
+    assert 'export PATH="$HOME/toolchains/node-v24.22.1/bin:$PATH"' in playwright
+    assert 'export PATH="$HOME/toolchains/node-v24.22.1/bin:$PATH"' in frontend
 
 
 def test_guest_ripgrep_is_seeded_by_provider_bootstraps() -> None:

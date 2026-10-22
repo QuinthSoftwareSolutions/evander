@@ -238,7 +238,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_readonly_mounts" in text
     assert "/opt/evander/toolchains/dotnet" in text
     assert "/opt/evander/toolchains/dotnet-tools" in text
-    assert "/opt/evander/toolchains/node-v24.14.0" in text
+    assert "/opt/evander/toolchains/node-v24.22.1" in text
     assert "/opt/evander/playwright-runtime" in text
     assert "/opt/evander/ms-playwright" in text
     assert "/opt/evander/nuget-cache-ro" in text
@@ -653,7 +653,7 @@ def test_worker_node_toolchain_role_seeds_and_verifies_runner_node_cache() -> No
     assert "Verify worker Node toolchain binaries on host cache" in role
     assert "Verify Node toolchain is available inside runner container" in role
     assert "evander_runner_image_name" in role
-    assert "/opt/evander/toolchains/node-v24.14.0/bin" in role
+    assert "/opt/evander/toolchains/node-v24.22.1/bin" in role
     assert "node --version && npm --version && npx --version" in role
 
 

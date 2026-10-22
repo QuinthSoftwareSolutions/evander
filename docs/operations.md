@@ -1505,7 +1505,7 @@ timings, available at DEBUG, that help distinguish workflow persistence from pro
 
 ## VM Playwright Bootstrap
 
-- `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.22.1`.
 - It copies `playwright` and `playwright-core` into `~/playwright-runtime/node_modules`.
 - It copies the host Playwright browser cache into `~/.cache/ms-playwright`.
 - It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, `NODE_PATH`, `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, `PLAYWRIGHT_MCP_SANDBOX`, and `PLAYWRIGHT_MCP_EXECUTABLE_PATH` setup to `~/.profile`.
@@ -1514,7 +1514,7 @@ timings, available at DEBUG, that help distinguish workflow persistence from pro
 
 ## VM Frontend Dependency Bootstrap
 
-- `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.22.1`.
 - It snapshots each selected install root under `~/frontend-deps-runtime/install-roots/<relative-path>`.
 - Each install root must already contain `package.json` and `node_modules` on the host.
 - `bootstrap-frontend-in-vm` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.

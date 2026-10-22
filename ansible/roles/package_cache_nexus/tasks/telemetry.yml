@@ -1,0 +1,26 @@
+---
+- name: Acknowledge Nexus required base telemetry when explicitly enabled
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ evander_nexus_port }}/service/rest/v1/system/mandatory-telemetry-acknowledgement"
+    method: POST
+    user: "{{ evander_nexus_admin_user }}"
+    password: "{{ evander_nexus_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      acknowledgement: true
+    status_code: 204
+  when: evander_nexus_acknowledge_mandatory_telemetry | default(false) | bool
+  no_log: true
+
+- name: Explain required Nexus telemetry operator acknowledgement
+  ansible.builtin.debug:
+    msg: >-
+      Nexus 3.97+ requires separate base telemetry acknowledgement. Review
+      https://help.sonatype.com/en/nexus-repository-telemetry.html and acknowledge it
+      manually in Nexus, or explicitly set
+      evander_nexus_acknowledge_mandatory_telemetry=true. EULA acceptance does not
+      acknowledge telemetry. Allow Nexus outbound access to
+      nxrm.telemetry.sonatype.com; Community Edition becomes read-only after its
+      telemetry upload grace period expires if required uploads cannot complete.
+  when: not (evander_nexus_acknowledge_mandatory_telemetry | default(false) | bool)

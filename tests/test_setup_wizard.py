@@ -423,7 +423,12 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     ) in unit
     assert (
         "--readonly-mount "
-        "/var/lib/agent-worker/toolchain-cache/node-v24.14.0:"
+        "/var/lib/agent-worker/toolchain-cache/node-v24.22.1:"
+        "/opt/evander/toolchains/node-v24.22.1"
+    ) in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/node-v24.22.1:"
         "/opt/evander/toolchains/node-v24.14.0"
     ) in unit
     assert (

@@ -2,7 +2,7 @@ ARG RUNNER_BASE_IMAGE=evander-runner-base:latest
 FROM ${RUNNER_BASE_IMAGE}
 
 ENV HOME=/home/agent
-ENV PATH=/home/agent/bin:/opt/evander/toolchains/node-v24.14.0/bin:/usr/local/bin:/usr/bin:/bin
+ENV PATH=/home/agent/bin:/opt/evander/toolchains/node-v24.22.1/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY claude /usr/local/bin/claude
 
@@ -13,7 +13,7 @@ RUN chmod 0755 /usr/local/bin/claude \
       /opt/evander/ms-playwright /opt/evander/nuget-cache-ro \
     && cat >/etc/profile.d/evander.sh <<'PROFILE'
 export HOME="${HOME:-/home/agent}"
-export PATH="/opt/evander/toolchains/node-v24.14.0/bin:$PATH"
+export PATH="/opt/evander/toolchains/node-v24.22.1/bin:$PATH"
 if [ -f /opt/evander/toolchains/mssql-client/env.sh ]; then
   . /opt/evander/toolchains/mssql-client/env.sh
 fi
