@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Decompose control-plane orchestration (0.120.4)
+
+- Separate worker reference checkout, task worktree preparation, and dependency composition into per-invocation stages while retaining Git validation, recovery, locking, and persistence order.
+- Give workflow binding resolution, active-run snapshots, and graph activity reporting explicit invocation state and focused stages, preserving reference traces, report projections, and SQLite read budgets.
+- Separate Team blocker updates, task cancellation, and dispatch activity finalization into ordered applications inside their existing command and repository transactions.
+- Extract relay HTTP routing and provider request preparation, and share Azure/OpenAI-compatible forwarding while preserving request policy, streaming, steering delivery and retry, and usage accounting.
+
 ## 2026-10-22 - Simplify control-plane ownership boundaries (0.120.3)
 
 - Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
