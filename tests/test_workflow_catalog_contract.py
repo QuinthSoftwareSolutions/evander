@@ -58,6 +58,15 @@ def pr_trigger_field_keys():
     ]
 
 
+def test_session_reasoning_default_is_configurable_in_workflow_editor(catalog_payload) -> None:
+    node = next(n for n in catalog_payload["nodes"] if n["type"] == "effect:session:set-reasoning-effort")
+    fields = {f["key"]: f for f in node["fields"]}
+    assert fields["reasoning_effort"]["required"] is True
+    assert fields["reasoning_effort"]["bindable"] is True
+    assert fields["reasoning_effort"]["kind"] == "json"
+    assert {"target", "session_id", "vm_name"} <= fields.keys()
+
+
 def test_workflow_catalog_descriptions(catalog_payload) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     event_validator = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:event:validate")

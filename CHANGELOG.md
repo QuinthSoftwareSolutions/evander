@@ -1,10 +1,15 @@
 # Changelog
 
-## 2026-10-22 - Allow clean task ownership handoffs (0.119.2)
+## 2026-10-22 - Allow clean task ownership handoffs (0.120.1)
 
 - Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
 - Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
 - Give existing checkout-preparation blockers one corrected retry after deployment without changing checkout identities, accepted recoveries or composition-conflict bindings. Suppress a persistent failure again after that attempt.
+
+## 2026-10-22 - Configure persistent reasoning controls in workflows (0.120.0)
+
+- Add a directory-scoped workflow effect for setting or clearing an existing session's native reasoning default, using the existing provider/model validation and preserving running turns and other session settings.
+- Expose the saved default in session-context queries and publish the node in the workflow editor, so operator-owned chat commands can override automatic routing until explicitly reset without hard-coded command syntax.
 
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
