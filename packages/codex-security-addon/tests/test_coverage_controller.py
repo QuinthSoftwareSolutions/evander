@@ -170,7 +170,10 @@ def running(tmp_path):
         "a" * 32,
         request(),
         "root/project",
-        {"revision": "d" * 40, "entries": [entry("a/a.py"), entry("b/b.py"), entry("c/c.py")]},
+        {
+            "revision": "d" * 40,
+            "entries": [entry(path, size=300_000) for path in ("a/a.py", "b/b.py", "c/c.py")],
+        },
         {"model": "example"},
     )
     controller.store.create(state)
@@ -234,6 +237,117 @@ def test_full_controller_preserves_native_files_and_runs_at_most_two_reviews(run
         coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
         assert coverage["progress"]["files_total"] == 3
         assert all(value["receipt"] for value in coverage["files"].values())
+
+
+def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(running):
+    controller, handle, worker, finish = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    # A legacy journal has one small scope per folder, with no batch-policy marker.
+    source.pop("batching_version")
+    source["inventory"] = [{**item, "size": 20} for item in source["inventory"]]
+    source["inventory_digest"] = c.inventory_digest(source["inventory"])
+    controller.store.save(source)
+    controller.poll(handle)
+    finish()
+    stopped = controller.cancel(handle)
+    assert stopped.cleanup_confirmed
+    source = controller.store.get(source["scan_id"], "root/project")
+    assert source["architecture"] is not None
+    assert len([item for item in source["tasks"].values() if item["kind"] == "files"]) == 3
+    assert all(
+        not item["attempts"] for item in source["tasks"].values() if item["kind"] == "files"
+    )
+    before = deepcopy(source)
+    artifact = controller.artifacts.get(source["archive_key"])
+    original_archive = artifact.blob_path.read_bytes()
+    command = controller.provider._command
+    controller.provider._command = lambda runtime, sid, args: (
+        {"coverage_runtime": 1, "revision": source["revision"], "entries": source["inventory"]}
+        if args[0] == "coverage-inventory" else command(runtime, sid, args)
+    )
+    controller.runtime.admin_service = SimpleNamespace(
+        managed_git_admin=SimpleNamespace(
+            get_repository=lambda *_: None,
+            pin_retained_snapshot=lambda *_, **__: None,
+        )
+    )
+    controller.verify_inventory = lambda _: None
+    continued_request = request(resume_from_scan_id=source["scan_id"])
+    resumed = controller.start("b" * 32, continued_request)
+    assert controller.start("b" * 32, continued_request) == resumed
+    journal = controller.store.get("b" * 32, "root/project")
+    scopes = [item for item in journal["tasks"].values() if item["kind"] == "files"]
+    assert [item["paths"] for item in scopes] == [["a/a.py", "b/b.py", "c/c.py"]]
+    assert journal["proofs"] == source["proofs"]
+    assert journal["batching_version"] == 2
+    for _ in range(6):
+        result = controller.poll(resumed)
+        if result.status != "running":
+            break
+        finish()
+    assert result.success and result.cleanup_confirmed
+    assert result.coverage_progress["files_reviewed"] == 3
+    assert not worker.active
+    assert controller.store.get(source["scan_id"], "root/project") == before
+    assert artifact.blob_path.read_bytes() == original_archive
+    with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
+        manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+        assert manifest["batching_version"] == coverage["batching_version"] == 2
+        assert source["proofs"][0]["archive_sha256"] in {
+            item["archive_sha256"] for item in manifest["sources"]
+        }
+
+
+@pytest.mark.parametrize("kind", ["architecture", "files", "boundary"])
+def test_cancellation_preserves_results_accepted_while_stopping(running, kind):
+    controller, handle, worker, finish = running
+    for _ in range(12):
+        controller.poll(handle)
+        accepted = [item["id"] for _, item, _ in worker.active.values() if item["kind"] == kind]
+        finish()
+        if accepted:
+            result = controller.cancel(handle)
+            break
+    assert accepted and result.cleanup_confirmed
+    journal = controller.store.get(handle.metadata["scan_id"], "root/project")
+    assert all(journal["tasks"][identity]["status"] == "completed" for identity in accepted)
+    assert not worker.active
+
+
+def test_cancellation_preserves_partial_scope_splits_for_continuation(running):
+    controller, handle, worker, finish = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    source = make_state(
+        source["scan_id"], request(), "root/project",
+        {"revision": source["revision"], "entries": [entry(p) for p in source["files"]]},
+        source["route"],
+    )
+    controller.store.save(source)
+    controller.poll(handle)
+    finish()
+    controller.poll(handle)
+    execution_id, (_, item, attempt) = next(iter(worker.active.items()))
+    unit = c_receipt(source, item, closed=False)
+    native_archive(controller.artifacts, attempt["scan_id"], unit)
+    worker.results[execution_id] = {
+        "status": "failed", "coverage": "partial", "coverage_unit": unit,
+    }
+
+    result = controller.cancel(handle)
+    assert result.cleanup_confirmed
+    stopped = controller.store.get(source["scan_id"], "root/project")
+    assert stopped["tasks"][item["id"]]["status"] == "split"
+    assert progress(stopped)["files_reviewed"] == 0
+    continued = make_state(
+        "b" * 32, request(resume_from_scan_id=source["scan_id"]), "root/project",
+        {"revision": source["revision"], "entries": source["inventory"]},
+        source["route"], previous=stopped,
+    )
+    queued = c.pending(continued)
+    assert len(queued) == 2
+    assert all(child["parent"] == item["id"] for child in queued)
+    assert {p for child in queued for p in child["paths"]} == set(item["paths"])
 
 
 def test_sealed_advisory_questions_allow_completion_and_are_retained_in_reports(running):

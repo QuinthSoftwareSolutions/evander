@@ -747,7 +747,7 @@ class CoverageController:
                     attempt["cleanup_confirmed"] = True
                 except (ValueError, RuntimeError, OSError):
                     attempt["cleanup_pending"] = True
-                if state["stop_reason"]:
+                if state["stop_reason"] and item["status"] not in {"completed", "split"}:
                     item["status"] = "blocked"
             self.cleanup(state)
             plan_boundaries(state)
@@ -928,6 +928,7 @@ class CoverageController:
             "coverage.json": {
                 "documentType": "evander.security-coverage",
                 "version": 1,
+                "batching_version": state.get("batching_version", 1),
                 "revision": state["revision"],
                 "inventory_digest": state["inventory_digest"],
                 "inventory": state["inventory"],
@@ -956,6 +957,7 @@ class CoverageController:
                 "revision": state["revision"],
                 "lineage": state["lineage"],
                 "coverage_policy": "all_tracked_files",
+                "batching_version": state.get("batching_version", 1),
                 "completed_at": state["finished_at"],
                 "stop_reason": state["stop_reason"],
                 "uncredited_sources": state["uncredited"],

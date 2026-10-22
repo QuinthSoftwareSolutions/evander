@@ -31,12 +31,12 @@ def request(**kwargs):
     )
 
 
-def state(paths=("src/a.py", "src/b.py", "tests/a.py")):
+def state(paths=("src/a.py", "src/b.py", "tests/a.py"), *, file_size=20):
     return c.make_state(
         "a" * 32,
         request(),
         "root/project",
-        {"revision": "d" * 40, "entries": [entry(p) for p in paths]},
+        {"revision": "d" * 40, "entries": [entry(p, size=file_size) for p in paths]},
         {"model": "example"},
     )
 
@@ -85,7 +85,7 @@ def mapping(s):
 
 
 def test_scopes_split_without_crediting_partial_or_late_results_and_keep_findings():
-    s = state()
+    s = state(file_size=200_000)
     mapping(s)
     assert c.progress(s)["files_reviewed"] == 0
     first, second = c.pending(s)
@@ -198,7 +198,7 @@ def test_advisory_questions_never_override_unfinished_static_work(unfinished):
 
 
 def test_advisory_questions_and_accepted_coverage_survive_resume_without_becoming_work():
-    s = state(("a/a.py", "b/b.py"))
+    s = state(("a/a.py", "b/b.py"), file_size=300_000)
     mapping(s)
     question = {
         "question": "Which external application calls this?",
@@ -255,7 +255,7 @@ def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
 
 
 def test_parallel_boundaries_close_independently_and_keep_global_work_until_resolved(tmp_path):
-    s = state(("a/a.py", "b/b.py"))
+    s = state(("a/a.py", "b/b.py"), file_size=300_000)
     mapping(s)
     for item in list(c.pending(s)):
         finish(s, item)
@@ -342,7 +342,7 @@ def test_partial_boundary_splits_keep_each_outstanding_item_assigned_once():
 
 
 def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
-    s = state(("a/a.py", "b/a.py", "c/a.py"))
+    s = state(("a/a.py", "b/a.py", "c/a.py"), file_size=300_000)
     mapping(s)
     store = c.CoverageStore(tmp_path)
     store.create(s)
@@ -358,7 +358,7 @@ def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
 
 
 def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
-    s = state(("a/a.py", "b/a.py"))
+    s = state(("a/a.py", "b/a.py"), file_size=300_000)
     mapping(s)
     finish(s, c.pending(s)[0])
     s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
