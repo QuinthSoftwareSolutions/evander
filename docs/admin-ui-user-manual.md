@@ -289,13 +289,19 @@ Common tasks:
    logging the profile in as a different account.
 5. Inspect sign-in state, account identity, plan, safe rate-limit buckets/reset timestamps, usage
    summary, active jobs, and queued prompts. No access or refresh token is shown.
-6. Rename, enable, disable, log out, or refresh a profile as needed. Profiles are not hard-deleted
-   in V1. Re-enable, successful login, and refresh wake durable queue reconciliation.
+6. Rename, enable, disable, log out, or refresh a profile as needed. Re-enable, successful login,
+   and refresh wake durable queue reconciliation.
+7. Use **Delete** and confirm to remove an unused profile and its saved worker login. Finish active
+   jobs, drain or cancel queued prompts, and reassign or remove unexpired sessions first. The
+   server checks session bindings across all directories on that worker. Recorded usage history
+   remains available. Deleting a profile does not cancel the provider's paid subscription.
 
 Signed-out, disabled, unavailable, and rate-limited subscription work remains queued without an
 automatic expiry or metered API fallback. FIFO order is enforced within one profile while other
-profiles can run concurrently. The reserved `default` profile represents legacy profile-less
-sessions and keeps the worker's existing login compatible.
+profiles can run concurrently. An existing `default` profile represents legacy profile-less
+sessions and keeps the worker's existing login compatible. New workers do not create an empty
+Default profile, and deleting it survives worker restarts. An existing singleton login is migrated
+only when the profile registry is first created.
 
 V1 accepts ChatGPT device login only. Business and Enterprise access tokens are not a profile
 login option in this release.

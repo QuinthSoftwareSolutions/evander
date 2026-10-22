@@ -13,12 +13,17 @@ from evander.execution.container_worker_client import (
 )
 from evander.config import GatewayConfig
 from evander.codex_auth import (
+    CodexAuthMode,
     CodexSubscriptionResetRequest,
+    effective_codex_auth_mode,
+    effective_subscription_profile_id,
     normalize_subscription_profile_id,
     normalize_subscription_quota_limit_id,
     normalize_subscription_quota_window_minutes,
 )
 from evander.models import AuditEvent
+from evander.repositories.session_manifests import SessionManifestRepository
+from evander.subscription_profile_bindings import subscription_profile_binding_lock
 
 
 class CodexAuthProviderConfigPort(Protocol):
@@ -35,6 +40,10 @@ class CodexSubscriptionResetConflict(ValueError):
     """The configured destination no longer matches the redemption attempt."""
 
 
+class CodexSubscriptionProfileConflict(ValueError):
+    """A profile is still referenced or the selected worker changed."""
+
+
 @dataclass(frozen=True, slots=True)
 class CodexAuthAdminDependencies:
     provider_config: CodexAuthProviderConfigPort
@@ -42,6 +51,7 @@ class CodexAuthAdminDependencies:
     runtime_dir: Path | None = None
     wake_reconciliation: Callable[[], None] | None = None
     client_factory: Callable[..., ContainerWorkerClient] = ContainerWorkerClient
+    session_repository: SessionManifestRepository | None = None
 
 
 class CodexAuthAdminService:
@@ -212,6 +222,81 @@ class CodexAuthAdminService:
             )
             self._wake()
         return result
+
+    def delete_profile(
+        self,
+        directory_path: str,
+        profile_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_user_id: str | None,
+    ) -> dict[str, Any]:
+        profile_id = str(normalize_subscription_profile_id(profile_id, allow_none=False))
+        expected_worker = payload.get("expected_worker_url")
+        if not isinstance(expected_worker, str) or not expected_worker.strip():
+            raise ValueError("expected_worker_url is required")
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        worker_url = self._normalize_worker_url(config.container_worker_base_url)
+        if worker_url != self._normalize_worker_url(expected_worker):
+            raise CodexSubscriptionProfileConflict("Worker changed; refresh subscriptions before deleting")
+        if self._deps.runtime_dir is None:
+            raise CodexSubscriptionProfileConflict("Runtime directory is unavailable")
+        with subscription_profile_binding_lock(self._deps.runtime_dir, worker_url, profile_id):
+            return self._delete_unused_profile(
+                directory_path, profile_id, config=config, actor_user_id=actor_user_id
+            )
+
+    def _delete_unused_profile(
+        self, directory_path: str, profile_id: str, *, config: GatewayConfig,
+        actor_user_id: str | None,
+    ) -> dict[str, Any]:
+        worker_url = self._normalize_worker_url(config.container_worker_base_url)
+        repository = self._deps.session_repository
+        if repository is None:
+            raise CodexSubscriptionProfileConflict("Session inventory is unavailable")
+        now = datetime.now(UTC)
+        for session in repository.read_all().values():
+            if session.expires_at <= now:
+                continue
+            session_config = self._deps.provider_config.resolve_for_session_id(session.session_id)
+            selected = effective_subscription_profile_id(session=session)
+            if selected is None and effective_codex_auth_mode(
+                session=session, config=session_config
+            ) is CodexAuthMode.CHATGPT_SUBSCRIPTION:
+                selected = "default"
+            if selected == profile_id and self._normalize_worker_url(
+                session_config.container_worker_base_url
+            ) == worker_url:
+                raise CodexSubscriptionProfileConflict(
+                    "Subscription profile is assigned to an unexpired session; "
+                    "reassign or remove its sessions before deleting"
+                )
+        if self._deps.runtime_dir is not None:
+            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+            records = AgentPromptQueueStore(
+                self._deps.runtime_dir / "queued-agent-prompts.json"
+            ).read_all()
+            for record in records.values():
+                selected = record.subscription_profile_id
+                if selected is None and str(record.queue_reason or "").startswith("subscription_"):
+                    selected = "default"
+                if selected != profile_id:
+                    continue
+                record_worker = self._worker_url_for_record(record)
+                if record_worker in ("", worker_url):
+                    raise CodexSubscriptionProfileConflict(
+                        "Subscription profile has queued prompts; drain or cancel them before deleting"
+                    )
+        try:
+            return self._mutate(
+                "codex_subscription_profile_delete", directory_path, actor_user_id,
+                lambda: self._client_for_config(config).delete_codex_auth_profile(profile_id),
+            )
+        except ContainerWorkerClientError as exc:
+            if exc.status_code == 409:
+                raise CodexSubscriptionProfileConflict("Subscription profile has active jobs") from exc
+            raise
 
     def start_profile_device_login(
         self,

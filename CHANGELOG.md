@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Delete unused subscription profiles (0.118.0)
+
+- Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.
+- Stop creating an empty Default profile on worker startup. Preserve existing legacy logins, allow their profile to be deleted, and retain other profiles and recorded usage history.
+- Normalize worker deletion IDs before checking active jobs, and coordinate deletion with new, reassigned, or renewed session bindings across control-plane processes. Revalidate profiles before saving a new live binding.
+
 ## 2026-10-22 - Preserve symlink identity in tracked security reviews (0.117.8)
 
 - Review assigned symlinks through deterministic Git metadata projections so the pinned SDK can assess internal, broken, external, cyclic and directory links without following their destinations.

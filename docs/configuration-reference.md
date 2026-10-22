@@ -1386,7 +1386,10 @@ Omitting the field on an existing-agent upsert preserves its current profile.
 An upsert can select another enabled profile, and setting `codex_auth_mode` to
 `metered_api` clears the stored profile. Legacy profile-less subscription
 sessions resolve to reserved profile `default`; newly created subscription
-agents in Admin Web require a named selection.
+agents in Admin Web require a named selection. Workers do not create an empty
+Default profile. Admin Web can delete an unused profile and its saved worker
+login after active jobs, queued prompts, and unexpired session bindings have
+been removed. Deleted profiles are not recreated on worker restart.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime

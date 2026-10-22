@@ -957,6 +957,23 @@ It also shows banked resets and the provider-reported credit balance. Credits sh
 when reported, "0" when the provider explicitly reports no credits, and "Unavailable" when a
 balance is missing or invalid. These credits are separate from earned rate-limit resets.
 
+Use **Delete** to remove an unused profile and its worker-held login. Deletion requires the same
+unlocked root-owner permission, checks that the worker selection is unchanged, and refuses active
+jobs, queued prompts, or unexpired session bindings across directories on that worker. Reassign or
+remove bound sessions and drain or cancel pending work first. Deletion retains recorded usage
+history and does not cancel the provider's paid subscription. Empty workers no longer create a
+Default profile; existing legacy singleton logins are migrated only before the registry exists,
+so a deleted profile stays deleted after restart.
+
+The Admin API is `DELETE /api/admin/codex-subscriptions/{profile_id}?directory_path=root`
+with JSON body `{"expected_worker_url":"http://worker.example.test:11888"}`. The worker API is
+`DELETE /v1/codex-auth/profiles/{profile_id}` and requires its bearer token. Both deletions are
+idempotent. Upgrade the worker before enabling the Admin Web deletion action.
+Deletion and the final validation/save of a subscription session share a per-profile lock across
+control-plane processes. If deletion wins while worker preparation is running, creation fails
+without saving a binding to the removed profile. Profile reassignment and expired-session renewal
+use the same check; updates retaining an existing unexpired binding can still use a disabled profile.
+
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
 durably queues the original prompt. A rate limit reached during a turn follows the same replay

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -61,6 +62,7 @@ def worker(tmp_path, monkeypatch, request):
     selected = []
     broker = SimpleNamespace(external_tokens=lambda: tokens)
     registry = SimpleNamespace(
+        use_profile=lambda _profile: nullcontext(),
         preflight=lambda profile: selected.append(profile),
         broker=lambda profile: broker,
         refresh_tokens=lambda profile, **kwargs: tokens,

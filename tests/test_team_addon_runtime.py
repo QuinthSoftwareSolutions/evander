@@ -9842,6 +9842,7 @@ def test_changed_preparation_generation_enqueues_receipted_attempt_cleanup(
         attempt_id="gitprep-generation-b",
         worktree_path="/home/agent/worktrees/repo/task-prep-b",
         preparation_generation="b" * 20,
+        activation_sequence=1,
         **common,
     )
 

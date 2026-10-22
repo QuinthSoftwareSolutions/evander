@@ -35,6 +35,7 @@ from evander.models import (
     tool_name_value,
 )
 from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,12 @@ class SessionAdminService:
     def _sessions_by_id(self) -> dict[str, Any]:
         repository = self._session_repository()
         return {session.session_id: session for session in repository.list_sessions()}
+
+    def _save_subscription_session(self, manifest: Any) -> None:
+        save_session_with_subscription_profile(
+            config=self._deps.config, repository=self._session_repository(), session=manifest,
+            provider_config=self._deps.runtime.provider_config,
+        )
 
     def list_sessions(
         self,
@@ -120,10 +127,10 @@ class SessionAdminService:
             target, self._sessions_by_id()
         )
         previous_expires_at = manifest.expires_at
-        manifest.expires_at = session_helpers.utc_now() + session_helpers.parse_session_extension(
-            extension
+        manifest = manifest.model_copy(
+            update={"expires_at": session_helpers.utc_now() + session_helpers.parse_session_extension(extension)}
         )
-        self._session_repository().upsert_session(manifest)
+        self._save_subscription_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -426,7 +433,7 @@ class SessionAdminService:
                 ),
             }
         )
-        self._session_repository().upsert_session(updated)
+        self._save_subscription_session(updated)
         from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
         AgentPromptQueueStore(

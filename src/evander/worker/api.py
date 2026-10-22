@@ -30,7 +30,7 @@ from .models import (
     WorkerTaskWorktreeRequest,
 )
 from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError
-from .codex_auth_profiles import CodexAuthBrokerRegistry
+from .codex_auth_profiles import CodexAuthBrokerRegistry, CodexAuthProfileInUseError
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
@@ -112,7 +112,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         return JSONResponse(record.model_dump(mode="json"))
 
     async def codex_auth_status(_: Request) -> JSONResponse:
-        return JSONResponse(await run_in_threadpool(daemon.codex_auth_status))
+        try:
+            return JSONResponse(await run_in_threadpool(daemon.codex_auth_status))
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
 
     async def list_codex_auth_profiles(_: Request) -> JSONResponse:
         return JSONResponse(await run_in_threadpool(daemon.list_codex_auth_profiles))
@@ -153,6 +156,19 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def delete_codex_auth_profile(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.delete_codex_auth_profile, request.path_params["profile_id"]
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexAuthProfileInUseError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except OSError:
+            return JSONResponse({"error": "Unable to remove subscription credentials"}, status_code=502)
         return JSONResponse(record)
 
     async def start_codex_profile_device_login(request: Request) -> JSONResponse:
@@ -617,6 +633,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/codex-auth", codex_auth_status, methods=["GET"]),
             Route("/v1/codex-auth/profiles", list_codex_auth_profiles, methods=["GET"]),
             Route("/v1/codex-auth/profiles", create_codex_auth_profile, methods=["POST"]),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}",
+                delete_codex_auth_profile,
+                methods=["DELETE"],
+            ),
             Route(
                 "/v1/codex-auth/profiles/{profile_id}",
                 codex_auth_profile_status,

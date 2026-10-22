@@ -87,6 +87,7 @@ class CodexAuthBroker:
         self._refresh_skew_seconds = max(0, int(refresh_skew_seconds))
         self._lock = threading.RLock()
         self._managed_client: CodexManagedAuthClient | None = None
+        self._closed = False
         self._device_logins: dict[str, dict[str, Any]] = {}
         self._login_notifications: SimpleQueue[dict[str, Any]] = SimpleQueue()
         self._lifecycle_file = (self.auth_home / ".broker.lock").open("a+")
@@ -260,6 +261,9 @@ class CodexAuthBroker:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self._managed_client is not None:
                 self._managed_client.close()
                 self._managed_client = None
@@ -269,6 +273,8 @@ class CodexAuthBroker:
                 self._lifecycle_file.close()
 
     def _ensure_client(self) -> CodexManagedAuthClient:
+        if self._closed:
+            raise CodexAuthBrokerError("Codex auth broker is closed")
         client = self._managed_client
         if client is not None and client.running:
             return client
