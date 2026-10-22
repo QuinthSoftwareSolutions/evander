@@ -15,6 +15,7 @@ from evander_team_addon.models import (
     DependencyGitSource,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
     GitWorkContext,
@@ -658,6 +659,12 @@ def test_settled_parallel_remediations_are_combined_into_one_successor() -> None
     state = _candidate_correction_state(gate_kind="review")
     first = _independent_remediation(state)
     second = _independent_remediation(state, suffix="-second", commit_sha="b" * 40)
+    second.initial_release_disposition = DeliverableInitialReleaseDisposition(
+        state="not_planned",
+        decided_at=datetime.now(tz=UTC),
+        decided_by_actor="coder",
+        reason="Release this code only through the candidate successor.",
+    )
     result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
 
     release_id = _build_release_package(
@@ -1786,6 +1793,161 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert state.git_work_contexts[context_id].base_commit == CORRECTION_COMMIT
 
 
+def _downstream_planning_evidence(
+    state: TeamState, *, planning_base: str = "correction"
+) -> Deliverable:
+    base_branch, base_commit = (
+        ("team/team/releases/release-predecessor", CANDIDATE_COMMIT)
+        if planning_base == "candidate"
+        else ("agents/session-coder/correction", CORRECTION_COMMIT)
+    )
+    task = AgentTask(
+        id="downstream-plan",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Plan the next phase",
+        description="Inspect the accepted correction and publish a plan.",
+        created_by_agent_id="lead",
+        originating_task_id="correction-task",
+        git_base_branch=base_branch,
+        git_base_commit_sha=base_commit,
+        deliverable_ids=["planning-evidence"],
+    )
+    deliverable = Deliverable(
+        id="planning-evidence",
+        task_id=task.id,
+        producer_agent_id="coder",
+        summary="Accepted phase plan without source changes.",
+        artifact_refs=["artifact:phase-plan"],
+        state=TeamRecordState.ACCEPTED,
+    )
+    state.tasks[task.id] = task
+    state.deliverables[deliverable.id] = deliverable
+    state.git_work_contexts["planning-context"] = GitWorkContext(
+        id="planning-context",
+        agent_id="coder",
+        task_id=task.id,
+        agent_branch="agents/session-coder/planning",
+        base_branch=task.git_base_branch,
+        base_commit=base_commit,
+    )
+    return deliverable
+
+
+@pytest.mark.parametrize("gate_kind", ["verification", "review"])
+@pytest.mark.parametrize("not_planned", [False, True])
+@pytest.mark.parametrize("planning_base", ["correction", "candidate"])
+def test_artifact_only_downstream_plan_preserves_reviewed_correction_successor(
+    tmp_path: Path,
+    gate_kind: str,
+    not_planned: bool,
+    planning_base: str,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    plan = _downstream_planning_evidence(seeded, planning_base=planning_base)
+    if not_planned:
+        plan.initial_release_disposition = DeliverableInitialReleaseDisposition(
+            state="not_planned",
+            decided_at=datetime.now(tz=UTC),
+            decided_by_actor="coder",
+            reason="Planning evidence has no code to release.",
+        )
+    original_plan = plan.model_dump(mode="json")
+    original_predecessor = seeded.release_packages["release-predecessor"].model_dump(mode="json")
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    successor_ids = result.get("created_successor_release_package_ids", [])
+    assert len(successor_ids) == 1, result
+    successor = state.release_packages[successor_ids[0]]
+    assert successor.deliverable_ids == ["correction-deliverable"]
+    assert successor.verification_waivers == []
+    promotion = state.git_promotions[successor.git_promotion_record_ids[0]]
+    assert promotion.base_commit_sha == CANDIDATE_COMMIT
+    assert [source.expected_commit_sha for source in promotion.sources] == [CORRECTION_COMMIT]
+    assert state.deliverables[plan.id].model_dump(mode="json") == original_plan
+    assert (
+        state.release_packages["release-predecessor"].model_dump(mode="json")
+        == original_predecessor
+    )
+    outbox_before_retry = repository.list_outbox_records()
+
+    retry = CandidateCorrectionReconciliationService(repository).reconcile()
+    assert retry["changed"] is False
+    assert len(repository.read().release_packages) == 2
+    assert repository.list_outbox_records() == outbox_before_retry
+
+
+@pytest.mark.parametrize(
+    "git_claim",
+    [
+        "agent_branch",
+        "accepted_pinned_ref",
+        "promotion_record_ids",
+        "review_manifest",
+        "composition",
+    ],
+)
+@pytest.mark.parametrize("planning_base", ["correction", "candidate"])
+def test_downstream_git_claim_without_review_still_blocks_successor(
+    tmp_path: Path,
+    git_claim: str,
+    planning_base: str,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    deliverable = _downstream_planning_evidence(seeded, planning_base=planning_base)
+    if git_claim == "review_manifest":
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha=CORRECTION_COMMIT,
+            reviewed_commit_sha=RECOVERY_COMMIT,
+            tree_hash="b" * 40,
+            commit_shas=[RECOVERY_COMMIT],
+            changed_paths=["M\tsrc/Recovery.cs"],
+        )
+    elif git_claim == "composition":
+        deliverable.dependency_composition_manifest = DependencyCompositionManifest(
+            target_task_id=deliverable.task_id,
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch="agents/session-coder/correction",
+            base_commit_sha=CORRECTION_COMMIT,
+            base_tree_hash="f" * 40,
+            dependency_git_sources=[
+                DependencyGitSource(
+                    dependency_task_id="correction-task",
+                    deliverable_id="correction-deliverable",
+                    branch="agents/session-coder/correction",
+                    commit_sha=CORRECTION_COMMIT,
+                )
+            ],
+            source_fingerprint="test-fingerprint",
+            composed_commit_sha=RECOVERY_COMMIT,
+            composed_tree_hash="b" * 40,
+        )
+    else:
+        value = {
+            "agent_branch": "agents/session-coder/recovery",
+            "accepted_pinned_ref": "refs/evander/team-reviews/recovery",
+            "promotion_record_ids": ["recovery-promotion"],
+        }[git_claim]
+        deliverable.git_refs = DeliverableGitRefs(**{git_claim: value})
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    assert result.get("created_successor_release_package_ids", []) == []
+    assert (
+        "no accepted review with an immutable reviewed commit"
+        in result["candidate_correction_errors"]["release-predecessor"]
+    )
+    assert len(state.release_packages) == 1
+    assert any(blocker.state == TeamBlockerState.OPEN for blocker in state.blockers.values())
+
+
 @pytest.mark.parametrize("gate_kind", ["verification", "review"])
 def test_accepted_downstream_recovery_without_agent_verification_creates_successor(
     tmp_path: Path,
@@ -1820,6 +1982,12 @@ def test_accepted_downstream_recovery_without_agent_verification_creates_success
         task_id=recovery_task.id,
         producer_agent_id="coder",
         summary="Verified downstream repair.",
+        initial_release_disposition=DeliverableInitialReleaseDisposition(
+            state="not_planned",
+            decided_at=datetime.now(tz=UTC),
+            decided_by_actor="coder",
+            reason="Release through the rejected candidate's successor.",
+        ),
         git_refs=DeliverableGitRefs(
             agent_branch="agents/session-coder/downstream-recovery",
             commit_sha=RECOVERY_COMMIT,

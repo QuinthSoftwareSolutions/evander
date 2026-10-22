@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Preserve correction sources beside planning evidence (0.118.2)
+
+- Require a deliverable's own Git provenance before automatically including it as replacement or additional code for a rejected release. An inherited checkout base on artifact-only planning evidence no longer displaces the accepted coding correction or adds the plan back into its release.
+- Preserve immutable review and release validation for partial Git claims and real code recoveries, including those marked as not planned for an initial release.
+
 ## 2026-10-22 - Bind shared-browser credentials to approved connections (0.118.1)
 
 - Replace directory-editable environment credential selectors with encrypted platform-managed references bound to the complete worker, relay or speech destination and directory scope. Require owner access and unlocked privileges for connection or credential changes, while preserving ordinary browser management and agent tools.
