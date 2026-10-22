@@ -448,7 +448,7 @@ fallback packages are worker-level caches mounted read-only into containers:
 
 - `/opt/evander/toolchains/dotnet`
 - `/opt/evander/toolchains/dotnet-tools`
-- `/opt/evander/toolchains/node-v24.14.0`
+- `/opt/evander/toolchains/node-v24.22.1`
 - `/opt/evander/playwright-runtime`
 - `/opt/evander/ms-playwright`
 - `/opt/evander/nuget-cache-ro`
@@ -475,7 +475,7 @@ and runs an offline `dotnet restore` smoke test inside the runner. Use
 global-packages tarball instead of restoring only that support package from the Ansible control
 machine. The older `HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
 `evander_worker_dotnet_restore_support_archive_path` names remain accepted for compatibility.
-Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
+Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.22.1`; set
 `evander_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy

@@ -371,7 +371,7 @@ def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
         docker_network="none",
         read_only_mounts=[
             "/cache/dotnet:/opt/evander/toolchains/dotnet",
-            "/cache/node:/opt/evander/toolchains/node-v24.14.0:ro",
+            "/cache/node:/opt/evander/toolchains/node-v24.22.1:ro",
         ],
     )
 
@@ -379,7 +379,48 @@ def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
 
     assert "-v" in args
     assert "/cache/dotnet:/opt/evander/toolchains/dotnet:ro" in args
-    assert "/cache/node:/opt/evander/toolchains/node-v24.14.0:ro" in args
+    assert "/cache/node:/opt/evander/toolchains/node-v24.22.1:ro" in args
+
+
+@pytest.mark.parametrize("deployment", ["setup", "ansible"])
+def test_worker_upgrade_keeps_saved_node_profile_on_patched_runtime(tmp_path, deployment):
+    from evander.setup.engine import LOCAL_CONTAINER_WORKER_READONLY_MOUNTS
+
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker", "session-1")
+    old_cache = tmp_path / "node-v24.14.0"
+    patched_cache = tmp_path / "node-v24.22.1"
+    old_cache.mkdir()
+    patched_cache.mkdir()
+    old_destination = "/opt/evander/toolchains/node-v24.14.0"
+    previous = DockerContainerRuntime(read_only_mounts=[f"{old_cache}:{old_destination}"])
+    previous._build_run_args(request=_request(), record=_record(paths), paths=paths)
+
+    if deployment == "setup":
+        configured = [f"{source}:{destination}"
+                      for source, destination in LOCAL_CONTAINER_WORKER_READONLY_MOUNTS]
+    else:
+        import yaml
+        from jinja2.nativetypes import NativeEnvironment
+
+        root = Path(__file__).resolve().parents[1]
+        defaults = yaml.safe_load((root / "ansible/group_vars/evander_worker_hosts.yml").read_text())
+        environment = NativeEnvironment()
+        environment.filters["bool"] = bool
+        values = {name: str(tmp_path / name) for name in defaults if name.endswith("_cache_path")}
+        values.update(evander_worker_dotnet_toolchain_enabled=False,
+                      evander_worker_mssql_client_toolchain_enabled=False)
+        configured = environment.from_string(defaults["evander_worker_readonly_mounts"]).render(**values)
+    node_mounts = []
+    for mount in configured:
+        source, destination = mount.split(":", 1)
+        if "/toolchains/node-" in destination:
+            assert Path(source).name in {"node-v24.22.1", "evander_worker_node_cache_path"}
+            node_mounts.append(f"{patched_cache}:{destination}")
+    upgraded = DockerContainerRuntime(read_only_mounts=node_mounts)
+    args = upgraded._build_run_args(request=_request(), record=_record(paths), paths=paths)
+    assert f"{patched_cache}:{old_destination}:ro" in args
+    assert f"{patched_cache}:/opt/evander/toolchains/node-v24.22.1:ro" in args
+    assert not any(str(old_cache) in arg for arg in args)
 
 
 def test_session_pins_bundle_across_selector_switch_and_daemon_restart(tmp_path: Path) -> None:

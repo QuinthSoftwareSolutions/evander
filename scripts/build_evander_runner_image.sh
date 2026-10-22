@@ -18,7 +18,7 @@ Flags:
 
 Environment:
   HOST_CODEX_ROOT          Host Codex package root.
-                           Default: ~/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex
+                           Default: ~/.nvm/versions/node/v24.22.1/lib/node_modules/@openai/codex
   HOST_CODEX_BINARY_PATH   Direct path to the Codex binary to copy into the image.
   HOST_CODEX_CODE_MODE_HOST_PATH
                            Direct path to the codex-code-mode-host executable.
@@ -74,7 +74,7 @@ source "${SCRIPT_DIR}/lib/runner_archive_cache.sh"
 CALLER_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 
-HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
+HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.22.1/lib/node_modules/@openai/codex}"
 HOST_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH:-}"
 HOST_CODEX_CODE_MODE_HOST_PATH="${HOST_CODEX_CODE_MODE_HOST_PATH:-}"
 HOST_CODEX_PLATFORM_PACKAGE="${HOST_CODEX_PLATFORM_PACKAGE:-@openai/codex-linux-x64}"

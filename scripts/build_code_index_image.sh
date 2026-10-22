@@ -4,7 +4,7 @@ set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'HELP'
 Build and save the isolated repository indexing image; does not deploy it.
-Requires Docker, Git, .NET SDK 10.0.111, Node 24.20.0 and Evander's Python 3.12 venv.
+Requires Docker, Git, .NET SDK 10.0.113, Node 24.22.1 and Evander's Python 3.12 venv.
 Tool downloads happen on the host, before an offline Docker build.
 Environment:
   CODE_INDEX_CACHE          Download/build cache (default: dist/code-index-tools)
@@ -28,8 +28,8 @@ INDEX_DOTNET_ROOT="${CODE_INDEX_DOTNET_ROOT:-$(dirname "$(readlink -f "$(command
 INDEX_NODE_ROOT="${CODE_INDEX_NODE_ROOT:-$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")}"
 INDEX_DOCKER="${DOCKER:-docker}"
 INDEX_SCIP_REVISION=47884461a79839fb74c99e6a0a7978cd7eb62476
-[[ "$(${INDEX_DOTNET_ROOT}/dotnet --version)" == 10.0.111 ]] || { echo 'SDK 10.0.111 required' >&2; exit 1; }
-[[ "$(${INDEX_NODE_ROOT}/bin/node --version)" == v24.20.0 ]] || { echo 'Node 24.20.0 required' >&2; exit 1; }
+[[ "$(${INDEX_DOTNET_ROOT}/dotnet --version)" == 10.0.113 ]] || { echo 'SDK 10.0.113 required' >&2; exit 1; }
+[[ "$(${INDEX_NODE_ROOT}/bin/node --version)" == v24.22.1 ]] || { echo 'Node 24.22.1 required' >&2; exit 1; }
 mkdir -p "${INDEX_CACHE}" "$(dirname "${INDEX_ARCHIVE}")"
 if [[ ! -d "${INDEX_CACHE}/source/.git" ]]; then
   git clone --no-checkout https://github.com/sourcegraph/scip-dotnet.git "${INDEX_CACHE}/source"
