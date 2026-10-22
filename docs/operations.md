@@ -750,7 +750,12 @@ Troubleshooting:
   on its Git context and server-owned preparation attempt. This provenance
   identifies resumed, unreviewed work; the immutable base, author history and
   acceptance/release gates remain in force. A retry uses the selected commit
-  even if the old branch subsequently advances. Both existing worker backends
+  even if the old branch subsequently advances. Returning to an earlier
+  specification allocates a new activation and receipt, preserving its newer
+  compatible commits; ordinary resumes and interrupted retries reuse that
+  activation. Final wake prompts include only its source context, commit, tree
+  and original root; full provenance remains on the durable context. Both
+  existing worker backends
   use their normal preparation and session execution paths; no new worker API
   or agent tool is required. Dirty work, divergent retained branches, missing
   provenance, changed owners/repositories/directories or incompatible dependency

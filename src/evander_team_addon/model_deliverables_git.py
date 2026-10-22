@@ -859,6 +859,7 @@ class TeamGitPreparationAttempt(TeamModel):
     branch: str
     base_ref: str
     preparation_generation: str
+    activation_sequence: int = Field(default=0, ge=0)
     state: TeamGitPreparationAttemptState = TeamGitPreparationAttemptState.PENDING
     worker_request_fingerprint: str | None = None
     base_commit_sha: str | None = None

@@ -4,6 +4,7 @@
 
 - Carry clean, compatible committed work into a fresh task checkout after instruction changes. Verify the task owner, session, repository, directory, original base and exact dependency pins; retain commit authorship and normal acceptance and release gates.
 - Persist the selected source before transferring it, seal the restored HEAD in the normal preparation receipt, and expose its unreviewed provenance in the fresh Git context. Preserve dirty, divergent, missing or incompatible work for explicit recovery, and reuse the exact selected commit after interruption.
+- Give reactivated specifications a fresh, stable preparation identity so returning to earlier instructions retains newer compatible work without changing old receipts. Carry only compact restored-work provenance into final wake prompts, trim repeated guidance, guard prompt-size budgets, and refresh installed guidance for existing sessions.
 
 ## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
 

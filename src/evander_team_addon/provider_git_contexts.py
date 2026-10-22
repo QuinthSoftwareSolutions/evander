@@ -52,6 +52,7 @@ from .provider_git_metadata import (
     _project_repo_context_tasks,
     _project_repo_git_preparation_attempt_id,
     _project_repo_task_preparation_generation,
+    _project_repo_task_preparation_activation,
     _project_repo_task_worktree_name,
     _record_project_repo_git_preparation_receipt,
     _resolved_project_git_identity,
@@ -233,6 +234,7 @@ class _TaskGitContextPreparation:
     pinned_base_tree: str | None
     composition_git_sources: list[dict[str, str]]
     preparation_generation: str
+    activation_sequence: int
     candidate_identity_commit: str | None
     agent_branch: str
     worktree_name: str
@@ -509,6 +511,11 @@ class _TaskGitContextPreparation:
             task_id=self.task_id,
             effective_base_branch=self.effective_base_branch,
         )
+        self.activation_sequence = _project_repo_task_preparation_activation(
+            self.batch.state,
+            task_id=self.task_id,
+            preparation_generation=self.preparation_generation,
+        )
         # A failed automatic composition may already own a worktree and branch,
         # even though it never produced a preparation receipt. Give the reviewed
         # recovery its own stable identity on both backends, preserving that
@@ -525,6 +532,7 @@ class _TaskGitContextPreparation:
             task_id=self.task_id,
             preparation_generation=self.preparation_generation,
             candidate_commit_sha=self.candidate_identity_commit,
+            activation_sequence=self.activation_sequence,
         )
         try:
             if self.dependency_recovery is None:
@@ -556,6 +564,7 @@ class _TaskGitContextPreparation:
             task_id=self.task_id,
             preparation_generation=self.preparation_generation,
             identity_commit=(self.candidate_identity_commit or self.pinned_base_commit),
+            activation_sequence=self.activation_sequence,
         )
         self.directory_path = (
             _optional_text(
@@ -603,6 +612,7 @@ class _TaskGitContextPreparation:
             branch=self.agent_branch,
             base_ref=self.worktree_base_ref or "HEAD",
             preparation_generation=self.preparation_generation,
+            activation_sequence=self.activation_sequence,
         )
         preparation_attempt = self.batch.state.git_preparation_attempts[self.preparation_attempt_id]
         self.use_preparation_receipt = (
@@ -893,6 +903,15 @@ class _TaskGitContextPreparation:
                     f"{current_preparation_generation}; no lease was granted"
                 ),
             )
+        if _project_repo_task_preparation_activation(
+            current_state,
+            task_id=self.task_id,
+            preparation_generation=current_preparation_generation,
+        ) != self.activation_sequence:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message="Task preparation activation changed during worktree preparation; no lease was granted",
+            )
 
     def _commit_context(self) -> None:
         last_conflict: TeamStateConflictError | None = None
@@ -1145,6 +1164,7 @@ def _project_repo_agent_branch(
     task_id: str,
     candidate_commit_sha: str | None = None,
     preparation_generation: str | None = None,
+    activation_sequence: int = 0,
 ) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
@@ -1160,6 +1180,7 @@ def _project_repo_agent_branch(
         if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
             raise ValueError("preparation_generation must be a 20-character hex fingerprint")
         generation_suffix = f"-prep-{normalized_generation[:12]}"
+    activation_suffix = f"-run-{activation_sequence}" if activation_sequence else ""
     return validate_branch_name(
-        f"agents/{session_id}/tasks/{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
+        f"agents/{session_id}/tasks/{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}{activation_suffix}"
     )

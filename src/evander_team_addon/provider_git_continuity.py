@@ -161,8 +161,8 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
         c
         for c in state.git_work_contexts.values()
         if c.task_id == p.task_id
-        and c.preparation_generation != p.preparation_generation
         and c.worktree_path is not None
+        and (c.agent_branch, c.worktree_path) != (p.agent_branch, p.expected_worktree_path)
     ]
     sources = {}
     for context in sorted(contexts, key=lambda item: (item.created_at, item.updated_at, item.id)):

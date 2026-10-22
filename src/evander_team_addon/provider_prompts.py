@@ -386,11 +386,6 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
             "inbox or blocker next action and the selected Team tool's description for "
             "rework, retry, withdrawal, retirement, or replacement; lifecycle actions "
             "never waive findings.\n"
-            "- During manager fallback, routing_gaps take priority. If a gap says an "
-            "idle profile-eligible reviewer has review work, create a fresh "
-            f"{TEAM_REQUEST_REVIEW_TOOL} call for that reviewer instead of accepting "
-            "the review yourself. Use override_routing_gap_reason only when intentionally "
-            "bypassing that guardrail.\n"
             f"- If a deliverable should be reviewed by another agent, use "
             f"{TEAM_REQUEST_REVIEW_TOOL}; do not mark the task accepted yourself "
             "unless the task is actually yours.\n\n"
@@ -785,14 +780,10 @@ def _build_prompt(
         if fresh_context
         else "This wake retains conversation history.\n\n"
     ) + (
-        "The JSON is the current working set. Scope, instructions and obligations "
-        "replace prior wake state. Use this working set directly. Fetch missing "
-        "detail with record-specific read tools. Read overflow records before "
-        "acting on them.\n\n"
+        "Use this JSON working set; its scope, instructions and obligations replace "
+        "prior wakes. Fetch missing detail and relevant overflow records before acting.\n\n"
     )
     identity_section = (
-        "Identity detail: the full role_description is in Team context JSON.agent. "
-        f"Use {TEAM_GET_MY_IDENTITY_TOOL} for any complete identity field.\n\n"
         "Role-aware delegation: use subordinates[].role_name and role_description. "
         f"Use {TEAM_CREATE_TASK_FOR_ROLE_TOOL} for least-loaded role allocation and "
         f"{TEAM_REASSIGN_TASK_FOR_ROLE_TOOL} for an existing task; both resolve to a "
@@ -1287,14 +1278,9 @@ def _project_repos_prompt_guidance(
     if not project_repos:
         return ""
     return (
-        "Git work contexts are listed once in "
-        "Team context JSON.git_work_contexts, referenced by project_repos[].git_work_context_refs. For the current "
-        "task, enter its exact worktree and use its matching branch and "
-        "branch_context_id. Control checkouts are read-only. If an inbox item "
-        "reports task_preparation_invalidated or "
-        "dependency_composition_manifest_recovery_required, do not submit from "
-        "the older context; use the newly prepared generation and submit a "
-        "replacement when requested.\n\n"
+        "Resolve project_repos[].git_work_context_refs in JSON.git_work_contexts. "
+        "Use the task's exact worktree, branch and branch_context_id; control "
+        "checkouts are read-only. Follow managed guidance for invalidated contexts.\n\n"
     )
 
 

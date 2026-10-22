@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from evander.worker.service import WorkerDaemon
 from evander_team_addon.models import AgentRuntime, ProjectGitConfig, TeamGitPreparationAttemptState
 from evander_team_addon.provider_git_contexts import _create_project_repo_git_work_contexts
 from evander_team_addon.provider_git_errors import DependencyGitPreparationError
+from evander_team_addon.provider_prompts import _build_prompt
 from evander_team_addon.repository import TeamStateConflictError
 from evander_team_addon.services.admin_service import TeamAdminService
 from team_runtime_support import _seed_team, _local_agent_python_transport
@@ -199,6 +201,112 @@ def test_changed_instructions_carry_real_commits_into_fresh_receipted_checkout(c
     assert h.physical(newest) != new_path
     assert git(h.physical(newest), "rev-parse", "HEAD") == later
     assert newest["retained_work"]["source_context_id"] == following["id"]
+
+
+@pytest.mark.parametrize("interruption", [None, "apply", "context_commit"])
+def test_returning_to_previous_specification_keeps_latest_work_and_receipts(
+    continuity, monkeypatch, interruption
+):
+    h = continuity
+    description = h.repo.read().tasks["task"].description
+    _, original = h.run()
+    h.commit(h.physical(original), "work under specification A\n")
+    h.edit()
+    state, changed = h.run()
+    latest = h.commit(h.physical(changed), "newer work under specification B\n")
+    receipts = {
+        key: row.model_dump(mode="json") for key, row in state.git_preparation_attempts.items()
+    }
+    TeamAdminService(h.repo).update_task(
+        task_id="task", description=description, expected_revision=h.repo.read().revision
+    )
+    if interruption is not None:
+        with monkeypatch.context() as patch:
+            if interruption == "apply":
+                patch.setattr(
+                    "evander_team_addon.provider_git_contexts.apply_retained_task_work",
+                    lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("interrupted")),
+                )
+            else:
+
+                def conflict(*_args, **_kwargs):
+                    raise TeamStateConflictError(expected_revision=1, current_revision=2)
+
+                patch.setattr(TeamAdminService, "create_git_work_context_with_id", conflict)
+            with pytest.raises(RuntimeError):
+                h.run()
+        advanced = h.commit(h.physical(changed), "old source advanced after interruption\n")
+        assert advanced != latest
+    state, resumed = h.run()
+    resumed_path = h.physical(resumed)
+    assert resumed["preparation_generation"] == original["preparation_generation"]
+    assert resumed_path not in {h.physical(original), h.physical(changed)}
+    assert git(resumed_path, "rev-parse", "HEAD") == latest
+    assert resumed["retained_work"]["source_context_id"] == changed["id"]
+    assert resumed["retained_work"]["commit_sha"] == latest
+    attempts = state.git_preparation_attempts
+    new_attempts = [row for key, row in attempts.items() if key not in receipts]
+    assert len(new_attempts) == 1
+    assert new_attempts[0].head_commit_sha == latest
+    assert new_attempts[0].activation_sequence > max(
+        row["activation_sequence"] for row in receipts.values()
+    )
+    assert {key: attempts[key].model_dump(mode="json") for key in receipts} == receipts
+    assert state.deliverables == {} and state.release_packages == {}
+    # Repeated wakes of the reactivated specification preserve later coding and
+    # reuse this preparation instead of allocating another checkout or receipt.
+    later = h.commit(resumed_path, "later active implementation\n")
+    after, again = h.run()
+    assert h.physical(again) == resumed_path
+    assert git(resumed_path, "rev-parse", "HEAD") == later
+    assert set(after.git_preparation_attempts) == set(attempts)
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_final_wake_prompt_keeps_restored_provenance_once_with_bounded_size(continuity, fresh):
+    h = continuity
+    _, original = h.run()
+    commit = h.commit(h.physical(original))
+    h.edit()
+    _, restored = h.run()
+    # Diagnostics and full source paths belong on the retrievable durable
+    # context, not in every wake. Extra fields must not bypass the projection.
+    restored["retained_work"]["diagnostics"] = "verbose history " * 1000
+    repo = {"prepared": True, "project_id": "project", "git_work_contexts": [restored]}
+    lease = {
+        "agent": {"id": "backend", "role_name": "Developer", "effective_role_permissions": []},
+        "runtime": {"context_clearing_policy": "off", "context_rotation_pending": False},
+        "has_prior_successful_wake": not fresh,
+        "reason": "scheduled",
+        "dispatch": {"id": restored["dispatch_id"], "task_ids": ["task"]},
+        "project_repo": repo,
+        "project_repos": [repo],
+    }
+    prompt = _build_prompt(lease, effective_resume_mode="new_context" if fresh else "same_context")
+    payload = json.loads(
+        prompt.split("Team context JSON:\n", 1)[1].split("\n\nMCP action surface:", 1)[0]
+    )
+    [binding] = payload["git_work_contexts"].values()
+    assert binding["retained_work"] == {
+        "source_context_id": original["id"],
+        "commit_sha": commit,
+        "tree_hash": git(h.physical(restored), "rev-parse", "HEAD^{tree}"),
+        "root_commit_sha": h.base,
+    }
+    assert payload["context_mode"] == ("fresh_full" if fresh else "retained_current")
+    assert prompt.count('"retained_work":') == 1
+    assert prompt.count(restored["worktree_path"]) == 1
+    assert "verbose history" not in prompt
+    assert original["worktree_path"] not in prompt
+    assert original["agent_branch"] not in prompt
+    restored.pop("retained_work")
+    ordinary = _build_prompt(
+        lease, effective_resume_mode="new_context" if fresh else "same_context"
+    )
+    assert '"retained_work":' not in ordinary
+    # Exact object IDs are essential provenance. Bound the additional serialized
+    # working set to a small record, rather than asserting incidental prose.
+    assert len(prompt.encode()) - len(ordinary.encode()) <= 360
 
 
 @pytest.mark.parametrize(
@@ -436,11 +544,15 @@ def test_existing_sqlite_store_adds_nullable_provenance_without_rewriting_state(
     with sqlite3.connect(h.repo.store.path) as db:
         db.execute("ALTER TABLE team_git_work_contexts DROP COLUMN retained_work_json")
         db.execute("UPDATE team_state_metadata SET value='85' WHERE key='sqlite_schema_version'")
+        db.execute(
+            "UPDATE team_git_preparation_attempts SET payload_json=json_remove(payload_json, '$.activation_sequence')"
+        )
     migrated = TeamStateRepository(h.repo.runtime_dir).read()
     assert migrated.revision == before.revision
     assert migrated.tasks["task"] == before.tasks["task"]
     assert migrated.git_work_contexts[old["id"]] == before.git_work_contexts[old["id"]]
     assert migrated.git_work_contexts[old["id"]].retained_work is None
+    assert migrated.git_preparation_attempts == before.git_preparation_attempts
 
 
 def test_admin_cannot_attach_unattested_retained_commit_to_checkout(continuity):
