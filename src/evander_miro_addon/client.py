@@ -122,7 +122,11 @@ class MiroClient:
                     timeout=httpx2.Timeout(45, read=60),
                     follow_redirects=False,
                 ) as client:
-                    async with streamable_http_client(MCP_URL, http_client=client) as streams:
+                    # Allow paired structured/text output and JSON escaping on
+                    # the wire; result_data still enforces the 1 MiB data limit.
+                    async with streamable_http_client(
+                        MCP_URL, http_client=client, max_sse_event_size=MAX_CONTENT_BYTES * 16
+                    ) as streams:
                         async with ClientSession(streams[0], streams[1]) as session:
                             self.session = session
                             await session.initialize()

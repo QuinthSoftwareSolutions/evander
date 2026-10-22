@@ -50,6 +50,10 @@ from evander.voice_sessions import (
 
 logger = logging.getLogger(__name__)
 
+# Existing Kibana imports allow 50 MiB of NDJSON. JSON string encoding can
+# expand it sixfold; retain finite wire headroom above that logical limit.
+_MAX_MCP_REQUEST_BODY_BYTES = 320 * 1024 * 1024
+
 
 def _install_mcp_http_logging(
     app: Starlette,
@@ -265,6 +269,7 @@ def create_app(context: RuntimeContext) -> Starlette:
     mcp_app = server.streamable_http_app(
         host=context.config.host,
         streamable_http_path="/mcp",
+        max_request_body_size=_MAX_MCP_REQUEST_BODY_BYTES,
     )
 
     async def retell_webhook(request: Request) -> PlainTextResponse | JSONResponse:

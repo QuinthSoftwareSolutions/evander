@@ -61,6 +61,11 @@ invocation still evaluate current grants, workflow approval leases and exact
 invocation approvals. An Evander session is distinct from an SDK transport session;
 the absence of the latter does not grant access to another Evander session.
 
+The gateway accepts MCP HTTP bodies up to 320 MiB. This wire limit accommodates
+the existing configurable 50 MiB Kibana NDJSON import limit even when JSON string
+escaping expands the request. Tool-specific logical limits still apply;
+requests above the wire limit receive HTTP 413 before tool dispatch.
+
 Policy and domain-validation failures remain actionable tool errors. Unexpected
 provider failures return a generic SDK error; inspect the corresponding operator
 audit record for the provider failure and its classification. Domain-validation replies include field diagnostics without Pydantic input dumps.
@@ -68,6 +73,9 @@ audit record for the provider failure and its classification. Domain-validation 
 The Figma and Miro MCP transports use HTTPX 2, which verifies TLS using the host OS
 trust store. Install any required private CA in that trust store, or configure
 `SSL_CERT_FILE`/`SSL_CERT_DIR`; their ordinary REST transports continue using HTTPX.
+Both MCP clients allow SSE events up to 16 MiB to accommodate base64 images,
+paired structured/text results and JSON escaping. Their existing content limits
+remain 8 MiB per Figma screenshot and 1 MiB per Miro result.
 Verify the Ansible package-install path in an isolated environment as well as the
 locked test environment before deploying a new SDK release.
 

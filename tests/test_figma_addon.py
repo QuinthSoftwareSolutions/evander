@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -1148,6 +1149,61 @@ def test_official_mcp_transport_client_identity_and_schema_validation(tmp_path, 
     with pytest.raises(FigmaError):
         client._mcp("use_figma", {})
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("image_size", [900 * 1024, 8 * 1024 * 1024 + 1])
+def test_screenshot_sse_transport_preserves_the_decoded_image_limit(monkeypatch, image_size):
+    from evander_figma_addon import client as module
+
+    image = PNG + b"\0" * (image_size - len(PNG))
+
+    def upstream(request):
+        assert request.headers["Authorization"] == "Bearer synthetic-token"
+        if request.method != "POST":
+            return httpx2.Response(405)
+        body = json.loads(request.content)
+        if "id" not in body:
+            return httpx2.Response(202)
+        if body["method"] == "initialize":
+            result = {
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "synthetic-figma", "version": "1"},
+                "capabilities": {"tools": {}},
+            }
+        elif body["method"] == "tools/list":
+            result = {"tools": [{"name": "get_screenshot", "inputSchema": {"type": "object"}}]}
+        else:
+            assert body["method"] == "tools/call"
+            assert body["params"]["name"] == "get_screenshot"
+            result = {
+                "content": [
+                    {
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(image).decode(),
+                    }
+                ]
+            }
+            message = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result})
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=("event: message\ndata: " + message + "\n\n").encode(),
+            )
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    real_client = httpx2.AsyncClient
+    monkeypatch.setattr(
+        module.httpx2,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx2.MockTransport(upstream), **kwargs),
+    )
+    client = FigmaClient(SimpleNamespace(token=lambda *_: "synthetic-token"), "root", "studio", {})
+    if image_size > 8 * 1024 * 1024:
+        with pytest.raises(FigmaError, match="bounded PNG preview"):
+            client.screenshot("testFile123", "1:2")
+    else:
+        assert client.screenshot("testFile123", "1:2") == image
 
 
 def test_literal_text_and_complete_batch_scope_validation(studio):

@@ -43,7 +43,11 @@ class FigmaClient:
                     timeout=httpx2.Timeout(30, read=90),
                     follow_redirects=False,
                 ) as http_client,
-                streamable_http_client(MCP_URL, http_client=http_client) as (read, write),
+                # Base64 screenshots within the decoded image limit exceed the
+                # SDK's default 1 MiB SSE cap; keep our bounded result allowance.
+                streamable_http_client(
+                    MCP_URL, http_client=http_client, max_sse_event_size=MAX_BYTES * 2
+                ) as (read, write),
             ):
                 async with ClientSession(
                     read, write, client_info=Implementation(name="evander", version="1")

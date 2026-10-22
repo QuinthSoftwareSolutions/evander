@@ -220,6 +220,84 @@ def read(service, kind="canvas", **changes):
     )
 
 
+@pytest.mark.parametrize(
+    "character,count,allowed",
+    [("x", 600 * 1024, True), ("\x7f", 900 * 1024, True), ("x", 1024 * 1024, False)],
+)
+def test_sse_transport_preserves_the_logical_response_limit(
+    setup, monkeypatch, character, count, allowed
+):
+    from evander_miro_addon import client as module
+
+    store, record, _, _ = setup
+    data = {
+        "svg": '<svg xmlns="http://www.w3.org/2000/svg"><text>'
+        + character * count
+        + "</text></svg>"
+    }
+
+    async def token(*_):
+        return "synthetic-token"
+
+    monkeypatch.setattr(module.MiroOAuth, "access_token", token)
+
+    def upstream(request):
+        assert request.headers["Authorization"] == "Bearer synthetic-token"
+        if request.method != "POST":
+            return httpx2.Response(405)
+        body = json.loads(request.content)
+        if "id" not in body:
+            return httpx2.Response(202)
+        if body["method"] == "initialize":
+            result = {
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "synthetic-miro", "version": "1"},
+                "capabilities": {"tools": {}},
+            }
+        elif body["method"] == "tools/list":
+            result = {
+                "tools": [
+                    {
+                        "name": "canvas_read_as_svg",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"miro_url": {"type": "string"}},
+                            "required": ["miro_url"],
+                        },
+                    }
+                ]
+            }
+        else:
+            assert body["method"] == "tools/call"
+            assert body["params"]["name"] == "canvas_read_as_svg"
+            # Structured MCP output also carries JSON text for legacy readers.
+            # The outer JSON escapes that text again before SSE framing.
+            result = {
+                "content": [{"type": "text", "text": json.dumps(data)}],
+                "structuredContent": data,
+            }
+            message = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result})
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=("event: message\ndata: " + message + "\n\n").encode(),
+            )
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async def check():
+        async with module.MiroClient(
+            store, record, http_transport=httpx2.MockTransport(upstream)
+        ).open() as client:
+            return await client.call("read_canvas", board_id="board1")
+
+    if allowed:
+        assert run(check()) == data
+    else:
+        with pytest.raises(MiroError) as error:
+            run(check())
+        assert error.value.code == "response_too_large"
+
+
 def update_args(snapshot, **changes):
     return {
         "connection_id": "architecture",

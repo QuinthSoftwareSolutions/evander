@@ -4,16 +4,20 @@ from datetime import UTC, datetime, timedelta
 import asyncio
 import json
 
+import httpx
 import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 import pytest
 from starlette.testclient import TestClient
 
+from evander.addons import AddonLoaderConfig
 from evander.directory_config import DirectoryConfigStore
 from evander.gateway import create_app
 from evander.models import ApprovalGrantSettings, ApprovalStatus, ToolName
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander_elastic_stack_addon import mcp as elastic_mcp
+from test_elastic_stack_addon import _client as elastic_client
 from test_gateway import (
     _build_runtime_with_workflow_config,
     _mcp_initialize_session,
@@ -181,6 +185,88 @@ def test_domain_validation_errors_omit_rejected_input_values(gateway):
     assert result["isError"] is True
     assert "resume_at" in json.dumps(result)
     assert "private-input-sentinel" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("protocol", ["legacy", "modern"])
+def test_gateway_preserves_large_elastic_bulk_requests(tmp_path, monkeypatch, protocol):
+    upstream_calls = []
+
+    def upstream(request):
+        upstream_calls.append(len(request.content))
+        return httpx.Response(200, json={"errors": False, "items": [{"index": {"status": 201}}]})
+
+    backend = elastic_client(upstream)
+    monkeypatch.setattr(elastic_mcp, "client_for_session", lambda *_: backend)
+    context = _build_runtime_with_workflow_config(
+        tmp_path, allowed_tools=["elasticsearch_bulk_index_documents"]
+    )
+    context.config.addon_loader = AddonLoaderConfig(
+        modules=["evander_elastic_stack_addon"], package_dirs=[]
+    )
+    manifest, proof = ensure_session_mcp_auth_token(
+        context.session_repository.get_session("session-1")
+    )
+    context.session_repository.upsert_session(manifest)
+    with TestClient(create_app(context)) as client:
+        headers = {
+            "accept": "application/json, text/event-stream",
+            "x-evander-session-id": "session-1",
+            "x-evander-mcp-session-token": proof,
+        }
+        if protocol == "legacy":
+            headers["mcp-session-id"] = _mcp_initialize_session(
+                client, session_id="session-1", mcp_session_token=proof
+            )
+        else:
+            headers.update(
+                {
+                    "mcp-protocol-version": "2026-07-28",
+                    "mcp-method": "tools/call",
+                    "mcp-name": "elasticsearch_bulk_index_documents",
+                }
+            )
+
+        def bulk(document_size):
+            params = {
+                "name": "elasticsearch_bulk_index_documents",
+                "arguments": {
+                    "target_id": "static",
+                    "index_name": "events-synthetic",
+                    "documents": [{"value": "x" * document_size}],
+                },
+            }
+            if protocol == "modern":
+                params["_meta"] = {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }
+            return payload(
+                client.post(
+                    "/mcp",
+                    headers=headers,
+                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params},
+                )
+            )["result"]
+
+        assert bulk(4500 * 1024).get("isError", False) is False
+        assert len(upstream_calls) == 1
+        assert 4 * 1024 * 1024 < upstream_calls[0] < 5 * 1024 * 1024
+        assert bulk(5 * 1024 * 1024)["isError"] is True
+        assert len(upstream_calls) == 1
+
+
+def test_gateway_rejects_oversized_wire_bodies_before_dispatch(gateway):
+    context, rpc, _ = gateway
+    response = rpc(
+        "tools/call",
+        {"name": "get_workflow_snapshot", "arguments": {}},
+        extra_headers={"content-length": str(320 * 1024 * 1024 + 1)},
+    )
+    assert response.status_code == 413
+    assert not any(
+        event.get("decision") == "allowed"
+        for event in read_audit_events(context.config.audit_log_path)
+    )
 
 
 def test_sdk_client_accepts_modern_gateway_responses(tmp_path):
