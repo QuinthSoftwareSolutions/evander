@@ -111,7 +111,7 @@ class VmAgentMutationMixin:
             update["expires_at"] = self._current_utc_now() + timedelta(hours=ttl_hours)
         if "allowed_tools" in body:
             update["allowed_tools"] = _normalize_allowed_tools(
-                self._agent_string_list(body, "allowed_tools") or []
+                self._agent_tool_names(body) or []
             )
         if "connector_grants" in body:
             connector_grants = resolve_and_validate_connector_grants(

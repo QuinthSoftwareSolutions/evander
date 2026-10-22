@@ -1556,6 +1556,7 @@ class GitPushBranchEffectDefinition(EffectDefinition):
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
     managed_repo_id: ConfigValue
+    directory_path: ConfigValue | None = None
     source_ref: ConfigValue
     expected_commit_sha: ConfigValue
     destination_branch: ConfigValue

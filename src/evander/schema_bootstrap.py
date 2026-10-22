@@ -1544,6 +1544,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
     "effect:pr:create": {
         "success": {"type": "boolean"},
         "managed_repo_id": {"type": "string"},
+        "directory_path": {"type": "string"},
         "source_ref": {"type": "string"},
         "expected_commit_sha": {"type": "string"},
         "destination_branch": {"type": "string"},

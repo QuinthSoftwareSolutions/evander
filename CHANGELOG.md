@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Preserve workflow scope, tool grants and inference attribution (0.121.0)
+
+- Let shared PR-publication workflows select the owning project directory while preserving repository, commit and publication-identity checks and rejecting scope escapes.
+- Preserve canonical built-in tool names when creating or updating agents, reject serialized enum names in new requests, and keep existing stored add-on grants and approval settings readable.
+- Add bindable Smart-switch inference cost categories, retaining inherited or explicit Uncategorized attribution across queued execution and restarts without changing provider input or token accounting.
+
 ## 2026-10-22 - Decompose control-plane orchestration (0.120.4)
 
 - Separate worker reference checkout, task worktree preparation, and dependency composition into per-invocation stages while retaining Git validation, recovery, locking, and persistence order.

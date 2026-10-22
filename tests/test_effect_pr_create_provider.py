@@ -23,11 +23,14 @@ class _AdminServiceStub:
         return dict(self.pr_create_result)
 
 
-def _build_context(tmp_path: Path, admin_service: _AdminServiceStub) -> EffectRuntimeContext:
+def _build_context(
+    tmp_path: Path, admin_service: _AdminServiceStub, directory_path: str = "root"
+) -> EffectRuntimeContext:
     return EffectRuntimeContext(
         resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
         admin_service=admin_service,
         env={},
+        metadata={"directory_path": directory_path},
     )
 
 
@@ -212,3 +215,62 @@ def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> Non
                 "destination_branch": "feature/topic",
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("workflow_directory", "project_directory", "bound"),
+    [
+        ("root", "root/acme/alpha", False),
+        ("root", "root/acme/beta", True),
+        ("root/acme/alpha", None, False),
+    ],
+)
+def test_pr_create_uses_project_scope_without_changing_publication_identity(
+    tmp_path: Path, workflow_directory: str, project_directory: str | None, bound: bool
+) -> None:
+    admin = _AdminServiceStub(pr_create_result={"success": True})
+    effect = PrCreateEffectDefinition(
+        id="publish-release", display_name="Publish release", type="effect:pr:create",
+        managed_repo_id="mr_11111111111111111111",
+        directory_path="${{route.directory_path}}" if bound else project_directory,
+        source_ref="refs/evander/team/release-approved", expected_commit_sha="a" * 40,
+        destination_branch="feature/release", publication_context_id="bound-release-identity",
+    )
+    provider = PrCreateEffectProvider()
+    provider.initialize(
+        effect_definition=effect,
+        runtime_context=_build_context(tmp_path, admin, workflow_directory),
+    )
+
+    result = provider.execute(
+        resolved_config={"directory_path": project_directory} if bound else None
+    )
+
+    call, = admin.calls
+    assert call["directory_path"] == (project_directory or workflow_directory)
+    assert result["directory_path"] == call["directory_path"]
+    assert call["publication_context_id"] == "bound-release-identity"
+    assert call["source_ref"] == "refs/evander/team/release-approved"
+    assert call["expected_commit_sha"] == "a" * 40
+
+
+@pytest.mark.parametrize("requested_directory", ["root", "root/acme/beta"])
+def test_pr_create_rejects_scope_escape_before_publication(
+    tmp_path: Path, requested_directory: str
+) -> None:
+    admin = _AdminServiceStub(pr_create_result={"success": True})
+    provider = PrCreateEffectProvider()
+    provider.initialize(
+        effect_definition=PrCreateEffectDefinition(
+            id="publish-release", display_name="Publish release", type="effect:pr:create",
+            managed_repo_id="mr_11111111111111111111", directory_path=requested_directory,
+            source_ref="refs/evander/team/release-approved", expected_commit_sha="a" * 40,
+            destination_branch="feature/release",
+        ),
+        runtime_context=_build_context(tmp_path, admin, "root/acme/alpha"),
+    )
+
+    with pytest.raises(ValueError, match="outside workflow directory scope"):
+        provider.execute()
+
+    assert admin.calls == []

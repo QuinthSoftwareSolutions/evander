@@ -1408,6 +1408,7 @@ def test_pr_create_effect_requires_managed_repo_and_pinned_source() -> None:
         }
     )
 
+    assert effect.directory_path is None
     assert effect.managed_repo_id == "mr_0123456789abcdefabcd"
     assert effect.source_ref == "refs/evander/operations/op-1/source"
     assert effect.expected_commit_sha == "a" * 40

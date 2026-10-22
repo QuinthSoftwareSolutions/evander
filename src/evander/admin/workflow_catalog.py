@@ -1766,6 +1766,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string"),
             _field("min_probability", "Minimum option probability", "number",
                    description="Optional cutoff; lower probability routes to the default."),
+            _field("cost_category", "Cost category", "string", bindable=True,
+                   description="Inference category for this switch. Omit/null to inherit; an empty string selects Uncategorized."),
             _field("outputs", "Outputs", "json", read_only=True,
                    description="Derived from the upstream node and passed through unchanged."),
         ],
@@ -4468,6 +4470,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field(
                 "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
             ),
+            _field("directory_path", "Directory path", "string", bindable=True),
             _field("source_ref", "Source ref", "string", required=True, bindable=True),
             _field(
                 "expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True

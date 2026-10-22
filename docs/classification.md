@@ -320,3 +320,18 @@ Provider contract references: [OpenAI Decisions guide](https://developers.openai
 [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create),
 [TypeSafe API](https://docs.typesafe.ai/api),
 [models](https://docs.typesafe.ai/models), and [confidence](https://docs.typesafe.ai/confidence).
+
+## Smart switch cost attribution
+
+`gate:classifier:switch` accepts a bindable `cost_category` string in its node
+configuration. This labels provider usage even when a switch runs before an
+agent session exists. Omit it or use null to retain the supplied attribution;
+use an empty string to explicitly select Uncategorized. Surrounding whitespace
+is trimmed. The prepared gate snapshot retains the resolved category across
+queueing and restarts, so later configuration changes affect new gate calls.
+The label is host bookkeeping and is not sent as classification input.
+
+This setting changes future usage attribution only. Historical corrections use
+`ModelUsageAdminService.set_inference_cost_categories` with exact event IDs,
+expected old categories, and a bounded time range; billing provenance and token
+counts remain unchanged. Agent session and prompt categories remain separate.

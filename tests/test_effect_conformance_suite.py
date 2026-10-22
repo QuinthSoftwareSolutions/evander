@@ -308,6 +308,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Create PR",
             "type": "effect:pr:create",
             "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "${{route.directory_path}}",
             "source_ref": "refs/evander/operations/op-1/source",
             "expected_commit_sha": "a" * 40,
             "destination_branch": "feature/issue-1",
@@ -434,6 +435,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert promote.type == "effect:git:promote-agent-branch"
     assert push_branch.type == "effect:git:push-branch"
     assert pr_create.type == "effect:pr:create"
+    assert pr_create.directory_path == "${{route.directory_path}}"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"
 
     _record_result(
