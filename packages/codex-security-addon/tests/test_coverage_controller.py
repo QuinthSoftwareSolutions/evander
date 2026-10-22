@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -10,9 +11,10 @@ from evander.execution import ExecutionStatusKind
 from evander.published_artifacts import PublishedArtifactStore
 from evander.security_scans import SecurityScanHandle
 from evander_codex_security_addon.coverage import make_state, progress
+from evander_codex_security_addon import coverage as c
 from evander_codex_security_addon.coverage_provider import CoverageController
 
-from test_coverage import entry, request, mapping, finish as finish_scope
+from test_coverage import entry, request, mapping, finish as finish_scope, receipt as c_receipt
 
 
 class Worker:
@@ -50,6 +52,7 @@ def native_archive(
     mutated_files=None,
     missing_files=(),
     extra_records=(),
+    native_coverage=None,
 ):
     prefix = f"security-scans/{scan_id}/reports/review/"
     documents = {
@@ -66,6 +69,7 @@ def native_archive(
         },
         "coverage.json": {"completeness": receipt["coverage"], "deferred": receipt["deferred"]},
     }
+    documents["coverage.json"].update(native_coverage or {})
     writeups = [path for path in (native_files or {}) if path.startswith("findings/")]
     if writeups:
         documents["findings.json"]["findings"][0]["writeup"] = {"reportPath": writeups[0]}
@@ -169,7 +173,7 @@ def running(tmp_path):
     )
     controller.store.create(state)
 
-    def finish_jobs(*, native_files=None):
+    def finish_jobs(*, native_files=None, native_coverage=None):
         for execution_id, (state, item, attempt) in list(worker.active.items()):
             receipt = {
                 "kind": item["kind"],
@@ -186,7 +190,13 @@ def running(tmp_path):
                     "threat_model": {"assets": ["source"]},
                     "paths": ["a/a.py", "b/b.py"],
                 }
-            native_archive(artifacts, attempt["scan_id"], receipt, native_files=native_files)
+            native_archive(
+                artifacts,
+                attempt["scan_id"],
+                receipt,
+                native_files=native_files,
+                native_coverage=native_coverage,
+            )
             worker.results[execution_id] = {
                 "status": "completed",
                 "coverage": "complete",
@@ -222,6 +232,226 @@ def test_full_controller_preserves_native_files_and_runs_at_most_two_reviews(run
         coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
         assert coverage["progress"]["files_total"] == 3
         assert all(value["receipt"] for value in coverage["files"].values())
+
+
+def test_sealed_advisory_questions_allow_completion_and_are_retained_in_reports(running):
+    controller, handle, worker, finish = running
+    question = {
+        "question": "Which external application uses these helpers?",
+        "followUpPrompt": "Review its deployment when it becomes available.",
+    }
+    # Reconstruct the controller while the architecture job is active.
+    controller.poll(handle)
+    restarted = CoverageController(controller.provider, controller.runtime)
+    restarted.route, restarted.backend, restarted.launch = (
+        controller.route,
+        controller.backend,
+        controller.launch,
+    )
+    for _ in range(10):
+        finish(native_coverage={"openQuestions": [question]})
+        result = restarted.poll(handle)
+        if result.status != "running":
+            break
+    assert result.success
+    assert result.coverage_progress["files_reviewed"] == 3
+    assert result.coverage_progress["attempts"] == 7  # Mapping, three files, three boundaries.
+    assert not worker.active
+    state = restarted.store.get(handle.metadata["scan_id"], "root/project")
+    assert not state["deferred"]
+    assert len(state["open_questions"]) == 7
+    assert all(not t["deferred_keys"] for t in state["tasks"].values())
+    artifact = restarted.artifacts.get(result.artifacts["archive_key"])
+    with tarfile.open(artifact.blob_path) as archive:
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+        report = archive.extractfile(result.artifacts["report.md"]).read().decode()
+        assert coverage["completeness"] == "complete"
+        assert coverage["open_questions"] == state["open_questions"]
+        assert question["question"] in report
+        assert question["followUpPrompt"] in report
+        native = [
+            n for n in archive.getnames() if "/sources/" in n and n.endswith("/coverage.json")
+        ]
+        assert len(native) == 7
+        for name in native:
+            assert json.load(archive.extractfile(name))["openQuestions"] == [question]
+
+
+@pytest.mark.parametrize(
+    "native_coverage",
+    [
+        {"completeness": "partial"},
+        {"deferred": [{"id": "source", "reason": "A call site remains unreviewed"}]},
+        {"explicitExclusions": [{"path": "a/a.py"}]},
+        {"surfaces": [{"label": "file:a/a.py", "disposition": "needs_follow_up"}]},
+    ],
+)
+def test_native_unfinished_work_cannot_be_hidden_by_a_complete_wrapper(running, native_coverage):
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = {
+        **c_receipt(state, item),
+        "open_questions": [{"question": "Unsealed wrapper question"}],
+    }
+    question = {"question": "Which external application uses this?"}
+    native_archive(
+        controller.artifacts,
+        attempt["scan_id"],
+        receipt,
+        native_coverage={**native_coverage, "openQuestions": [question]},
+    )
+    child = SecurityScanHandle(
+        execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]}
+    )
+    if "completeness" in native_coverage or "deferred" in native_coverage:
+        with pytest.raises(ValueError, match="coverage receipt"):
+            controller.proof({"status": "completed", "coverage": "complete"}, child, receipt)
+    else:
+        proof = controller.proof({"status": "completed", "coverage": "complete"}, child, receipt)
+        assert receipt["open_questions"] == [question]
+        c.accept(state, item, attempt["scan_id"], receipt, proof)
+    assert progress(state)["files_reviewed"] == 0
+    assert item["status"] != "completed"
+
+
+def legacy_question_journal(controller, handle, *, collision=False):
+    """An old journal with a sealed map and question-derived boundary work."""
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    question = {"question": "How is this deployed outside the repository?"}
+    question_id = "question:" + c.digest(question)[:24]
+    receipt = {
+        "kind": item["kind"],
+        "paths": item["paths"],
+        "revision": state["revision"],
+        "sdk_version": c.SDK_VERSION,
+        "coverage": "partial",
+        "deferred": [
+            {
+                "id": question_id if collision else "source",
+                "reason": "Review the authorization boundary",
+            }
+        ],
+        "architecture": {"threat_model": {"assets": ["source"]}},
+    }
+    native_archive(
+        controller.artifacts,
+        attempt["scan_id"],
+        receipt,
+        native_coverage={"openQuestions": [question]},
+    )
+    child = SecurityScanHandle(
+        execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]}
+    )
+    proof = controller.proof({"status": "completed", "coverage": "partial"}, child, receipt)
+    c.accept(state, item, attempt["scan_id"], receipt, proof)
+    attempt["cleanup_confirmed"] = True
+    key = attempt["scan_id"] + ":" + question_id
+    state.pop("open_questions")
+    state["deferred"][key] = {"reason": question["question"], "resolution": None}
+    # A question-shaped key alone is never enough evidence to remove work.
+    state["deferred"]["unknown:question:" + c.digest(question)[:24]] = {
+        "reason": question["question"],
+        "resolution": None,
+    }
+    for item in state["tasks"].values():
+        if item["kind"] == "files":
+            item["status"] = "blocked"
+    c.plan_boundaries(state)
+    state["cleanup_confirmed"] = True
+    controller.store.save(state)
+    return state, key, question
+
+
+@pytest.mark.parametrize("collision", [False, True])
+def test_resume_reclassifies_only_proven_legacy_questions_and_keeps_source_immutable(
+    running, collision
+):
+    controller, handle, _, _ = running
+    source, key, question = legacy_question_journal(controller, handle, collision=collision)
+    source.update(finished_at=c.now().isoformat(), phase="finished", stop_reason="Review stopped")
+    controller.publish(source)
+    controller.store.save(source)
+    before = deepcopy(source)
+    artifact = controller.artifacts.get(source["archive_key"])
+    original_archive = artifact.blob_path.read_bytes()
+    original_command = controller.provider._command
+    inventory = {
+        "coverage_runtime": 1,
+        "revision": source["revision"],
+        "entries": source["inventory"],
+    }
+    controller.provider._command = lambda runtime, sid, args: (
+        inventory if args[0] == "coverage-inventory" else original_command(runtime, sid, args)
+    )
+    controller.runtime.admin_service = SimpleNamespace(
+        managed_git_admin=SimpleNamespace(
+            get_repository=lambda *_: None,
+            pin_retained_snapshot=lambda *_, **__: None,
+        )
+    )
+    controller.verify_inventory = lambda _: None
+    resumed_handle = controller.start("b" * 32, request(resume_from_scan_id=source["scan_id"]))
+    resumed = controller.store.get(resumed_handle.metadata["scan_id"], "root/project")
+    assert resumed["open_questions"][key] == {
+        **question,
+        "receipt": source["proofs"][0]["archive_key"],
+    }
+    assert (key in resumed["deferred"]) is collision
+    assert sum(
+        key in item["deferred_keys"]
+        for item in resumed["tasks"].values()
+        if item["kind"] == "boundary"
+    ) == int(collision)
+    assert "unknown:question:" + c.digest(question)[:24] in resumed["deferred"]
+    if not collision:
+        assert source["proofs"][0]["provider_scan_id"] + ":source" in resumed["deferred"]
+    assert progress(resumed)["files_reviewed"] == 0
+    assert resumed["revision"] == source["revision"]
+    assert resumed["proofs"] == source["proofs"]
+    assert resumed["lineage"] == [source["scan_id"]]
+    assert controller.store.get(source["scan_id"], "root/project") == before
+    assert artifact.blob_path.read_bytes() == original_archive
+
+
+def test_active_legacy_journal_migrates_once_and_preserves_the_deadline(running):
+    controller, handle, _, _ = running
+    source, key, _ = legacy_question_journal(controller, handle)
+    deadline = source["deadline_at"]
+    controller.poll(handle)
+    migrated = controller.store.get(source["scan_id"], "root/project")
+    assert key in migrated["open_questions"]
+    assert key not in migrated["deferred"]
+    assert migrated["deadline_at"] == deadline
+    assert migrated["files"] == source["files"]
+    controller.restore_open_questions = lambda _: pytest.fail(
+        "Already migrated journal was reprocessed"
+    )
+    controller.poll(handle)
+
+
+@pytest.mark.parametrize("damage", ["archive", "revision", "seal"])
+def test_legacy_question_migration_requires_authentic_preserved_provenance(running, damage):
+    controller, handle, _, _ = running
+    state, key, _ = legacy_question_journal(controller, handle)
+    before = deepcopy(state)
+    if damage == "archive":
+        controller.artifacts.get(state["proofs"][0]["archive_key"]).blob_path.write_bytes(
+            b"tampered"
+        )
+    elif damage == "revision":
+        state["revision"] = "e" * 40
+    else:
+        state["proofs"][0]["provider_scan_id"] = "wrong-native-id"
+    with pytest.raises(ValueError, match="integrity|provenance"):
+        controller.restore_open_questions(state)
+    assert key in state["deferred"]
+    assert "open_questions" not in state
+    assert state["files"] == before["files"]
 
 
 @pytest.mark.parametrize(
