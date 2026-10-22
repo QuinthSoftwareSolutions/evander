@@ -9,7 +9,7 @@ from .lifecycle_sql import (
     timestamp_microseconds_sql,
 )
 
-SQLITE_SCHEMA_VERSION = 85
+SQLITE_SCHEMA_VERSION = 86
 
 _SCOPED_LIFECYCLE_INDEX_SQL = f"""
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_live
@@ -1317,6 +1317,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     dependency_composition_manifest_json TEXT,
     preparation_generation TEXT,
+    retained_work_json TEXT,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

@@ -45,6 +45,7 @@ from ..models import (
     DependencyGitSource,
     DependencyCompositionRecoveryState,
     GitWorkContext,
+    RetainedTaskWork,
     OutcomeKindDefinition,
     PersistentAgent,
     Project,
@@ -2283,6 +2284,7 @@ class TeamAdminService(TeamTaskAdministration):
         worktree_path: str | None = None,
         expected_preparation_generation: str | None = None,
         preparation_attempt_id: str | None = None,
+        retained_work: Mapping[str, object] | RetainedTaskWork | None = None,
         dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource] | None = None,
         dependency_composition_recovery_id: str | None = None,
         manual_dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
@@ -2306,6 +2308,9 @@ class TeamAdminService(TeamTaskAdministration):
         normalized_worktree_path = _optional_text(worktree_path)
         normalized_expected_preparation_generation = _optional_text(expected_preparation_generation)
         normalized_preparation_attempt_id = _optional_text(preparation_attempt_id)
+        normalized_retained_work = (
+            RetainedTaskWork.model_validate(retained_work) if retained_work is not None else None
+        )
         normalized_dependency_git_sources = [
             source
             if isinstance(source, DependencyGitSource)
@@ -2452,6 +2457,20 @@ class TeamAdminService(TeamTaskAdministration):
                             f"Git work context base commit {normalized_base_commit} does "
                             f"not match task {task.id} pin {task.git_base_commit_sha}"
                         )
+            if normalized_retained_work is not None and not any(
+                item.task_id == task.id
+                and item.agent_id == agent.id
+                and item.branch == normalized_agent_branch
+                and item.worktree_path == normalized_worktree_path
+                and item.preparation_generation == current_preparation_generation
+                and item.retained_work == normalized_retained_work
+                and item.state in {
+                    TeamGitPreparationAttemptState.PREPARED,
+                    TeamGitPreparationAttemptState.COMMITTED,
+                }
+                for item in state.git_preparation_attempts.values()
+            ):
+                raise ValueError("Retained work does not match the server-owned prepared attempt")
             effective_context_id = normalized_context_id or _generated_id(
                 prefix="gitctx",
                 labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],
@@ -2473,6 +2492,7 @@ class TeamAdminService(TeamTaskAdministration):
                     manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
                     dependency_composition_manifest=(normalized_dependency_composition_manifest),
                     preparation_generation=current_preparation_generation,
+                    retained_work=normalized_retained_work,
                     base_branch=effective_base_branch,
                     base_commit=normalized_base_commit,
                     agent_branch=normalized_agent_branch,
@@ -2505,6 +2525,7 @@ class TeamAdminService(TeamTaskAdministration):
                 manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
                 dependency_composition_manifest=(normalized_dependency_composition_manifest),
                 preparation_generation=current_preparation_generation,
+                retained_work=normalized_retained_work,
                 base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,

@@ -6,6 +6,18 @@
 - Stop creating an empty Default profile on worker startup. Preserve existing legacy logins, allow their profile to be deleted, and retain other profiles and recorded usage history.
 - Normalize worker deletion IDs before checking active jobs, and coordinate deletion with new, reassigned, or renewed session bindings across control-plane processes. Revalidate profiles before saving a new live binding.
 
+## 2026-10-22 - Preserve symlink identity in tracked security reviews (0.117.8)
+
+- Review assigned symlinks through deterministic Git metadata projections so the pinned SDK can assess internal, broken, external, cyclic and directory links without following their destinations.
+- Independently verify the projected revision and original link objects before granting coverage; retain explicit dispositions, immutable native reports and projection provenance across interruption and resume.
+- Package the projection runtime in scanner images and include it in cache invalidation.
+
+## 2026-10-22 - Preserve committed task work across preparation changes (0.117.7)
+
+- Carry clean, compatible committed work into a fresh task checkout after instruction changes. Verify the task owner, session, repository, directory, original base and exact dependency pins; retain commit authorship and normal acceptance and release gates.
+- Persist the selected source before transferring it, seal the restored HEAD in the normal preparation receipt, and expose its unreviewed provenance in the fresh Git context. Preserve dirty, divergent, missing or incompatible work for explicit recovery, and reuse the exact selected commit after interruption.
+- Give reactivated specifications a fresh, stable preparation identity so returning to earlier instructions retains newer compatible work without changing old receipts. Carry only compact restored-work provenance into final wake prompts, trim repeated guidance, guard prompt-size budgets, and refresh installed guidance for existing sessions.
+
 ## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
 
 - Stop safely if older coverage evidence is missing or corrupt: prevent further reviews, continue worker cleanup, and hold the repository reservation until cleanup is confirmed. Report the archive as unavailable without publishing unverifiable evidence, and retain the failure details in private host logs.

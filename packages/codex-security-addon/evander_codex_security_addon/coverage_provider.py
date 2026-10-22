@@ -52,6 +52,7 @@ from .coverage import (
     valid_path,
 )
 from .report_files import public_report_path
+from .coverage_projection import symlink_projection
 
 LOG = logging.getLogger(__name__)
 
@@ -331,7 +332,27 @@ class CoverageController:
         attempt["retention_pending"] = False
         self.store.save(state)
 
-    def proof(self, result, handle, receipt):
+    def proof(self, result, handle, receipt, *, state=None, item=None):
+        projection = None
+        if state is not None:
+            if (
+                receipt.get("revision") != state["revision"]
+                or receipt.get("kind") != item["kind"]
+                or sorted(receipt.get("paths", [])) != item["paths"]
+            ):
+                raise ValueError("Review result does not match the pinned scope")
+            if item["kind"] != "architecture" and any(
+                x["mode"] == "120000" and x["path"] in item["paths"] for x in state["inventory"]
+            ):
+                bare, _ = self.git.resolve_internal_repository(
+                    state["managed_repo_id"], self.directory
+                )
+                try:
+                    projection = symlink_projection(bare, state["revision"], item["paths"])
+                except (OSError, subprocess.SubprocessError, RecursionError) as exc:
+                    raise ValueError("Source symlink projection could not be verified") from exc
+        if receipt.get("source_projection") != projection:
+            raise ValueError("Review symlink projection does not match the source snapshot")
         known = {
             key: value for key, value in result.items() if key in SecurityScanResult.model_fields
         }
@@ -348,9 +369,10 @@ class CoverageController:
         coverage = json.loads(members[prefix + "coverage.json"])
         scan = manifest["scan"]
         expected = ["."] if receipt["kind"] == "architecture" else receipt["paths"]
+        expected_revision = projection["revision"] if projection else receipt["revision"]
         if (
             scan["target"].get("kind") != "git_revision"
-            or scan["target"].get("revision") != receipt["revision"]
+            or scan["target"].get("revision") != expected_revision
             or sorted(scan["scope"]["includePaths"]) != sorted(expected)
             or not scan.get("sealedAt")
             or scan.get("status") != "completed"
@@ -431,6 +453,7 @@ class CoverageController:
             "target_id": scan["target"].get("targetId"),
             "findings": findings["findings"],
             "report_prefix": prefix,
+            **({"source_projection": projection} if projection else {}),
         }
 
     def launch(self, state, item):
@@ -688,7 +711,7 @@ class CoverageController:
                 receipt = result.get("coverage_unit")
                 if receipt:
                     try:
-                        proof = self.proof(result, child, receipt)
+                        proof = self.proof(result, child, receipt, state=state, item=item)
                         accept(state, item, attempt["scan_id"], receipt, proof)
                         state["uncredited"] = [
                             source
@@ -938,13 +961,14 @@ class CoverageController:
                 "uncredited_sources": state["uncredited"],
                 "sources": [
                     {
-                        k: p[k]
-                        for k in (
-                            "archive_key",
-                            "archive_sha256",
-                            "provider_scan_id",
-                            "report_prefix",
-                        )
+                        **{
+                            k: p[k]
+                            for k in ("archive_key", "archive_sha256", "provider_scan_id", "report_prefix")
+                        },
+                        **(
+                            {"source_projection": p["source_projection"]}
+                            if p.get("source_projection") else {}
+                        ),
                     }
                     for p in state["proofs"]
                 ],
@@ -982,6 +1006,11 @@ class CoverageController:
             "Native reports and evidence are retained unchanged in sources/. See coverage.json for every file disposition.",
             "This is a static review. Live deployment behavior was not tested.",
         ]
+        if any(p.get("source_projection") for p in state["proofs"]):
+            report.extend([
+                "",
+                "Symlink metadata reviews use derived Git snapshots. scan-manifest.json records each verified projection back to the original revision and link objects; destination files receive no automatic coverage credit.",
+            ])
         manifest = data.pop("scan-manifest.json")
         content = {
             prefix + name: json.dumps(value, sort_keys=True, ensure_ascii=True).encode()

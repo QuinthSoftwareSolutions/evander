@@ -1461,6 +1461,12 @@ def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
     dependency_sources = _mapping_rows(context.get("dependency_git_sources"))
     if dependency_sources:
         row["dependency_git_sources"] = dependency_sources
+    retained = _compact_fields(
+        _mapping_or_empty(context.get("retained_work")),
+        ("source_context_id", "commit_sha", "tree_hash", "root_commit_sha"),
+    )
+    if retained:
+        row["retained_work"] = retained
     return row
 
 

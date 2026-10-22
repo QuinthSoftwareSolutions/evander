@@ -7,7 +7,7 @@ import re
 
 logger = logging.getLogger("evander_team_addon.providers")
 
-TEAM_AGENT_GUIDANCE_VERSION = 47
+TEAM_AGENT_GUIDANCE_VERSION = 48
 
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 
