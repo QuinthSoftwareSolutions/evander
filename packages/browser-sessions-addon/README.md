@@ -1,14 +1,13 @@
 # Browser Sessions Add-on
 
-| Mode | Application/browser host | Human access |
+| Mode | Browser host | Destinations |
 | --- | --- | --- |
-| Hosted demonstration | Authoring agent's assigned container worker | Admin UI sign-in and directory permission |
-| Hosted development | Same worker and selected checkout | Same authenticated viewer with dev-server updates |
-| Local support | User's existing Chrome tab | Single-use invitation, extension, explicit local input grant |
+| Hosted | Owning agent's assigned container worker | Approved HTTP targets or leased application endpoints |
+| Local support | User's existing Chrome tab | Explicitly shared tab and locally approved origins |
 
 Hosted viewers join the already active browser, including its application login and navigation. Viewer chat resumes the authoring task and thread; browser_session_reply answers that transcript. Teams and Discord keep their own transcripts.
 
-Install this optional package explicitly. Core installation does not enable or deploy it. See [operations](docs/operations.md), [protocol](docs/protocol.md), and the [synthetic launch recipe](examples/preview/README.md).
+Install this optional package explicitly. Core installation does not enable or deploy it. See [operations](docs/operations.md), [protocol](docs/protocol.md), and the [browser-only sessions and Playwright](docs/independent-sessions.md).
 
 ## Build and verify
 
@@ -16,17 +15,26 @@ Use Node 22+ and the repository's Python environment. Run npm ci --ignore-script
 
 Python package builds include the built viewer/controller and extension ZIP. Extract evander_browser_sessions_addon/ui_static/chrome-extension.zip and load its directory in Chrome developer mode, or distribute a signed extension through managed Chrome deployment.
 
-The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual MV3 debugger API, authenticated hosted state, frame streaming, control handover and source/style updates. It pregrants only its optional loopback host permission. Installation dialogs, enterprise policy, real worker networking and SQL require deployment qualification. For the real SQL provisioning/isolation/cleanup check, set EVANDER_BROWSER_TEST_SQL_SERVER, EVANDER_BROWSER_TEST_SQL_PASSWORD and optionally EVANDER_BROWSER_TEST_SQLCMD for a dedicated test server, then run python -m unittest discover -s tests -p test_worker_sql.py. The check creates and drops only generated preview databases and logins; it is skipped when those settings are absent.
+The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual MV3 debugger API, authenticated hosted state, frame streaming, control handover and source/style updates. It pregrants only its optional loopback host permission. Installation dialogs, enterprise policy, real worker networking and SQL require deployment qualification.
 
 ## Agent usage
 
-1. Grant desired browser_session tools to the authoring agent.
-2. Discover browser_session_profiles and browser_session_workspaces.
-3. Prepare a repo-local .evander/preview.json; call browser_session_create with a fresh request ID, approved profile and opaque workspace reference.
-4. Poll browser_session_status and send its viewer URL in the existing Teams/Discord conversation.
-5. Observe before acting. Use current element references and generation. Human takeover fences agent input. Observe again after an unknown action outcome instead of replaying it.
-6. Viewer feedback resumes the authoring task. Send progress updates and replies with browser_session_reply and the original message ID, as often as needed. Give each outgoing reply a fresh request_id and reuse it only when retrying the identical reply. Source edits stay normal repository edits.
-7. Close to release resources before removing the owning checkout.
+All authorized agents receive the add-on's packaged [operating guide](evander_browser_sessions_addon/agent-guide.md)
+and browser-creation schema through `browser_session_profiles` and
+`browser_session_create`. To resume an existing session, request
+`browser_session_status` with `include_guidance: true`. This is the shared source
+of operating instructions for all agent roles; application-specific recipes stay
+in operator-owned storage.
+
+1. Grant desired browser_session tools explicitly and discover browser profiles.
+2. For an external application, select the owning agent's approved HTTP target aliases.
+3. For hosted application code, create it through the independent Application Environments add-on and await its endpoint references.
+4. Call browser_session_create in hosted mode with a browser profile, targets and entry_url. Reuse request_id for identical retries.
+5. Share the returned viewer_url through existing configured delivery or CI output.
+6. Observe before acting. Human takeover fences both typed input and optional Playwright connections. Reobserve after an unknown outcome; never replay it.
+7. Close the browser when finished. Close its application separately when desired.
+
+See [managed login, Playwright, page selection and CI output](docs/independent-sessions.md).
 
 For local support, create mode user_hosted and call browser_session_invite. The user opens their app tab and extension, pastes the invitation and approves the control-plane connection. It starts in observe mode. Only that host grants input, approves another origin or stops sharing. The agent that creates the session observes and interacts with it using its existing context and browser tool grants. Extension chat resumes that same agent and its originating thread; replies remain in the extension transcript. No separate support agent is created.
 
@@ -50,9 +58,9 @@ Enable optional speech in directory settings. Microphone transcription requires 
 
 ## Boundaries
 
-Hosted sessions require container_worker_vm on Linux with Docker IPv4 bridge filtering. Local hosting targets Chrome 125+. Pop-up windows, browser chrome, file transfer, arbitrary JavaScript, clipboard sharing and continuous recordings are outside this version. Cross-origin navigation pauses local input until approved. Debugger detach requires a new invitation.
+Hosted sessions require container_worker_vm on Linux with Docker IPv4 bridge filtering. Local hosting targets Chrome 125+. Typed tools expose bounded browser actions. Granted Playwright connections support test scripts in the same Chromium browser; file transfer, clipboard sharing and continuous recordings remain unavailable. Cross-origin navigation pauses local input until approved. Debugger detach requires a new invitation.
 
-Defaults: one controller; one hosted preview per worker and authoring agent; four-hour hard deadline; thirty-minute inactivity limit; ten-minute invitations. “Keep active” resets inactivity without extending the hard deadline. Frames and polling do not renew activity.
+Defaults: one controller; one hosted browser per worker and authoring agent; four-hour hard deadline; thirty-minute inactivity limit; ten-minute invitations. “Keep active” resets inactivity without extending the hard deadline. Frames and polling do not renew activity.
 
 Customer recipes, credentials and seed data belong in operator-owned storage.
 
@@ -78,9 +86,9 @@ for capability checks, receipt recovery and Teams workflow activation.
 
 ## Faster multi-step interaction
 
-Browser Sessions 0.5.0 adds optional `browser_session_run` and
-`browser_session_cancel_run`. The PA chooses short multi-step objectives, supplies
-exact input values and verifies the result; the directory's Jev or OpenAI
+The optional tools `browser_session_run` and
+`browser_session_cancel_run` let the owning agent choose short multi-step objectives, supply
+exact input values and verify the result; the directory's Jev or OpenAI
 Decisions provider selects intermediate typed actions in the existing shared
 browser. This is disabled by default. See [setup, agent guidance, limits and
 benchmarks](docs/fast-execution.md).

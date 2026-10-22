@@ -28,8 +28,12 @@ def execution(request, domain, hosted):
         "commands": [],
         "after_decision": None,
         "probability": 1,
+        "question_probabilities": {},
         "mode": "normal",
         "attribution": [],
+        "choices": {},
+        "observation_prefix": "observation-",
+        "page_epoch": "1",
     }
     original = peers.call
 
@@ -39,8 +43,8 @@ def execution(request, domain, hosted):
             state["commands"].append(command)
             if command["action"] == "observe":
                 return {
-                    "observation_id": "observation-" + str(len(state["commands"])),
-                    "page_epoch": "1",
+                    "observation_id": state["observation_prefix"] + str(len(state["commands"])),
+                    "page_epoch": state["page_epoch"],
                     "url": "https://application.test/accounts",
                     "elements": [
                         {
@@ -86,41 +90,39 @@ def execution(request, domain, hosted):
                 "action": "fill",
                 "target": "node-1",
                 "input": "v0",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         elif not state["saved"]:
             selected = {
                 "action": "click",
                 "target": "node-2",
                 "input": "_none",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         else:
             selected = {
                 "action": "done",
                 "target": "_none",
                 "input": "_none",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         if state["mode"] == "wait":
             selected["action"] = "wait"
+        selected.update(state["choices"])
         if provider == "jev":
             questions = body["questions"]
             answers = {}
             for name, q in questions.items():
+                probability = state["question_probabilities"].get(name, state["probability"])
                 chosen = selected[name]
-                if chosen not in q["criteria"]:
+                if chosen not in q["criteria"] and name not in {"key", "direction"}:
                     chosen = next(iter(q["criteria"]))
                 other = next(key for key in q["criteria"] if key != chosen)
                 probabilities = {
-                    key: state["probability"]
-                    if key == chosen
-                    else 1 - state["probability"]
-                    if key == other
-                    else 0
+                    key: probability if key == chosen else 1 - probability if key == other else 0
                     for key in q["criteria"]
                 }
                 answers[name] = {
@@ -132,9 +134,15 @@ def execution(request, domain, hosted):
         else:
             answers = []
             for q in body["questions"]:
+                probability = state["question_probabilities"].get(q["name"], state["probability"])
                 chosen = selected[q["name"]]
                 options = [c["value"] for c in q["choices"]]
                 if chosen not in options:
+                    if q["name"] in {"key", "direction"}:
+                        # A conditional question with no applicable option can
+                        # refuse even when action and target are unambiguous.
+                        answers.append({"name": q["name"], "type": "refusal"})
+                        continue
                     chosen = options[0]
                 other = next(key for key in options if key != chosen)
                 answers.append(
@@ -146,9 +154,9 @@ def execution(request, domain, hosted):
                         "probabilities": [
                             {
                                 "value": key,
-                                "probability": state["probability"]
+                                "probability": probability
                                 if key == chosen
-                                else 1 - state["probability"]
+                                else 1 - probability
                                 if key == other
                                 else 0,
                             }
@@ -226,6 +234,71 @@ def test_multistep_adapters_literals_fresh_final_state_and_retry(execution):
         e.run(goal="Different objective")
 
 
+def test_same_page_and_actions_have_same_model_input_despite_new_receipt_ids(execution):
+    e = execution
+    first = e.run()
+    first_wire = list(e.state["provider_calls"])
+    first_commands = list(e.state["commands"])
+    e.state.update(
+        value="", saved=False, commands=[], observation_prefix="new-document-", page_epoch="27"
+    )
+    second = e.run(request_id="deliberate-second-objective")
+    second_wire = e.state["provider_calls"][len(first_wire) :]
+    assert first["status"] == second["status"] == "needs_verification"
+    assert len(first_wire) == len(second_wire) == 3
+    assert first_wire == second_wire
+    # Current semantic state and completed actions must still reach the provider.
+    states = [body.get("state") or json.loads(body["input"]) for body in second_wire]
+    assert states[0]["page"]["elements"][0]["value"] == ""
+    assert states[1]["page"]["elements"][0]["value"] == "Example"
+    assert states[2]["page"]["elements"][-1]["name"] == "Account saved"
+    assert states[1]["completed_actions"] == [
+        {"action": "fill", "ref": "node-1", "outcome": "completed"}
+    ]
+    # Do not normalize the actual command fences, returned observation or accounting identity.
+    assert second["observation"]["observation_id"].startswith("new-document-")
+    assert second["observation"]["page_epoch"] == "27"
+    for command in e.state["commands"]:
+        if command["action"] != "observe":
+            assert command["observation_id"].startswith("new-document-")
+            assert command["generation"] == e.session.control_generation
+    assert {c["id"] for c in first_commands}.isdisjoint(c["id"] for c in e.state["commands"])
+    assert e.state["attribution"][-1]["trace_id"] == second["id"] != first["id"]
+
+
+@pytest.mark.parametrize("action,parameter", [("key", "key"), ("scroll", "direction")])
+def test_irrelevant_option_cannot_become_keyboard_or_zero_scroll_input(
+    execution, action, parameter
+):
+    e = execution
+    e.state["choices"] = {"action": action, "target": "node-1", parameter: "_none"}
+    result = e.run(max_steps=1)
+    assert result["status"] == "needs_pa"
+    assert parameter in result["reason"]
+    assert not result["steps"]
+    assert not any(c["action"] != "observe" for c in e.state["commands"])
+
+
+@pytest.mark.parametrize(
+    "action,parameter,selected,expected",
+    [
+        ("key", "key", "Enter", {"text": "Enter"}),
+        ("scroll", "direction", "down", {"delta_x": 0, "delta_y": 500}),
+    ],
+)
+def test_required_keyboard_and_scroll_choices_still_issue_bounded_input(
+    execution, action, parameter, selected, expected
+):
+    e = execution
+    e.state["choices"] = {"action": action, "target": "node-1", parameter: selected}
+    result = e.run(max_steps=1)
+    commands = [c for c in e.state["commands"] if c["action"] != "observe"]
+    assert len(commands) == 1
+    assert commands[0]["action"] == action
+    assert all(commands[0][key] == value for key, value in expected.items())
+    assert result["steps"][0]["outcome"] == "completed"
+
+
 @pytest.mark.parametrize("control", ["pause", "claim"])
 def test_control_change_while_deciding_prevents_input(execution, control):
     e = execution
@@ -271,13 +344,26 @@ def test_failure_yields_without_replay(execution, mode, reason):
     assert len(e.state["provider_calls"]) < 2
 
 
-def test_low_probability_yields_even_if_vendor_confidence_is_one(execution):
+@pytest.mark.parametrize("question", ["action", "target", "input"])
+def test_low_probability_identifies_relevant_choice_even_if_vendor_confidence_is_one(
+    execution, question
+):
     e = execution
-    e.state["probability"] = 0.55
+    e.state["question_probabilities"] = {question: 0.55}
     result = e.run()
     assert result["status"] == "needs_pa"
     assert "ambiguous" in result["reason"]
+    assert question in result["reason"]
+    assert "0.550" in result["reason"] and "0.800" in result["reason"]
     assert not e.state["value"]
+
+
+def test_low_probability_on_irrelevant_choices_does_not_block_valid_actions(execution):
+    e = execution
+    e.state["question_probabilities"] = {"key": 0.2, "direction": 0.2}
+    result = e.run()
+    assert result["status"] == "needs_verification"
+    assert e.state["saved"]
 
 
 def test_private_literals_not_sent_to_provider_or_persisted(execution):
@@ -318,7 +404,23 @@ def test_cancel_during_decision_and_stop_is_retry_safe(execution):
 def test_missing_values_never_invent_text(execution):
     result = execution.run(values={})
     assert result["status"] == "needs_pa"
+    assert "request.values" in result["reason"]
     assert not execution.state["value"]
+
+
+@pytest.mark.parametrize("literal", ["", "  Exact text  \n"])
+def test_supplied_literals_can_clear_fields_and_preserve_whitespace(execution, literal):
+    e = execution
+    e.state["value"] = "Existing value"
+    e.state["choices"] = {"action": "fill", "target": "node-1", "input": "v0"}
+    result = e.run(
+        values={"replacement": {"description": "Replacement field content", "value": literal}},
+        max_steps=1,
+    )
+    assert e.state["value"] == literal
+    assert result["observation"]["elements"][0]["value"] == literal
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["outcome"] == "completed"
 
 
 def test_step_limit_is_lowered_and_last_result_requires_verification(execution):
@@ -424,13 +526,23 @@ def test_pending_command_restart_recovers_without_replaying(execution, action):
     receipt = restarted.run_get(e.session.id, run["id"])
     assert receipt["status"] == ("outcome_unknown" if action == "click" else "needs_pa")
     assert receipt["steps"] == (
-        [{"command_id": "command-on-wire", "action": "click", "ref": "node-2", "outcome": "unknown"}]
+        [
+            {
+                "command_id": "command-on-wire",
+                "action": "click",
+                "ref": "node-2",
+                "outcome": "unknown",
+            }
+        ]
         if action == "click"
         else []
     )
     assert not e.state["commands"]
     with restarted.connect() as db:
-        assert db.execute("SELECT state FROM commands WHERE id=?", (command.id,)).fetchone()[0] == "unknown"
+        assert (
+            db.execute("SELECT state FROM commands WHERE id=?", (command.id,)).fetchone()[0]
+            == "unknown"
+        )
     assert restarted.claim_run(
         e.session.id, "agent:agent-a", request, "fingerprint", seconds=1, max_steps=1
     ) == (receipt, False)
@@ -633,10 +745,13 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
             payload = json.loads(request.content) if request.content else None
             if request.url.path.endswith("/command") and payload["command"]["action"] != "observe":
                 attempts.append(payload["command"])
-                return httpx.Response(409, json={"code": "stale_target", "error": "private-peer-detail"})
+                return httpx.Response(
+                    409, json={"code": "stale_target", "error": "private-peer-detail"}
+                )
             return httpx.Response(
                 200, json=original(base, token).call(request.method, request.url.path, payload)
             )
+
         return HttpPeer(base, "BROWSER_TEST_TOKEN", transport=httpx.MockTransport(relay))
 
     e.service.peer_factory = peer
@@ -646,11 +761,19 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
     assert not result["observation_current"]  # The PA must observe the changed page.
     assert len(attempts) == len(e.state["provider_calls"]) == 1
     assert result["steps"] == [
-        {"command_id": attempts[0]["id"], "action": "fill", "ref": "node-1", "outcome": "not_applied"}
+        {
+            "command_id": attempts[0]["id"],
+            "action": "fill",
+            "ref": "node-1",
+            "outcome": "not_applied",
+        }
     ]
     assert e.state["value"] == ""
     assert "private-peer-detail" not in json.dumps(result)
     with e.service.store.connect() as db:
-        assert db.execute("SELECT state FROM commands WHERE id=?", (attempts[0]["id"],)).fetchone()[0] == "not_applied"
+        assert (
+            db.execute("SELECT state FROM commands WHERE id=?", (attempts[0]["id"],)).fetchone()[0]
+            == "not_applied"
+        )
     assert e.run()["id"] == result["id"]
     assert len(attempts) == 1

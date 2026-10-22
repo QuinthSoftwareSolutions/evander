@@ -1,37 +1,22 @@
 {
-  "description": "Node fragments; supply a trusted preview_request event node and wire normal Teams/Discord delivery to the viewer URL.",
+  "description": "Share an existing approved external application; no hosted application environment is created.",
   "nodes": [
     {
-      "id": "preview",
-      "display_name": "Start shared preview",
+      "id": "browser",
+      "display_name": "Share test browser",
       "type": "effect:browser-session:ensure",
       "config": {
-        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
+        "agent_session_id": "${{request.payload.agent_session_id}}",
         "request": {
-          "mode": "hosted_development",
-          "request_id": "${{preview_request.event_id}}",
-          "profile_id": "web",
-          "workspace_ref": "${{preview_request.payload.workspace_ref}}",
-          "launch_manifest_path": ".evander/preview.json"
+          "mode": "hosted",
+          "request_id": "${{request.event_id}}",
+          "profile_id": "browser",
+          "target_aliases": [
+            "test-ui",
+            "test-api"
+          ],
+          "entry_url": "https://test.example.test/"
         }
-      }
-    },
-    {
-      "id": "preview_status",
-      "display_name": "Preview status",
-      "type": "query:browser-session:status",
-      "config": {
-        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
-        "browser_session_id": "${{preview.id}}"
-      }
-    },
-    {
-      "id": "close_preview",
-      "display_name": "Close preview",
-      "type": "effect:browser-session:close",
-      "config": {
-        "agent_session_id": "${{preview_request.payload.agent_session_id}}",
-        "browser_session_id": "${{preview.id}}"
       }
     }
   ]

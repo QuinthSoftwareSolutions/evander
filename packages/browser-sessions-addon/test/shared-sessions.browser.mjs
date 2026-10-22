@@ -25,7 +25,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
       stdio:["ignore","pipe","pipe"]});
     let controllerError=""; controller.stderr.on("data", d=>controllerError+=d);
     const path = "/test/"+config.session.id;
-    let state = await until(async()=>{const s=await f.api(path+"/state");return s.state==="ready"&&s;}, "hosted browser readiness");
+    let state = await until(async()=>{const s=await f.api(path+"/state");return s.state==="ready"&&s;}, "hosted browser readiness").catch(error=>{throw new Error(error.message+"; controller: "+controllerError);});
     const observe = ()=>f.api(path+"/command", command(state,"observe"));
     let observed = await observe();
     assert.ok(observed.elements.some(e=>e.role==="heading"&&e.name==="Station materials"));
@@ -210,7 +210,7 @@ for (const failure of [
   });
 }
 
-test("guided launch-profile setup saves through the production settings API", async () => {
+test("guided browser-profile setup saves through the production settings API", async () => {
   const f = await fixture();
   let browser;
   try {
@@ -221,7 +221,7 @@ test("guided launch-profile setup saves through the production settings API", as
       { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     await page.getByRole("button", { name: "Add profile", exact: true }).click();
-    await page.getByLabel("Application image", { exact: true }).fill("seeded-preview:2");
+    await page.getByLabel("Browser image", { exact: true }).fill("seeded-preview:2");
     await page.getByLabel("Maximum steps",{exact:true}).fill("12");
     await page.getByLabel("Time limit (seconds)",{exact:true}).fill("15");
     const saved = page.waitForResponse(response =>
@@ -233,7 +233,7 @@ test("guided launch-profile setup saves through the production settings API", as
     await page.getByRole("status").getByText("Saved", { exact: true }).waitFor();
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Configure", exact: true }).click();
-    assert.equal(await page.getByLabel("Application image", { exact: true }).inputValue(),
+    assert.equal(await page.getByLabel("Browser image", { exact: true }).inputValue(),
       "seeded-preview:2");
     assert.equal(await page.getByLabel("Maximum steps",{exact:true}).inputValue(),"12");
     assert.equal(await page.getByLabel("Time limit (seconds)",{exact:true}).inputValue(),"15");

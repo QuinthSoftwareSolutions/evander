@@ -91,12 +91,28 @@ function update(value: any) {
     $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask your agent to start another session.";
   }
 }
+function pageOptions(pages:any[]) {
+  if(!Array.isArray(pages))return;
+  $("page-picker").hidden=pages.length<2;
+  const select=$("pages") as HTMLSelectElement;
+  const signature=JSON.stringify(pages);
+  if(select.dataset.signature===signature)return;
+  select.dataset.signature=signature;select.replaceChildren();
+  for(const page of pages) {
+    const option=document.createElement("option");option.value=page.id;option.textContent=page.url;option.selected=page.selected;select.append(option);
+  }
+}
+$("pages").addEventListener("change",()=>{
+  observation="";
+  void api("/sessions/"+sessionId+"/select-page",{page_id:($("pages") as HTMLSelectElement).value}).then(result=>pageOptions(result.pages)).catch(showError);
+});
 async function command(action: string, options: any = {}) {
   const result = await api("/sessions/" + sessionId + "/command", {
     id: crypto.randomUUID(), generation: session.control_generation,
     action, observation_id: observation || null, ...options,
   });
   if (result.observation_id) observation = result.observation_id;
+  if(result.pages)pageOptions(result.pages);
   return result;
 }
 function serializeInput(action: string, options: any = {}) {
@@ -229,6 +245,7 @@ async function openViewer() {
     const payload = JSON.parse(String(event.data));
     if (payload.kind === "state") { actor = payload.actor ?? actor; update(payload.session); }
     if (payload.kind === "frame") {
+      pageOptions(payload.pages);
       const image = new Image();
       image.src = "data:image/jpeg;base64," + payload.image;
       await image.decode();
@@ -308,8 +325,7 @@ function renderSettings() {
   for (const [name, profile] of Object.entries(settings.profiles) as [string, any][]) {
     const card = document.createElement("div"); card.className = "config-card";
     const title = document.createElement("strong"); title.textContent = name; card.append(title);
-    field(card, "Application image", profile.image, (value) => profile.image = value);
-    field(card, "Browser image", profile.browser_image, (value) => profile.browser_image = value);
+    field(card, "Browser image", profile.image, (value) => profile.image = value);
     field(card, "CPUs", profile.cpus, (value) => profile.cpus = Number(value), "number");
     field(card, "Memory (MiB)", profile.memory_mib, (value) => profile.memory_mib = Number(value), "number");
     $("profiles").append(card);
@@ -330,9 +346,7 @@ $("add-worker").addEventListener("click", () => {
 });
 $("add-profile").addEventListener("click", () => {
   const name = "profile-" + (Object.keys(settings.profiles).length + 1);
-  settings.profiles[name] = { image: "evander-runner:latest", browser_image: "evander-browser-controller:latest",
-    cpus: 2, memory_mib: 4096, browser_memory_mib: 1536,
-    public_environment: {}, readonly_mounts: {}, egress_allowlist: [], database_enabled: false };
+  settings.profiles[name] = { image: "evander-browser-controller:latest", cpus: 1, memory_mib: 1536, readonly_mounts: {}, playwright_enabled: false };
   renderSettings();
 });
 $("apply-advanced").addEventListener("click", () => {
@@ -364,7 +378,7 @@ function renderCatalog() {
     const status = document.createElement("span"); status.className = "status"; status.textContent = item.state.replaceAll("_", " ");
     status.dataset.state = item.state;
     const title = document.createElement("h2"); title.textContent = item.title;
-    const type = document.createElement("p"); type.textContent = item.mode === "hosted_development" ? "Live development" : "Guided demonstration";
+    const type = document.createElement("p"); type.textContent = "Shared browser";
     const expiry = document.createElement("p"); expiry.textContent = "Expires " + new Date(item.expires_at * 1000).toLocaleString();
     card.append(status, title, type, expiry); $("session-list").append(card);
   }

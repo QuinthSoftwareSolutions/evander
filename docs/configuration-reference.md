@@ -117,6 +117,12 @@ extension settings apply. The list/download calls are also restricted to the ses
 `metadata.pr_feedback_streams` entries and use the directory-scoped Azure DevOps organization,
 project, and `azure_devops_pr_pat_env` credential.
 
+Azure DevOps voting through `submit_pr_review` also requires an exact
+`metadata.pr_feedback_streams` entry for the target PR and the `submit_pr_review` tool grant.
+The configured PR credential's authenticated identity must already be an optional or required
+reviewer. Approve, approve with suggestions, waiting for author, and reset are supported;
+Reject is unavailable. See the [review workflow contract](operations.md#review-request-workflow).
+
 ## 1) Service environment files (`config/*.env.example`)
 
 These example files document env vars that services may still consume. The rendered systemd units

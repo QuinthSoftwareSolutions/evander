@@ -117,6 +117,74 @@ async function confirmClick(page, button, accept = true) {
   ]);
 }
 
+test("credit balances show whole numbers, distinguish zero, unlimited, and unavailable and refresh with usage", { timeout: 60_000 }, async (t) => {
+  const selected = profile("balance", "Credit balance", 3);
+  selected.rate_limits.default.credits = { has_credits: true, unlimited: false, balance: "99" };
+  selected.rate_limits.by_limit_id = {
+    codex: { credits: { has_credits: true, unlimited: false, balance: "1250.50" } },
+  };
+  const legacy = profile("legacy", "Legacy balance", 0);
+  legacy.rate_limits.default.credits = { has_credits: true, unlimited: false, balance: "12.75" };
+  const empty = profile("empty", "No credits", 1);
+  empty.rate_limits.default.credits = { has_credits: false, unlimited: false, balance: null };
+  const unlimited = profile("unlimited", "Unlimited credits", 2);
+  unlimited.rate_limits.default.credits = { has_credits: true, unlimited: true, balance: null };
+  const missing = profile("missing", "Unknown balance", null, { rate_limits: null });
+  const olderWorker = profile("older", "Older worker", 4);
+  const otherBucket = profile("other", "Other bucket", 0);
+  otherBucket.rate_limits.default = {
+    limit_id: "other", credits: { has_credits: true, unlimited: false, balance: "500" },
+  };
+  otherBucket.rate_limits.by_limit_id = {
+    other: { credits: { has_credits: true, unlimited: false, balance: "500" } },
+  };
+  const cases = [
+    [selected, "1,251"], [legacy, "13"], [empty, "0"], [unlimited, "Unlimited"],
+    [missing, "Unavailable"], [olderWorker, "Unavailable"], [otherBucket, "Unavailable"],
+  ];
+  const { page, errors } = await fixture(t, async (route) => {
+    assert.equal(route.request().method(), "GET");
+    return route.fulfill({ json: { worker_url: "http://worker.test", profiles: cases.map(([entry]) => entry) } });
+  });
+  for (const [entry, expected] of cases) {
+    const creditCell = row(page, entry.display_name).locator(".subscription-credits");
+    await creditCell.waitFor();
+    assert.equal((await creditCell.innerText()).replace(/\s+/g, " "), `${expected} Credits`);
+  }
+  assert.match(await row(page, "Credit balance").innerText(), /20%\s+7-day remaining/);
+  assert.match(await row(page, "Credit balance").innerText(), /3\s+Banked resets/);
+
+  for (const width of [1600, 1100, 960, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    assert.equal(await row(page, "Credit balance").locator(".subscription-credits").isVisible(), true);
+    if (process.env.PLAYWRIGHT_ARTIFACT_DIR && [1600, 390].includes(width)) {
+      await mkdir(process.env.PLAYWRIGHT_ARTIFACT_DIR, { recursive: true });
+      await page.screenshot({ path: `${process.env.PLAYWRIGHT_ARTIFACT_DIR}/subscription-credits-${width}.png`, fullPage: true });
+    }
+  }
+  // A narrow content area needs the compact layout even in a wide browser.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.locator(".subscription-profiles").evaluate((element) => { element.style.maxWidth = "850px"; });
+  assert.equal(await page.locator(".subscription-columns").isVisible(), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  const creditCell = row(page, "Credit balance").locator(".subscription-credits");
+  for (const balance of [null, "", "  ", "unknown", "-1", "Infinity", "0x10", 10, { token: "secret" }]) {
+    selected.rate_limits.by_limit_id.codex.credits.balance = balance;
+    // Neither view has a usable balance, including when credits are known to exist.
+    selected.rate_limits.default.credits = null;
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await creditCell.filter({ hasText: /^Unavailable\s*Credits$/ }).waitFor();
+  }
+  for (const [balance, expected] of [["0", "0"], ["0.0001", "0"], [" 20.25 ", "20"]]) {
+    selected.rate_limits.by_limit_id.codex.credits.balance = balance;
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await creditCell.filter({ hasText: new RegExp(`^${expected.replace(".", "\\.")}\\s*Credits$`) }).waitFor();
+  }
+  assert.deepEqual(errors, []);
+});
+
 test("banked resets use the authoritative count and redemption retries consume once", { timeout: 60_000 }, async (t) => {
   let selected = profile("team-plus", "Team Plus", 3);
   const others = [

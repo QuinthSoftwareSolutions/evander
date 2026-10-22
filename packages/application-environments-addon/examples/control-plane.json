@@ -1,0 +1,16 @@
+{
+  "allocations_enabled": false,
+  "lifetime_seconds": 14400,
+  "workers": {
+    "worker-a": {
+      "base_url": "https://worker.example.test:11893",
+      "parent_worker_url": "https://worker.example.test:11888",
+      "token_env": "EVANDER_APPLICATION_WORKER_TOKEN"
+    }
+  },
+  "profiles": {
+    "web": {
+      "image": "approved-web:1"
+    }
+  }
+}

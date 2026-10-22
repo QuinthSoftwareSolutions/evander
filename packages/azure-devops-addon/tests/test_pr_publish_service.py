@@ -12,6 +12,175 @@ from evander_azure_devops_addon.pull_requests import AzureDevOpsPrPublishProvide
 from evander.services import GitHubPrPublishProvider, PrPublishService
 
 
+@pytest.mark.parametrize("is_required", [False, True])
+@pytest.mark.parametrize(
+    ("event", "expected_vote"),
+    [
+        (" approve ", 10),
+        ("APPROVE_WITH_SUGGESTIONS", 5),
+        ("WAITING_FOR_AUTHOR", -5),
+        ("REQUEST_CHANGES", -5),
+        ("RESET", 0),
+    ],
+)
+def test_azure_review_votes_as_the_assigned_host_identity_and_deduplicates_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    is_required: bool,
+    event: str,
+    expected_vote: int,
+) -> None:
+    requests: list[httpx.Request] = []
+    reviewer_id = "11111111-1111-1111-1111-111111111111"
+    reviewer_path = (
+        f"/example/proj/_apis/git/repositories/repo1/pullRequests/17/reviewers/{reviewer_id}"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"] == "Basic OnNlY3JldA=="
+        if request.url.path == "/example/_apis/connectionData":
+            assert request.method == "GET"
+            return httpx.Response(200, json={"authenticatedUser": {"id": reviewer_id}})
+        assert request.url.params["api-version"] == "7.1"
+        if request.method == "GET" and request.url.path == reviewer_path:
+            return httpx.Response(
+                200,
+                json={"id": reviewer_id, "isRequired": is_required, "vote": expected_vote},
+            )
+        if request.method == "POST" and request.url.path.endswith("/pullRequests/17/threads"):
+            return httpx.Response(201, json={"id": 44, "comments": [{"id": 10}]})
+        if request.method == "PUT" and request.url.path == reviewer_path:
+            expected_payload = {"id": reviewer_id, "vote": expected_vote}
+            if expected_vote in {5, 10}:
+                expected_payload["isReapprove"] = True
+            assert json.loads(request.content) == expected_payload
+            return httpx.Response(200, json={"id": reviewer_id, "vote": expected_vote})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handle))
+    service = PrPublishService(
+        providers={
+            "azure_devops": AzureDevOpsPrPublishProvider(
+                organization_url="https://dev.azure.com/example",
+                project="proj",
+                pat="secret",
+            )
+        },
+        idempotency_store_path=tmp_path / "idempotency.json",
+    )
+    arguments = dict(
+        provider="ado",
+        repo="repo1",
+        pr_id="17",
+        body_text="Summary",
+        event=event,
+        idempotency_key="review-vote-1",
+    )
+    result = service.submit_review(**arguments)
+    retry = service.submit_review(**arguments)
+
+    assert result["status"] == "posted"
+    assert result["vote"] == expected_vote
+    assert result["reviewer_id"] == reviewer_id
+    assert result["published_feedback_ids"] == ["azure_devops:thread_comment:44:10"]
+    assert retry["status"] == "deduplicated"
+    assert retry["vote"] == expected_vote
+    assert [r.method for r in requests] == ["GET", "GET", "POST", "PUT"]
+
+
+@pytest.mark.parametrize("event", ["REJECT", "REJECTED", "-10", "UNKNOWN"])
+def test_azure_review_rejects_unsupported_votes_before_provider_io(
+    monkeypatch: pytest.MonkeyPatch,
+    event: str,
+) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        pytest.fail(f"unsupported vote reached provider: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handle))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    with pytest.raises(ValueError, match="review event"):
+        provider.submit_review(repo="repo1", pr_id="17", body_text="Summary", event=event)
+
+
+@pytest.mark.parametrize(
+    ("stage", "status", "payload", "error", "expected_methods"),
+    [
+        ("identity", 200, {}, ValueError, ["GET"]),
+        ("identity", 401, {}, httpx.HTTPStatusError, ["GET"]),
+        ("reviewer", 404, {}, ValueError, ["GET", "GET"]),
+        ("reviewer", 200, {"id": "another-user"}, ValueError, ["GET", "GET"]),
+        ("summary", 500, {}, httpx.HTTPStatusError, ["GET", "GET", "POST"]),
+        ("vote", 403, {}, httpx.HTTPStatusError, ["GET", "GET", "POST", "PUT"]),
+        (
+            "vote",
+            200,
+            {"id": "another-user", "vote": 10},
+            ValueError,
+            ["GET", "GET", "POST", "PUT"],
+        ),
+        (
+            "vote",
+            200,
+            {"id": "11111111-1111-1111-1111-111111111111", "vote": -10},
+            ValueError,
+            ["GET", "GET", "POST", "PUT"],
+        ),
+    ],
+)
+def test_azure_review_does_not_vote_before_publication_or_report_unconfirmed_votes(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    status: int,
+    payload: dict,
+    error: type[Exception],
+    expected_methods: list[str],
+) -> None:
+    requests: list[httpx.Request] = []
+    reviewer_id = "11111111-1111-1111-1111-111111111111"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/_apis/connectionData"):
+            current_stage = "identity"
+            success = {"authenticatedUser": {"id": reviewer_id}}
+        elif request.method == "GET" and request.url.path.endswith(f"/reviewers/{reviewer_id}"):
+            current_stage = "reviewer"
+            success = {"id": reviewer_id}
+        elif request.method == "POST" and request.url.path.endswith("/pullRequests/17/threads"):
+            current_stage = "summary"
+            success = {"id": 44, "comments": [{"id": 10}]}
+        elif request.method == "PUT" and request.url.path.endswith(f"/reviewers/{reviewer_id}"):
+            current_stage = "vote"
+            assert json.loads(request.content) == {
+                "id": reviewer_id,
+                "vote": 10,
+                "isReapprove": True,
+            }
+            success = {"id": reviewer_id, "vote": 10}
+        else:
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        return (
+            httpx.Response(status, json=payload)
+            if current_stage == stage
+            else httpx.Response(200, json=success)
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handle))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    with pytest.raises(error):
+        provider.submit_review(repo="repo1", pr_id="17", body_text="Summary", event="APPROVE")
+    assert [r.method for r in requests] == expected_methods
+
+
 def test_pr_publish_service_idempotency_reuses_first_comment_response(tmp_path: Path) -> None:
     class StubProvider:
         def __init__(self) -> None:

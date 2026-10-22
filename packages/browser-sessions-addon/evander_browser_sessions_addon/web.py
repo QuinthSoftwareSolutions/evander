@@ -129,13 +129,13 @@ def admin_api_routes(context):
             if session.mode == "user_hosted":
                 raise BrowserError("Local browser sharing is private to its host", "not_found", 404)
             action = request.path_params.get("action", "state")
-            if request.method == "GET" and action not in {"state", "messages"}:
+            if request.method == "GET" and action not in {"state", "messages", "pages"}:
                 raise BrowserError("This operation requires POST", "method_not_allowed", 405)
             permission = (
                 MANAGE
                 if action == "close"
                 else CONTROL
-                if request.method == "POST" and action != "extend"
+                if request.method == "POST" and action not in {"extend", "select-page"}
                 else VIEW
             )
             actor = authorize(context, request, session.directory, permission)
@@ -178,6 +178,16 @@ def admin_api_routes(context):
                 result = await run_in_threadpool(
                     service.cancel_run, session.id, actor, payload.get("run_id")
                 )
+            elif action in {"pages", "select-page"}:
+                from uuid import uuid4
+
+                command = BrowserCommand(
+                    id=str(uuid4()),
+                    generation=session.control_generation,
+                    action="pages" if action == "pages" else "select_page",
+                    page_id=payload.get("page_id") if action == "select-page" else None,
+                )
+                result = await run_in_threadpool(service.command, session.id, actor, command)
             elif action == "command":
                 command = BrowserCommand.model_validate(payload)
                 result = await run_in_threadpool(service.command, session.id, actor, command)
@@ -238,15 +248,24 @@ def admin_api_routes(context):
                 mutation(request, config)
                 payload = await read_json(request)
                 if payload.get("stream") is True:
-                    return await stream_audio(voice.speech_chunks(
-                        session.id, actor, str(payload["request_id"]), str(payload["message_id"]),
-                        validate=lambda: authorize(context, request, session.directory, permission),
-                    ))
+                    return await stream_audio(
+                        voice.speech_chunks(
+                            session.id,
+                            actor,
+                            str(payload["request_id"]),
+                            str(payload["message_id"]),
+                            validate=lambda: authorize(
+                                context, request, session.directory, permission
+                            ),
+                        )
+                    )
                 content = await voice.speech(
                     session.id, actor, str(payload["request_id"]), str(payload["message_id"])
                 )
                 authorize(context, request, session.directory, permission)
-                return Response(content, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+                return Response(
+                    content, media_type="audio/wav", headers={"Cache-Control": "no-store"}
+                )
             raise BrowserError("Unknown voice operation", "not_found", 404)
         except PermissionError:
             return error(BrowserError("Browser-session permission is required", "forbidden", 403))
