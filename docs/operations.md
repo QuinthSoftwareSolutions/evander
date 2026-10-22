@@ -745,6 +745,14 @@ Troubleshooting:
   still valid; otherwise record the orphaned artifact-space ref and remove or
   quarantine the published files according to the deployment's artifact
   retention policy.
+- **Evidence trapped behind a task blocker** — the owner can use the existing
+  `team_submit_deliverable` with `evidence_only=true`, retained `artifact_paths`,
+  and a failed or incomplete `verification.status`. A matching task-specific
+  request in the current dispatch authorizes this evidence operation even when
+  normal task scope excludes the blocked task. Inspect the returned
+  `published_evidence_artifacts` receipt; keep substantive blockers and normal
+  completion, acceptance, and release gates. Reuse the exact request and payload
+  after interruption or context rotation to recover the existing receipt.
 
 ## Model Usage Querying
 

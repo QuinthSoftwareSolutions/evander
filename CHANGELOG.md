@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.114.1)
+
+- Let the existing Team deliverable handoff publish retained failed or incomplete verification artifacts with `evidence_only=true`, returning immutable receipts and notifying the superior and task requesters while preserving task blockers, Git work contexts, acceptance, review, and release gates.
+- Authorize only that evidence operation from an owned task-specific request in the current dispatch. Retain ordinary task mutation boundaries, artifact path checks, and idempotent publication and wake recovery across context rotations.
+
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
 - Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, lossless boundaries between bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.

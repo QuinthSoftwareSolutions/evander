@@ -2546,6 +2546,7 @@ def _register_delivery_review_tools(
         outcomes: list[dict[str, Any]] | None = None,
         source_deliverable_ids: list[str] | None = None,
         completion: dict[str, Any] | None = None,
+        evidence_only: bool = False,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -2571,6 +2572,7 @@ def _register_delivery_review_tools(
                 outcomes=outcomes,
                 source_deliverable_ids=source_deliverable_ids,
                 completion=completion,
+                evidence_only=evidence_only,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -2593,6 +2595,14 @@ def _register_delivery_review_tools(
             "coordination, or acknowledgement-only work with team_update_task "
             "state=finished instead. Publishes any artifact_paths from /artifacts "
             "before recording state. Optional "
+            "evidence_only=true publishes retained artifact_paths with a failed or "
+            "incomplete verification status without creating a deliverable, changing "
+            "task state, or requesting acceptance. It returns published_evidence_artifacts "
+            "receipts and notifies the superior and task requesters. It may answer an "
+            "owned task-specific request in the current dispatch even while that task "
+            "is blocked; this grants no other task mutation authority. Git references "
+            "on evidence-only receipts are agent-reported diagnostics, not submitted "
+            "or accepted Git provenance. Optional "
             "verification records are optional diagnostic reports with status "
             "passed, failed, partial, not_run, or unknown and a summary; they never "
             "gate acceptance or release intake. Git deliverables must include "
@@ -3241,6 +3251,7 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
         dispatch_id: str,
         artifact_paths: list[str] | None = None,
         source_paths: list[str] | None = None,
+        evidence_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         del artifact_paths
         from .providers import _publish_deliverable_artifact_bundle
@@ -3261,6 +3272,10 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
             deliverable_id=deliverable_id,
             dispatch_id=dispatch_id,
             source_paths=list(source_paths or []),
+            **(
+                {"evidence_metadata": dict(evidence_metadata)}
+                if evidence_metadata is not None else {}
+            ),
         )
 
     return _publish
