@@ -45,7 +45,7 @@ function weeklyRemainingPercent(rateLimits: Record<string, unknown> | null): num
 }
 
 const percentFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
-const creditsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 20 });
+const creditsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
 function remainingCredits(rateLimits: Record<string, unknown> | null): string {
   const byLimitId = rateLimits?.by_limit_id;
