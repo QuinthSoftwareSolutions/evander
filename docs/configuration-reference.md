@@ -1045,6 +1045,7 @@ Type-specific keys:
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `cyber_access_program`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
+| `effect:session:set-reasoning-effort` | exactly one of `target`, `session_id`, `vm_name`; `reasoning_effort` (native level or explicit null) | `outputs` |
 | `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `effect:teams:update-message` (Teams/Graph add-on) | `session_id`, `channel_target`, `message_id`, `message` | `thread_id`, `expected_revision`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
@@ -1309,6 +1310,23 @@ agent, or in **Sessions → Settings → Reasoning effort** after unlocking priv
 operations. **Agents → Prompt** and the `effect:agent:prompt` and
 `effect:agent:enqueue-prompt` workflow nodes can override it for one prompt.
 `effect:agent:create.reasoning_effort` sets the session default.
+
+`effect:session:set-reasoning-effort` updates that default for an existing session
+in the workflow's directory or a descendant. Supply a native level such as
+`"low"`, or JSON `null` to clear it; omitting the field is an error. The effect
+uses the normal model/provider validation and leaves the model, permissions and
+metadata unchanged. Its result includes `success` and, on success,
+`reasoning_effort`. `query:session-context` exposes the nullable saved default.
+
+Chat command wording, sender checks, acknowledgements and routing belong to the
+workflow configuration. Route setting commands before classification or active-turn
+steering, derive the target from the authenticated sender's session, and acknowledge
+only a successful update. To retain a saved preference, bypass automatic effort
+classification while `query:session-context.reasoning_effort` is non-null and omit
+the prompt override so dispatch inherits the session. Clearing the default then
+restores automatic routing. Other channels which inherit the session default use
+the same setting. Running turns and already captured queue entries keep their
+previous settings.
 
 Resolution is: non-null prompt override, then the session default, then the harness
 fallback. The existing fallback remains `high` for Codex; Claude Code and Copilot

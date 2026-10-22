@@ -1400,6 +1400,30 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
         return self
 
 
+class SessionSetReasoningEffortEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:set-reasoning-effort"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    reasoning_effort: ConfigValue | None
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def validate_effort(cls, value: object) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        return normalize_reasoning_effort(value)
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionSetReasoningEffortEffectDefinition":
+        selectors = [
+            value for value in (self.target, self.session_id, self.vm_name) if value is not None
+        ]
+        if len(selectors) != 1 or not isinstance(selectors[0], str) or not selectors[0].strip():
+            raise ValueError("Provide exactly one non-empty target, session_id, or vm_name")
+        return self
+
+
 class SessionSetImageGenerationEnabledEffectDefinition(EffectDefinition):
     type: Literal["effect:session:set-image-generation-enabled"]
     target: ConfigValue | None = None

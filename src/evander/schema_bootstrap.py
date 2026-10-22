@@ -1463,6 +1463,14 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "directory_path": {"type": "string"},
         "image_generation_enabled": {"type": "boolean"},
     },
+    "effect:session:set-reasoning-effort": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "reasoning_effort": {"type": ["string", "null"]},
+    },
     "effect:session:renew-if-expired": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},
@@ -1653,6 +1661,7 @@ _QUERY_OUTPUT_SCHEMAS = {
         "groups": {"type": "object"},
     },
     "query:session-context": {
+        "reasoning_effort": {"type": ["string", "null"]},
         "activity": {"type": "object"},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},

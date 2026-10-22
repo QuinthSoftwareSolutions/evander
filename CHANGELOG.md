@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Configure persistent reasoning controls in workflows (0.120.0)
+
+- Add a directory-scoped workflow effect for setting or clearing an existing session's native reasoning default, using the existing provider/model validation and preserving running turns and other session settings.
+- Expose the saved default in session-context queries and publish the node in the workflow editor, so operator-owned chat commands can override automatic routing until explicitly reset without hard-coded command syntax.
+
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
 - Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
