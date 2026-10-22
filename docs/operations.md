@@ -936,7 +936,10 @@ a profile and starting or ending login require unlocked privileged operations an
 not to a directory. Profile IDs are immutable lowercase slugs, display names are editable, and
 the first successful login permanently pins the OpenAI account ID. Use a new profile for a
 different account. The profile list shows the percentage remaining in the worker-reported Codex
-Codex seven-day rate-limit window; it shows "Unavailable" when no seven-day window is reported.
+seven-day rate-limit window; it shows "Unavailable" when no seven-day window is reported.
+It also shows banked resets and the provider-reported credit balance. Credits show "Unlimited"
+when reported, "0" when the provider explicitly reports no credits, and "Unavailable" when a
+balance is missing or invalid. These credits are separate from earned rate-limit resets.
 
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
@@ -3418,6 +3421,27 @@ work and let the trigger orchestrator start a temporary review VM.
     `path line N` at the start of a top-level comment
   - `submit_pr_review(...)` for a summary plus optional batched inline findings
   - `post_pr_feedback_reply(...)` when replying to an existing feedback thread/comment
+
+For Azure DevOps, `submit_pr_review` accepts the following `event` values:
+
+| Event | Reviewer vote |
+| --- | --- |
+| omitted or `COMMENT` | Publish comments without changing the vote |
+| `APPROVE` | Approved (10) |
+| `APPROVE_WITH_SUGGESTIONS` | Approved with suggestions (5) |
+| `WAITING_FOR_AUTHOR` or `REQUEST_CHANGES` | Waiting for author (-5) |
+| `RESET` | No vote (0) |
+
+Reject is unsupported. A voting call requires a matching provider/repository/PR entry in the
+session's `metadata.pr_feedback_streams`. The directory-scoped PR credential's authenticated
+identity must already be assigned as a reviewer, optional or required. The caller cannot select
+another reviewer's identity. The host publishes the summary and inline comments before updating
+the vote. Positive votes include `isReapprove: true` so an unchanged approval can apply to a
+new PR iteration. The host verifies the provider's returned identity and vote, and includes
+`reviewer_id` and `vote` in the response and audit. Use the same `idempotency_key` only for retries of the same
+submission. If voting fails after comments were published, inspect the PR before retrying to
+avoid duplicate comments. Existing tool grants, argument policies, and approval requirements
+still apply. GitHub retains its existing `COMMENT`, `APPROVE`, and `REQUEST_CHANGES` events.
 
 Maintain existing comments with `delete_pr_comment(provider, repo, pr_id, comment_id, ...)`
 and `resolve_pr_comment(provider, repo, pr_id, ...)`. Both require their own explicit

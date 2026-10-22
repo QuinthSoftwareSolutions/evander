@@ -1,16 +1,22 @@
 # Short browser objectives
 
-The authoring PA can use `browser_session_run` for a short multi-step objective in
-its existing shared browser. Jev or OpenAI Decisions selects intermediate actions
-from current controls and application-built arguments. The PA keeps the task and
-conversation, supplies exact text values, and verifies the final result. No
+Any authorized owning agent can use `browser_session_run` for a short multi-step
+objective in its existing shared browser. Jev or OpenAI Decisions selects
+intermediate actions from current controls and application-built arguments. The
+owning agent keeps the task and conversation, supplies exact text values, and
+verifies the final result. No
 application-specific prepared workflow or extra support agent is required.
 
 ## Enable after qualification
 
-Deploy Browser Sessions 0.5.0 to the control plane, relay and hosted browser image.
-Local hosts update Chrome extension 0.5.0. Helper mode also needs native helper
-0.4.0. Connections advertise `fast_execution: 1`; old endpoints keep their direct
+Deploy Browser Sessions 0.9.2 for control-aware decision questions and the operating
+guide. Fast execution requires a hosted controller supporting capability version
+1, Chrome extension 0.5.0 or later, or native helper 0.4.0 or later when selected.
+Use Chrome extension 0.6.2 for the native-picker mouse-down/mouse-up correction in
+local sharing, including when using native helper 0.4.0. Hosted controllers receive
+the same correction from the updated server package/image. The decision questions
+and diagnostics are control-plane changes; the native helper needs no update.
+Connections advertise `fast_execution: 1`; old endpoints keep their direct
 tools and return `endpoint_upgrade_required` for a run.
 
 In the directory's Browser Sessions settings, enable **Faster browser actions**.
@@ -20,7 +26,7 @@ The loop inherits that provider and its model. It never changes provider on fail
 Existing dispatch privacy policy still applies before each provider request.
 
 Grant `browser_session_run`, `browser_session_cancel_run`,
-`browser_session_observe` and `browser_session_act` to the owning PA. Neither
+`browser_session_observe` and `browser_session_act` to the owning agent. Neither
 enabling the add-on nor deploying this release changes live tool grants. Local
 hosts must still grant input; hosted viewers still require Admin sign-in.
 
@@ -43,13 +49,62 @@ run budget and provider timeout. Automatic provider retries are disabled.
 The selected option's probability must meet the threshold for every relevant
 choice; vendor confidence fields do not override that check.
 
-## PA guidance
+Operation descriptions distinguish ordinary field replacement from requested
+character-key typing and dropdown keyboard interaction. Each target advertises
+its allowed actions; missing literals, readonly fields and non-editable
+comboboxes cannot become fill/type commands. The server checks the selected
+action against the target before dispatch in addition to endpoint revalidation.
+The platform uses no application-specific names, label rules or prepared workflows.
+
+Operation, target, supplied input, key and scroll direction remain separate
+questions batched in one provider request. Only choices needed by the selected
+operation are scored. Waiting, readiness for verification and assistance do not
+need a target or input. Every conditional question includes an explicit
+no-operation option. All eligible targets remain available up to the 200-target
+cap; truncation yields to the owning agent instead of discarding controls.
+
+When a relevant choice is below threshold, the durable receipt includes a
+`decision` object with `question`, `choice`, `probability`, `threshold` and at most
+three `alternatives` (`choice`/`probability`). These contain bounded option IDs,
+never option descriptions, page labels, screenshots or supplied text values.
+Target choices can include `target_ref`, the original endpoint reference
+associated with that model-local option. An implicit keyboard target is resolved
+only from a uniquely focused observed control and is sent as an explicitly
+referenced, revalidated command.
+Identical retries and session status retain those diagnostics for the owning
+agent. A confidence failure still yields before input; probabilities are neither
+combined across alternatives nor relaxed.
+
+Decision evidence contains semantic page state, snapshot-local target aliases and
+completed action outcomes. The server alone maps aliases back to original endpoint
+references; prior actions whose controls are no longer present retain their action
+and outcome with a previous-target marker. Random observation/command receipt IDs,
+document epochs and shared-page IDs stay in the execution and accounting paths.
+The original observation IDs, generations and target checks still fence every
+browser command.
+Native mouse-down may change its own control's mutable selection/expansion before
+mouse-up. That transition is permitted within the click; other form changes and
+target identity, document, origin and generation changes still stop further input.
+
+## Agent guidance
+
+The add-on packages its complete [shared browser operating guide](../evander_browser_sessions_addon/agent-guide.md).
+Profile discovery and session creation return it as `agent_guidance`, including
+the launch-manifest schema. Any owning agent can retrieve it again through
+`browser_session_status` with `include_guidance: true`. Ordinary status polling
+omits it. No personal-assistant workflow or AGENTS.md prompt is required.
 
 Use this tool automatically for a short objective needing several UI actions.
 Use the existing direct tools for a single known click or entry. Split larger
-requests into bounded objectives, retaining domain context in the PA.
-Supply exact literal values, with meaningful descriptions. Never put secrets in
-the goal; mark private values `sensitive: true`. The decision model sees their
+requests into bounded objectives, retaining domain context in the owning agent.
+Use current visible control names, explicit ordering dependencies and the expected
+result. Describe the next local objective, letting the model select intermediate
+actions from current page state; no prepared application workflow is required.
+Resolve domain choices and author text, such as form instructions, before calling.
+Supply every exact literal in `request.values`, with meaningful descriptions;
+text in `goal` alone cannot be entered. Include an empty-string literal to clear
+a field. An empty values map is appropriate only when no text entry is needed.
+Never put secrets in the goal; mark private values `sensitive: true`. The decision model sees their
 labels rather than their literals. Observations and history sent for decisions
 mask those literals; action receipts omit all entered text. Password values in
 accessibility observations remain masked. The gateway records tool decisions and
@@ -74,7 +129,7 @@ Example arguments for `browser_session_run`:
 The model can choose click, hover, fill, character typing, bounded keyboard
 navigation, scrolling, waiting, done or help. It cannot generate text, scripts,
 selectors, coordinates, URLs or new values. Missing data, unsupported surfaces,
-truncation, ambiguous decisions and repeated lack of progress return to the PA.
+truncation, ambiguous decisions and repeated lack of progress return to the owning agent.
 Dropdowns use the existing click/key paths. Rich observations include current
 field state, surrounding row/form/dialog context and bounded page text. The
 human's stream and pointer continue; intermediate observations omit images.
@@ -82,7 +137,8 @@ human's stream and pointer continue; intermediate observations omit images.
 A `needs_verification` receipt is not proof of success. Verify the returned actual
 page state before reporting success. If `observation_current` is false, or a
 retry receipt has no observation, obtain a fresh observation first. `needs_pa`
-means inspect and decide the next step. Never blindly repeat a submission after
+is the historical API name for returning to the owning agent, regardless of its
+role; inspect and decide the next step. Never blindly repeat a submission after
 `outcome_unknown`.
 
 ## Stop, retries and recovery
@@ -90,7 +146,7 @@ means inspect and decide the next step. Never blindly repeat a submission after
 One automation lease covers the run's observations and actions. Competing agent
 commands are rejected while it is running. Status, chat, streaming and human
 controls remain available. Ordinary Teams/browser follow-ups are handled by the
-PA after this short tool call. Stop, Pause, Take control, closure and expiry
+owning agent after this short tool call. Stop, Pause, Take control, closure and expiry
 interrupt input. A stop pauses agent control and does not authorize automatic
 resumption; wait for a new user instruction.
 
@@ -115,14 +171,14 @@ synthetic pages and mocked decision responses, exercising the real provider
 adapters without consuming API credits. Live provider speed is a separate check.
 
 Use `scripts/benchmark_fast_execution.py --help` for the opt-in paired benchmark.
-An operator-supplied PA driver runs identical cases using direct tools, Jev and
+An operator-supplied agent driver runs identical cases using direct tools, Jev and
 OpenAI Decisions. It must reset the synthetic application between runs, configure
 only the requested strategy, read actual final application state independently
-of the PA's claim, and return usage telemetry. The harness verifies expected
+of the agent's claim, and return usage telemetry. The harness verifies expected
 state and reports success rate, median/p95 time, model/browser calls and cost.
 Keep automatic use opt-in until matched runs show lower multi-step latency
 without reducing completion rate. Never substitute a scripted click sequence
-for the full PA direct-tools baseline.
+for the full agent direct-tools baseline.
 
 The driver is an explicit command, executed without a shell:
 
@@ -131,14 +187,14 @@ python3 scripts/benchmark_fast_execution.py --output /operator-owned/browser-ben
 ```
 
 Its stdin is one JSON object containing `case_id`, `goal`, `values`, `strategy`,
-`iteration`, `reset`, and `limits`. `direct` requires the complete PA turn using
-observe/act tools; the two provider strategies require the same PA task with
-`browser_session_run` and that directory provider. Include PA verification in all
+`iteration`, `reset`, and `limits`. `direct` requires the complete agent turn using
+observe/act tools; the two provider strategies require the same agent task with
+`browser_session_run` and that directory provider. Include agent verification in all
 three. Start timing consistently; the harness measures the complete driver call.
 The driver's single JSON stdout result contains `verified_state`, `model_calls`,
 `browser_calls` and `cost_usd`. Logs belong on stderr. Consult `CASES` in the script
 for initial fixture expectations and expected final persisted states; do not
-provide expected states to the PA as evidence of success. The harness compares
+provide expected states to the agent as evidence of success. The harness compares
 observed state independently and stores only timings, outcomes and aggregate
 usage. Run only against disposable fixture data, using operator-owned driver
 configuration. No real provider benchmark is part of the default test suite.

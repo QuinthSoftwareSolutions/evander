@@ -83,7 +83,7 @@ async function overlay(message: any) {
       if (!dot) {
         dot = document.createElement("div");
         dot.id = "__evander_agent_pointer";
-        dot.setAttribute("aria-label", "Truman pointer");
+        dot.setAttribute("aria-label", "Agent pointer");
         Object.assign(dot.style, { position: "fixed", width: "18px", height: "18px",
           border: "3px solid #aa36ff", borderRadius: "50%", pointerEvents: "none",
           zIndex: "2147483647", transition: "left 120ms, top 120ms", boxShadow: "0 0 0 4px #aa36ff30" });
@@ -232,7 +232,7 @@ async function attach() {
     mainFrameId = (await cdp("Page.getFrameTree")).frameTree.frame.id;
     step = "enabling accessibility";
     await cdp("Accessibility.enable");
-    step = "connecting to Truman";
+    step = "connecting to Evander";
     await connectEndpoint();
   } catch (error: any) {
     const reason = String(error?.message ?? error ?? "Unknown browser error").replace(/\s+/g, " ").slice(0, 400);

@@ -16,7 +16,7 @@ On Linux/macOS, extract the corresponding package, make `evander-browser-helper`
 
 Each installation authorizes the exact extension ID; there is no wildcard origin. Rerun installation if an unpacked extension moves and receives another ID. The installer retains explicitly registered IDs for other local Chrome profiles. Remove the helper through Windows Installed Apps or `evander-browser-helper --uninstall`. End active sharing before removal.
 
-Open `chrome://inspect/#remote-debugging` and enable Chrome's remote debugging connection. Choose **Installed helper — full browser control** in the extension, then pair a fresh invitation. Chrome asks permission for the local debugging connection. Approve it to continue; the Truman session still starts observe-only. Use **Allow Truman to interact** to grant input.
+Open `chrome://inspect/#remote-debugging` and enable Chrome's remote debugging connection. Choose **Installed helper — full browser control** in the extension, then pair a fresh invitation. Chrome asks permission for the local debugging connection. Approve it to continue; the sharing session still starts observe-only. Use **Allow agent to interact** to grant input.
 
 The default is the stable Chrome user-data directory. For another channel or a custom profile directory, append `--browser-data-dir "/path/to/user-data"` to the install command. Use the parent of **Profile Path** from `chrome://version`, containing `Local State` and `DevToolsActivePort`, rather than its `Default` or `Profile 1` subdirectory. Selecting another tab or profile with the same URL cannot redirect the helper: the extension supplies the selected tab's exact Chrome target ID, which the helper verifies.
 

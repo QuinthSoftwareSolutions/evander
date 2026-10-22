@@ -47,7 +47,7 @@ async function refresh() {
       after = Math.max(after, message.seq);
       if (displayedMessages.has(message.id)) continue;
       const paragraph = document.createElement("p");
-      paragraph.textContent = (message.actor.startsWith("agent:") ? "Truman: " : "You: ") + message.body;
+      paragraph.textContent = (message.actor.startsWith("agent:") ? "Agent: " : "You: ") + message.body;
       $("messages").append(paragraph); displayedMessages.add(message.id);
     }
     voice.messages(result.messages);

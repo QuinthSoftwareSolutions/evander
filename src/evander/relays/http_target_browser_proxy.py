@@ -148,14 +148,33 @@ class HttpTargetBrowserProxy:
 
     def _authenticate(self, authorization: str | None) -> SessionManifest:
         session_id, token = self._basic_credentials(authorization)
+        aliases = None
+        if session_id.startswith("proxy~"):
+            from evander.resources.endpoints import ProxyGrants
+            from evander.resources.models import ResourceError
+
+            try:
+                session_id, aliases = ProxyGrants(self.config.runtime_dir).authenticate(
+                    session_id[6:], token
+                )
+            except ResourceError as exc:
+                raise ProxyRequestError(407, "proxy authentication required") from exc
         try:
             session = self.provider_config_resolver.get_session_manifest(session_id)
         except ValueError as exc:
             raise ProxyRequestError(407, "proxy authentication required") from exc
         if session.expires_at <= datetime.now(UTC):
             raise ProxyRequestError(407, "proxy authentication required")
-        if not verify_mcp_session_proof_token(session, token):
+        if aliases is None and not verify_mcp_session_proof_token(session, token):
             raise ProxyRequestError(407, "proxy authentication required")
+        if aliases is not None:
+            metadata = dict(session.metadata or {})
+            current = session.http_targets_metadata()
+            current.targets = {
+                key: value for key, value in current.targets.items() if key in aliases
+            }
+            metadata["http_targets"] = current.model_dump(mode="json")
+            session = session.model_copy(update={"metadata": metadata})
         return session
 
     @staticmethod

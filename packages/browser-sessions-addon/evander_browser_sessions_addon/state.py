@@ -135,9 +135,10 @@ class Store(RunStore):
                     for key in (
                         "mode",
                         "directory",
-                        "workspace_ref",
+                        "target_aliases",
+                        "endpoint_refs",
+                        "entry_url",
                         "profile_id",
-                        "launch_manifest_path",
                     )
                 ):
                     raise BrowserError(
@@ -272,6 +273,28 @@ class Store(RunStore):
             ).fetchone()
         return json.loads(row[0]) if row else {}
 
+    def consume_playwright_observation(self, session_id, observation_id, generation, actor):
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT payload FROM private_sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            payload = json.loads(row[0]) if row else {}
+            observation = payload.get("playwright_observation", {})
+            if (
+                observation.get("id") != observation_id
+                or observation.get("generation") != generation
+                or observation.get("actor") != actor
+                or not 0 <= self.now() - observation.get("observed_at", 0) <= 30
+            ):
+                raise BrowserError(
+                    "Observe the current page before connecting", "observation_required", 409
+                )
+            payload.pop("playwright_observation")
+            db.execute(
+                "UPDATE private_sessions SET payload=? WHERE session_id=?",
+                (json.dumps(payload), session_id),
+            )
+
     def audit(self, session_id, actor, kind, payload):
         with self.connect(write=True) as db:
             self._audit(db, session_id, actor, kind, payload)
@@ -361,9 +384,11 @@ class Store(RunStore):
                        AND delivery_status IN ('queued','pending','delivery_unknown')"""
             rows = db.execute(query + " AND seq>? ORDER BY seq LIMIT ?", (after, limit)).fetchall()
             if after and len(rows) < limit:
-                rows.extend(db.execute(
-                    query + " AND seq<=? ORDER BY seq LIMIT ?", (after, limit - len(rows))
-                ).fetchall())
+                rows.extend(
+                    db.execute(
+                        query + " AND seq<=? ORDER BY seq LIMIT ?", (after, limit - len(rows))
+                    ).fetchall()
+                )
             if rows:
                 db.execute(
                     "INSERT INTO delivery_poll_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET after_seq=excluded.after_seq",

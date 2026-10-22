@@ -190,7 +190,7 @@ class RunStore:
         with self.connect(write=True) as db:
             self._command_access(db, session_id, actor, run_id)
 
-    def update_run(self, session_id, run_id, *, step=None, status=None, reason=""):
+    def update_run(self, session_id, run_id, *, step=None, status=None, reason="", decision=None):
         with self.connect(write=True) as db:
             row = db.execute(
                 "SELECT * FROM browser_runs WHERE session_id=? AND id=?", (session_id, run_id)
@@ -202,6 +202,8 @@ class RunStore:
             # A late return must not erase a cancellation or uncertainty receipt.
             if value["status"] == "running" and status:
                 value.update(status=status, reason=reason, finished_at=self.now())
+                if decision is not None:
+                    value["decision"] = decision
             self._write_run(db, value)
             return value
 

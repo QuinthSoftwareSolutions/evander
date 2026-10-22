@@ -38,11 +38,15 @@ def pin_workspace(root, relative, target, device, inode):
         source = f"/proc/{os.getpid()}/fd/{descriptor}"
         subprocess.run(
             ["mount", "--no-canonicalize", "--bind", source, str(target)],
-            check=True, capture_output=True, timeout=30,
+            check=True,
+            capture_output=True,
+            timeout=30,
         )
         subprocess.run(
             ["mount", "--make-private", str(target)],
-            check=True, capture_output=True, timeout=30,
+            check=True,
+            capture_output=True,
+            timeout=30,
         )
     finally:
         os.close(descriptor)

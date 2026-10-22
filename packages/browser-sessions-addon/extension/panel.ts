@@ -91,11 +91,11 @@ async function refresh() {
     if (!result.session) return;
     activeRunId=result.session.active_run?.id;
     $("run-progress").hidden=!activeRunId; $("stop-run").hidden=!activeRunId;
-    $("run-progress").textContent="Truman is working · "+(result.session.active_run?.step_count ?? 0)+" steps";
+    $("run-progress").textContent="Agent is working · "+(result.session.active_run?.step_count ?? 0)+" steps";
     $("title").textContent = result.session.title;
     $("shared-origin").textContent = "Sharing " + (result.session.current_url ? new URL(result.session.current_url).origin : "the selected tab");
     $("status").textContent = !result.connected ? "Disconnected — agent control is paused" :
-      result.granted && result.session.controller?.startsWith("agent:") ? "Truman may interact with this tab" : "Observe only — you control this tab";
+      result.granted && result.session.controller?.startsWith("agent:") ? "Agent may interact with this tab" : "Observe only — you control this tab";
     $("compatibility").hidden = result.mode !== "compatibility";
     if (result.mode === "helper") $("status").textContent += " · Local helper";
     $("compatibility").textContent = "Compatibility mode keeps your other extensions active. Native browser dialogs and pages requiring trusted input need normal mode.";
@@ -103,7 +103,7 @@ async function refresh() {
     if (ended) stopVoice(); else startVoice();
     for (const message of result.messages ?? []) {
       const item = document.createElement("p");
-      item.textContent = (message.actor.startsWith("agent:") ? "Truman: " : "You: ") + message.body;
+      item.textContent = (message.actor.startsWith("agent:") ? "Agent: " : "You: ") + message.body;
       if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
       $("messages").append(item); after = Math.max(after, message.seq);
     }

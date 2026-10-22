@@ -28,8 +28,15 @@ def execution(request, domain, hosted):
         "commands": [],
         "after_decision": None,
         "probability": 1,
+        "question_probabilities": {},
         "mode": "normal",
         "attribution": [],
+        "choices": {},
+        "observation_prefix": "observation-",
+        "page_epoch": "1",
+        "page_id": "page-1",
+        "ref_prefix": "node-",
+        "element_overrides": {},
     }
     original = peers.call
 
@@ -38,28 +45,45 @@ def execution(request, domain, hosted):
             command = payload["command"]
             state["commands"].append(command)
             if command["action"] == "observe":
+                if state.get("receipt_churn"):
+                    state["page_id"] = "incidental-identity-" + str(len(state["commands"]))
                 return {
-                    "observation_id": "observation-" + str(len(state["commands"])),
-                    "page_epoch": "1",
+                    "observation_id": state["observation_prefix"] + str(len(state["commands"])),
+                    "page_epoch": state["page_epoch"],
+                    "page_id": state["page_id"],
+                    "pages": [
+                        {
+                            "id": state["page_id"],
+                            "url": "https://application.test/accounts",
+                            "selected": True,
+                        }
+                    ],
                     "url": "https://application.test/accounts",
                     "elements": [
                         {
-                            "ref": "node-1",
+                            "ref": state["ref_prefix"] + "1",
                             "role": "textbox",
                             "name": "Name",
                             "value": state["value"][:1000]
                             if state["mode"] == "clipped"
                             else state["value"],
                             "context": [{"role": "form", "name": "Create account"}],
+                            **state["element_overrides"].get("node-1", {}),
                         },
-                        {"ref": "node-2", "role": "button", "name": "Save", "value": ""},
                         {
-                            "ref": "node-3",
+                            "ref": state["ref_prefix"] + "2",
+                            "role": "button",
+                            "name": "Save",
+                            "value": "",
+                        },
+                        {
+                            "ref": state["ref_prefix"] + "3",
                             "role": "alert",
                             "name": "Account saved" if state["saved"] else "",
                             "value": "",
                         },
-                    ],
+                    ]
+                    + state.get("extra_elements", []),
                     "truncated": state["mode"] == "truncated",
                 }
             if state["mode"] == "unknown":
@@ -86,41 +110,62 @@ def execution(request, domain, hosted):
                 "action": "fill",
                 "target": "node-1",
                 "input": "v0",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         elif not state["saved"]:
             selected = {
                 "action": "click",
                 "target": "node-2",
                 "input": "_none",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         else:
             selected = {
                 "action": "done",
                 "target": "_none",
                 "input": "_none",
-                "key": "Enter",
-                "direction": "down",
+                "key": "_none",
+                "direction": "_none",
             }
         if state["mode"] == "wait":
             selected["action"] = "wait"
+        selected.update(state["choices"])
+        incoming = body.get("state") or json.loads(body["input"])
+        symbolic_targets = {
+            "node-1": incoming["page"]["elements"][0]["ref"],
+            "node-2": incoming["page"]["elements"][1]["ref"],
+        }
+        symbolic_targets.update(
+            {
+                element["ref"]: observed["ref"]
+                for element, observed in zip(
+                    state.get("extra_elements", []), incoming["page"]["elements"][3:]
+                )
+            }
+        )
+        selected["target"] = symbolic_targets.get(selected["target"], selected["target"])
+        if provider == "jev":
+            supplied = {k: v["criteria"] for k, v in body["questions"].items()}
+        else:
+            supplied = {
+                q["name"]: {c["value"]: c["description"] for c in q["choices"]}
+                for q in body["questions"]
+            }
+        if selected["action"] not in supplied["action"] and not state["choices"]:
+            selected["action"] = "help"
         if provider == "jev":
             questions = body["questions"]
             answers = {}
             for name, q in questions.items():
+                probability = state["question_probabilities"].get(name, state["probability"])
                 chosen = selected[name]
-                if chosen not in q["criteria"]:
+                if chosen not in q["criteria"] and name not in {"key", "direction"}:
                     chosen = next(iter(q["criteria"]))
                 other = next(key for key in q["criteria"] if key != chosen)
                 probabilities = {
-                    key: state["probability"]
-                    if key == chosen
-                    else 1 - state["probability"]
-                    if key == other
-                    else 0
+                    key: probability if key == chosen else 1 - probability if key == other else 0
                     for key in q["criteria"]
                 }
                 answers[name] = {
@@ -132,9 +177,15 @@ def execution(request, domain, hosted):
         else:
             answers = []
             for q in body["questions"]:
+                probability = state["question_probabilities"].get(q["name"], state["probability"])
                 chosen = selected[q["name"]]
                 options = [c["value"] for c in q["choices"]]
                 if chosen not in options:
+                    if q["name"] in {"key", "direction"}:
+                        # A conditional question with no applicable option can
+                        # refuse even when action and target are unambiguous.
+                        answers.append({"name": q["name"], "type": "refusal"})
+                        continue
                     chosen = options[0]
                 other = next(key for key in options if key != chosen)
                 answers.append(
@@ -146,9 +197,9 @@ def execution(request, domain, hosted):
                         "probabilities": [
                             {
                                 "value": key,
-                                "probability": state["probability"]
+                                "probability": probability
                                 if key == chosen
-                                else 1 - state["probability"]
+                                else 1 - probability
                                 if key == other
                                 else 0,
                             }
@@ -226,6 +277,111 @@ def test_multistep_adapters_literals_fresh_final_state_and_retry(execution):
         e.run(goal="Different objective")
 
 
+@pytest.mark.parametrize("extra_count", [198, 199])
+def test_candidate_limit_preserves_the_last_control_or_yields_without_truncation(
+    execution, extra_count
+):
+    e = execution
+    e.state["extra_elements"] = [
+        {"ref": "button-" + str(i), "role": "button", "name": "Control " + str(i)}
+        for i in range(extra_count)
+    ]
+    e.state["choices"] = {"action": "click", "target": "button-" + str(extra_count - 1)}
+    result = e.run(goal="Click the last control", values={}, max_steps=1)
+    inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
+    if extra_count == 198:  # The fixture contributes two other eligible controls.
+        assert len(inputs) == 1 and inputs[0]["ref"] == "button-197"
+        assert len(e.state["provider_calls"]) == 1
+    else:
+        assert not inputs and not e.state["provider_calls"]
+        assert result["status"] == "needs_pa"
+        assert "truncated" in result["reason"]
+
+
+def test_unused_target_confidence_does_not_block_readiness_for_pa_verification(execution):
+    e = execution
+    e.state.update(value="Example", saved=True)
+    e.state["question_probabilities"] = {"target": 0.55}
+    result = e.run()
+    assert result["status"] == "needs_verification"
+    assert result["observation"]["elements"][-1]["name"] == "Account saved"
+    assert not result["steps"]
+    assert not any(c["action"] != "observe" for c in e.state["commands"])
+
+
+def test_same_page_and_actions_have_same_model_input_despite_new_receipt_ids(execution):
+    e = execution
+    first = e.run()
+    first_wire = list(e.state["provider_calls"])
+    first_commands = list(e.state["commands"])
+    e.state.update(
+        value="",
+        saved=False,
+        commands=[],
+        observation_prefix="new-document-",
+        page_epoch="27",
+        page_id="new-page-identity",
+        ref_prefix="new-backend-",
+    )
+    second = e.run(request_id="deliberate-second-objective")
+    second_wire = e.state["provider_calls"][len(first_wire) :]
+    assert first["status"] == second["status"] == "needs_verification"
+    assert len(first_wire) == len(second_wire) == 3
+    assert first_wire == second_wire
+    # Current semantic state and completed actions must still reach the provider.
+    states = [body.get("state") or json.loads(body["input"]) for body in second_wire]
+    assert states[0]["page"]["elements"][0]["value"] == ""
+    assert states[1]["page"]["elements"][0]["value"] == "Example"
+    assert states[2]["page"]["elements"][-1]["name"] == "Account saved"
+    assert states[1]["completed_actions"] == [
+        {"action": "fill", "ref": "t0", "outcome": "completed"}
+    ]
+    # Do not normalize the actual command fences, returned observation or accounting identity.
+    assert second["observation"]["observation_id"].startswith("new-document-")
+    assert second["observation"]["page_epoch"] == "27"
+    assert second["observation"]["page_id"] == "new-page-identity"
+    for command in e.state["commands"]:
+        if command["action"] != "observe":
+            assert command["observation_id"].startswith("new-document-")
+            assert command["generation"] == e.session.control_generation
+            assert command["ref"].startswith("new-backend-")
+    assert {c["id"] for c in first_commands}.isdisjoint(c["id"] for c in e.state["commands"])
+    assert e.state["attribution"][-1]["trace_id"] == second["id"] != first["id"]
+
+
+@pytest.mark.parametrize("action,parameter", [("key", "key"), ("scroll", "direction")])
+def test_irrelevant_option_cannot_become_keyboard_or_zero_scroll_input(
+    execution, action, parameter
+):
+    e = execution
+    e.state["choices"] = {"action": action, "target": "node-1", parameter: "_none"}
+    result = e.run(max_steps=1)
+    assert result["status"] == "needs_pa"
+    assert parameter in result["reason"]
+    assert not result["steps"]
+    assert not any(c["action"] != "observe" for c in e.state["commands"])
+
+
+@pytest.mark.parametrize(
+    "action,parameter,selected,expected",
+    [
+        ("key", "key", "Enter", {"text": "Enter"}),
+        ("scroll", "direction", "down", {"delta_x": 0, "delta_y": 500}),
+    ],
+)
+def test_required_keyboard_and_scroll_choices_still_issue_bounded_input(
+    execution, action, parameter, selected, expected
+):
+    e = execution
+    e.state["choices"] = {"action": action, "target": "node-1", parameter: selected}
+    result = e.run(max_steps=1)
+    commands = [c for c in e.state["commands"] if c["action"] != "observe"]
+    assert len(commands) == 1
+    assert commands[0]["action"] == action
+    assert all(commands[0][key] == value for key, value in expected.items())
+    assert result["steps"][0]["outcome"] == "completed"
+
+
 @pytest.mark.parametrize("control", ["pause", "claim"])
 def test_control_change_while_deciding_prevents_input(execution, control):
     e = execution
@@ -271,13 +427,160 @@ def test_failure_yields_without_replay(execution, mode, reason):
     assert len(e.state["provider_calls"]) < 2
 
 
-def test_low_probability_yields_even_if_vendor_confidence_is_one(execution):
+@pytest.mark.parametrize("question", ["action", "target", "input"])
+def test_low_probability_identifies_relevant_choice_even_if_vendor_confidence_is_one(
+    execution, question
+):
     e = execution
-    e.state["probability"] = 0.55
+    e.state["question_probabilities"] = {question: 0.55}
     result = e.run()
     assert result["status"] == "needs_pa"
     assert "ambiguous" in result["reason"]
+    assert question in result["reason"]
+    assert "0.550" in result["reason"] and "0.800" in result["reason"]
     assert not e.state["value"]
+
+
+def test_ambiguous_choices_return_durable_metadata_without_literal_values(execution):
+    e = execution
+    e.state["question_probabilities"] = {"input": 0.55}
+    private = "private-value@example.test"
+    result = e.run(
+        values={"private": {"description": "Private field", "value": private, "sensitive": True}}
+    )
+    diagnostic = result["decision"]
+    assert diagnostic["question"] == "input"
+    assert diagnostic["choice"] == "v0"
+    assert diagnostic["probability"] == 0.55
+    assert diagnostic["threshold"] == 0.8
+    assert diagnostic["alternatives"][0]["choice"] == "_none"
+    assert len(diagnostic["alternatives"]) <= 3
+    assert e.service.store.run_status(e.session.id)["last_run"]["decision"] == diagnostic
+    calls = len(e.state["provider_calls"])
+    assert (
+        e.run(
+            values={
+                "private": {"description": "Private field", "value": private, "sensitive": True}
+            }
+        )["decision"]
+        == diagnostic
+    )
+    assert len(e.state["provider_calls"]) == calls
+    assert not any(command["action"] != "observe" for command in e.state["commands"])
+    with e.service.store.connect() as db:
+        assert private not in str(
+            [tuple(row) for row in db.execute("SELECT payload FROM browser_runs")]
+        )
+
+
+def test_ambiguous_target_diagnostics_map_aliases_to_current_endpoint_references(execution):
+    e = execution
+    e.state["ref_prefix"] = "different-backend-"
+    e.state["question_probabilities"] = {"target": 0.55}
+    result = e.run()
+    diagnostic = result["decision"]
+    assert diagnostic["question"] == "target"
+    assert diagnostic["choice"] == "t0"
+    assert diagnostic["target_ref"] == "different-backend-1"
+    assert not any(command["action"] != "observe" for command in e.state["commands"])
+    assert "Create account" not in json.dumps(diagnostic)
+    assert "Name" not in json.dumps(diagnostic)
+    assert e.service.store.run_status(e.session.id)["last_run"]["decision"] == diagnostic
+
+
+@pytest.mark.parametrize(
+    "overrides,values",
+    [
+        ({"readonly": True}, {"name": {"description": "Field value", "value": "Example"}}),
+        (
+            {"role": "combobox", "editable": False},
+            {"name": {"description": "Option", "value": "Example"}},
+        ),
+        ({}, {}),
+    ],
+)
+def test_text_entry_is_not_offered_without_a_writable_target_and_literal(
+    execution, overrides, values
+):
+    e = execution
+    e.state["element_overrides"] = {"node-1": overrides}
+    result = e.run(values=values)
+    assert result["status"] == "needs_pa"
+    body = e.state["provider_calls"][0]
+    questions = body["questions"]
+    if isinstance(questions, list):
+        questions = {
+            q["name"]: {"criteria": {c["value"]: c["description"] for c in q["choices"]}}
+            for q in questions
+        }
+    assert not {"fill", "type"} & set(questions["action"]["criteria"])
+    target = questions["target"]["criteria"]["t0"]
+    target = json.loads(target) if isinstance(target, str) else target
+    assert not {"fill", "type"} & set(target["allowed_actions"])
+    assert {"click", "key"} <= set(target["allowed_actions"])
+    assert not any(command["action"] != "observe" for command in e.state["commands"])
+
+
+@pytest.mark.parametrize("action", ["fill", "type"])
+def test_independent_action_and_target_choices_cannot_type_into_a_button(execution, action):
+    e = execution
+    e.state["choices"] = {"action": action, "target": "node-2", "input": "v0"}
+    result = e.run()
+    assert result["status"] == "needs_pa"
+    assert not result["steps"]
+    assert not any(command["action"] != "observe" for command in e.state["commands"])
+
+
+def test_false_string_flags_do_not_make_a_text_field_readonly_or_disabled(execution):
+    e = execution
+    e.state["element_overrides"] = {"node-1": {"readonly": "false", "disabled": "false"}}
+    result = e.run()
+    assert result["status"] == "needs_verification"
+    assert e.state["value"] == "Example"
+
+
+def test_character_typing_remains_an_available_distinct_operation(execution):
+    e = execution
+    e.state["choices"] = {"action": "type", "target": "node-1", "input": "v0"}
+    result = e.run(
+        goal="Type the supplied badge using character key events",
+        values={"badge": {"description": "Badge characters to type", "value": "ID-42"}},
+        max_steps=1,
+    )
+    inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
+    assert len(inputs) == 1
+    assert inputs[0]["action"] == "type"
+    assert inputs[0]["text"] == "ID-42"
+    assert result["steps"][0]["outcome"] == "completed"
+
+
+@pytest.mark.parametrize("focused_count", [0, 1, 2])
+def test_keyboard_without_explicit_target_requires_one_observed_focused_control(
+    execution, focused_count
+):
+    e = execution
+    e.state["element_overrides"] = {"node-1": {"focused": focused_count > 0}}
+    e.state["extra_elements"] = [
+        {"ref": "other-field", "role": "textbox", "name": "Other", "focused": focused_count > 1}
+    ]
+    e.state["choices"] = {"action": "key", "target": "_none", "key": "Enter"}
+    result = e.run(max_steps=1)
+    inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
+    if focused_count == 1:
+        assert len(inputs) == 1
+        assert inputs[0]["action"] == "key" and inputs[0]["ref"] == "node-1"
+        assert inputs[0]["revalidate"] is True
+    else:
+        assert not inputs
+        assert result["status"] == "needs_pa"
+
+
+def test_low_probability_on_irrelevant_choices_does_not_block_valid_actions(execution):
+    e = execution
+    e.state["question_probabilities"] = {"key": 0.2, "direction": 0.2}
+    result = e.run()
+    assert result["status"] == "needs_verification"
+    assert e.state["saved"]
 
 
 def test_private_literals_not_sent_to_provider_or_persisted(execution):
@@ -318,7 +621,23 @@ def test_cancel_during_decision_and_stop_is_retry_safe(execution):
 def test_missing_values_never_invent_text(execution):
     result = execution.run(values={})
     assert result["status"] == "needs_pa"
+    assert "request.values" in result["reason"]
     assert not execution.state["value"]
+
+
+@pytest.mark.parametrize("literal", ["", "  Exact text  \n"])
+def test_supplied_literals_can_clear_fields_and_preserve_whitespace(execution, literal):
+    e = execution
+    e.state["value"] = "Existing value"
+    e.state["choices"] = {"action": "fill", "target": "node-1", "input": "v0"}
+    result = e.run(
+        values={"replacement": {"description": "Replacement field content", "value": literal}},
+        max_steps=1,
+    )
+    assert e.state["value"] == literal
+    assert result["observation"]["elements"][0]["value"] == literal
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["outcome"] == "completed"
 
 
 def test_step_limit_is_lowered_and_last_result_requires_verification(execution):
@@ -387,6 +706,7 @@ def test_waits_are_bounded_by_no_progress_detection(execution, monkeypatch):
 
     e = execution
     e.state["mode"] = "wait"
+    e.state["receipt_churn"] = True
     monkeypatch.setattr("evander_browser_sessions_addon.execution.time.sleep", lambda _: None)
     # BrowserRun's default function was captured at import, so avoid sleeping in this bounded unit probe.
     original = BrowserRun.__init__
@@ -424,13 +744,23 @@ def test_pending_command_restart_recovers_without_replaying(execution, action):
     receipt = restarted.run_get(e.session.id, run["id"])
     assert receipt["status"] == ("outcome_unknown" if action == "click" else "needs_pa")
     assert receipt["steps"] == (
-        [{"command_id": "command-on-wire", "action": "click", "ref": "node-2", "outcome": "unknown"}]
+        [
+            {
+                "command_id": "command-on-wire",
+                "action": "click",
+                "ref": "node-2",
+                "outcome": "unknown",
+            }
+        ]
         if action == "click"
         else []
     )
     assert not e.state["commands"]
     with restarted.connect() as db:
-        assert db.execute("SELECT state FROM commands WHERE id=?", (command.id,)).fetchone()[0] == "unknown"
+        assert (
+            db.execute("SELECT state FROM commands WHERE id=?", (command.id,)).fetchone()[0]
+            == "unknown"
+        )
     assert restarted.claim_run(
         e.session.id, "agent:agent-a", request, "fingerprint", seconds=1, max_steps=1
     ) == (receipt, False)
@@ -633,10 +963,13 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
             payload = json.loads(request.content) if request.content else None
             if request.url.path.endswith("/command") and payload["command"]["action"] != "observe":
                 attempts.append(payload["command"])
-                return httpx.Response(409, json={"code": "stale_target", "error": "private-peer-detail"})
+                return httpx.Response(
+                    409, json={"code": "stale_target", "error": "private-peer-detail"}
+                )
             return httpx.Response(
                 200, json=original(base, token).call(request.method, request.url.path, payload)
             )
+
         return HttpPeer(base, "BROWSER_TEST_TOKEN", transport=httpx.MockTransport(relay))
 
     e.service.peer_factory = peer
@@ -646,11 +979,19 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
     assert not result["observation_current"]  # The PA must observe the changed page.
     assert len(attempts) == len(e.state["provider_calls"]) == 1
     assert result["steps"] == [
-        {"command_id": attempts[0]["id"], "action": "fill", "ref": "node-1", "outcome": "not_applied"}
+        {
+            "command_id": attempts[0]["id"],
+            "action": "fill",
+            "ref": "node-1",
+            "outcome": "not_applied",
+        }
     ]
     assert e.state["value"] == ""
     assert "private-peer-detail" not in json.dumps(result)
     with e.service.store.connect() as db:
-        assert db.execute("SELECT state FROM commands WHERE id=?", (attempts[0]["id"],)).fetchone()[0] == "not_applied"
+        assert (
+            db.execute("SELECT state FROM commands WHERE id=?", (attempts[0]["id"],)).fetchone()[0]
+            == "not_applied"
+        )
     assert e.run()["id"] == result["id"]
     assert len(attempts) == 1

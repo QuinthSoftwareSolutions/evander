@@ -4,7 +4,7 @@
 <body><header class="topbar"><a href="/#dashboard" class="brand">EVANDER <span>Browser sessions</span></a>
 <div class="top-actions"><span id="directory-label"></span></div></header>
 <main id="catalog" class="catalog" hidden><div class="page-heading"><div><p class="eyebrow">WORK TOGETHER</p>
-<h1>Browser sessions</h1><p class="muted">Explore an application with Truman, or refine a change together.</p></div>
+<h1>Browser sessions</h1><p class="muted">Explore an application with your agent, or refine a change together.</p></div>
 <div class="catalog-actions"><label class="catalog-filter"><input type="checkbox" id="show-closed">Show closed sessions</label>
 <button id="configure">Configure</button></div></div><div id="session-list" class="session-list"></div>
 <section id="settings-panel" class="settings-panel" hidden><h2>Browser session settings</h2><form id="settings-form">
@@ -24,7 +24,7 @@
 <section class="settings-section" aria-labelledby="workers-heading">
 <div class="section-heading"><h3 id="workers-heading">Workers</h3><button id="add-worker" type="button" class="quiet">Add worker</button></div><div id="workers"></div></section>
 <section class="settings-section" aria-labelledby="profiles-heading">
-<div class="section-heading"><h3 id="profiles-heading">Launch profiles</h3><button id="add-profile" type="button" class="quiet">Add profile</button></div><div id="profiles"></div></section>
+<div class="section-heading"><h3 id="profiles-heading">Browser profiles</h3><button id="add-profile" type="button" class="quiet">Add profile</button></div><div id="profiles"></div></section>
 <section class="settings-section" aria-labelledby="fast-heading"><h3 id="fast-heading">Faster browser actions</h3>
 <div class="settings-toggles"><label class="check"><input type="checkbox" id="fast-enabled">Enable multi-step decision execution</label></div>
 <div class="form-grid">
@@ -48,6 +48,7 @@
 <div class="browser-toolbar" aria-label="Browser controls"><div class="session-details"><div class="session-summary">
 <h1 id="session-title">Connecting…</h1><span id="status" class="status" role="status">Connecting</span><span id="run-progress" class="muted" role="status" hidden></span></div>
 <span id="application-url" class="application-url"></span></div><div class="toolbar-actions">
+<label id="page-picker" hidden>Page <select id="pages" aria-label="Shared browser page"></select></label>
 <button id="point" class="quiet" aria-pressed="false">Point to something</button>
 <button id="claim" aria-pressed="false" disabled>Take control</button>
 <button id="pause" class="quiet">Pause agent</button>
@@ -58,9 +59,9 @@
 <div id="error" class="error-banner" role="alert" hidden><span id="error-message"></span>
 <button id="dismiss-error" type="button" class="quiet" aria-label="Dismiss notification">×</button></div></div>
 <div id="viewport" class="viewport"><canvas id="display" width="1440" height="900" tabindex="0" aria-label="Shared application" aria-describedby="control-help"></canvas>
-<div id="pointer" class="agent-pointer" hidden><span>Truman</span></div><div id="empty" class="empty-state">
-<div class="spinner"></div><h2>Waiting for the application</h2><p>The same browser stays open while you and Truman work.</p></div></div>
-</section><aside class="conversation"><div class="chat-heading"><div class="chat-heading-row"><h2>Talk with Truman</h2>
+<div id="pointer" class="agent-pointer" hidden><span>Agent</span></div><div id="empty" class="empty-state">
+<div class="spinner"></div><h2>Waiting for the application</h2><p>The same browser stays open while you and your agent work.</p></div></div>
+</section><aside class="conversation"><div class="chat-heading"><div class="chat-heading-row"><h2>Talk with your agent</h2>
 <button id="theme-toggle" type="button" class="quiet">Dark mode</button></div></div>
 <div id="messages" class="messages" role="log" aria-live="polite"></div>
 <form id="chat-form"><div id="annotation" class="annotation" hidden>Point attached <button type="button" id="clear-annotation" class="quiet">Remove</button></div>
@@ -71,6 +72,6 @@
 <span data-voice-status role="status"></span>
 
 </div>
-<label class="sr-only" for="chat-body">Message Truman</label><textarea id="chat-body" placeholder="What would you like to change or explore?" maxlength="16000" rows="3" required></textarea>
+<label class="sr-only" for="chat-body">Message agent</label><textarea id="chat-body" placeholder="What would you like to change or explore?" maxlength="16000" rows="3" required></textarea>
 <div class="chat-footer"><span id="expiry"></span><button id="send">Send</button></div></form></aside></main>
 <script type="module" src="/addons/browser-sessions-addon/assets/viewer.js"></script></body></html>

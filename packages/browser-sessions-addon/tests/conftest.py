@@ -19,6 +19,12 @@ class Bindings:
             agent, "root/demo", time.time() + 20000, "worker-a", "https://worker.test", "thread-123"
         )
 
+    def http_targets(self, agent):
+        return {
+            "app": SimpleNamespace(base_url="http://preview-app:4200"),
+            "other": SimpleNamespace(base_url="http://other-app:4200"),
+        }
+
     def close_support(self, session):
         self.closed.append(session.id)
 
@@ -46,8 +52,10 @@ class Peers:
             raise BrowserError("cleanup failed")
         if path == "/healthz":
             return {"capabilities": {"browser_sessions": 1}}
+        if path.endswith("/fence"):
+            return {"fenced": True}
         if method == "POST" and path.startswith("/v1/sessions"):
-            return {"allowed_origins": ["http://preview-app:4200"], "state": "accepted"}
+            return {"allowed_origins": payload["session"]["allowed_origins"], "state": "accepted"}
         return {"released": True, "state": "running", "success": True}
 
 
@@ -80,11 +88,11 @@ def hosted(domain):
     result = service.create(
         "agent-a",
         CreateRequest(
-            mode="hosted_development",
+            mode="hosted",
             request_id="create",
             profile_id="web",
-            workspace_ref="a" * 32,
-            launch_manifest_path=".evander/preview.json",
+            target_aliases=["app"],
+            entry_url="http://preview-app:4200",
         ),
     )
     return service.store.mutate(result["id"], "test", lambda s: setattr(s, "state", "ready"))
@@ -133,6 +141,7 @@ def speech_provider(domain, monkeypatch):
         return httpx.Response(200, content=output.getvalue(), headers={"Content-Type": "audio/wav"})
 
     original = Voice.provider
+
     async def provider(self, *args, **kwargs):
         self.transport = httpx.MockTransport(respond)
         return await original(self, *args, **kwargs)
