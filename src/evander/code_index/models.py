@@ -15,8 +15,8 @@ TOOLCHAIN = {
     "scip-dotnet-revision": "47884461a79839fb74c99e6a0a7978cd7eb62476",
     "scip-typescript": "0.4.0",
     "typescript": "5.9.3",
-    "dotnet-sdk": "10.0.111",
-    "node": "24.20.0",
+    "dotnet-sdk": "10.0.113",
+    "node": "24.22.1",
 }
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 DEFAULT_INCLUDES = [

@@ -351,7 +351,7 @@ def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "/home/agent/.claude" in dockerfile
     assert "/home/agent/.evander/session.env" in dockerfile
     assert "/opt/evander/toolchains/mssql-client/env.sh" in dockerfile
-    assert "/opt/evander/toolchains/node-v24.14.0/bin" in dockerfile
+    assert "/opt/evander/toolchains/node-v24.22.1/bin" in dockerfile
     assert "ANTHROPIC_AUTH_TOKEN" in dockerfile
     assert "DISABLE_TELEMETRY" in dockerfile
     assert 'CMD ["bash", "-lc", "claude --version"]' in dockerfile

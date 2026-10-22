@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Update vulnerable dependencies and toolchains (0.119.2)
+
+- Raise Python runtime, development and build dependency security floors across the core and independent add-ons, and refresh the Python and affected npm lockfiles.
+- Update Node to 24.22.1, the code-index .NET SDK to 10.0.113, Nexus to 3.97.1 and Qdrant to 1.19.2 across deployment defaults, bootstrap paths and toolchain metadata.
+- Preserve existing container session Node paths and guest profile upgrades and make Nexus mandatory telemetry acknowledgement an explicit operator setting.
+- Synchronize the hosted tab-viewing regression with the live tab picker before waiting for selection responses.
+
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
 - Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.

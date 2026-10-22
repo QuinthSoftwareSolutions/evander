@@ -47,10 +47,15 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     await viewer.request.post(f.base+"/api/auth/login");
     await viewer.goto(f.base+"/addons/browser-sessions-addon/view/"+config.session.id,{waitUntil:"domcontentloaded"});
     await viewer.locator("#empty").waitFor({state:"hidden"});
+    await viewer.locator("#pages").waitFor({state:"visible"});
+    await viewer.waitForFunction(ids=>ids.every(id=>
+      [...document.getElementById("pages").options].some(option=>option.value===id)),
+      [second.id,original.id]);
     for (const tab of [second, original]) {
-      const selection=viewer.waitForResponse(response=>response.url().endsWith("/select-page"));
-      await viewer.locator("#pages").selectOption(tab.id);
-      const response=await selection;
+      const [response]=await Promise.all([
+        viewer.waitForResponse(response=>response.url().endsWith("/select-page")),
+        viewer.locator("#pages").selectOption(tab.id),
+      ]);
       assert.equal(response.status(),200,await response.text());
       await until(async()=>(await observe()).url===tab.url,"selected shared tab");
       await viewer.waitForFunction(url=>document.getElementById("application-url").textContent===url,tab.url);
