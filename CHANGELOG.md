@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Preserve correction sources beside planning evidence (0.118.1)
+
+- Require a downstream deliverable's own Git provenance before treating it as replacement code for a rejected release. An inherited checkout base on artifact-only planning evidence no longer displaces the accepted coding correction.
+- Preserve immutable review and release validation for partial Git claims and real code recoveries, including those marked as not planned for an initial release.
+
 ## 2026-10-22 - Delete unused subscription profiles (0.118.0)
 
 - Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.

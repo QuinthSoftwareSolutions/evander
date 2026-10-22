@@ -2175,6 +2175,14 @@ def _candidate_correction_downstream_recovery_base(
         or deliverable.superseded_by_deliverable_id is not None
     ):
         return None
+    # A task's checkout base can support artifact-only planning. Only a deliverable's
+    # own Git provenance can make it a replacement code input; partial claims still validate.
+    if not (
+        any(deliverable.git_refs.model_dump().values())
+        or deliverable.review_manifest is not None
+        or deliverable.dependency_composition_manifest is not None
+    ):
+        return None
     try:
         require_task_resolved(
             state,
