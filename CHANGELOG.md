@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-22 - Keep gateway installs on the compatible MCP SDK (0.121.1)
+
+- Bound the MCP Python SDK to the supported 1.x release line while retaining the 1.30.0 security floor. Fresh and upgraded installations no longer select MCP 2.x, which removes the FastMCP API used by the gateway.
+
 ## 2026-10-22 - Preserve workflow scope, tool grants and inference attribution (0.121.0)
 
 - Let shared PR-publication workflows select the owning project directory while preserving repository, commit and publication-identity checks and rejecting scope escapes.
