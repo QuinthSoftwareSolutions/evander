@@ -42,6 +42,7 @@ from .provider_git_continuity import (
     apply_retained_task_work,
     pin_retained_task_work,
     retained_target_base,
+    validate_handoff_writers,
 )
 from .provider_git_errors import (
     DependencyGitPreparationError,
@@ -801,6 +802,7 @@ class _TaskGitContextPreparation:
         )
 
     def _validate_prepared_dependency_provenance(self, current_state: Any) -> None:
+        validate_handoff_writers(self, current_state)
         current_correction_source = _verified_rejected_candidate_git_source(
             self.batch.context,
             state=current_state,

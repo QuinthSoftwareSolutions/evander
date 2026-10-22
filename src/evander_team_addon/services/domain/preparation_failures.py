@@ -51,6 +51,7 @@ EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
 _TASK_PREPARATION_SOURCE_PREFIX = "execution-preparation:task:"
 _INBOX_PREPARATION_SOURCE_PREFIX = "execution-preparation:inbox:"
 TASK_PREPARATION_CONTRACT_VERSION = 4
+TASK_GIT_PREPARATION_RETRY_VERSION = 1
 _TASK_PREPARATION_GENERATION_FIELDS = (
     "id",
     "owner_agent_id",
@@ -207,10 +208,8 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
     )
     relevant_task_ids = {task.id, *dependency_ids}
     payload = {
-        # Bump this contract version when a durable repository/worktree
-        # preparation defect is repaired. Existing generation-keyed blockers
-        # then receive one bounded retry under the corrected implementation;
-        # a still-persistent cause opens a fresh blocker for the new version.
+        # Shared identity of task, checkout and recovery inputs. Implementation
+        # fixes use the separate retry version without changing those inputs.
         "preparation_contract_version": TASK_PREPARATION_CONTRACT_VERSION,
         "task": _task_generation_payload(task),
         "project_git": (
@@ -359,15 +358,27 @@ def _human_correction_generation_payload(
     }
 
 
+def task_preparation_failure_generation(
+    state: TeamState, task_id: str, *, reason_code: str = "task_execution_preparation_failed",
+) -> str:
+    """Version checkout retry suppression independently of Git/recovery identity."""
+    generation = task_preparation_generation(state, task_id)
+    if reason_code != "dependency_git_preparation_failed":
+        return generation  # Composition recovery retains its original blocker binding.
+    value = f"{generation}:git-retry:{TASK_GIT_PREPARATION_RETRY_VERSION}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+
+
 def task_preparation_source_id(
     state: TeamState,
     *,
     task_id: str,
     error: object,
+    reason_code: str = "task_execution_preparation_failed",
 ) -> str:
     return (
         f"{_TASK_PREPARATION_SOURCE_PREFIX}{task_id}:"
-        f"{task_preparation_generation(state, task_id)}:"
+        f"{task_preparation_failure_generation(state, task_id, reason_code=reason_code)}:"
         f"{preparation_cause_fingerprint(error)}"
     )
 
@@ -389,7 +400,8 @@ def task_preparation_blocker_is_current(
         # Historical dependency-preparation incidents had no generation. Keep
         # them fail-closed until an authorized actor resolves them.
         return True
-    generation_prefix = f"{source_prefix}{task_preparation_generation(state, task_id)}:"
+    generation = task_preparation_failure_generation(state, task_id, reason_code=blocker.reason_code)
+    generation_prefix = f"{source_prefix}{generation}:"
     return blocker.source_id.startswith(generation_prefix)
 
 
@@ -481,7 +493,9 @@ def reconcile_stale_task_preparation_blockers(
                 "The task preparation generation changed; the prior failure "
                 "no longer suppresses a fresh preparation attempt."
             ),
-            reference_ids=[task_preparation_generation(state, blocker.task_id)],
+            reference_ids=[task_preparation_failure_generation(
+                state, blocker.task_id, reason_code=blocker.reason_code,
+            )],
             now=effective_now,
         )
         task = state.tasks.get(blocker.task_id)
@@ -516,7 +530,7 @@ def record_task_preparation_failure(
         raise ValueError(f"cannot record task preparation failure for task {task_id}")
     if task.state not in _NON_TERMINAL_TASK_STATES:
         return None
-    generation = task_preparation_generation(state, task.id)
+    generation = task_preparation_failure_generation(state, task.id, reason_code=reason_code)
     semantic_error = f"git:{diagnostic_cause}" if diagnostic_cause and diagnostic_cause != "unknown" else error
     cause = preparation_cause_fingerprint(semantic_error)
     blocker, _created = open_or_get_blocker(
@@ -526,6 +540,7 @@ def record_task_preparation_failure(
             state,
             task_id=task.id,
             error=semantic_error,
+            reason_code=reason_code,
         ),
         reason_code=reason_code,
         summary=f"Execution preparation failed for task {task.id}",
@@ -856,6 +871,7 @@ __all__ = [
     "REVIEW_PREPARATION_BLOCKER_REASON_CODE",
     "TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES",
     "TASK_PREPARATION_CONTRACT_VERSION",
+    "TASK_GIT_PREPARATION_RETRY_VERSION",
     "create_rejected_candidate_correction_preparation_recovery_inbox",
     "create_human_correction_preparation_recovery_inbox",
     "dispatch_project_work_ids",
@@ -868,6 +884,7 @@ __all__ = [
     "record_task_preparation_failure",
     "task_has_current_preparation_blocker",
     "task_preparation_blocker_is_current",
+    "task_preparation_failure_generation",
     "task_preparation_generation",
     "task_git_work_context_generation",
     "task_preparation_source_id",
