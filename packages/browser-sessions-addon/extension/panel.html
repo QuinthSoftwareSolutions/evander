@@ -1,9 +1,9 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Truman assistance</title><link rel="stylesheet" href="styles.css"></head>
-<body><header><span class="eyebrow">EVANDER</span><h1>Truman assistance</h1></header>
+<title>Agent assistance</title><link rel="stylesheet" href="styles.css"></head>
+<body><header><span class="eyebrow">EVANDER</span><h1>Agent assistance</h1></header>
 <main>
-<section id="pairing"><h2>Share this tab</h2><p>Select the application tab you want to share. Paste the invitation Truman sent you.</p>
+<section id="pairing"><h2>Share this tab</h2><p>Select the application tab you want to share. Paste the invitation your agent sent you.</p>
 <label>Invitation link<input id="invitation" type="url" autocomplete="off" placeholder="https://control.example/…"></label>
 <label>Browser connection<select id="connection-mode"><option value="extension">Extension only</option><option value="helper">Installed helper — full browser control</option></select></label>
 <details id="helper-setup"><summary>Install the optional helper</summary>
@@ -12,10 +12,10 @@
 <p>Download and extract the helper package, run its installer and paste this extension ID when prompted. Then enable remote debugging at chrome://inspect/#remote-debugging. Approve Chrome's connection prompt when sharing.</p>
 <p><a id="helper-download" target="_blank" rel="noreferrer" hidden>Download helper packages</a><span id="helper-link-hint">Paste an invitation to show your control plane's helper downloads.</span></p></details>
 <button id="pair">Review and share this tab</button>
-<p class="muted">Sharing starts with observation. You decide when Truman may click or type.</p></section>
+<p class="muted">Sharing starts with observation. You decide when the agent may click or type.</p></section>
 <section id="session" hidden><h2 id="title"></h2><p id="shared-origin" class="muted"></p><p id="compatibility" hidden></p>
 <p id="status" role="status"></p>
-<div class="buttons"><button id="grant">Allow Truman to interact</button><button id="pause">Stop agent control</button>
+<div class="buttons"><button id="grant">Allow agent to interact</button><button id="pause">Stop agent control</button>
 <button id="origin">Approve current page</button><button id="disconnect" class="danger">End sharing</button></div>
 <p class="muted">Only the selected tab is shared. After switching sites, click the extension icon on the shared tab again to show the pointer.</p>
 <details id="voice-panel"><summary>Voice</summary>
@@ -28,6 +28,6 @@
 </div></details>
 <p id="run-progress" role="status" hidden></p><button id="stop-run" hidden>Stop current task</button>
 <div id="messages" role="log" aria-live="polite"></div>
-<form id="chat"><label>Message Truman<textarea id="body" rows="3" maxlength="16000" required></textarea></label><button>Send</button></form>
+<form id="chat"><label>Message agent<textarea id="body" rows="3" maxlength="16000" required></textarea></label><button>Send</button></form>
 </section><p id="error" class="error" role="alert"></p></main>
 <script type="module" src="panel.js"></script></body></html>
