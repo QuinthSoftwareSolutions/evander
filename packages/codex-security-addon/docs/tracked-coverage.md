@@ -64,9 +64,13 @@ the same commit, through the pinned public scoped Standard-scan API. Supporting
 reads outside the assigned scope earn no file credit.
 
 Only a sealed native result matching the revision and exact scope can close a
-scope. It must report complete coverage with no exclusions, follow-up surfaces,
-open questions or deferred work. Binary/symlink/submodule dispositions also need
-explicit source-backed notes in `file:<path>` coverage surfaces. Unavailable
+scope. It must report complete coverage with no exclusions, follow-up surfaces
+or deferred work. Native `openQuestions` are advisory: they remain visible with
+their source receipts in the aggregate report and coverage ledger, without
+preventing an otherwise complete static review from closing. Partial coverage,
+deferred work and `needs_follow_up` surfaces still prevent completion, even when
+the report also contains advisory questions. Binary/symlink/submodule
+dispositions also need explicit source-backed notes in `file:<path>` coverage surfaces. Unavailable
 content remains blocked. Text cannot be dismissed as not applicable. Boundary
 results must explicitly resolve previously retained work using `deferred:<key>`
 surfaces. Architecture mapping itself earns no file coverage.
@@ -112,6 +116,14 @@ incompatible or expired sources cannot resume. Legacy scans without a journal
 require a new tracked scan. A continuation receives a fresh budget and linked
 scan ID; the source report and artifacts remain immutable. It always reviews the
 original commit even after the branch advances or is force-pushed.
+
+Older journals may have promoted advisory questions into required work. On
+continuation, the controller verifies their preserved native reports and removes
+only exact question-derived blockers with authenticated provenance; genuine
+deferred work and ambiguous records remain required. The same repair applies to
+active journals after an orchestrator restart. This does not grant file credit:
+previously uncredited scopes still require a complete validated review. Earlier
+finished runs and their published reports remain unchanged.
 
 Existing managed-Git retained snapshots protect that commit. Journals and pins
 remain for seven days after the latest referencing run; active runs and their

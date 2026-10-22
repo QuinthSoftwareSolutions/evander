@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Keep advisory security questions separate from unfinished review (0.117.5)
+
+- Accept complete, sealed static security reviews that contain advisory open questions while continuing to require exact scope, revision, file dispositions and resolution of genuine deferred work. Retain the questions and their source receipts in aggregate reports and coverage ledgers.
+- Repair question-derived blockers in active or resumed legacy coverage journals using verified preserved reports. Preserve ambiguous and genuinely deferred work, existing file credit, original deadlines and immutable reports from earlier runs.
+
 ## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.117.4)
 
 - Let the existing Team deliverable handoff publish retained failed or incomplete verification artifacts with `evidence_only=true`, returning immutable receipts and notifying the superior and task requesters while preserving task blockers, Git work contexts, acceptance, review, and release gates.

@@ -45,6 +45,7 @@ from .coverage import (
     pending,
     plan_boundaries,
     progress,
+    record_open_questions,
     resumable,
     retry,
     valid_path,
@@ -136,6 +137,8 @@ class CoverageController:
             )
             if previous:
                 self.verify_proofs(previous)
+                if "open_questions" not in previous:
+                    self.restore_open_questions(state)
             pin_ref = "refs/evander/security-scans/" + scan_id
             self.git.pin_retained_snapshot(
                 request.managed_repo_id,
@@ -259,6 +262,49 @@ class CoverageController:
     def verify_proofs(self, state):
         for proof in [*state["proofs"], *state["uncredited"]]:
             self.archive_members(proof["archive_key"], proof["archive_sha256"])
+
+    def restore_open_questions(self, state):
+        """Reclassify legacy question blockers only from preserved accepted reports.
+
+        This changes no file credit and never edits the source run of a resume.
+        A genuine deferred item, even one with a colliding ID, remains required.
+        """
+        questions, required = {}, set()
+        for proof in state["proofs"]:
+            _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            prefix = proof["report_prefix"]
+            scan = json.loads(members[prefix + "scan-manifest.json"])["scan"]
+            body = members[prefix + "coverage.json"]
+            seals = [x for x in scan["artifacts"] if x.get("path") == "coverage.json"]
+            if (
+                scan["id"] != proof["provider_scan_id"]
+                or scan["target"].get("kind") != "git_revision"
+                or scan["target"].get("revision") != state["revision"]
+                or scan.get("status") != "completed"
+                or not scan.get("sealedAt")
+                or len(seals) != 1
+                or seals[0].get("sha256") != hashlib.sha256(body).hexdigest()
+            ):
+                raise ValueError("Retained question provenance failed verification")
+            coverage = json.loads(body)
+            required.update(
+                proof["provider_scan_id"] + ":" + str(item["id"])
+                for item in coverage.get("deferred", [])
+            )
+            record_open_questions(
+                {"open_questions": questions}, coverage.get("openQuestions", []), proof
+            )
+        removed = set()
+        for key, question in questions.items():
+            if key not in required and state["deferred"].get(key) == {
+                "reason": question["question"],
+                "resolution": None,
+            }:
+                del state["deferred"][key]
+                removed.add(key)
+        for item in state["tasks"].values():
+            item["deferred_keys"] = [k for k in item["deferred_keys"] if k not in removed]
+        state["open_questions"] = questions
 
     def retain_attempt(self, state, attempt, child, result):
         known = {
@@ -526,6 +572,9 @@ class CoverageController:
                     self.publish(state)
                 self.store.save(state)
                 return self.output(state)
+            if "open_questions" not in state:
+                self.restore_open_questions(state)
+                self.store.save(state)
             from evander.security_scans import SecurityScanRequest
 
             request = SecurityScanRequest.model_validate(state["request"])
@@ -843,6 +892,7 @@ class CoverageController:
                 "progress": progress(state),
                 "files": state["files"],
                 "deferred": state["deferred"],
+                "open_questions": state.get("open_questions", {}),
                 "remaining_scopes": [
                     {"kind": x["kind"], "paths": x["paths"], "status": x["status"]}
                     for x in state["tasks"].values()
@@ -893,6 +943,14 @@ class CoverageController:
             "## Findings",
             "",
             *[f"- {x['severity']}: {x['title']}" for x in findings],
+            "",
+            "## Open questions and limitations",
+            "",
+            *[
+                f"- {x['question']} (Source: {x['receipt']})"
+                + (f" Follow-up: {x['followUpPrompt']}" if x.get("followUpPrompt") else "")
+                for x in state.get("open_questions", {}).values()
+            ],
             "",
             "## Remaining work",
             "",

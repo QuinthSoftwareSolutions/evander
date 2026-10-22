@@ -162,12 +162,69 @@ def test_binary_disposition_and_boundary_closure_are_both_required():
                 "reason": "Reviewed image metadata; no executable source content",
             }
         },
+        open_questions=[{"question": "Is the image used by an external application?"}],
     )
     c.plan_boundaries(s)
     assert not c.complete(s)
     finish(s, c.pending(s)[0])
     assert c.complete(s)
     assert c.progress(s)["files_not_applicable"] == 1
+    assert len(s["open_questions"]) == 1
+
+
+@pytest.mark.parametrize(
+    "unfinished",
+    [
+        {"closed": False},
+        {"deferred": [{"id": "source", "reason": "Review the remaining call site"}]},
+        {"exclusions": [{"path": "src/a.py"}]},
+        {"needs_follow_up": True},
+    ],
+)
+def test_advisory_questions_never_override_unfinished_static_work(unfinished):
+    s = state(("src/a.py",))
+    mapping(s)
+    item = c.pending(s)[0]
+    finish(
+        s,
+        item,
+        open_questions=[{"question": "How is the application deployed?"}],
+        **unfinished,
+    )
+    assert item["status"] == "pending"
+    assert c.progress(s)["files_reviewed"] == 0
+    assert len(s["open_questions"]) == 1
+    assert not c.complete(s)
+
+
+def test_advisory_questions_and_accepted_coverage_survive_resume_without_becoming_work():
+    s = state(("a/a.py", "b/b.py"))
+    mapping(s)
+    question = {
+        "question": "Which external application calls this?",
+        "followUpPrompt": "Review its deployment when available.",
+    }
+    finish(s, c.pending(s)[0], open_questions=[question])
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    before = deepcopy(s)
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"]),
+        s["directory_path"],
+        {"revision": s["revision"], "entries": s["inventory"]},
+        s["route"],
+        previous=s,
+    )
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert resumed["open_questions"] == s["open_questions"]
+    assert not resumed["deferred"]
+    finish(resumed, c.pending(resumed)[0])
+    c.plan_boundaries(resumed)
+    for item in c.pending(resumed):
+        finish(resumed, item, open_questions=[question])
+    assert c.complete(resumed)
+    assert len(resumed["open_questions"]) == 3
+    assert s == before
 
 
 def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
