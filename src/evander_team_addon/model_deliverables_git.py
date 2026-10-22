@@ -754,6 +754,44 @@ class DependencyCompositionRecovery(TeamModel):
         return self
 
 
+class RetainedTaskWork(TeamModel):
+    """Unreviewed committed work carried into a new preparation generation."""
+
+    source_context_id: str
+    source_attempt_id: str
+    source_generation: str
+    source_branch: str
+    source_worktree_path: str
+    base_commit_sha: str
+    root_commit_sha: str
+    commit_sha: str
+    tree_hash: str
+
+    @field_validator("source_context_id", "source_attempt_id", "source_worktree_path")
+    @classmethod
+    def _source_text(cls, value: str) -> str:
+        return _required_text(value, "retained source")
+
+    @field_validator("source_branch")
+    @classmethod
+    def _source_branch(cls, value: str) -> str:
+        return validate_branch_name(value)
+
+    @field_validator("source_generation")
+    @classmethod
+    def _source_generation(cls, value: str) -> str:
+        if re.fullmatch(r"[0-9a-f]{20}", value) is None:
+            raise ValueError("retained source generation must be a 20-character fingerprint")
+        return value
+
+    @field_validator("base_commit_sha", "root_commit_sha", "commit_sha", "tree_hash")
+    @classmethod
+    def _object_id(cls, value: str) -> str:
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
+            raise ValueError("retained work requires full lowercase Git object IDs")
+        return value
+
+
 class GitWorkContext(TeamModel):
     id: str
     checkout_id: str | None = None
@@ -770,6 +808,7 @@ class GitWorkContext(TeamModel):
     manual_dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     dependency_composition_manifest: DependencyCompositionManifest | None = None
     preparation_generation: str | None = None
+    retained_work: RetainedTaskWork | None = None
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -825,6 +864,7 @@ class TeamGitPreparationAttempt(TeamModel):
     base_commit_sha: str | None = None
     head_commit_sha: str | None = None
     git_work_context_id: str | None = None
+    retained_work: RetainedTaskWork | None = None
     last_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

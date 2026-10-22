@@ -38,6 +38,11 @@ from .models import (
 from .provider_constants import (
     TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
 )
+from .provider_git_continuity import (
+    apply_retained_task_work,
+    pin_retained_task_work,
+    retained_target_base,
+)
 from .provider_git_errors import (
     DependencyGitPreparationError,
 )
@@ -618,8 +623,8 @@ class _TaskGitContextPreparation:
         self.composition_result: dict[str, Any] = {}
         self.preparation_receipt_result: dict[str, Any] = {}
         try:
-            self.worktree_path, self.base_commit = _prepare_project_repo_task_worktree(
-                self.batch.context,
+            self.retained_work = pin_retained_task_work(self)
+            options = dict(
                 project_repo=self.batch.project_repo,
                 session_id=self.batch.session_id,
                 task_id=self.task_id,
@@ -670,6 +675,29 @@ class _TaskGitContextPreparation:
                 task_author_identity=self.task_author,
                 composition_result=self.composition_result,
                 preparation_receipt_result=self.preparation_receipt_result,
+            )
+            attempt = self.batch.state.git_preparation_attempts[self.preparation_attempt_id]
+            if (
+                self.retained_work is not None
+                and attempt.state == TeamGitPreparationAttemptState.PENDING
+            ):
+                # Do not seal a worker receipt at the old failed candidate. First
+                # restore the pinned work, then let normal preparation attest it.
+                path, base = _prepare_project_repo_task_worktree(
+                    self.batch.context,
+                    **{
+                        **options,
+                        "preparation_attempt_id": None,
+                        "prior_base_commit": retained_target_base(self),
+                        "preparation_receipt_result": {},
+                        "composition_result": {},
+                    },
+                )
+                apply_retained_task_work(self, worktree_path=path, base_commit=base)
+                options["prior_base_commit"] = base
+            self.worktree_path, self.base_commit = _prepare_project_repo_task_worktree(
+                self.batch.context,
+                **options,
             )
         except DependencyGitPreparationError as exc:
             if exc.conflict is not None:
@@ -896,6 +924,7 @@ class _TaskGitContextPreparation:
                         self.batch.state,
                         self.task_id,
                     ),
+                    retained_work=self.retained_work,
                 )
                 break
             try:
@@ -919,6 +948,7 @@ class _TaskGitContextPreparation:
                         ),
                         manual_dependency_git_sources=self.manual_dependency_git_sources,
                         dependency_composition_manifest=(self.dependency_composition_manifest),
+                        retained_work=self.retained_work,
                         resource_provenance_validator=(
                             self._validate_prepared_dependency_provenance
                         ),
@@ -1049,6 +1079,7 @@ def _validate_project_repo_git_work_context(
     manual_dependency_git_sources: Sequence[Mapping[str, str]] = (),
     dependency_composition_manifest: Mapping[str, Any] | None = None,
     preparation_generation: str | None = None,
+    retained_work: Any = None,
 ) -> None:
     def _normalized_comparison_value(value: Any) -> Any:
         if hasattr(value, "model_dump"):
@@ -1080,6 +1111,7 @@ def _validate_project_repo_git_work_context(
             else None
         ),
         "preparation_generation": preparation_generation,
+        "retained_work": retained_work,
     }
     mismatches = [
         field_name

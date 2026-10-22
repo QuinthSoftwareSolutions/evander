@@ -35,7 +35,7 @@ from evander_team_addon.services.domain.dependency_composition_recovery import (
     accept_dependency_composition_recovery,
 )
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from team_runtime_support import _seed_team
+from team_runtime_support import _seed_team, _local_agent_python_transport
 
 
 def _git(path: Path, *args: str) -> str:
@@ -343,8 +343,11 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
         runtime_dir=tmp_path / "worker-runtime", worker_root=tmp_path / "worker-root",
         allowed_git_source_prefixes=[str(tmp_path)], container_runtime=SimpleNamespace(),
     )
-    daemon.clone_repo(
+    clone = daemon.clone_repo(
         "session-backend", WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    _local_agent_python_transport(
+        monkeypatch, tmp_path / "worker-root/sessions/session-backend/agent_home"
     )
     requests = []
 
@@ -377,7 +380,7 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
             project_id="project", dispatch_id=dispatch_id,
             project_repo={
                 "managed_repo_id": "mr_0123456789abcdefabcd", "guest_repo_name": "repo",
-                "target_dir": "/home/agent/repo", "execution_backend": "container_worker_vm",
+                "target_dir": clone.target_dir, "execution_backend": "container_worker_vm",
             },
             tasks=[state.tasks["task"].model_dump(mode="json")], base_branch="main",
         )
@@ -423,7 +426,14 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
         },
         expected_revision=repo.read().revision,
     )
-    state, rows, _ = prepare_task("dispatch-second-child")
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        prepare_task("dispatch-second-child")
+    assert failure.value.cause == "workspace_dirty"
+    # Explicit operator recovery preserves these bytes outside the old
+    # checkout, allowing fresh composition after the prerequisite is cleared.
+    retained_notes = tmp_path / "retained-operator-notes.txt"
+    (original_checkout / "operator-notes.txt").rename(retained_notes)
+    state, rows, _ = prepare_task("dispatch-second-child-retry")
     [row] = rows
     assert len({request.worktree_name for request in requests}) == 2
     assert len(state.git_preparation_attempts) == 2
@@ -440,7 +450,7 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
     assert _git(checkout, "rev-parse", "HEAD") == composed
     assert (checkout / "implementation.txt").read_text() == "Preserved agent work.\n"
     assert _git(original_checkout, "rev-parse", "HEAD") == contributions[0]["commit_sha"]
-    assert (original_checkout / "operator-notes.txt").read_text() == "Preserve prior preparation.\n"
+    assert retained_notes.read_text() == "Preserve prior preparation.\n"
 
 
 def test_preparation_attempt_rejects_changed_worktree_path(tmp_path: Path) -> None:

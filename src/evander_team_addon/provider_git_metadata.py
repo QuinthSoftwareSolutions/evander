@@ -382,6 +382,9 @@ def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
     composition_manifest = payload.get("dependency_composition_manifest")
     if isinstance(composition_manifest, Mapping):
         row["dependency_composition_manifest"] = dict(composition_manifest)
+    retained_work = payload.get("retained_work")
+    if isinstance(retained_work, Mapping):
+        row["retained_work"] = dict(retained_work)
     return row
 
 

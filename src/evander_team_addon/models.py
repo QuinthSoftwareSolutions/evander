@@ -196,6 +196,7 @@ from .model_deliverables_git import (
     DependencyCompositionRecovery,
     DependencyGitSource,
     GitWorkContext,
+    RetainedTaskWork,
     ReviewFindingRecord,
     TeamGitPreparationAttempt,
 )
@@ -414,6 +415,7 @@ __all__ = [
     "GitPromotionRecord",
     "GitPromotionSource",
     "GitWorkContext",
+    "RetainedTaskWork",
     "GitWorkContextState",
     "GovernanceAgendaItem",
     "GovernanceAgendaItemState",

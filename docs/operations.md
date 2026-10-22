@@ -745,6 +745,17 @@ Troubleshooting:
   still valid; otherwise record the orphaned artifact-space ref and remove or
   quarantine the published files according to the deployment's artifact
   retention policy.
+- **Committed work after a task specification edit** — preparation preserves
+  compatible retained commits in a fresh checkout and records `retained_work`
+  on its Git context and server-owned preparation attempt. This provenance
+  identifies resumed, unreviewed work; the immutable base, author history and
+  acceptance/release gates remain in force. A retry uses the selected commit
+  even if the old branch subsequently advances. Both existing worker backends
+  use their normal preparation and session execution paths; no new worker API
+  or agent tool is required. Dirty work, divergent retained branches, missing
+  provenance, changed owners/repositories/directories or incompatible dependency
+  pins stop preparation with a concrete recovery incident. Preserve the old
+  checkout and use the existing Git recovery path to resolve that prerequisite.
 - **Evidence trapped behind a task blocker** — the owner can use the existing
   `team_submit_deliverable` with `evidence_only=true`, retained `artifact_paths`,
   and a failed or incomplete `verification.status`. A matching task-specific
