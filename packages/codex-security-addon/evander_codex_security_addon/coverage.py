@@ -228,7 +228,8 @@ def retention_anchor(state):
 
 def complete(state):
     return (
-        state.get("architecture") is not None
+        not state.get("migration_error")
+        and state.get("architecture") is not None
         and state["boundary_planned"]
         and all(x["disposition"] in {"reviewed", "not_applicable"} for x in state["files"].values())
         and all(x["status"] in {"completed", "split"} for x in state["tasks"].values())

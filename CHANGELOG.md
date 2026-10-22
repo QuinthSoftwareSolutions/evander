@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
+
+- Stop safely if older coverage evidence is missing or corrupt: prevent further reviews, continue worker cleanup, and hold the repository reservation until cleanup is confirmed. Report the archive as unavailable without publishing unverifiable evidence, and retain the failure details in private host logs.
+
 ## 2026-10-22 - Keep advisory security questions separate from unfinished review (0.117.5)
 
 - Accept complete, sealed static security reviews that contain advisory open questions while continuing to require exact scope, revision, file dispositions and resolution of genuine deferred work. Retain the questions and their source receipts in aggregate reports and coverage ledgers.

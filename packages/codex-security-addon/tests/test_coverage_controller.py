@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from copy import deepcopy
+from datetime import timedelta
 import hashlib
 import io
 import json
@@ -452,6 +453,89 @@ def test_legacy_question_migration_requires_authentic_preserved_provenance(runni
     assert key in state["deferred"]
     assert "open_questions" not in state
     assert state["files"] == before["files"]
+
+
+def damaged_legacy_scan_with_running_child(running, *, missing=False):
+    controller, handle, worker, _ = running
+    state, _, _ = legacy_question_journal(controller, handle)
+    item = next(x for x in state["tasks"].values() if x["kind"] == "files")
+    item["status"] = "pending"
+    attempt = c.begin(state, item)
+    controller.launch(state, item)
+    source = controller.artifacts.get(state["proofs"][0]["archive_key"])
+    if missing:
+        source.blob_path.unlink()
+    else:
+        source.blob_path.write_bytes(b"corrupt retained report")
+    controller.store.save(state)
+    return state, attempt["handle"]["execution_id"]
+
+
+@pytest.mark.parametrize("operation", ["poll", "cancel", "deadline"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_bad_legacy_evidence_still_stops_workers_and_releases_reservation(
+    running, operation, missing
+):
+    controller, handle, worker, _ = running
+    state, child = damaged_legacy_scan_with_running_child(running, missing=missing)
+    if operation == "deadline":
+        state["deadline_at"] = (c.now() + timedelta(seconds=60)).isoformat()
+        controller.store.save(state)
+    before = deepcopy(state)
+    result = controller.cancel(handle) if operation == "cancel" else controller.poll(handle)
+    assert result.status == "failed" and result.coverage == "partial"
+    assert result.cleanup_confirmed
+    assert "evidence could not be verified" in result.error
+    assert "aggregate report unavailable" in result.error
+    assert not result.artifacts
+    assert worker.active == {}
+    assert worker.destroyed == [child]
+    saved = controller.store.get(state["scan_id"], "root/project")
+    assert saved["finished_at"] and saved["migration_error"]
+    assert saved["deadline_at"] == before["deadline_at"]
+    assert saved["proofs"] == before["proofs"]
+    assert saved["files"] == before["files"]
+    assert saved["deferred"] == before["deferred"]
+    assert "open_questions" not in saved
+    assert progress(saved)["attempts"] == progress(before)["attempts"]
+    # A restart can report the failure without retrying migration or launching work.
+    restarted = CoverageController(controller.provider, controller.runtime)
+    restarted.backend = controller.backend
+    restarted.restore_open_questions = lambda _: pytest.fail("Retried failed conversion")
+    assert restarted.poll(handle).cleanup_confirmed
+    replacement = make_state(
+        "b" * 32,
+        request(),
+        "root/project",
+        {"revision": state["revision"], "entries": state["inventory"]},
+        state["route"],
+    )
+    controller.store.create(replacement)
+
+
+def test_bad_legacy_evidence_retains_reservation_until_uncertain_cleanup_recovers(running):
+    controller, handle, worker, _ = running
+    state, child = damaged_legacy_scan_with_running_child(running)
+    worker.fail_destroy = True
+    result = controller.cancel(handle)
+    assert result.status == "failed" and not result.cleanup_confirmed
+    assert list(worker.active) == [child]
+    assert result.coverage_progress["cleanup_condition"]
+    replacement = make_state(
+        "b" * 32,
+        request(),
+        "root/project",
+        {"revision": state["revision"], "entries": state["inventory"]},
+        state["route"],
+    )
+    with pytest.raises(ValueError, match="active scan"):
+        controller.store.create(replacement)
+    worker.fail_destroy = False
+    result = controller.poll(handle)
+    assert result.status == "failed" and result.cleanup_confirmed
+    assert worker.active == {}
+    assert worker.destroyed == [child]
+    controller.store.create(replacement)
 
 
 @pytest.mark.parametrize(
