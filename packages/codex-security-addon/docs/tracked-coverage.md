@@ -56,8 +56,12 @@ pending scopes, generations, jobs, immutable proof hashes, outstanding work,
 deadline and model/access route. SQLite transactions and per-scan process locks
 serialize updates and repository claims across orchestrator restarts.
 
-Scopes follow directory/path order and contain at most 100 files or 512 KiB;
-an oversized file stays intact in a singleton scope. A shared architecture review
+Scopes follow path order and pack across adjacent folders, containing at most
+100 tracked entries and 512 KiB of text. Small binary files, symlinks and submodule
+entries share scopes while still requiring their own explicit dispositions.
+Files larger than 512 KiB stay intact in singleton scopes. Known unavailable
+entries are isolated so they do not obstruct otherwise reviewable batches.
+A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
 validation items. Every review uses an isolated SDK state directory and clone of
 the same source commit, through the pinned public scoped Standard-scan API. Supporting
@@ -138,6 +142,21 @@ require a new tracked scan. A continuation receives a fresh budget and linked
 scan ID; the source report and artifacts remain immutable. It always reviews the
 original commit even after the branch advances or is force-pushed.
 
+An explicit continuation of an older, folder-fragmented journal regroups only
+unstarted root file and boundary scopes under these bounds. Completed reviews,
+previously attempted scopes and split children keep their assignments; file
+credit, findings, native receipts and outstanding boundary work are preserved.
+The new journal records `batching_version: 2`, also included in its aggregate
+coverage ledger and manifest. Further resumes retain that plan. Source journals
+and published archives are immutable, and an active scan keeps its existing
+assignments until an explicit continuation after confirmed cleanup. Regrouping
+does not change the snapshot, selected model/access route, per-run concurrency
+limit or review-completion requirements.
+Results accepted during cancellation remain completed, and partial scopes retain
+their split children. On continuation, older scheduling flags cannot reopen an
+already accepted architecture map or credited file scope. This reuses existing
+host-owned evidence without granting additional file credit.
+
 Older journals may have promoted advisory questions into required work. On
 continuation, the controller verifies their preserved native reports and removes
 only exact question-derived blockers with authenticated provenance; genuine
@@ -178,6 +197,9 @@ the saved scan ID; do not clear a lock based on elapsed time alone.
 Deploy the control plane, worker code, pinned runtime/profile and rebuilt scanner
 image before enabling the policy in live workflows. The image fingerprint covers
 both `coverage_runner.py` and `coverage_sdk.mjs`; unchanged inputs reuse it.
+Batch packing and continuation regrouping execute on the control plane and are
+not worker-image inputs; changes confined to those policies do not require a
+scanner-image rebuild.
 Use a disposable managed synthetic repository and the selected real subscription
 for a bounded qualification after deployment: interrupt after accepted progress,
 verify private diagnostics and native hashes, resume at the original SHA, and

@@ -16,13 +16,13 @@ from evander_codex_security_addon.coverage_projection import (
     tree_entries,
 )
 
-from test_coverage import request, receipt
+from test_coverage import request as scan_request, receipt
 from test_coverage_controller import native_archive, running  # noqa: F401
 from test_coverage_projection import links  # noqa: F401
 
 
-@pytest.fixture
-def review(running, links):  # noqa: F811
+@pytest.fixture(params=[("readme-link",), ("README.md", "readme-link")], ids=["link", "mixed"])
+def review(running, links, request):  # noqa: F811
     controller, _, _, _ = running
     repo, revision, _ = links
     entries = [
@@ -31,7 +31,7 @@ def review(running, links):  # noqa: F811
     ]
     state = c.make_state(
         "b" * 32,
-        request().model_copy(update={"managed_repo_id": "managed-links"}),
+        scan_request().model_copy(update={"managed_repo_id": "managed-links"}),
         "root/project",
         {"revision": revision, "entries": entries},
         {"model": "example"},
@@ -41,8 +41,9 @@ def review(running, links):  # noqa: F811
         managed_git_admin=SimpleNamespace(resolve_internal_repository=lambda *args: (repo, None))
     )
     state["architecture"] = {"paths": list(state["files"])}
-    state["tasks"] = {k: t for k, t in state["tasks"].items() if t["kind"] != "architecture"}
-    item = next(t for t in state["tasks"].values() if t["paths"] == ["readme-link"])
+    item = c.task("files", request.param)
+    remaining = c.task("files", set(state["files"]) - set(item["paths"]))
+    state["tasks"] = {scope["id"]: scope for scope in (item, remaining)}
     attempt = c.begin(state, item)
     projection = symlink_projection(repo, revision, item["paths"])
     unit = receipt(state, item, source_projection=projection)
@@ -73,8 +74,11 @@ def test_accepted_link_receipt_survives_restart_resume_and_publication(review):
     )
     assert c.accept(state, item, attempt["scan_id"], unit, proof)
     assert state["files"]["readme-link"]["disposition"] == "reviewed"
-    assert state["files"]["README.md"]["disposition"] == "pending"
-    assert c.progress(state)["files_reviewed"] == 1
+    assert state["files"]["README.md"]["disposition"] == (
+        "reviewed" if "README.md" in item["paths"] else "pending"
+    )
+    assert state["files"]["dir/file.txt"]["disposition"] == "pending"
+    assert c.progress(state)["files_reviewed"] == len(item["paths"])
     findings, _, _ = c.aggregate(state)
     assert findings[0]["sources"][0]["source_projection"] == {
         k: unit["source_projection"][k] for k in ("source_revision", "revision", "paths")
@@ -121,7 +125,7 @@ def test_accepted_link_receipt_survives_restart_resume_and_publication(review):
     )
     resumed = c.make_state(
         "c" * 32,
-        request().model_copy(update={"managed_repo_id": saved["managed_repo_id"]}),
+        scan_request().model_copy(update={"managed_repo_id": saved["managed_repo_id"]}),
         "root/project",
         {"revision": saved["revision"], "entries": saved["inventory"]},
         saved["route"],

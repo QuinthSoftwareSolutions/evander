@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Pack tracked security reviews across folders (0.121.2)
+
+- Pack adjacent paths and small non-text entries into bounded review scopes instead of starting a job for each folder or non-text file. Preserve the 100-entry and 512 KiB text limits, intact oversized files and explicit non-text review requirements.
+- On explicit continuation, regroup only untouched legacy scopes while retaining accepted coverage, findings, attempted scopes, split refinements and outstanding boundary assignments. Keep active runs and source reports unchanged, and record the batching policy in aggregate reports.
+- Preserve completed and split scopes when cancellation accepts a saved result; reuse already accepted map and file coverage when continuing older journals with stale scheduling flags.
+
 ## 2026-10-22 - Keep gateway installs on the compatible MCP SDK (0.121.1)
 
 - Bound the MCP Python SDK to the supported 1.x release line while retaining the 1.30.0 security floor. Fresh and upgraded installations no longer select MCP 2.x, which removes the FastMCP API used by the gateway.
