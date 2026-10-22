@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Bind shared-browser credentials to approved connections (0.118.1)
+
+- Replace directory-editable environment credential selectors with encrypted platform-managed references bound to the complete worker, relay or speech destination and directory scope. Require owner access and unlocked privileges for connection or credential changes, while preserving ordinary browser management and agent tools.
+- Resolve authorization before each HTTP, WebSocket, speech and cleanup request. Retain original session placement and reject legacy credential-bearing snapshots until explicitly migrated.
+- Add a reviewed, maintenance-only migration with protected recovery backups for settings, saved connections and cleanup callbacks. Publish Browser Sessions 0.9.3 with owner-only credential controls and relay key delivery; Chrome extension and native helper versions are unchanged.
+
 ## 2026-10-22 - Delete unused subscription profiles (0.118.0)
 
 - Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.

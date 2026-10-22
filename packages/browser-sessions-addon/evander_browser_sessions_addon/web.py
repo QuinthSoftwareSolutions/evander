@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-import os
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -14,19 +13,30 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from evander.admin.web.rbac import (
+    ADMIN_OWNER_PERMISSION,
     BROWSER_SESSIONS_VIEW_PERMISSION as VIEW,
     BROWSER_SESSIONS_CONTROL_PERMISSION as CONTROL,
     BROWSER_SESSIONS_MANAGE_PERMISSION as MANAGE,
 )
+from evander.admin.web.shared import request_has_privileged_operations
+from evander.credentials import CredentialError
 from evander.models import DirectoryPath
 
-from .models import BrowserCommand, BrowserError, CreateRequest, MessageRequest, Settings, origin
+from .models import BrowserCommand, BrowserError, CreateRequest, CredentialRequest, MessageRequest, Settings, origin
 from .relay import error, read_json
 from .service import Service
 from .voice import Voice, read_audio, require_voice_origin, stream_audio
+from .credentials import configure_credential, connection_settings
+
+
+class RelayWebSocket(connect):
+    """Keep relay credentials on the approved destination, including its base path."""
+
+    def process_redirect(self, exc):
+        return exc
 
 
 def authenticated(context, connection):
@@ -61,6 +71,12 @@ def admin_api_routes(context):
     service = Service(context.runtime_dir, context.service)
     voice = Voice(service)
 
+    def can_manage_connections(request, directory):
+        return request_has_privileged_operations(
+            auth=context.auth, service=context.service, request=request,
+            required_permission=ADMIN_OWNER_PERMISSION, directory_path=directory,
+        )
+
     async def settings(request):
         try:
             directory = DirectoryPath(
@@ -73,18 +89,45 @@ def admin_api_routes(context):
                 payload = await read_json(request)
                 if type(payload.get("expected_revision")) is not int:
                     raise BrowserError("expected_revision is required", "revision_required", 428)
-                value = Settings.model_validate(payload["settings"])
+                candidate = Settings.model_validate(payload["settings"])
+                if connection_settings(candidate) != connection_settings(value) and not can_manage_connections(request, directory):
+                    raise BrowserError("Connection changes require owner access and unlocked privileges", "forbidden", 403)
+                value = candidate
                 revision = service.store.save_settings(
                     directory, payload["expected_revision"], value
                 )
             return JSONResponse(
-                {"revision": revision, "settings": value.model_dump()},
+                {"revision": revision, "settings": value.model_dump(),
+                 "can_manage_connections": can_manage_connections(request, directory)},
                 headers={"Cache-Control": "no-store"},
             )
         except PermissionError:
             return error(
                 BrowserError("Browser-session management permission is required", "forbidden", 403)
             )
+        except (BrowserError, ValidationError, ValueError, KeyError) as exc:
+            return error(exc)
+
+    async def credentials(request):
+        try:
+            directory = DirectoryPath(segments=request.query_params.get("directory", "root")).as_posix()
+            actor = authorize(context, request, directory, ADMIN_OWNER_PERMISSION)
+            if not can_manage_connections(request, directory):
+                raise PermissionError
+            _, value = service.settings(directory, required=False)
+            mutation(request, value)
+            parsed = CredentialRequest.model_validate(await read_json(request))
+            payload = parsed.model_dump()
+            payload["token"] = parsed.token.get_secret_value()
+            revision, value = await run_in_threadpool(
+                configure_credential, service, directory, payload, actor
+            )
+            return JSONResponse({"revision": revision, "settings": value.model_dump(),
+                                 "can_manage_connections": True}, headers={"Cache-Control": "no-store"})
+        except PermissionError:
+            return error(BrowserError("Credential management requires owner access and unlocked privileges", "forbidden", 403))
+        except CredentialError:
+            return error(BrowserError("Managed credential storage is unavailable", "credential_unavailable", 503))
         except (BrowserError, ValidationError, ValueError, KeyError) as exc:
             return error(exc)
 
@@ -285,13 +328,12 @@ def admin_api_routes(context):
                 config.public_base_url
             ):
                 raise BrowserError("Stream origin rejected", "forbidden", 403)
-            private = service.store.private(session.id)
-            relay_url = private.get("relay_url", config.relay_url)
-            token = os.environ.get(private.get("relay_token_env", config.relay_token_env), "")
+            relay_url, ref = service.relay_connection(session)
+            token = service.credentials.token(session.directory, "relay", relay_url, ref)
             if not token:
                 raise BrowserError("Browser relay is unavailable", "relay_unavailable", 503)
             url = relay_url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
-            inner = await connect(
+            inner = await RelayWebSocket(
                 url + "/internal/sessions/" + session.id + "/view",
                 additional_headers={"Authorization": "Bearer " + token},
                 max_size=4 * 1024 * 1024,
@@ -327,6 +369,7 @@ def admin_api_routes(context):
             PermissionError,
             WebSocketDisconnect,
             ConnectionClosed,
+            InvalidHandshake,
             OSError,
             RuntimeError,
         ):
@@ -337,6 +380,7 @@ def admin_api_routes(context):
                 await inner.close()
 
     return [
+        Route("/credentials", credentials, methods=["POST"]),
         Route("/settings", settings, methods=["GET", "PUT"]),
         Route("/sessions", sessions, methods=["GET", "POST"]),
         Route("/sessions/{session_id}", operation),

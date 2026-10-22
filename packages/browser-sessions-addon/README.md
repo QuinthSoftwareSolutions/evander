@@ -9,6 +9,12 @@ Hosted viewers join the already active browser, including its application login 
 
 Install this optional package explicitly. Core installation does not enable or deploy it. See [operations](docs/operations.md), [protocol](docs/protocol.md), and the [browser-only sessions and Playwright](docs/independent-sessions.md).
 
+## Managed connections
+
+Owners configure worker, relay and speech destinations and store their credentials through **Configure** after unlocking privileged operations. Credentials are encrypted by the platform store and bound to their purpose, complete destination and directory scope. Browser managers can use configured connections and adjust ordinary session settings without reading credentials or selecting environment variables. Existing sessions retain their original connections.
+
+See [credential migration](docs/credentials.md) before upgrading an installation that uses environment-based browser settings.
+
 ## Build and verify
 
 Use Node 22+ and the repository's Python environment. Run npm ci --ignore-scripts, npm run build, and python scripts/package_extension.py. Run python -m pytest -q, npm test, and npm run test:browser. Set EVANDER_TEST_PYTHON to the repository Python interpreter for integration fixtures.

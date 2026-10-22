@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import io
 import json
-import os
 import re
 import shutil
 import wave
@@ -105,10 +104,12 @@ class Voice:
         self.store.active(session)
         _, settings = self.service.settings(session.directory)
         config = settings.voice
-        if not config.enabled or not os.environ.get(config.api_key_env):
+        if not config.enabled:
             raise BrowserError(
                 "Voice has not been configured for this directory", "voice_unavailable", 409
             )
+        self.service.credentials.reference(session.directory, "voice", config.api_base_url, config.credential_ref)
+        config._directory = session.directory
         return config
 
     def info(self, session_id):
@@ -123,7 +124,7 @@ class Voice:
             ).fetchone()[0]
         return {
             "latest_message_seq": latest,
-            "enabled": config.enabled and bool(os.environ.get(config.api_key_env)),
+            "enabled": config.enabled and bool(config.credential_ref),
             "microphone_available": shutil.which("ffmpeg") is not None,
             "max_recording_seconds": config.max_recording_seconds,
             "max_audio_bytes": config.max_audio_bytes,
@@ -187,7 +188,9 @@ class Voice:
             ) as client:
                 request = client.build_request(
                     "POST", config.api_base_url + path,
-                    headers={"Authorization": "Bearer " + os.environ[config.api_key_env]},
+                    headers={"Authorization": "Bearer " + self.service.credentials.token(
+                        config._directory, "voice", config.api_base_url, config.credential_ref
+                    )},
                     **kwargs,
                 )
                 async with asyncio.timeout_at(deadline):
