@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-22 - Separate application environments from shared browsers (0.117.0)
+
+- Add an independent optional Application Environments project with bounded application leases, private HTTP endpoints, safe checkout mounts and SQL Server add-on resource binding beyond agent turns.
+- Make hosted Browser Sessions target approved external sites or leased application endpoints without requiring application recipes or hosting.
+- Add explicitly granted Playwright connections, retained browser contexts, managed-login tools and shared page selection with generation-fenced human takeover.
+- Supply independent deployment assets and a read-only coordinated migration checker; legacy creation calls must migrate after existing hosted previews drain.
+- Confirm expired application cleanup before reusing quota, require a fresh connection credential after browser detach, and drain or cancel hosted login commands before granting human control in every hosted profile, including when Playwright is disabled.
+
 ## 2026-10-21 - Support bounded Azure DevOps review votes (0.116.0)
 
 - Let `submit_pr_review` approve, approve with suggestions, wait for the author, or reset the authenticated host identity's reviewer vote after publishing its comments. Preserve comment-only submissions and GitHub review behavior; reject unsupported votes, including Reject.

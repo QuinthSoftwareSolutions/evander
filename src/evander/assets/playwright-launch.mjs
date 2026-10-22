@@ -98,3 +98,19 @@ export async function createManagedWebsiteContext(browser, targetAlias, options 
     throw new Error("Could not initialize the managed website context.");
   }
 }
+
+
+export async function connectSharedChromium(chromium, connectionConfigPath) {
+  const { readFile } = await import("node:fs/promises");
+  if(typeof connectionConfigPath!=="string" || !connectionConfigPath.startsWith("/run/evander-resources/browser-sessions-addon/"))
+    throw new Error("Use the private config_path returned by browser_session_connect.");
+  const {browser:connection}=JSON.parse(await readFile(connectionConfigPath,"utf8"));
+  const browser=await chromium.connectOverCDP(connection.endpoint,{headers:connection.headers,timeout:15000});
+  const newContext=browser.newContext.bind(browser);
+  browser.newContext=options=>{
+    if(options && Object.hasOwn(options,"proxy")) throw new Error("Shared browser proxy is host-owned.");
+    return newContext({...options,serviceWorkers:"block",...(connection.proxy?{proxy:connection.proxy}:{})});
+  };
+  // browser.close() detaches this CDP client; browser_session_close ends sharing.
+  return browser;
+}

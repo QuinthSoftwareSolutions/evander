@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 from evander.addons import AddonContext
 from evander_browser_sessions_addon import register_addon
-from evander_browser_sessions_addon.models import BrowserError, LaunchManifest, RunRequest
+from evander_browser_sessions_addon.models import BrowserError, CreateRequest, RunRequest
 from evander_browser_sessions_addon.providers import BrowserEffect, Definition
 from evander_browser_sessions_addon.service import Bindings
 
@@ -74,10 +74,14 @@ def test_any_owning_agent_can_discover_packaged_guidance_without_a_pa_prompt(dom
     assert profiles["agent_guidance"] == created["agent_guidance"] == status["agent_guidance"]
     guidance = status["agent_guidance"]
     assert guidance["instructions"]
-    assert guidance["launch_manifest_schema"]["required"] == ["command"]
+    assert guidance["create_request_schema"]["required"] == ["mode", "request_id"]
+    assert guidance["create_request_schema"]["properties"]["mode"]["enum"] == ["hosted", "user_hosted"]
+    assert "hosted" in profiles["modes"]
+    assert set(profiles["modes"]) <= {"hosted", "user_hosted"}
+    assert all("playwright_enabled" in profile for profile in profiles["profiles"])
     # Published instructions must contain usable examples of the actual public contracts.
-    manifest, objective = re.findall(r"```json\n(.*?)\n```", guidance["instructions"], re.S)
-    LaunchManifest.model_validate_json(manifest)
+    creation, objective = re.findall(r"```json\n(.*?)\n```", guidance["instructions"], re.S)
+    assert CreateRequest.model_validate_json(creation).mode == "hosted"
     request = RunRequest.model_validate_json(objective)
     assert any(value.value == "" for value in request.values.values())
     compact = call("browser_session_status", browser_session_id=created["id"])

@@ -12,6 +12,7 @@ from starlette.routing import Route
 import uvicorn
 
 from .models import BrowserError
+from evander.resources.container_runtime import RuntimeError as WorkerError
 from .relay import error, require_internal, read_json
 from .worker import Supervisor, WorkerSettings
 
@@ -50,9 +51,18 @@ def create_app(settings, *, supervisor=None):
                         "capabilities": {"browser_sessions": 1},
                     }
                 )
-            if "parent_id" in request.path_params:
+            if request.path_params.get("action") in {"connect", "fence"}:
+                payload = await read_json(request)
                 result = await asyncio.to_thread(
-                    supervisor.workspaces, request.path_params["parent_id"]
+                    getattr(supervisor, request.path_params["action"]),
+                    request.path_params["session_id"],
+                    payload,
+                )
+            elif request.path_params.get("action", "").startswith("detach-"):
+                result = await asyncio.to_thread(
+                    supervisor.detach_resource,
+                    request.path_params["session_id"],
+                    request.path_params["action"][7:],
                 )
             elif request.path_params.get("action") == "close":
                 result = await asyncio.to_thread(
@@ -72,13 +82,12 @@ def create_app(settings, *, supervisor=None):
             else:
                 result = supervisor.receipt(supervisor.get(request.path_params["session_id"]))
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
-        except (BrowserError, ValueError, KeyError) as exc:
+        except (BrowserError, WorkerError, ValueError, KeyError) as exc:
             return error(exc)
 
     return Starlette(
         routes=[
             Route("/healthz", handle),
-            Route("/v1/workspaces/{parent_id}", handle),
             Route("/v1/sessions/{session_id}", handle, methods=["GET", "POST", "DELETE"]),
             Route("/v1/sessions/{session_id}/{action}", handle, methods=["POST"]),
         ],

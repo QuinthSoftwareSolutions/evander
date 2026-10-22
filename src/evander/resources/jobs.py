@@ -81,6 +81,24 @@ class Jobs:
             and time.time() >= owner.valid_until
         ):
             return None
+        if owner.reference.get("workload_id"):
+            from types import SimpleNamespace
+            from .workloads import Workloads
+
+            workload = Workloads(self.store.path.parent / "managed-workloads.db").current(owner)
+            if workload is None:
+                return None
+            inspected = self.inspect(workload.container_id)
+            if inspected is None or not inspected.get("State", {}).get("Running"):
+                return None
+            if (
+                inspected["Id"] != workload.container_id
+                or inspected["Config"].get("Labels", {}).get("evander.resource") != workload.id
+            ):
+                raise ResourceError("Managed workload identity cannot be verified")
+            return SimpleNamespace(
+                job_id=workload.id, container_id=workload.container_id
+            ), inspected
         found = []
         for record in self.store.list_by_session(owner.session_id):
             if record.status != "running" or any(

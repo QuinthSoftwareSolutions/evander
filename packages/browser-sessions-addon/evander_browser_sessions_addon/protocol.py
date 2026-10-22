@@ -19,7 +19,7 @@ def authorize_command(session: Session, actor: str, command: BrowserCommand, *, 
         )
     if (
         not command.observing
-        and command.action not in {"navigate", "reload"}
+        and command.action not in {"navigate", "reload", "authenticate"}
         and not command.observation_id
     ):
         raise BrowserError("Observe the page before interacting", "observation_required", 409)
