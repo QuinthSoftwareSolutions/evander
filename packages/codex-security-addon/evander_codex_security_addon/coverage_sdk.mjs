@@ -11,6 +11,9 @@ const sdkVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(setup.plugi
 if (sdkVersion !== request.sdk_version) throw new Error('Pinned SDK version differs from the coverage journal');
 const original = parse(fs.readFileSync(path.join(root, 'codex-home/config.toml'), 'utf8'));
 const work = request.coverage_task;
+const reviewTarget = path.join(root, 'review-target.json');
+const projection = fs.existsSync(reviewTarget) ? JSON.parse(fs.readFileSync(reviewTarget, 'utf8')).source_projection : null;
+const reviewRevision = projection ? projection.revision : request.snapshot_commit;
 const config = {
   model: request.frozen_route.model,
   model_reasoning_effort: request.frozen_route.reasoning_effort,
@@ -30,8 +33,12 @@ if (work.kind === 'architecture') instructions.push('Establish the repository ar
 if (work.kind === 'boundary') {
   instructions.push('Review cross-component trust boundaries using the supplied map and retained candidates. For EACH supplied outstanding item add a surface labelled "deferred:<key>" with its explicit outcome and source-backed notes; unfinished items remain needs_follow_up.');
 }
+if (projection) instructions.push(
+  'This checkout is a deterministic symlink metadata projection of the original pinned revision. Assigned symlinks are regular JSON descriptions of their original Git entries, not application source files. Review the link itself: its stored target, placement, usage and trust implications. Do not follow external destinations. Use the original parent revision and Git objects for source context.',
+  'For EACH assigned symlink, record an explicit justified file:<original path> coverage surface. Reviewing its destination alone gives no credit for the link. Broken, external, cyclic and directory links require an explicit disposition; unsupported or unresolved review remains needs_follow_up.',
+);
 const knowledge = path.join(root, 'review-context.json');
-fs.writeFileSync(knowledge, JSON.stringify({ architecture: work.architecture, assignedInventory: work.assigned_entries, outstanding: work.deferred, priorFindings: work.prior_findings, acceptedFileReviews: work.accepted_file_reviews }), { mode: 0o600 });
+fs.writeFileSync(knowledge, JSON.stringify({ architecture: work.architecture, assignedInventory: work.assigned_entries, sourceProjection: projection, outstanding: work.deferred, priorFindings: work.prior_findings, acceptedFileReviews: work.accepted_file_reviews }), { mode: 0o600 });
 const security = new CodexSecurity({ pluginPath: setup.plugin_root, pythonPath: '/usr/bin/python3', codexOverrides: config });
 const stop = new AbortController();
 let retryAfter = 900;
@@ -46,7 +53,7 @@ try {
   });
   const native = result.manifest.scan;
   const scope = work.kind === 'architecture' ? ['.'] : work.paths;
-  if (native.target.kind !== 'git_revision' || native.target.revision !== request.snapshot_commit ||
+  if (native.target.kind !== 'git_revision' || native.target.revision !== reviewRevision ||
       JSON.stringify([...native.scope.includePaths].sort()) !== JSON.stringify([...scope].sort()) ||
       (result.coverage.excludePaths || []).length) throw new Error('SDK result scope mismatch');
   const findings = result.findings.findings;
@@ -72,7 +79,7 @@ try {
     coverage_unit: { kind: work.kind, paths: work.paths, revision: request.snapshot_commit, sdk_version: sdkVersion,
       coverage: result.coverage.completeness, exclusions: result.coverage.explicitExclusions || [],
       deferred: result.coverage.deferred || [], needs_follow_up: (result.coverage.surfaces || []).some(s => s.disposition === 'needs_follow_up'),
-      dispositions, resolutions, architecture: model ? { threat_model: model, paths: anchors } : null },
+      dispositions, resolutions, ...(projection ? { source_projection: projection } : {}), architecture: model ? { threat_model: model, paths: anchors } : null },
   };
   fs.writeFileSync(path.join(root, 'sdk-result.json'), JSON.stringify(value), { mode: 0o600, flag: 'wx' });
 } catch (error) {
