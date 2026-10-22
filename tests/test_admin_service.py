@@ -15242,11 +15242,13 @@ def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     backend = SimpleNamespace(
-        config=SimpleNamespace(
-            model_provider_mode="openai_public",
-            container_worker_codex_auth_mode="chatgpt_subscription",
-        ),
+        config=service.config.model_copy(update={
+            "container_worker_base_url": "http://worker.test",
+            "model_provider_mode": "openai_public",
+            "container_worker_codex_auth_mode": "chatgpt_subscription",
+        }),
         client=SimpleNamespace(
+            base_url="http://worker.test",
             codex_auth_profile_status=lambda profile_id: {
                 "profile_id": profile_id,
                 "enabled": True,
@@ -15257,6 +15259,9 @@ def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
         service.vm_agent_admin,
         "container_worker_backend",
         MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.runtime.provider_config, "resolve_for_session_id", lambda _sid: backend.config
     )
     service.runtime.session_repository.upsert_session(
         SessionManifest(

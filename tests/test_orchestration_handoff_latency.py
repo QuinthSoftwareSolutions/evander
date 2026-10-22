@@ -337,7 +337,10 @@ def test_storage_maintenance_does_not_block_inflight_effects(tmp_path, monkeypat
 def test_queue_recovery_is_bounded_and_reuses_noop_snapshot(monkeypatch):
     from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 
-    records = {f"queue-{i:03d}": SimpleNamespace(created_at=datetime.now(UTC)) for i in range(120)}
+    records = {
+        f"queue-{i:03d}": SimpleNamespace(created_at=datetime.now(UTC), metadata={})
+        for i in range(120)
+    }
     reads, inspected = [], []
 
     def read_all():
@@ -413,11 +416,11 @@ def test_queue_recovery_advances_past_failed_vm_inventory(monkeypatch, vm_count)
 
     now = datetime.now(UTC)
     records = {
-        f"vm-{i:03d}": SimpleNamespace(created_at=now, target=f"vm-{i:03d}")
+        f"vm-{i:03d}": SimpleNamespace(created_at=now, target=f"vm-{i:03d}", metadata={})
         for i in range(vm_count)
     }
     records["container-last"] = SimpleNamespace(
-        created_at=now + timedelta(seconds=1), target="container-last"
+        created_at=now + timedelta(seconds=1), target="container-last", metadata={}
     )
     inventory_reads, dispatched = [], []
 

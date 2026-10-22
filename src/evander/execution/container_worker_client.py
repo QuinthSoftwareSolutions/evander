@@ -129,6 +129,11 @@ class ContainerWorkerClient:
         response = self._request("POST", f"/v1/codex-auth/profiles/{encoded}/device-login")
         return self._json_dict(response, operation="start Codex profile device login")
 
+    def delete_codex_auth_profile(self, profile_id: str) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request("DELETE", f"/v1/codex-auth/profiles/{encoded}")
+        return self._json_dict(response, operation="delete Codex auth profile")
+
     def consume_codex_profile_reset_credit(
         self, profile_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:

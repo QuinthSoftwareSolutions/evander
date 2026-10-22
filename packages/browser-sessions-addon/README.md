@@ -9,6 +9,12 @@ Hosted viewers join the already active browser, including its application login 
 
 Install this optional package explicitly. Core installation does not enable or deploy it. See [operations](docs/operations.md), [protocol](docs/protocol.md), and the [browser-only sessions and Playwright](docs/independent-sessions.md).
 
+## Managed connections
+
+Owners configure worker, relay and speech destinations and store their credentials through **Configure** after unlocking privileged operations. Credentials are encrypted by the platform store and bound to their purpose, complete destination and directory scope. Browser managers can use configured connections and adjust ordinary session settings without reading credentials or selecting environment variables. Existing sessions retain their original connections.
+
+See [credential migration](docs/credentials.md) before upgrading an installation that uses environment-based browser settings.
+
 ## Build and verify
 
 Use Node 22+ and the repository's Python environment. Run npm ci --ignore-scripts, npm run build, and python scripts/package_extension.py. Run python -m pytest -q, npm test, and npm run test:browser. Set EVANDER_TEST_PYTHON to the repository Python interpreter for integration fixtures.
@@ -49,6 +55,8 @@ Workflow nodes effect:browser-session:ensure, query:browser-session:status and e
 ## Hosted viewer
 
 The standalone viewer fills the page with a compact browser toolbar, the shared application and chat, without a separate page header, footer or session-list link. Session details stay in the toolbar. One button indicates control ownership and toggles between **Take control** and **Hand back to agent**. The theme button beside **Talk with your agent** remembers the light/dark preference used by Admin Web; embedded views follow their host's theme. This changes the viewer's appearance, independently of the shared application's own theme.
+
+Viewers can switch between shared tabs without taking control. Selecting a tab changes the shared view and preserves the current input controller.
 
 Enter sends a non-empty message; Shift+Enter inserts a newline. Observe-only clicks show a brief reminder, and other errors remain dismissible inside the toolbar without covering chat.
 

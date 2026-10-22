@@ -33,6 +33,7 @@ from evander.host_directories.grants import (
     resolve_and_validate_host_directory_grants,
 )
 from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 
 class VmAgentMutationMixin:
@@ -93,6 +94,8 @@ class VmAgentMutationMixin:
             target_name = str(session.vm_id or agent_id)
 
         update: dict[str, Any] = {}
+        profile_client = None
+        profile_config = self.config
         if "reasoning_effort" in body:
             update["reasoning_effort"] = normalize_reasoning_effort(body["reasoning_effort"])
         if "fast_mode" in body:
@@ -296,11 +299,13 @@ class VmAgentMutationMixin:
             if profile_id is None:
                 raise ValueError("subscription_profile_id is required")
             if profile_id != session.subscription_profile_id:
-                backend_client = self.container_worker_backend(
+                profile_backend = self.container_worker_backend(
                     directory_path=session.directory_path,
                     session_id=session.session_id,
-                ).client
-                profile_status = backend_client.codex_auth_profile_status(str(profile_id))
+                )
+                profile_client = profile_backend.client
+                profile_config = profile_backend.config
+                profile_status = profile_client.codex_auth_profile_status(str(profile_id))
                 if not bool(profile_status.get("enabled")):
                     raise ValueError(f"Codex subscription profile {profile_id!r} is disabled")
             update["subscription_profile_id"] = profile_id
@@ -331,7 +336,13 @@ class VmAgentMutationMixin:
         session_cyber_access_program(
             updated, self.runtime.provider_config.resolve_for_directory(updated.directory_path)
         )
-        self.runtime.session_repository.upsert_session(updated)
+        save_session_with_subscription_profile(
+            config=profile_config,
+            repository=self.runtime.session_repository,
+            session=updated,
+            client=profile_client,
+            provider_config=self.runtime.provider_config if profile_client is None else None,
+        )
         if "codex_auth_mode" in body or "subscription_profile_id" in body:
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 

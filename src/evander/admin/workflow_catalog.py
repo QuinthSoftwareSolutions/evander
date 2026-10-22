@@ -862,6 +862,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:set-reasoning-effort": (
+        "Set a session's native reasoning default for future turns, or clear it with null."
+    ),
     "effect:website-session:ensure-profile": (
         "Create or reuse an exact-origin website login from a host-approved template. "
         "Returns a profile ID without exposing credentials or performing a login."
@@ -4263,6 +4266,23 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("browser_origin", "Website origin", "string", required=True, bindable=True),
             _field("login_origin", "Login API origin", "string", required=True, bindable=True),
             _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:set-reasoning-effort",
+        label="Session reasoning effort",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "reasoning_effort", "Reasoning effort", "json", required=True, bindable=True,
+                description=(
+                    'Native effort such as "low"; JSON null clears the default. '
+                    "Running turns are unchanged."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

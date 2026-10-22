@@ -45,6 +45,7 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
+from evander_team_addon.services.agent_failure_service import record_agent_wake_failure
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import (
     TeamChatService,
@@ -229,6 +230,43 @@ def _seed_agent_with_task(tmp_path: Path) -> TeamStateRepository:
         expected_revision=repository.read().revision,
     )
     return repository
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_wake_failure_preserves_receipt_and_runtime_without_applying_actions(
+    tmp_path: Path, legacy: bool,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker", now=LEASE_NOW, respect_wake_interval=False,
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    before_count = state.agent_runtimes["worker"].no_progress_count
+    if legacy:
+        TeamAgentActionService(repository).apply_agent_action(
+            session_id="session-worker", dispatch_id=dispatch_id,
+            action={}, valid=False, error="provider unavailable",
+        )
+    else:
+        record_agent_wake_failure(
+            repository, session_id="session-worker", dispatch_id=dispatch_id,
+            error="provider unavailable",
+        )
+
+    persisted = repository.read()
+    assert persisted.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
+    assert persisted.dispatches[dispatch_id].error == "provider unavailable"
+    assert persisted.agent_runtimes["worker"].active_dispatch_id is None
+    assert persisted.agent_runtimes["worker"].wake_leased_until is None
+    assert persisted.agent_runtimes["worker"].no_progress_count == before_count + 1
+    receipts = list(persisted.action_records.values())
+    assert len(receipts) == 1
+    assert receipts[0].agent_id == "worker"
+    assert receipts[0].dispatch_id == dispatch_id
+    assert receipts[0].action == {}
+    assert receipts[0].success is False
+    assert receipts[0].error == "provider unavailable"
+    assert persisted.tasks["task"].state == TeamTaskState.PENDING
 
 
 def test_non_git_project_chat_uses_provider_neutral_directory_scope(

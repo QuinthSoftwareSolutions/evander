@@ -4,13 +4,13 @@ from evander.admin.services.vm_agent.common_imports import (
     dataclass,
     AGENT_ARTIFACTS_ENV,
     Any,
-    BaseModel,
     DEFAULT_AGENT_ARTIFACTS_DIR,
-    Field,
-    Literal,
-    UTC,
-    datetime,
     re,
+)
+
+from evander.admin.services.agent_create_operation_service import (
+    AgentCreateOperation,
+    AgentCreateOperationStatus,
 )
 
 
@@ -51,24 +51,6 @@ except UnicodeDecodeError:
     raise SystemExit(65)
 PY
 """
-AgentCreateOperationStatus = Literal["queued", "running", "succeeded", "failed"]
-
-
-class AgentCreateOperation(BaseModel):
-    operation_id: str
-    status: AgentCreateOperationStatus
-    backend: str
-    target_name: str
-    session_id: str | None = None
-    directory_path: str = "root"
-    owner_id: str | None = None
-    owner_pid: int | None = None
-    result: dict[str, Any] | None = None
-    error: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)

@@ -527,6 +527,7 @@ class GitStoreMixin:
                     else None
                 ),
                 "preparation_generation": row["preparation_generation"],
+                "retained_work": _json_loads(row["retained_work_json"] or "null"),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -544,9 +545,9 @@ class GitStoreMixin:
                     dependency_composition_recovery_id,
                     manual_dependency_git_sources_json,
                     dependency_composition_manifest_json,
-                    preparation_generation, state, created_at, updated_at
+                    preparation_generation, retained_work_json, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -568,6 +569,7 @@ class GitStoreMixin:
                         else None
                     ),
                     context.get("preparation_generation"),
+                    _json_dumps(context.get("retained_work")),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],

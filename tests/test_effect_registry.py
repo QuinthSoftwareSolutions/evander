@@ -550,6 +550,13 @@ class _CustomSchemaProvider(EffectProviderBase):
         return effect_definition
 
 
+def test_empty_registry_preserves_legacy_defaults_unless_catalog_is_explicit() -> None:
+    assert EffectProviderRegistry(initial={}).registered_types() == tuple(
+        DEFAULT_EFFECT_PROVIDER_REGISTRY
+    )
+    assert EffectProviderRegistry(initial={}, defaults_when_empty=False).registered_types() == ()
+
+
 def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
         "effect:ado:build-wait",
@@ -603,6 +610,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:communication:send-message",
         "effect:notification:send",
         "effect:session:update-metadata",
+        "effect:session:set-reasoning-effort",
         "effect:website-session:ensure-profile",
         "effect:session:set-image-generation-enabled",
         "effect:session:approve-mcp-tools-for-run",
@@ -3621,6 +3629,40 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
     assert "teams:chat-1:agent_thread_id" not in updated.metadata
 
 
+@pytest.mark.parametrize("explicit_thread", [None, "explicit-old-thread"])
+def test_agent_enqueue_new_context_replaces_saved_thread_and_later_resumes(explicit_thread) -> None:
+    admin = _AdminServiceStub(
+        create_vm_calls=[], clone_repo_into_vm_calls=[], bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[], resume_calls=[],
+    )
+    original = admin._sessions["session-42"]
+    admin._sessions["session-42"] = original.model_copy(update={"metadata": {
+        "agent_thread_ids": {"conversation-a": "old-thread", "conversation-b": "other-thread"},
+        "preferences": {"language": "Swedish"},
+    }})
+    admin.list_vms = lambda **kw: []
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin)
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="fresh", display_name="Fresh turn", type="effect:agent:enqueue-prompt",
+        session_id="session-42", prompt="Confirm fresh context", resume_mode="new_context",
+        resume_thread_id=explicit_thread, resume_thread_metadata_key="conversation-a",
+    )
+    output = factory.build(effect).execute()
+    assert admin.resume_calls[0]["resume_mode"] == "new_context"
+    assert admin.resume_calls[0]["resume_thread_id"] is None
+    assert output["thread_id"] == "thread-new-123"
+    saved = admin._sessions["session-42"]
+    assert saved.metadata["agent_thread_ids"] == {
+        "conversation-a": "thread-new-123", "conversation-b": "other-thread",
+    }
+    assert saved.model == original.model and saved.allowed_tools == original.allowed_tools
+    assert saved.metadata["preferences"] == {"language": "Swedish"}
+    factory.build(effect.model_copy(update={
+        "id": "later", "resume_mode": "same_context", "resume_thread_id": None,
+    })).execute()
+    assert admin.resume_calls[1]["resume_thread_id"] == "thread-new-123"
+
+
 def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata_key() -> None:
     effect = AgentEnqueuePromptEffectDefinition(
         id="effect-prompt",
@@ -6540,7 +6582,7 @@ def test_agent_create_upsert_can_switch_auth_modes_and_subscription_profiles(
         )
     )
     backend = _FakeContainerBackend()
-    profile_enabled = {"team-a": True, "team-b": True}
+    profile_enabled = {"default": True, "team-a": True, "team-b": True}
     profile_status_calls: list[str] = []
 
     def profile_status(profile_id: str) -> dict[str, object]:
@@ -6724,6 +6766,85 @@ def test_agent_create_upsert_can_switch_auth_modes_and_subscription_profiles(
     assert legacy_metered is not None
     assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
     assert legacy_metered.subscription_profile_id is None
+
+
+@pytest.mark.parametrize("existing_binding", [None, "other-profile", "expired"])
+def test_agent_create_does_not_save_a_binding_deleted_during_worker_preparation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, existing_binding: str | None,
+) -> None:
+    from evander.admin.services.codex_auth_admin_service import (
+        CodexAuthAdminDependencies,
+        CodexAuthAdminService,
+    )
+    from evander.execution.container_worker_client import ContainerWorkerClientError
+
+    config = GatewayConfig(
+        runtime_dir=tmp_path, execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test", model_provider_mode="openai_public",
+    )
+    repository = JsonSessionManifestRepository(config.session_store_path)
+    original = None
+    if existing_binding:
+        original = SessionManifest(
+            session_id="binding-race", vm_provider="container_worker_vm", allowed_tools=[],
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a" if existing_binding == "expired" else "team-old",
+            expires_at=datetime.now(UTC) + timedelta(hours=-1 if existing_binding == "expired" else 1),
+            metadata={"execution_backend": "container_worker_vm", "worker_url": "http://worker.test"},
+        )
+        repository.upsert_session(original)
+
+    class Worker:
+        base_url = "http://worker.test/"
+        deleted = False
+
+        def codex_auth_profile_status(self, profile_id):
+            if self.deleted:
+                raise ContainerWorkerClientError("Profile not found", status_code=404)
+            return {"profile_id": profile_id, "enabled": True}
+
+        def delete_codex_auth_profile(self, profile_id):
+            self.deleted = True
+            return {"profile_id": profile_id, "deleted": True}
+
+    worker = Worker()
+    profile_admin = CodexAuthAdminService(CodexAuthAdminDependencies(
+        provider_config=SimpleNamespace(
+            resolve_for_directory=lambda _path: config,
+            resolve_for_session_id=lambda _session: config,
+        ),
+        audit=SimpleNamespace(log=lambda _event: None), runtime_dir=tmp_path,
+        session_repository=repository, client_factory=lambda **_kwargs: worker,
+    ))
+    backend = _FakeContainerBackend()
+    backend.client = worker
+    prepare = backend.prepare_session
+
+    def delete_during_preparation(**kwargs):
+        assert profile_admin.delete_profile("root", "team-a", {
+            "expected_worker_url": "http://worker.test",
+        }, actor_user_id="owner@example.test")["deleted"]
+        return prepare(**kwargs)
+
+    backend.prepare_session = delete_during_preparation
+    monkeypatch.setattr("evander.effects.providers.agent_create.container_backend", lambda *_args: backend)
+    resolver = _ContainerResolverStub(config)
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=SimpleNamespace(runtime=SimpleNamespace(
+            session_repository=repository, provider_config=resolver,
+        )),
+    )
+    provider = factory.build(AgentCreateEffectDefinition(
+        id="agent-create-binding-race", display_name="Create", type="effect:agent:create",
+        execution_backend="container_worker_vm", session_id="binding-race",
+        existing_agent_behavior="upsert", codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        subscription_profile_id="team-a",
+    ))
+    with pytest.raises(ValueError, match="no longer exists"):
+        provider.execute()
+    assert worker.deleted
+    assert repository.get_session("binding-race") == original
 
 
 def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:

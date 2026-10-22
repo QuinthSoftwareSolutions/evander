@@ -309,6 +309,9 @@ def test_broker_has_one_durable_auth_file_and_one_owner(tmp_path: Path) -> None:
             CodexAuthBroker(auth_home=tmp_path / "codex-auth", client_factory=lambda *a, **k: None)
     finally:
         broker.close()
+    broker.close()
+    with pytest.raises(CodexAuthBrokerError, match="closed"):
+        broker.start_device_login()
 
 
 def test_concurrent_stale_token_refresh_happens_once(tmp_path: Path) -> None:

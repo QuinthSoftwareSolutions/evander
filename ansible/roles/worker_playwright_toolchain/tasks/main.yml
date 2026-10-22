@@ -353,7 +353,7 @@
       - --network
       - none
       - -v
-      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0:ro"
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.22.1:ro"
       - -v
       - "{{ evander_worker_playwright_runtime_cache_path }}:/opt/evander/playwright-runtime:ro"
       - -v
@@ -362,7 +362,7 @@
       - bash
       - -lc
       - >-
-        export PATH="/opt/evander/toolchains/node-v24.14.0/bin:$PATH";
+        export PATH="/opt/evander/toolchains/node-v24.22.1/bin:$PATH";
         export EVANDER_PLAYWRIGHT_RUNTIME="/opt/evander/playwright-runtime/node_modules";
         export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME";
         export PLAYWRIGHT_BROWSERS_PATH="/opt/evander/ms-playwright";

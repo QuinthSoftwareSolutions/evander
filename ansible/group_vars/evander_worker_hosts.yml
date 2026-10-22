@@ -231,7 +231,7 @@ evander_worker_toolchain_cache_root: "{{ evander_worker_root }}/toolchain-cache"
 evander_worker_dotnet_bundle_selector: "{{ evander_worker_toolchain_cache_root }}/dotnet-current"
 evander_worker_dotnet_cache_path: "{{ evander_worker_dotnet_bundle_selector }}/sdk"
 evander_worker_dotnet_tools_cache_path: "{{ evander_worker_dotnet_bundle_selector }}/tools"
-evander_worker_node_cache_path: "{{ evander_worker_toolchain_cache_root }}/node-v24.14.0"
+evander_worker_node_cache_path: "{{ evander_worker_toolchain_cache_root }}/node-v24.22.1"
 evander_worker_playwright_runtime_cache_path: "{{ evander_worker_toolchain_cache_root }}/playwright-runtime"
 evander_worker_playwright_browsers_cache_path: "{{ evander_worker_toolchain_cache_root }}/ms-playwright"
 evander_worker_nuget_fallback_cache_path: "{{ evander_worker_toolchain_cache_root }}/nuget-cache-ro"
@@ -297,7 +297,7 @@ evander_worker_dotnet_restore_support_package_version: "6.0.0"
 # evander_worker_node_toolchain_archive_path to an existing .tar.gz when
 # deploying from a prebuilt archive instead of a local Node directory.
 evander_worker_node_toolchain_enabled: true
-evander_worker_node_version: "v24.14.0"
+evander_worker_node_version: "v24.22.1"
 evander_worker_node_toolchain_local_path: >-
   {{
     lookup('env', 'HOST_NODE_ROOT')
@@ -325,6 +325,7 @@ evander_worker_playwright_runtime_archive_path: "{{ lookup('env', 'HOST_PLAYWRIG
 evander_worker_playwright_browsers_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_BROWSERS_ARCHIVE') | default('', true) }}"
 evander_worker_playwright_runtime_remote_archive_path: "{{ evander_worker_root }}/images/playwright-runtime.tar.gz"
 evander_worker_playwright_browsers_remote_archive_path: "{{ evander_worker_root }}/images/playwright-browsers.tar.gz"
+# Keep the legacy destination backed by the patched cache for saved session profiles.
 evander_worker_readonly_mounts: >-
   {{
     ([
@@ -332,6 +333,7 @@ evander_worker_readonly_mounts: >-
       evander_worker_dotnet_tools_cache_path ~ ':/opt/evander/toolchains/dotnet-tools'
     ] if (evander_worker_dotnet_toolchain_enabled | bool) else [])
     + [
+      evander_worker_node_cache_path ~ ':/opt/evander/toolchains/node-v24.22.1',
       evander_worker_node_cache_path ~ ':/opt/evander/toolchains/node-v24.14.0',
       evander_worker_playwright_runtime_cache_path ~ ':/opt/evander/playwright-runtime',
       evander_worker_playwright_browsers_cache_path ~ ':/opt/evander/ms-playwright',

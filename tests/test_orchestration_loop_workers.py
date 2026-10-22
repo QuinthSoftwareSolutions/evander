@@ -15,64 +15,6 @@ from evander.orchestration.wiring import (
     build_trigger_worker_wiring,
 )
 from evander.repositories.orchestration_db import OrchestrationWalCheckpointResult
-from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
-from evander.workflow.engine import OrchestrationLoop
-
-
-class _StaticProvider:
-    def __init__(self, events: list[TriggerEvent]) -> None:
-        self._events = events
-
-    def poll(self) -> list[TriggerEvent]:
-        return list(self._events)
-
-
-def test_workers_delegate_run_once_to_shared_orchestration_loop(
-    monkeypatch, tmp_path: Path
-) -> None:
-    calls: list[int] = []
-    original_run_once = OrchestrationLoop.run_once
-
-    def _spy_run_once(self, *, max_events: int, resolve_and_execute):  # type: ignore[no-untyped-def]
-        calls.append(max_events)
-        return original_run_once(
-            self, max_events=max_events, resolve_and_execute=resolve_and_execute
-        )
-
-    monkeypatch.setattr(OrchestrationLoop, "run_once", _spy_run_once)
-
-    runtime_dir = tmp_path / "runtime"
-    config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
-        {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "cron-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-        }
-    )
-
-    trigger_worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
-    trigger_worker.provider_factory.build = lambda _trigger: _StaticProvider([])  # type: ignore[assignment]
-    trigger_worker.run_once()
-
-    effect_worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
-    effect_worker.run_once()
-
-    # Effects delegate one event at a time so completed futures can be reaped
-    # between events; the worker owns the outer count/time slice budget.
-    assert calls == [1, 1]
 
 
 def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:

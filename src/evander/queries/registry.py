@@ -25,10 +25,15 @@ DEFAULT_QUERY_PROVIDER_REGISTRY: dict[QueryType, QueryProviderClass] = dict(QUER
 
 
 class QueryProviderRegistry:
-    def __init__(self, initial: Mapping[QueryType, QueryProviderClass] | None = None) -> None:
-        self._providers: dict[QueryType, QueryProviderClass] = dict(
-            initial or DEFAULT_QUERY_PROVIDER_REGISTRY
-        )
+    def __init__(
+        self,
+        initial: Mapping[QueryType, QueryProviderClass] | None = None,
+        *,
+        defaults_when_empty: bool = True,
+    ) -> None:
+        if initial is None or (defaults_when_empty and not initial):
+            initial = DEFAULT_QUERY_PROVIDER_REGISTRY
+        self._providers: dict[QueryType, QueryProviderClass] = dict(initial)
 
     def register(self, query_type: QueryType, provider_class: QueryProviderClass) -> None:
         self._providers[query_type] = provider_class

@@ -1911,6 +1911,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         record: Any,
         session: Any | None,
     ) -> str | None:
+        if getattr(record, "resume_mode", None) == "new_context":
+            return None
         explicit = self._usable_resume_thread_id(getattr(record, "resume_thread_id", None))
         if explicit:
             return explicit

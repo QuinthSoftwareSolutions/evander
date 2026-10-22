@@ -745,6 +745,22 @@ Troubleshooting:
   still valid; otherwise record the orphaned artifact-space ref and remove or
   quarantine the published files according to the deployment's artifact
   retention policy.
+- **Committed work after a task specification edit** — preparation preserves
+  compatible retained commits in a fresh checkout and records `retained_work`
+  on its Git context and server-owned preparation attempt. This provenance
+  identifies resumed, unreviewed work; the immutable base, author history and
+  acceptance/release gates remain in force. A retry uses the selected commit
+  even if the old branch subsequently advances. Returning to an earlier
+  specification allocates a new activation and receipt, preserving its newer
+  compatible commits; ordinary resumes and interrupted retries reuse that
+  activation. Final wake prompts include only its source context, commit, tree
+  and original root; full provenance remains on the durable context. Both
+  existing worker backends
+  use their normal preparation and session execution paths; no new worker API
+  or agent tool is required. Dirty work, divergent retained branches, missing
+  provenance, changed owners/repositories/directories or incompatible dependency
+  pins stop preparation with a concrete recovery incident. Preserve the old
+  checkout and use the existing Git recovery path to resolve that prerequisite.
 - **Evidence trapped behind a task blocker** — the owner can use the existing
   `team_submit_deliverable` with `evidence_only=true`, retained `artifact_paths`,
   and a failed or incomplete `verification.status`. A matching task-specific
@@ -940,6 +956,23 @@ seven-day rate-limit window; it shows "Unavailable" when no seven-day window is 
 It also shows banked resets and the provider-reported credit balance. Credits show "Unlimited"
 when reported, "0" when the provider explicitly reports no credits, and "Unavailable" when a
 balance is missing or invalid. These credits are separate from earned rate-limit resets.
+
+Use **Delete** to remove an unused profile and its worker-held login. Deletion requires the same
+unlocked root-owner permission, checks that the worker selection is unchanged, and refuses active
+jobs, queued prompts, or unexpired session bindings across directories on that worker. Reassign or
+remove bound sessions and drain or cancel pending work first. Deletion retains recorded usage
+history and does not cancel the provider's paid subscription. Empty workers no longer create a
+Default profile; existing legacy singleton logins are migrated only before the registry exists,
+so a deleted profile stays deleted after restart.
+
+The Admin API is `DELETE /api/admin/codex-subscriptions/{profile_id}?directory_path=root`
+with JSON body `{"expected_worker_url":"http://worker.example.test:11888"}`. The worker API is
+`DELETE /v1/codex-auth/profiles/{profile_id}` and requires its bearer token. Both deletions are
+idempotent. Upgrade the worker before enabling the Admin Web deletion action.
+Deletion and the final validation/save of a subscription session share a per-profile lock across
+control-plane processes. If deletion wins while worker preparation is running, creation fails
+without saving a binding to the removed profile. Profile reassignment and expired-session renewal
+use the same check; updates retaining an existing unexpired binding can still use a disabled profile.
 
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
@@ -1472,7 +1505,7 @@ timings, available at DEBUG, that help distinguish workflow persistence from pro
 
 ## VM Playwright Bootstrap
 
-- `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.22.1`.
 - It copies `playwright` and `playwright-core` into `~/playwright-runtime/node_modules`.
 - It copies the host Playwright browser cache into `~/.cache/ms-playwright`.
 - It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, `NODE_PATH`, `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, `PLAYWRIGHT_MCP_SANDBOX`, and `PLAYWRIGHT_MCP_EXECUTABLE_PATH` setup to `~/.profile`.
@@ -1481,7 +1514,7 @@ timings, available at DEBUG, that help distinguish workflow persistence from pro
 
 ## VM Frontend Dependency Bootstrap
 
-- `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.22.1`.
 - It snapshots each selected install root under `~/frontend-deps-runtime/install-roots/<relative-path>`.
 - Each install root must already contain `package.json` and `node_modules` on the host.
 - `bootstrap-frontend-in-vm` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.

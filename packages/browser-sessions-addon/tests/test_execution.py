@@ -970,7 +970,7 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
                 200, json=original(base, token).call(request.method, request.url.path, payload)
             )
 
-        return HttpPeer(base, "BROWSER_TEST_TOKEN", transport=httpx.MockTransport(relay))
+        return HttpPeer(base, token, transport=httpx.MockTransport(relay))
 
     e.service.peer_factory = peer
     result = e.run()

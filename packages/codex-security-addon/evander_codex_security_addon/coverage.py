@@ -148,6 +148,7 @@ def make_state(
         "proofs": [],
         "uncredited": [],
         "deferred": {},
+        "open_questions": {},
         "architecture": None,
         "boundary_planned": False,
         "files": {
@@ -184,6 +185,7 @@ def make_state(
             }
         )
         state["lineage"] = [*previous["lineage"], previous["scan_id"]]
+        state["open_questions"] = deepcopy(previous.get("open_questions", {}))
         for item in state["tasks"].values():
             if item["status"] in {"running", "blocked"}:
                 item["status"] = "pending"
@@ -226,7 +228,8 @@ def retention_anchor(state):
 
 def complete(state):
     return (
-        state.get("architecture") is not None
+        not state.get("migration_error")
+        and state.get("architecture") is not None
         and state["boundary_planned"]
         and all(x["disposition"] in {"reviewed", "not_applicable"} for x in state["files"].values())
         and all(x["status"] in {"completed", "split"} for x in state["tasks"].values())
@@ -290,6 +293,14 @@ def begin(state, item, *, at=None):
     return attempt
 
 
+def record_open_questions(state, questions, proof):
+    """Retain native advisory questions with their immutable source receipt."""
+    recorded = state.setdefault("open_questions", {})
+    for question in questions:
+        key = proof["provider_scan_id"] + ":question:" + digest(question)[:24]
+        recorded.setdefault(key, {**deepcopy(question), "receipt": proof["archive_key"]})
+
+
 def accept(state, item, attempt_id, receipt, proof, *, at=None):
     """Fence late completions and bind every accepted result to its input scope."""
     at = at or now()
@@ -310,17 +321,15 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
         state["deferred"].setdefault(key, {**deepcopy(deferred), "resolution": None})
         if item["kind"] == "boundary" and key not in item["deferred_keys"]:
             item["deferred_keys"].append(key)
-    for question in receipt.get("open_questions", []):
-        key = proof["provider_scan_id"] + ":question:" + digest(question)[:24]
-        state["deferred"].setdefault(key, {"reason": question["question"], "resolution": None})
-        if item["kind"] == "boundary" and key not in item["deferred_keys"]:
-            item["deferred_keys"].append(key)
+    # The native schema permits openQuestions on a complete static review.
+    # Required work is expressed by partial coverage, deferred work or follow-up
+    # surfaces; advisory limitations must not create new review obligations.
+    record_open_questions(state, receipt.get("open_questions", []), proof)
     closed = (
         receipt.get("coverage") == "complete"
         and not receipt.get("deferred")
         and not receipt.get("exclusions")
         and not receipt.get("needs_follow_up")
-        and not receipt.get("open_questions")
     )
     if item["kind"] == "architecture":
         architecture = receipt.get("architecture")
@@ -492,6 +501,13 @@ def aggregate(state):
                 "finding_id": finding["findingId"],
                 "occurrence_id": finding.get("occurrenceId"),
             }
+            if proof.get("source_projection"):
+                # Preserve native locations/line numbers while making their
+                # derived review revision visible to downstream summarizers.
+                source["source_projection"] = {
+                    k: proof["source_projection"][k]
+                    for k in ("source_revision", "revision", "paths")
+                }
             if source not in record["sources"]:
                 record["sources"].append(source)
     counts = dict.fromkeys(SEVERITIES, 0)

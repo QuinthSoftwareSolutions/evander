@@ -16,7 +16,7 @@ from evander.gateway.communication_artifact_helpers import CommunicationArtifact
 from evander.gateway.communication_attachment_helpers import CommunicationAttachmentHelpers
 from evander.gateway.dependencies import GatewayToolDependencies, _compat_gateway_attr
 from evander.gateway.tool_audit import (
-    _mark_tool_call_audited,
+    _record_tool_call_audit,
     _tool_call_audit_fields,
 )
 from evander.inline_media import (
@@ -914,7 +914,8 @@ class InlineMediaHelpers:
             if event_type == "inline_media_list"
             else ToolName.DOWNLOAD_INLINE_MEDIA
         )
-        self.context.audit.log(
+        _record_tool_call_audit(
+            self.context.audit.log,
             AuditEvent(
                 event_type=event_type,
                 session_id=session_id,
@@ -943,4 +944,3 @@ class InlineMediaHelpers:
                 },
             )
         )
-        _mark_tool_call_audited()

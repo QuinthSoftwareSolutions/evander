@@ -11,6 +11,34 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 
 
+def _local_agent_python_transport(monkeypatch, agent_home: Path | dict[str, Path]) -> None:
+    """Run actual preparation Python while simulating the guest path mount."""
+    import json
+    import subprocess
+    import sys
+
+    from evander.effects.providers.agent_exec import AgentExecEffectProvider
+
+    def execute(self, **_kwargs):
+        effect = self._effect()
+        home = agent_home[effect.session_id] if isinstance(agent_home, dict) else agent_home
+        payload = json.dumps(json.loads(effect.command[-1])).replace("/home/agent", str(home))
+        completed = subprocess.run(
+            [sys.executable, "-c", effect.command[2], effect.command[3], payload],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        return {
+            "stdout": completed.stdout.replace(str(home), "/home/agent"),
+            "stderr": completed.stderr,
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", execute)
+
+
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
     return TeamAdminService(repo)
 

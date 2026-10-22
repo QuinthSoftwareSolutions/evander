@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 import time
 
 from evander.gateway.request_context import _first_string_in_payload
-from evander.models import McpToolName, ToolName, tool_name_value
+from evander.models import AuditEvent, McpToolName, ToolName, tool_name_value
 
 
 @dataclass(slots=True)
@@ -49,6 +50,16 @@ def _mark_tool_call_audited() -> None:
     current = _tool_call_context()
     if current is not None:
         current.audit_emitted = True
+
+
+def _record_tool_call_audit(log: Callable[[AuditEvent], None], event: AuditEvent) -> None:
+    """Emit immediately and suppress a duplicate generic dispatch audit.
+
+    Tool summaries and supplemental domain records keep their original write
+    timing, including direct in-process calls and audit-storage error handling.
+    """
+    log(event)
+    _mark_tool_call_audited()
 
 
 def _tool_call_arguments_dict(arguments: Any) -> dict[str, Any]:

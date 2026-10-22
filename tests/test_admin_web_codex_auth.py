@@ -15,6 +15,7 @@ from evander.admin.services.codex_auth_admin_service import (
 from evander.admin.web import codex_auth as codex_auth_module
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.models import SessionManifest
 
 
 class FakeAuth:
@@ -41,6 +42,7 @@ class FakeAuth:
 class FakeWorkerClient:
     def __init__(self) -> None:
         self.reset_requests: list[tuple[str, dict[str, object]]] = []
+        self.deleted_profiles: list[str] = []
 
     def codex_auth_status(self) -> dict[str, object]:
         return {"signed_in": False, "email": None}
@@ -100,6 +102,10 @@ class FakeWorkerClient:
     def logout_codex_auth_profile(self, profile_id: str) -> dict[str, object]:
         return {"profile_id": profile_id, "signed_in": False}
 
+    def delete_codex_auth_profile(self, profile_id: str) -> dict[str, object]:
+        self.deleted_profiles.append(profile_id)
+        return {"profile_id": profile_id, "deleted": True}
+
     def consume_codex_profile_reset_credit(self, profile_id, payload):
         self.reset_requests.append((profile_id, payload))
         return {
@@ -121,6 +127,7 @@ def _service(
     runtime_dir: Path | None = None,
     worker_url: str = "http://worker.test",
     session_worker_urls: dict[str, str] | None = None,
+    sessions: list[SessionManifest] | None = None,
 ) -> SimpleNamespace:
     audit_events: list[object] = []
     session_urls = dict(session_worker_urls or {})
@@ -151,6 +158,9 @@ def _service(
                 runtime_dir=runtime_dir,
                 wake_reconciliation=wake_reconciliation,
                 client_factory=lambda **_kwargs: worker or FakeWorkerClient(),
+                session_repository=SimpleNamespace(
+                    read_all=lambda: {s.session_id: s for s in (sessions or [])}
+                ),
             )
         ),
         audit_events=audit_events,
@@ -202,6 +212,81 @@ def test_admin_codex_auth_requires_privileged_unlock() -> None:
 
     assert response.status_code == 403
     assert response.json() == {"error": "Privileged operations are locked."}
+
+
+def test_delete_profile_requires_unlock_expected_worker_and_audits_success(tmp_path: Path) -> None:
+    worker = FakeWorkerClient()
+    auth = FakeAuth(privileged=False)
+    service = _service(worker, runtime_dir=tmp_path)
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, auth))
+    path = "/api/admin/codex-subscriptions/team-a?directory_path=engineering"
+    with TestClient(app) as client:
+        assert client.request("DELETE", path, json={"expected_worker_url": "http://worker.test"}).status_code == 403
+        auth.privileged = True
+        assert client.request("DELETE", path, json={}).status_code == 400
+        assert client.request("DELETE", path, json={"expected_worker_url": "http://changed.test"}).status_code == 409
+        assert worker.deleted_profiles == []
+        deleted = client.request("DELETE", path, json={"expected_worker_url": "http://worker.test/"})
+    assert deleted.status_code == 200
+    assert worker.deleted_profiles == ["team-a"]
+    assert service.audit_events[-1].event_type == "codex_subscription_profile_delete"
+    assert service.audit_events[-1].decision == "allowed"
+    assert all(check == ("admin.owner", "root") for check in auth.permission_checks)
+
+
+@pytest.mark.parametrize("expired,other_worker,legacy", [
+    (False, False, False), (False, False, True), (True, False, False), (False, True, False),
+])
+def test_delete_profile_guards_unexpired_bindings_across_directories(
+    tmp_path: Path, expired: bool, other_worker: bool, legacy: bool,
+) -> None:
+    profile_id = "default" if legacy else "team-a"
+    session = SessionManifest(
+        session_id="bound", vm_id="vm-bound", directory_path="root/another-directory",
+        allowed_tools=[], codex_auth_mode="chatgpt_subscription",
+        subscription_profile_id=None if legacy else profile_id,
+        expires_at=datetime.now(UTC) + timedelta(days=-1 if expired else 1),
+    )
+    worker = FakeWorkerClient()
+    service = _service(worker, runtime_dir=tmp_path, sessions=[session], session_worker_urls={
+        "bound": "http://another-worker.test" if other_worker else "http://worker.test",
+    })
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
+    with TestClient(app) as client:
+        response = client.request("DELETE", f"/api/admin/codex-subscriptions/{profile_id}",
+                                  json={"expected_worker_url": "http://worker.test"})
+    blocked = not expired and not other_worker
+    assert response.status_code == (409 if blocked else 200)
+    assert worker.deleted_profiles == ([] if blocked else [profile_id])
+
+
+def test_delete_profile_refuses_queued_work_and_worker_active_job_conflicts(tmp_path: Path) -> None:
+    worker = FakeWorkerClient()
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue.put(QueuedAgentPromptRecord(
+        queue_key="queued", target="vm-a", vm_name="vm-a", session_id="queued",
+        prompt="Continue", effect_id="effect-queued", subscription_profile_id="team-a",
+    ))
+    service = _service(worker, runtime_dir=tmp_path)
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
+    with TestClient(app) as client:
+        response = client.request("DELETE", "/api/admin/codex-subscriptions/team-a",
+                                  json={"expected_worker_url": "http://worker.test"})
+    assert response.status_code == 409
+    assert worker.deleted_profiles == []
+
+    def active(_profile_id):
+        raise ContainerWorkerClientError("active jobs", status_code=409)
+    worker.delete_codex_auth_profile = active
+    queue.store.delete("queued")
+    service = _service(worker, runtime_dir=tmp_path)
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
+    with TestClient(app) as client:
+        response = client.request("DELETE", "/api/admin/codex-subscriptions/team-a",
+                                  json={"expected_worker_url": "http://worker.test"})
+    assert response.status_code == 409
+    assert "active jobs" in response.json()["error"]
+    assert service.audit_events[-1].decision == "error"
 
 
 def test_admin_subscription_profile_reads_do_not_require_privileged_unlock() -> None:

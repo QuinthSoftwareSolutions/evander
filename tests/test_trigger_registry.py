@@ -79,6 +79,13 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
     }
 
 
+def test_empty_registry_preserves_legacy_defaults_unless_catalog_is_explicit() -> None:
+    assert TriggerProviderRegistry(initial={}).registered_types() == tuple(
+        DEFAULT_TRIGGER_PROVIDER_REGISTRY
+    )
+    assert TriggerProviderRegistry(initial={}, defaults_when_empty=False).registered_types() == ()
+
+
 def test_factory_initializes_provider_with_runtime_context() -> None:
     trigger = CronTriggerDefinition(
         id="cron-1",

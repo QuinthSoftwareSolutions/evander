@@ -1,3 +1,4 @@
+import type { InspectorDraftController } from "./useInspectorDraft";
 import { type Dispatch, type SetStateAction } from "react";
 import { type WorkflowEditorFieldDefinition, type WorkflowNodeConfig } from "../../types";
 import { workflowJsonFieldFallbackValue } from "../../workflowFieldDefaults";
@@ -16,13 +17,7 @@ import {
   EFFECT_TARGET_KEYS,
   SESSION_LIST_METADATA_FIELD_KEYS,
 } from "./editorConstants";
-import {
-  type EffectTargetKey,
-  type InspectorDraftSnapshot,
-  type JsonDisplayMode,
-  type SessionListMetadataRuleDraftRow,
-  type StringMapDraftRow,
-} from "./editorTypes";
+import { type EffectTargetKey, type InspectorDraftSnapshot, type JsonDisplayMode, type SessionListMetadataRuleDraftRow } from "./editorTypes";
 import { isRecord } from "./editorValues";
 import {
   createStringMapDraftRow,
@@ -38,77 +33,62 @@ import {
 } from "./fieldModels";
 
 type NodeFieldActionsInputs = {
+  inspector: InspectorDraftController;
   selectedNode: WorkflowNodeConfig | undefined;
-  inspectorKnownValues: Record<string, unknown>;
-  setInspectorKnownValues: Dispatch<SetStateAction<Record<string, unknown>>>;
   stageInspectorDraft: (nextDraft?: Partial<InspectorDraftSnapshot>) => void;
-  inspectorJsonDrafts: Record<string, string>;
-  setInspectorJsonDrafts: Dispatch<SetStateAction<Record<string, string>>>;
   tutorialCurrentRequiredAction: () => WorkflowTutorialRequiredAction | null;
   isTutorialMode: boolean;
   completeTutorialAction: (action: WorkflowTutorialRequiredAction) => boolean;
-  inspectorUnknownValues: Record<string, unknown>;
-  setInspectorUnknownValues: Dispatch<SetStateAction<Record<string, unknown>>>;
-  inspectorStringListDrafts: Record<string, string>;
-  setInspectorStringListDrafts: Dispatch<SetStateAction<Record<string, string>>>;
-  inspectorToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
-  setInspectorToolArgumentPolicyDrafts: Dispatch<SetStateAction<Record<string, ToolArgumentPolicyDraftRow[]>>>;
-  inspectorJsonDisplayModes: Record<string, JsonDisplayMode>;
-  setInspectorJsonDisplayModes: Dispatch<SetStateAction<Record<string, JsonDisplayMode>>>;
-  setInspectorDraftError: Dispatch<SetStateAction<string | null>>;
   setError: Dispatch<SetStateAction<string | null>>;
-  setInspectorFieldModes: Dispatch<SetStateAction<Record<string, "literal" | "bind" | "template">>>;
   selectedNodeBindingOptions: import("../../workflowNodeOutputs").WorkflowBindingOption[];
   setCopiedBindingExpression: Dispatch<SetStateAction<string | null>>;
   setOutputCopyError: Dispatch<SetStateAction<string | null>>;
   effectTargetKey: "target" | "session_id" | "vm_name";
-  inspectorFieldModes: Record<string, "literal" | "bind" | "template">;
   effectTargetField: WorkflowEditorFieldDefinition | undefined;
-  setInspectorEffectTargetKey: Dispatch<SetStateAction<"target" | "session_id" | "vm_name">>;
   workflowMutationLocked: boolean;
-  inspectorStringMapDrafts: Record<string, StringMapDraftRow[]>;
-  setInspectorStringMapDrafts: Dispatch<SetStateAction<Record<string, StringMapDraftRow[]>>>;
-  setInspectorSessionListMetadataRules: Dispatch<SetStateAction<SessionListMetadataRuleDraftRow[]>>;
-  setInspectorSessionListMetadataRawMode: Dispatch<SetStateAction<boolean>>;
-  inspectorSessionListMetadataRules: SessionListMetadataRuleDraftRow[];
 };
 
 /** Binds node field actions to the current render state. */
 export function createNodeFieldActions({
+  inspector,
   selectedNode,
-  inspectorKnownValues,
-  setInspectorKnownValues,
   stageInspectorDraft,
-  inspectorJsonDrafts,
-  setInspectorJsonDrafts,
   tutorialCurrentRequiredAction,
   isTutorialMode,
   completeTutorialAction,
-  inspectorUnknownValues,
-  setInspectorUnknownValues,
-  inspectorStringListDrafts,
-  setInspectorStringListDrafts,
-  inspectorToolArgumentPolicyDrafts,
-  setInspectorToolArgumentPolicyDrafts,
-  inspectorJsonDisplayModes,
-  setInspectorJsonDisplayModes,
-  setInspectorDraftError,
   setError,
-  setInspectorFieldModes,
   selectedNodeBindingOptions,
   setCopiedBindingExpression,
   setOutputCopyError,
   effectTargetKey,
-  inspectorFieldModes,
   effectTargetField,
-  setInspectorEffectTargetKey,
   workflowMutationLocked,
-  inspectorStringMapDrafts,
-  setInspectorStringMapDrafts,
-  setInspectorSessionListMetadataRules,
-  setInspectorSessionListMetadataRawMode,
-  inspectorSessionListMetadataRules,
 }: NodeFieldActionsInputs) {
+  const {
+    inspectorKnownValues,
+    inspectorUnknownValues,
+    inspectorJsonDrafts,
+    inspectorToolArgumentPolicyDrafts,
+    inspectorJsonDisplayModes,
+    inspectorStringListDrafts,
+    inspectorStringMapDrafts,
+    inspectorSessionListMetadataRules,
+    inspectorFieldModes,
+  } = inspector.state;
+  const {
+    setInspectorKnownValues,
+    setInspectorUnknownValues,
+    setInspectorJsonDrafts,
+    setInspectorToolArgumentPolicyDrafts,
+    setInspectorJsonDisplayModes,
+    setInspectorStringListDrafts,
+    setInspectorStringMapDrafts,
+    setInspectorSessionListMetadataRules,
+    setInspectorSessionListMetadataRawMode,
+    setInspectorFieldModes,
+    setInspectorEffectTargetKey,
+    setInspectorDraftError,
+  } = inspector.setters;
   function updateSelectedTriggerEnabled(nextEnabled: boolean) {
     if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return;
     const next = { ...inspectorKnownValues, enabled: workflowTriggerEnabledValue(nextEnabled) };

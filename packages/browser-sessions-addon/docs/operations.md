@@ -6,7 +6,7 @@ Read the [coordinated split migration](../../application-environments-addon/docs
 2. Enable browser-sessions-addon through the loader; restart gateway, Admin Web and both orchestrators through normal deployment. When deploying a wheel separately from the core checkout, select evander_browser_sessions_addon in both host and trigger-orchestrator addon_loader.modules so package-directory discovery does not keep using the checkout copy. Use the configuration APIs and their lock/revision checks. Verify the loaded source and exercise creation/invitation through the actual MCP endpoint.
 3. Require Admin sign-in, configure public HTTPS, and assign directory browser permissions.
 4. Install the opt-in deploy/ units. The core installer does not install optional daemons.
-5. Store distinct relay/worker tokens in root-readable env files. Relay uses EVANDER_BROWSER_RELAY_TOKEN; worker references must agree in both settings copies.
+5. Provision distinct relay/worker receiver tokens in protected service configuration, initialize the platform credential store, and follow [managed browser credentials](credentials.md). Owners store matching sender credentials through the browser settings page; directory settings contain only managed references. Deliver `evander-credentials-key` to the relay through its systemd credential import and grant the service account access to the encrypted runtime store.
 6. Seed approved browser images, Node and Playwright/Chromium through existing provisioning. Browser sessions never pull images or receive general internet.
 7. Configure identical browser profiles in Admin Shared Browsers and worker JSON. The local copy stays an independent operator authority.
 8. Route public paths with deploy/Caddyfile.fragment. Managed Admin Web Caddy deployments discover /etc/evander/browser-relay.env and retain the relay route. Override evander_admin_web_browser_relay_enabled to force it on or off; the relay upstream defaults to 127.0.0.1:11890. Permit control-plane traffic to the private supervisor, default 11891. Keep 11890 and /internal/* private.
@@ -23,7 +23,7 @@ Build examples/Dockerfile.browser after npm run build using a preseeded runner b
 
 ## Configuration and recovery
 
-The guided form offers workers/profiles plus Advanced JSON for unusual cache settings. Saves use revisions. Children inherit until a complete override is saved. Active cleanup stays pinned to original placement.
+The guided form offers workers/profiles plus Advanced JSON for unusual cache settings. Saves use revisions. Children inherit until a complete override is saved. Active cleanup stays pinned to original placement. Connection changes and credential provisioning require directory-owner access and unlocked privileged operations. Changes in a child do not authorize reuse of a parent credential for another destination.
 
 Disabling sharing rejects new actions and closes resources during reconciliation. Keep daemons available until release. Removing optional registration does not erase core dependencies; unavailable cleanup blocks checkout deletion.
 

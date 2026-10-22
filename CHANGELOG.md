@@ -1,11 +1,83 @@
 # Changelog
 
-## 2026-10-22 - Decompose control-plane orchestration (0.117.5)
+## 2026-10-22 - Decompose control-plane orchestration (0.120.4)
 
 - Separate worker reference checkout, task worktree preparation, and dependency composition into per-invocation stages while retaining Git validation, recovery, locking, and persistence order.
 - Give workflow binding resolution, active-run snapshots, and graph activity reporting explicit invocation state and focused stages, preserving reference traces, report projections, and SQLite read budgets.
 - Separate Team blocker updates, task cancellation, and dispatch activity finalization into ordered applications inside their existing command and repository transactions.
 - Extract relay HTTP routing and provider request preparation, and share Azure/OpenAI-compatible forwarding while preserving request policy, streaming, steering delivery and retry, and usage accounting.
+
+## 2026-10-22 - Simplify control-plane ownership boundaries (0.120.3)
+
+- Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
+- Run workflow workers directly, distinguish empty provider catalogs from omitted defaults, and centralize managed tool audit emission while preserving summaries, cancellation handling, durable ordering, and legacy Team action compatibility.
+- Consolidate workflow inspector draft state and split pricing and Teams authentication out of the configuration screen, preserving incomplete drafts, revision checks, and navigation behavior.
+
+## 2026-10-22 - Update vulnerable dependencies and toolchains (0.120.2)
+
+- Raise Python runtime, development and build dependency security floors across the core and independent add-ons, and refresh the Python and affected npm lockfiles.
+- Update Node to 24.22.1, the code-index .NET SDK to 10.0.113, Nexus to 3.97.1 and Qdrant to 1.19.2 across deployment defaults, bootstrap paths and toolchain metadata.
+- Preserve existing container session Node paths and guest profile upgrades and make Nexus mandatory telemetry acknowledgement an explicit operator setting.
+- Synchronize the hosted tab-viewing regression with the live tab picker before waiting for selection responses.
+
+## 2026-10-22 - Allow clean task ownership handoffs (0.120.1)
+
+- Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
+- Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+- Give existing checkout-preparation blockers one corrected retry after deployment without changing checkout identities, accepted recoveries or composition-conflict bindings. Suppress a persistent failure again after that attempt.
+
+## 2026-10-22 - Configure persistent reasoning controls in workflows (0.120.0)
+
+- Add a directory-scoped workflow effect for setting or clearing an existing session's native reasoning default, using the existing provider/model validation and preserving running turns and other session settings.
+- Expose the saved default in session-context queries and publish the node in the workflow editor, so operator-owned chat commands can override automatic routing until explicitly reset without hard-coded command syntax.
+
+## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
+
+- Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
+- Publish Browser Sessions 0.9.4 with the corrected hosted controller and regression coverage for tab viewing and control handover.
+
+## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
+
+- Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.
+- Refresh queue-recovery fixtures with standard message metadata so batching and recovery during VM inventory failures reach their existing assertions.
+
+## 2026-10-22 - Preserve correction sources beside planning evidence (0.118.2)
+
+- Require a deliverable's own Git provenance before automatically including it as replacement or additional code for a rejected release. An inherited checkout base on artifact-only planning evidence no longer displaces the accepted coding correction or adds the plan back into its release.
+- Preserve immutable review and release validation for partial Git claims and real code recoveries, including those marked as not planned for an initial release.
+
+## 2026-10-22 - Bind shared-browser credentials to approved connections (0.118.1)
+
+- Replace directory-editable environment credential selectors with encrypted platform-managed references bound to the complete worker, relay or speech destination and directory scope. Require owner access and unlocked privileges for connection or credential changes, while preserving ordinary browser management and agent tools.
+- Resolve authorization before each HTTP, WebSocket, speech and cleanup request. Retain original session placement and reject legacy credential-bearing snapshots until explicitly migrated.
+- Add a reviewed, maintenance-only migration with protected recovery backups for settings, saved connections and cleanup callbacks. Publish Browser Sessions 0.9.3 with owner-only credential controls and relay key delivery; Chrome extension and native helper versions are unchanged.
+
+## 2026-10-22 - Delete unused subscription profiles (0.118.0)
+
+- Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.
+- Stop creating an empty Default profile on worker startup. Preserve existing legacy logins, allow their profile to be deleted, and retain other profiles and recorded usage history.
+- Normalize worker deletion IDs before checking active jobs, and coordinate deletion with new, reassigned, or renewed session bindings across control-plane processes. Revalidate profiles before saving a new live binding.
+
+## 2026-10-22 - Preserve symlink identity in tracked security reviews (0.117.8)
+
+- Review assigned symlinks through deterministic Git metadata projections so the pinned SDK can assess internal, broken, external, cyclic and directory links without following their destinations.
+- Independently verify the projected revision and original link objects before granting coverage; retain explicit dispositions, immutable native reports and projection provenance across interruption and resume.
+- Package the projection runtime in scanner images and include it in cache invalidation.
+
+## 2026-10-22 - Preserve committed task work across preparation changes (0.117.7)
+
+- Carry clean, compatible committed work into a fresh task checkout after instruction changes. Verify the task owner, session, repository, directory, original base and exact dependency pins; retain commit authorship and normal acceptance and release gates.
+- Persist the selected source before transferring it, seal the restored HEAD in the normal preparation receipt, and expose its unreviewed provenance in the fresh Git context. Preserve dirty, divergent, missing or incompatible work for explicit recovery, and reuse the exact selected commit after interruption.
+- Give reactivated specifications a fresh, stable preparation identity so returning to earlier instructions retains newer compatible work without changing old receipts. Carry only compact restored-work provenance into final wake prompts, trim repeated guidance, guard prompt-size budgets, and refresh installed guidance for existing sessions.
+
+## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
+
+- Stop safely if older coverage evidence is missing or corrupt: prevent further reviews, continue worker cleanup, and hold the repository reservation until cleanup is confirmed. Report the archive as unavailable without publishing unverifiable evidence, and retain the failure details in private host logs.
+
+## 2026-10-22 - Keep advisory security questions separate from unfinished review (0.117.5)
+
+- Accept complete, sealed static security reviews that contain advisory open questions while continuing to require exact scope, revision, file dispositions and resolution of genuine deferred work. Retain the questions and their source receipts in aggregate reports and coverage ledgers.
+- Repair question-derived blockers in active or resumed legacy coverage journals using verified preserved reports. Preserve ambiguous and genuinely deferred work, existing file credit, original deadlines and immutable reports from earlier runs.
 
 ## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.117.4)
 

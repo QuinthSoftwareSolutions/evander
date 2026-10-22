@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import os
 import base64
 import json
 from pathlib import Path
@@ -24,11 +23,13 @@ from .models import (
     CreateRequest,
     MessageRequest,
     Session,
+    WorkerConnection,
     TERMINAL,
     origin,
 )
 from .protocol import authorize_command
 from .state import Store, digest
+from .credentials import Credentials
 
 
 @dataclass(frozen=True)
@@ -233,11 +234,11 @@ ACTION_CONFLICTS = {
 
 
 class HttpPeer:
-    def __init__(self, base_url, token_env, *, transport=None):
-        self.base_url, self.token_env, self.transport = base_url.rstrip("/"), token_env, transport
+    def __init__(self, base_url, token, *, transport=None):
+        self.base_url, self._token, self.transport = base_url.rstrip("/"), token, transport
 
     def call(self, method, path, payload=None, *, timeout=30):
-        token = os.environ.get(self.token_env)
+        token = self._token() if callable(self._token) else self._token
         if not token:
             raise BrowserError(
                 "Browser service credentials are unavailable", "peer_unavailable", 503
@@ -290,7 +291,33 @@ class Service:
         self.store = store or Store(runtime_dir, now=now)
         self.bindings = bindings or Bindings(runtime_dir, service)
         self.peer_factory, self.now = peer_factory, now
-        self.dependencies = SessionDependencies(runtime_dir)
+        self.credentials = Credentials(runtime_dir)
+        self.dependencies = SessionDependencies(runtime_dir, credential_store=self.credentials.store)
+
+    def worker_peer(self, session, connection):
+        connection = WorkerConnection.model_validate(connection)
+        self.credentials.reference(
+            session.directory, "worker", connection.base_url, connection.credential_ref,
+            worker_id=session.worker_id, connection=connection,
+        )
+        return self.peer_factory(connection.base_url, lambda: self.credentials.token(
+            session.directory, "worker", connection.base_url, connection.credential_ref,
+            worker_id=session.worker_id, connection=connection,
+        ))
+
+    def relay_connection(self, session):
+        private = self.store.private(session.id)
+        if "relay_token_env" in private:
+            raise BrowserError("Legacy browser connections require credential migration", "credential_unavailable", 409)
+        if "relay_url" in private:
+            return private["relay_url"], private.get("relay_credential_ref")
+        settings = self.store.settings(session.directory)[1]
+        return settings.relay_url, settings.relay_credential_ref
+
+    def relay_peer(self, session):
+        base, ref = self.relay_connection(session)
+        self.credentials.reference(session.directory, "relay", base, ref)
+        return self.peer_factory(base, lambda: self.credentials.token(session.directory, "relay", base, ref))
 
     def settings(self, directory, *, required=True):
         revision, settings = self.store.settings(directory)
@@ -435,6 +462,14 @@ class Service:
         native_thread_id, conversation = (
             capture(parent) if callable(capture) else (parent.native_thread_id, {})
         )
+        self.credentials.reference(
+            parent.directory, "relay", settings.relay_url, settings.relay_credential_ref
+        )
+        if connection is not None:
+            self.credentials.reference(
+                parent.directory, "worker", connection.base_url, connection.credential_ref,
+                worker_id=worker_id, connection=connection,
+            )
         now = self.now()
         session = Session(
             id="browser-" + secrets.token_hex(12),
@@ -462,29 +497,21 @@ class Service:
         )
         if not created:
             return self.receipt(session)
-        if request.mode == "user_hosted":
-            self.dependencies.register(
-                agent_session_id,
-                session.id,
-                settings.relay_url + "/internal/sessions/" + session.id + "/close",
-                settings.relay_token_env,
-            )
+        private = {
+            "relay_url": settings.relay_url,
+            "relay_credential_ref": settings.relay_credential_ref,
+        }
         if connection and profile:
-            self.store.set_private(
-                session.id,
-                {
-                    "connection": connection.model_dump(),
-                    "profile": profile.model_dump(),
-                    "relay_url": settings.relay_url,
-                    "relay_token_env": settings.relay_token_env,
-                },
-            )
-            self.dependencies.register(
-                agent_session_id,
-                session.id,
-                settings.relay_url + "/internal/sessions/" + session.id + "/close",
-                settings.relay_token_env,
-            )
+            private.update(connection=connection.model_dump(), profile=profile.model_dump())
+        self.store.set_private(session.id, private)
+        auth = self.credentials.reference(
+            parent.directory, "relay", settings.relay_url, settings.relay_credential_ref
+        )
+        self.dependencies.register_managed(
+            agent_session_id, session.id,
+            settings.relay_url + "/internal/sessions/" + session.id + "/close", auth,
+        )
+        if connection and profile:
             try:
                 self._start_hosted(session, connection, profile, settings)
             except BrowserError:
@@ -505,7 +532,7 @@ class Service:
             "worker:" + session.worker_id,
             max(1, session.expires_at - self.now()),
         )
-        peer = self.peer_factory(connection.base_url, connection.token_env)
+        peer = self.worker_peer(session, connection)
         health = peer.call("GET", "/healthz")
         if health.get("capabilities", {}).get("browser_sessions") != 1:
             raise BrowserError(
@@ -556,7 +583,7 @@ class Service:
             session.id, observation_id, generation, "agent:" + agent_session_id
         )
         private = private_record["connection"]
-        result = self.peer_factory(private["base_url"], private["token_env"]).call(
+        result = self.worker_peer(session, private).call(
             "POST", "/v1/sessions/" + session.id + "/connect", {"session": session.model_dump()}
         )
         self.store.audit(
@@ -675,7 +702,7 @@ class Service:
                 kind="automation_revoked",
             )
             connection = private["connection"]
-            result = self.peer_factory(connection["base_url"], connection["token_env"]).call(
+            result = self.worker_peer(session, connection).call(
                 "POST",
                 "/v1/sessions/" + session_id + "/fence",
                 {"session": paused.model_dump()},
@@ -734,13 +761,8 @@ class Service:
 
     def sync(self, session_id):
         session = self.store.get(session_id)
-        settings = self.store.settings(session.directory)[1]
-        private = self.store.private(session_id)
         try:
-            self.peer_factory(
-                private.get("relay_url", settings.relay_url),
-                private.get("relay_token_env", settings.relay_token_env),
-            ).call("POST", "/internal/sessions/" + session_id + "/sync", {})
+            self.relay_peer(session).call("POST", "/internal/sessions/" + session_id + "/sync", {})
         except BrowserError:
             # Every command also carries a fresh state fence. No input can use
             # an old generation while a stream reconnects.
@@ -790,11 +812,7 @@ class Service:
         authorize_command(session, actor, command, agent=agent)
         self.store.record_command(session_id, actor, command, run_id=run_id)
         private = self.store.private(session_id)
-        settings = self.store.settings(session.directory)[1]
-        peer = self.peer_factory(
-            private.get("relay_url", settings.relay_url),
-            private.get("relay_token_env", settings.relay_token_env),
-        )
+        peer = self.relay_peer(session)
         try:
             result = peer.call(
                 "POST",
@@ -1019,7 +1037,7 @@ class Service:
             private = self.store.private(session_id)
             if session.worker_id and private.get("connection"):
                 connection = private["connection"]
-                self.peer_factory(connection["base_url"], connection["token_env"]).call(
+                self.worker_peer(session, connection).call(
                     "DELETE", "/v1/sessions/" + session.id
                 )
             self.bindings.close_support(session)
@@ -1060,9 +1078,7 @@ class Service:
                 private = self.store.private(session.id)
                 connection = private.get("connection", {})
                 try:
-                    result = self.peer_factory(
-                        connection["base_url"], connection["token_env"]
-                    ).call("GET", "/v1/sessions/" + session.id)
+                    result = self.worker_peer(session, connection).call("GET", "/v1/sessions/" + session.id)
                     origins = result.get("allowed_origins")
                     if isinstance(origins, list) and set(origins) < set(session.allowed_origins):
 

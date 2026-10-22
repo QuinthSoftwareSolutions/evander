@@ -41,7 +41,7 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 
-HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0}"
+HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.22.1}"
 HOST_PLAYWRIGHT_NODE_MODULES="${HOST_PLAYWRIGHT_NODE_MODULES:-${CALLER_HOME}/node_modules}"
 HOST_PLAYWRIGHT_BROWSERS="${HOST_PLAYWRIGHT_BROWSERS:-${CALLER_HOME}/.cache/ms-playwright}"
 PLAYWRIGHT_LAUNCH_HELPER_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/evander/assets/playwright-launch.mjs"
@@ -90,7 +90,7 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   chmod 700 ~/.evander
 "
 
-scp "${SSH_OPTS[@]}" -r "${HOST_NODE_ROOT}" "${VM_USER}@${VM_IP}:~/toolchains/node-v24.14.0"
+scp "${SSH_OPTS[@]}" -r "${HOST_NODE_ROOT}" "${VM_USER}@${VM_IP}:~/toolchains/node-v24.22.1"
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_NODE_MODULES}/playwright" "${VM_USER}@${VM_IP}:~/playwright-runtime/node_modules/"
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_NODE_MODULES}/playwright-core" "${VM_USER}@${VM_IP}:~/playwright-runtime/node_modules/"
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_BROWSERS}" "${VM_USER}@${VM_IP}:~/.cache/ms-playwright"
@@ -143,6 +143,8 @@ playwright_block_start = 'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && com
 managed_exports = {
     'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+    'export PATH="$HOME/toolchains/node-v24.22.1/bin:$PATH"',
+    'export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"',
     'export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
     'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
     'export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"',
@@ -185,7 +187,7 @@ lines = repair_missing_profile_fi(lines)
 filtered = remove_managed_playwright_lines(lines)
 filtered.extend(
     [
-        'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+        'export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"',
         'export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
         'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
         'export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"',
@@ -206,8 +208,9 @@ PY
 }
 
 append_node_path_setup ~/.profile
+append_node_path_setup ~/.bashrc
 
-export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
+export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"
 export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"
 export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
 export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"

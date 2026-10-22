@@ -33,8 +33,10 @@ def test_local_plugin_setup_cannot_bypass_broker_for_model_or_remote_operations(
     )
 
 
+@pytest.mark.parametrize("scope_kind", ["ordinary", "symlinks"])
+@pytest.mark.parametrize("native_result", ["interrupted", "completed"])
 def test_public_scoped_standard_sdk_reaches_subscription_transport_with_exact_paths(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, scope_kind, native_result
 ):
     node = shutil.which("node")
     if node is None or not (PACKAGE / "node_modules/@openai/codex-security").exists():
@@ -67,7 +69,18 @@ elif 'exec' in args:
     scope = pathlib.Path(os.environ['CODEX_SECURITY_TARGET_PATHS_FILE'])
     pathlib.Path(os.environ['SYNTHETIC_SDK_LOG']+'.scope').write_bytes(scope.read_bytes())
     print(json.dumps({'type':'thread.started','thread_id':'11111111-1111-4111-8111-111111111111'}))
-    print(json.dumps({'type':'turn.failed','error':{'message':'Synthetic transport boundary reached; no model executed'}}))
+    if os.environ['SYNTHETIC_SDK_RESULT'] == 'completed':
+        paths = json.loads(scope.read_text())
+        documents = {
+            'scan-manifest.json': {'scan': {'target': {'kind': 'git_revision'}, 'scope': {'summary': 'Synthetic receipt test; no security analysis performed', 'runtimeStatus': 'not_exercised'}}},
+            'findings.json': {'findings': []},
+            'coverage.json': {'completeness': 'complete', 'inventoryStrategy': 'scoped_path', 'includePaths': paths, 'excludePaths': [], 'surfaces': [{'id': str(i), 'label': 'file:'+p, 'disposition': 'no_issue_found', 'receiptRefs': [], 'notes': 'Synthetic link disposition; no security analysis performed'} for i,p in enumerate(paths)], 'explicitExclusions': [], 'deferred': []},
+        }
+        for name, value in documents.items():
+            (pathlib.Path(os.environ['CODEX_SECURITY_SCAN_DIR'])/name).write_text(json.dumps(value))
+        print(json.dumps({'type':'turn.completed','usage':{'input_tokens':0,'cached_input_tokens':0,'output_tokens':0}}))
+    else:
+        print(json.dumps({'type':'turn.failed','error':{'message':'Synthetic transport boundary reached; no model executed'}}))
 else:
     raise SystemExit('Unexpected synthetic CLI command')
 """
@@ -79,6 +92,12 @@ else:
     root.chmod(0o700)
     (repo / "included.py").write_text('print("review me")\n')
     (repo / "outside.py").write_text('print("supporting source only")\n')
+    paths = ["included.py"]
+    if scope_kind == "symlinks":
+        links = {"file-link": "included.py", "broken-link": "missing", "external-link": "/unavailable-private-target", "directory-link": ".", "cycle-a": "cycle-b", "cycle-b": "cycle-a"}
+        for name, target in links.items():
+            (repo / name).symlink_to(target)
+        paths = sorted([*links, "included.py"])
     for args in (
         ["init", "-q"],
         ["add", "."],
@@ -110,7 +129,7 @@ else:
                 "frozen_route": {"model": "synthetic-model", "reasoning_effort": "high"},
                 "coverage_task": {
                     "kind": "files",
-                    "paths": ["included.py"],
+                    "paths": paths,
                     "inventory_paths": ["included.py", "outside.py"],
                     "architecture": {},
                     "deferred": {},
@@ -120,6 +139,9 @@ else:
             }
         )
     )
+    from evander_codex_security_addon.coverage_runner import prepare_review
+
+    projection = prepare_review(root, json.loads((root / "request.json").read_text()))
     env = {
         k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "CODEX_", "EVANDER_"))
     }
@@ -131,6 +153,7 @@ else:
         EVANDER_CODEX_BROKER_SOCKET="synthetic",
         OPENAI_API_KEY="placeholder-must-not-be-selected",
         SYNTHETIC_SDK_LOG=str(log),
+        SYNTHETIC_SDK_RESULT=native_result,
     )
     result = subprocess.run(
         [node, str(PACKAGE / "evander_codex_security_addon/coverage_sdk.mjs"), str(root)],
@@ -145,7 +168,7 @@ else:
     assert turns, result.stderr
     assert all(not x["api_key_present"] for x in turns)
     scope = json.loads(Path(str(log) + ".scope").read_text())
-    assert scope == ["included.py"]
+    assert scope == paths
     from evander.worker import codex_runtime_bridge
 
     monkeypatch.setattr(codex_runtime_bridge, "allowed_path", lambda value, **kwargs: None)
@@ -156,8 +179,15 @@ else:
         assert mode == "exec"
         assert model == "synthetic-model" or config["model"] == "synthetic-model"
         assert config["responses_api_metadata"] == {"codex_security_surface": "sdk"}
-        assert turn["environment"]["CODEX_SECURITY_TARGET_REVISION"] == revision
+        assert turn["environment"]["CODEX_SECURITY_TARGET_REVISION"] == (projection["revision"] if projection else revision)
         assert "every assigned file" in prompt
     value = json.loads((root / "sdk-result.json").read_text())
-    assert value["status"] == "failed"
-    assert "coverage_unit" not in value
+    if native_result == "completed":
+        assert value["status"] == "completed", result.stderr
+        assert value["coverage_unit"]["paths"] == paths
+        assert value["coverage_unit"]["revision"] == revision
+        assert value["coverage_unit"].get("source_projection") == projection
+        assert set(value["coverage_unit"]["dispositions"]) == set(paths)
+    else:
+        assert value["status"] == "failed"
+        assert "coverage_unit" not in value

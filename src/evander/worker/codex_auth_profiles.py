@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import shutil
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,10 @@ from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError, CodexExter
 
 def _now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+class CodexAuthProfileInUseError(CodexAuthBrokerError):
+    """A worker job still owns or is acquiring this profile."""
 
 
 class CodexAuthProfileRecord(BaseModel):
@@ -61,22 +67,6 @@ class CodexAuthProfileStore:
 
     def __init__(self, path: Path) -> None:
         self.store = JsonStore(Path(path), CodexAuthProfileRecord, file_mode=0o600)
-        self._ensure_default()
-
-    def _ensure_default(self) -> None:
-        now = _now_utc()
-
-        def updater(records: dict[str, CodexAuthProfileRecord]) -> None:
-            if DEFAULT_SUBSCRIPTION_PROFILE_ID not in records:
-                records[DEFAULT_SUBSCRIPTION_PROFILE_ID] = CodexAuthProfileRecord(
-                    profile_id=DEFAULT_SUBSCRIPTION_PROFILE_ID,
-                    display_name="Default",
-                    enabled=True,
-                    created_at=now,
-                    updated_at=now,
-                )
-
-        self.store.update_all(updater)
 
     def list(self) -> list[CodexAuthProfileRecord]:
         return sorted(self.store.read_all().values(), key=lambda item: item.profile_id)
@@ -190,13 +180,20 @@ class CodexAuthBrokerRegistry:
         self.auth_root = self.worker_root / "codex-auth"
         self.auth_root.mkdir(parents=True, exist_ok=True)
         self.auth_root.chmod(0o700)
+        migrate_legacy = not (self.auth_root / "profiles.json").exists() and (
+            (self.auth_root / "auth.json").is_file()
+            or DEFAULT_SUBSCRIPTION_PROFILE_ID in (initial_brokers or {})
+        )
         self.profiles = CodexAuthProfileStore(self.auth_root / "profiles.json")
+        if migrate_legacy:
+            self.profiles.create(profile_id="default", display_name="Default")
         self._command = tuple(app_server_command)
         self._env = dict(app_server_env or {})
         self._command_factory = command_factory
         self._broker_factory = broker_factory
         self._brokers: dict[str, CodexAuthBroker] = dict(initial_brokers or {})
         self._lock = threading.RLock()
+        self._profile_users: dict[str, int] = {}
 
     def auth_home(self, profile_id: object) -> Path:
         normalized = str(normalize_subscription_profile_id(profile_id, allow_none=False))
@@ -205,9 +202,9 @@ class CodexAuthBrokerRegistry:
         return self.auth_root / "profiles" / normalized
 
     def broker(self, profile_id: object) -> CodexAuthBroker:
-        record = self.profiles.require(profile_id)
-        normalized = record.profile_id
         with self._lock:
+            record = self.profiles.require(profile_id)
+            normalized = record.profile_id
             broker = self._brokers.get(normalized)
             if broker is not None:
                 return broker
@@ -224,6 +221,42 @@ class CodexAuthBrokerRegistry:
             )
             self._brokers[normalized] = broker
             return broker
+
+    @contextmanager
+    def use_profile(self, profile_id: object) -> Iterator[None]:
+        """Reserve a profile until an admitted job has a durable worker record."""
+        normalized = str(normalize_subscription_profile_id(profile_id, allow_none=False))
+        with self._lock:
+            self._profile_users[normalized] = self._profile_users.get(normalized, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._profile_users[normalized] -= 1
+                if not self._profile_users[normalized]:
+                    del self._profile_users[normalized]
+
+    def delete_profile(
+        self, profile_id: object, *, has_active_jobs: Callable[[], bool]
+    ) -> dict[str, Any]:
+        normalized = str(normalize_subscription_profile_id(profile_id, allow_none=False))
+        with self._lock:
+            if self._profile_users.get(normalized) or has_active_jobs():
+                raise CodexAuthProfileInUseError("Subscription profile has active jobs")
+            if self.profiles.store.get(normalized) is None:
+                return {"profile_id": normalized, "deleted": True}
+            broker = self._brokers.get(normalized)
+            if broker is not None:
+                broker.close()
+                del self._brokers[normalized]
+            auth_home = self.auth_home(normalized)
+            if normalized == DEFAULT_SUBSCRIPTION_PROFILE_ID:
+                # The legacy home also contains the registry and all named homes.
+                (auth_home / "auth.json").unlink(missing_ok=True)
+            elif auth_home.exists():
+                shutil.rmtree(auth_home)
+            self.profiles.store.delete(normalized)
+            return {"profile_id": normalized, "deleted": True}
 
     def create_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
         unsupported = sorted(set(payload) - {"profile_id", "display_name", "enabled"})
@@ -255,7 +288,15 @@ class CodexAuthBrokerRegistry:
         return self.profile_status(record.profile_id)
 
     def list_profiles(self) -> dict[str, Any]:
-        return {"profiles": [self.profile_status(item.profile_id) for item in self.profiles.list()]}
+        profiles = []
+        for item in self.profiles.list():
+            try:
+                profiles.append(self.profile_status(item.profile_id))
+            except CodexAuthBrokerError:
+                # A concurrent delete may have removed this snapshot entry.
+                if self.profiles.store.get(item.profile_id) is not None:
+                    raise
+        return {"profiles": profiles}
 
     def profile_status(
         self,

@@ -310,6 +310,14 @@ def _lineage_waiting_task_ids(
     return sorted(waiting)
 
 
+def _deliverable_declares_git_content(deliverable: Deliverable) -> bool:
+    return (
+        any(deliverable.git_refs.model_dump().values())
+        or deliverable.review_manifest is not None
+        or deliverable.dependency_composition_manifest is not None
+    )
+
+
 def _settled_lineage_deliverable_ids(
     state: TeamState,
     *,
@@ -335,6 +343,7 @@ def _settled_lineage_deliverable_ids(
                 deliverable is not None
                 and deliverable.state == TeamRecordState.ACCEPTED
                 and deliverable.superseded_by_deliverable_id is None
+                and _deliverable_declares_git_content(deliverable)
                 and deliverable_id not in predecessor_deliverable_ids
                 and deliverable_id not in deliverable_ids
             ):
@@ -2174,6 +2183,10 @@ def _candidate_correction_downstream_recovery_base(
         or deliverable.state != TeamRecordState.ACCEPTED
         or deliverable.superseded_by_deliverable_id is not None
     ):
+        return None
+    # A task's checkout base can support artifact-only planning. Only a deliverable's
+    # own Git provenance can make it a replacement code input; partial claims still validate.
+    if not _deliverable_declares_git_content(deliverable):
         return None
     try:
         require_task_resolved(

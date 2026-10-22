@@ -3348,6 +3348,9 @@ def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
         }
     ]
     guidance = str(guidance_files[0]["content"])
+    # Keep common installed instructions within a fixed budget; feature-specific
+    # working sets and retrievable records carry the variable detail.
+    assert len(guidance.encode("utf-8")) <= 32 * 1024
     assert "Continue your assigned team-agent work" not in guidance
     assert "managers and project leads may create top-level tasks" not in guidance
     assert "non-lead roles" not in guidance
@@ -3370,7 +3373,6 @@ def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
     assert "use team_decide_deliverable to accept or reject it" in guidance
     assert "Rejection requires a concrete reason" in guidance
     assert "Do not accept or reject someone else's task" in guidance
-    assert "idle profile-eligible reviewer" in guidance
     assert "override_routing_gap_reason" in guidance
     assert "Release requests stand alone" in guidance
     assert "Team automatically creates the successor release" in guidance
@@ -3453,8 +3455,7 @@ def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
     assert "do not have create_root_task" in prompt
     assert "You may NOT create top-level tasks" in prompt
     assert "Every team_create_task or team_create_tasks call must set parent_task_id" in prompt
-    assert "Identity detail: the full role_description is in" in prompt
-    assert "Use team_get_my_identity" in prompt
+    assert len(prompt.encode("utf-8")) <= 8 * 1024
     assert "A previous Team operation had validation errors" not in prompt
     for field_name in (
         "dependency_status",
@@ -9841,6 +9842,7 @@ def test_changed_preparation_generation_enqueues_receipted_attempt_cleanup(
         attempt_id="gitprep-generation-b",
         worktree_path="/home/agent/worktrees/repo/task-prep-b",
         preparation_generation="b" * 20,
+        activation_sequence=1,
         **common,
     )
 
@@ -10114,8 +10116,15 @@ def test_wake_failure_requeues_delivered_operator_attention(tmp_path: Path) -> N
 
 
 def test_dependency_git_composition_conflict_persists_typed_recovery(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
+    from evander_team_addon.services.domain import preparation_failures
+
+    current_failure_generation = preparation_failures.task_preparation_failure_generation
+    monkeypatch.setattr(
+        preparation_failures, "task_preparation_failure_generation",
+        lambda state, task_id, **_: preparation_failures.task_preparation_generation(state, task_id),
+    )
     repo = _seed_team(tmp_path)
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
@@ -10172,6 +10181,15 @@ def test_dependency_git_composition_conflict_persists_typed_recovery(
     assert recovery.failed_deliverable_id == "deliverable-two"
     restored = TeamStateRepository(tmp_path).read()
     assert restored.dependency_composition_recoveries[recovery.id] == recovery
+    monkeypatch.setattr(
+        preparation_failures, "task_preparation_failure_generation", current_failure_generation,
+    )
+    unchanged, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend", defer_activation=True, respect_wake_interval=False,
+    )
+    assert leases == []
+    assert unchanged.blockers[blocker.id].state == TeamBlockerState.OPEN
+    assert unchanged.dependency_composition_recoveries[recovery.id] == recovery
 
 
 def test_successive_dispatches_reuse_task_worktree_with_fresh_context_id(

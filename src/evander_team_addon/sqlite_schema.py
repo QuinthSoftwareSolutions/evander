@@ -97,8 +97,9 @@ def migrate_schema(
     The caller owns its lock and transaction. Column additions remain ordered
     around table rebuilds and data rewrites; callbacks reuse that connection.
     """
-    # v83/v84 are indexes only. A valid v82 store must not replay historical
-    # normalization/backfill passes or rewrite business records for this upgrade.
+    # v83/v84 add indexes; v86 adds nullable continuity provenance. A valid v82
+    # store must not replay historical normalization/backfill passes or rewrite
+    # business records for this upgrade.
     try:
         versions = dict(connection.execute(
             "SELECT key,value FROM team_state_metadata WHERE key IN ('sqlite_schema_version','state_schema_version')"
@@ -117,6 +118,12 @@ def migrate_schema(
     if index_only:
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
+        _ensure_column(
+            connection,
+            table_name="team_git_work_contexts",
+            column_name="retained_work_json",
+            definition="TEXT",
+        )
         for statement in (_LIFECYCLE_INDEX_SQL + _SCOPED_LIFECYCLE_INDEX_SQL).split(";"):
             if statement.strip():
                 connection.execute(statement)
@@ -572,6 +579,7 @@ def _upgrade_git_context_columns(
         ),
         ("team_git_work_contexts", "dependency_composition_manifest_json", "TEXT"),
         ("team_git_work_contexts", "preparation_generation", "TEXT"),
+        ("team_git_work_contexts", "retained_work_json", "TEXT"),
         ("team_deliverables", "accepted_pinned_ref", "TEXT"),
         ("team_deliverables", "dependency_composition_manifest_json", "TEXT"),
         ("team_deliverables", "acceptance_policy_version", "INTEGER NOT NULL DEFAULT 1"),

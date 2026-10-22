@@ -104,7 +104,13 @@ class Bindings:
         return True
 
 
-service = Service(folder, bindings=Bindings())
+os.environ["EVANDER_CREDENTIALS_KEY_FILE"] = str(folder / "master.key")
+service = Service(folder / "runtime", bindings=Bindings())
+service.credentials.store.initialize()
+relay_ref = service.credentials.create("root", "relay", base, "fixture-relay-token")["id"]
+voice_ref = service.credentials.create("root", "voice", base + "/test/provider", "fixture-speech-secret")["id"]
+worker = {"base_url": base, "parent_worker_url": base, "credential_ref": None}
+worker["credential_ref"] = service.credentials.create("root", "worker", base, "fixture-worker-token", worker_id="fixture-worker", connection=worker)["id"]
 service.store.save_settings(
     "root",
     0,
@@ -112,8 +118,9 @@ service.store.save_settings(
         enabled=True,
         public_base_url=base,
         relay_url=base,
+        relay_credential_ref=relay_ref,
         fast_execution={"enabled": True},
-        voice={"enabled": True, "api_base_url": base + "/test/provider"},
+        voice={"enabled": True, "api_base_url": base + "/test/provider", "credential_ref": voice_ref},
     ),
 )
 auth = AdminWebAuth(AdminWebConfig.from_env(), AdminWebUserStore(folder / "users.db"))
@@ -135,6 +142,7 @@ async def setup(request):
         directory="root/demo",
         agent_session_id="agent-a",
         mode="user_hosted" if local else "hosted",
+        worker_id=None if local else "fixture-worker",
         title="Shared station preview",
         state="starting",
         controller=None if local else "agent:agent-a",
@@ -162,7 +170,8 @@ async def setup(request):
             result["control_port"] = control_probe.getsockname()[1]
         service.store.set_private(session.id, {
             "profile": {"playwright_enabled": False},
-            "connection": {"base_url": base, "token_env": "EVANDER_BROWSER_FIXTURE_WORKER_TOKEN"},
+            "connection": worker,
+            "relay_url": base, "relay_credential_ref": relay_ref,
             "controller_port": result["control_port"],
             "controller_proof": result["endpoint_token"],
         })
@@ -227,7 +236,8 @@ async def application(request):
     return HTMLResponse("""<!doctype html><html><head><title>Station fixture</title>
     <style>body{font:18px sans-serif;margin:32px;background:#f6f8fa}button{padding:14px;margin-left:12px}input{padding:10px}</style></head>
     <body><h1>Station materials</h1><label>Material <input aria-label="Material"></label>
-    <button>Add material</button><p id="result"></p><script>
+    <button>Add material</button><p id="result"></p>
+    <a href="/position" target="_blank">Open shared tab</a><script>
     document.querySelector("button").onclick=()=>document.querySelector("#result").textContent=document.querySelector("input").value+" added";
     setInterval(async()=>{const r=await fetch("/position");document.querySelector("button").style.marginLeft=(await r.text())+"px"},150);
     </script></body></html>""")
@@ -242,6 +252,12 @@ async def login(request):
     response = JSONResponse({"ok": True})
     response.set_cookie(auth.config.cookie_name, auth.login("operator", "fixture-password"))
     return response
+
+
+async def unlock(request):
+    auth.require(request)
+    auth.mark_privileged_for_request(request)
+    return JSONResponse({"ok": True})
 
 
 voice_events = []
@@ -292,6 +308,7 @@ app = Starlette(
         Route("/test/voice/events", speech_events),
         Route("/test/provider/audio/{action}", speech_provider, methods=["POST"]),
         Route("/test/setup", setup, methods=["POST"]),
+        Route("/test/unlock", unlock, methods=["POST"]),
         Route("/v1/sessions/{id}/fence", worker_fence, methods=["POST"]),
         Route("/test/{id}/{action}", test_operation, methods=["GET", "POST"]),
         Route("/application", application),

@@ -1595,3 +1595,5 @@ Optional shared-browser voice settings and host credential setup are described i
 Optional [multi-step decision execution](packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
 
 Application hosting and shared browsing are independent optional packages: [Application Environments](packages/application-environments-addon/README.md) and [Browser Sessions](packages/browser-sessions-addon/README.md). Existing combined previews require the coordinated cutover guide before upgrade.
+
+Assistant workflows can [start a fresh conversation context](docs/conversation-context-reset.md) with the existing prompt enqueue operation.

@@ -72,12 +72,13 @@ from evander.repositories.sqlite_runtime import (
     foreground_storage_wait_budget,
     is_storage_busy as sqlite_busy,
 )
+# Retain historical daemon imports for callers using the adapter API.
 from evander.orchestration.adapters import (
-    EffectCompletionPublisherAdapter,
-    EffectDependencyResolverAdapter,
-    EffectEventFetcherAdapter,
-    EffectLoopExecution,
-    EffectExecutionRecorderAdapter,
+    EffectCompletionPublisherAdapter as EffectCompletionPublisherAdapter,
+    EffectDependencyResolverAdapter as EffectDependencyResolverAdapter,
+    EffectEventFetcherAdapter as EffectEventFetcherAdapter,
+    EffectLoopExecution as EffectLoopExecution,
+    EffectExecutionRecorderAdapter as EffectExecutionRecorderAdapter,
 )
 from evander.provider_config import ProviderConfigResolver
 from evander.runtime import RuntimeContext
@@ -114,7 +115,7 @@ from evander.workflow.engine.node_executors import (
     ProviderEffectNodeExecutor,
     ProviderQueryNodeExecutor,
 )
-from evander.workflow.engine import OrchestrationLoop
+from evander.workflow.engine import OrchestrationLoop as OrchestrationLoop
 from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from evander.orchestration.wal_maintenance import OrchestrationWalCheckpointMaintenance
 from evander.orchestration.internal_events import (
@@ -1070,55 +1071,6 @@ class EffectOrchestratorWorker:
             self._log_phase_duration(phase, phase_started, published_count=count)
             completion_events_published += count
 
-        loop = OrchestrationLoop[
-            TriggerQueueRecord,
-            tuple[ExecutionGraph, str, dict[str, Any]],
-            EffectLoopExecution,
-        ](
-            event_fetcher=EffectEventFetcherAdapter(
-                fetch_pending=lambda: (self.event_queue.list_pending(limit=1) or [None])[0]
-            ),
-            dependency_resolver=EffectDependencyResolverAdapter(
-                dependency_factory=lambda _queue_record: (graph, config_revision, {})
-            ),
-            execution_recorder=EffectExecutionRecorderAdapter(
-                record_event_processed=lambda queue_record: (
-                    self._update_event_delivery_state(queue_record.event_id),
-                    self.cursor_repository.record_processed_event(
-                        event_id=queue_record.event_id,
-                        source_node_id=queue_record.trigger_id,
-                    ),
-                )
-            ),
-            completion_publisher=EffectCompletionPublisherAdapter(),
-        )
-
-        def _resolve_and_execute(
-            queue_record: TriggerQueueRecord,
-            dependency: tuple[ExecutionGraph, str, dict[str, Any]],
-        ) -> EffectLoopExecution:
-            nonlocal effect_executions_started, last_trigger_type
-            last_trigger_type = queue_record.trigger_type
-            resolved_graph, resolved_config_revision, _cursor = dependency
-            phase_started = time.perf_counter()
-            execution_count = self._process_event_record(
-                queue_record,
-                graph=resolved_graph,
-                config_revision=resolved_config_revision,
-            )
-            self._log_phase_duration(
-                "event_processing",
-                phase_started,
-                event_id=queue_record.event_id,
-                executions_started=execution_count,
-            )
-            effect_executions_started += execution_count
-            return EffectLoopExecution(
-                queue_record=queue_record,
-                execution_count=execution_count,
-                published_count=0,
-            )
-
         phase_started = time.perf_counter()
         max_events = max(
             1, int(getattr(active_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))
@@ -1133,11 +1085,31 @@ class EffectOrchestratorWorker:
             # from executor callbacks or bypass event delivery/idempotency.
             completed, published = self._reap_completed_futures()
             completion_events_published += published
-            loop_result = loop.run_once(max_events=1, resolve_and_execute=_resolve_and_execute)
-            events_processed += loop_result.events_scanned
-            executions_recorded += loop_result.executions_recorded
-            if not loop_result.events_scanned:
+            pending = self.event_queue.list_pending(limit=1)
+            if not pending:
                 break
+            queue_record = pending[0]
+            events_processed += 1
+            last_trigger_type = queue_record.trigger_type
+            event_started = time.perf_counter()
+            execution_count = self._process_event_record(
+                queue_record,
+                graph=graph,
+                config_revision=config_revision,
+            )
+            self._log_phase_duration(
+                "event_processing",
+                event_started,
+                event_id=queue_record.event_id,
+                executions_started=execution_count,
+            )
+            effect_executions_started += execution_count
+            self._update_event_delivery_state(queue_record.event_id)
+            self.cursor_repository.record_processed_event(
+                event_id=queue_record.event_id,
+                source_node_id=queue_record.trigger_id,
+            )
+            executions_recorded += 1
             if last_trigger_type.startswith("gate:"):
                 consecutive_gate_events += 1
             else:

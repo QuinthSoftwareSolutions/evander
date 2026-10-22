@@ -12,8 +12,10 @@ import time
 
 if __package__:
     from . import runner
+    from .coverage_projection import git_bytes, symlink_projection
 else:
     import runner
+    from coverage_projection import git_bytes, symlink_projection
 
 
 def inventory(request):
@@ -82,9 +84,33 @@ def inventory(request):
     return {"coverage_runtime": 1, "revision": revision, "entries": entries}
 
 
+def review_projection(target, request, *, materialize=False):
+    work = request["coverage_task"]
+    if work.get("kind") == "architecture":
+        return None
+    if work.get("assigned_entries") and not any(
+        x["mode"] == "120000" for x in work["assigned_entries"]
+    ):
+        return None
+    return symlink_projection(
+        target, request["snapshot_commit"], work["paths"], materialize=materialize
+    )
+
+
+def prepare_review(root, request):
+    target = root / "checkout"
+    projection = review_projection(target, request, materialize=True)
+    if projection:
+        git_bytes(target, "checkout", "--detach", projection["revision"])
+    runner.write_json(root / "review-target.json", {"source_projection": projection})
+    return projection
+
+
 def validate_snapshot(root, request):
     target = root / "checkout"
-    if runner.git(target, "rev-parse", "HEAD^{commit}") != request["snapshot_commit"] or runner.git(
+    projection = review_projection(target, request)
+    revision = projection["revision"] if projection else request["snapshot_commit"]
+    if runner.git(target, "rev-parse", "HEAD^{commit}") != revision or runner.git(
         target, "status", "--porcelain=v1", "--untracked-files=all"
     ):
         raise ValueError("Scoped reviewer changed the pinned checkout")
@@ -146,6 +172,7 @@ def run_task(request):
             if base or revision != request["snapshot_commit"]:
                 raise ValueError("Scoped review snapshot mismatch")
             runner.write_json(root / "target.json", {"from_commit": None, "to_commit": revision})
+            prepare_review(root, request)
             config = subprocess.run(
                 [
                     str(runner.INSTALL_ROOT / "node"),

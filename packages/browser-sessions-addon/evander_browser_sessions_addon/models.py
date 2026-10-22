@@ -6,7 +6,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator, model_validator
 
 ADDON_ID = "browser-sessions-addon"
 PROTOCOL_VERSION = 1
@@ -24,6 +24,7 @@ State = Literal[
     "cleanup_failed",
 ]
 IDENTIFIER = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+CREDENTIAL_REF = r"^cred_[0-9a-f]{32}$"
 
 
 class BrowserError(ValueError):
@@ -73,7 +74,7 @@ def relative_path(value: str) -> str:
 
 class WorkerConnection(Contract):
     base_url: str
-    token_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    credential_ref: str | None = Field(default=None, pattern=CREDENTIAL_REF)
     parent_worker_url: str
     relay_url: str | None = None
 
@@ -103,6 +104,13 @@ class WorkerConnection(Contract):
         return value.rstrip("/")
 
 
+class CredentialRequest(Contract):
+    expected_revision: int = Field(ge=0, strict=True)
+    purpose: Literal["worker", "relay", "voice"]
+    worker_id: str | None = Field(default=None, pattern=IDENTIFIER)
+    token: SecretStr
+
+
 class LaunchProfile(Contract):
     """Browser-only authority; application images and launch commands are separate."""
 
@@ -123,9 +131,8 @@ class LaunchProfile(Contract):
 class VoiceSettings(Contract):
     enabled: bool = False
     api_base_url: str = "https://api.openai.com/v1"
-    api_key_env: str = Field(
-        default="EVANDER_BROWSER_VOICE_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
-    )
+    credential_ref: str | None = Field(default=None, pattern=CREDENTIAL_REF)
+    _directory: str = PrivateAttr(default="")
     transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
     speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
     voice: str = Field(default="onyx", min_length=1, max_length=128)
@@ -231,7 +238,7 @@ class Settings(Contract):
     enabled: bool = False
     public_base_url: str = ""
     relay_url: str = "http://127.0.0.1:11890"
-    relay_token_env: str = "EVANDER_BROWSER_RELAY_TOKEN"
+    relay_credential_ref: str | None = Field(default=None, pattern=CREDENTIAL_REF)
     guest_enabled: bool = True
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     fast_execution: FastExecutionSettings = Field(default_factory=FastExecutionSettings)
@@ -258,14 +265,6 @@ class Settings(Contract):
             if urlsplit(value).query or urlsplit(value).fragment:
                 raise ValueError("Base URLs cannot contain query parameters or fragments")
         return value.rstrip("/")
-
-    @field_validator("relay_token_env")
-    @classmethod
-    def env(cls, value):
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-            raise ValueError("Invalid credential reference")
-        return value
-
 
 class Session(Contract):
     id: str = Field(pattern=IDENTIFIER)
