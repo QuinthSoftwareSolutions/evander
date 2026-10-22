@@ -236,7 +236,8 @@ async def application(request):
     return HTMLResponse("""<!doctype html><html><head><title>Station fixture</title>
     <style>body{font:18px sans-serif;margin:32px;background:#f6f8fa}button{padding:14px;margin-left:12px}input{padding:10px}</style></head>
     <body><h1>Station materials</h1><label>Material <input aria-label="Material"></label>
-    <button>Add material</button><p id="result"></p><script>
+    <button>Add material</button><p id="result"></p>
+    <a href="/position" target="_blank">Open shared tab</a><script>
     document.querySelector("button").onclick=()=>document.querySelector("#result").textContent=document.querySelector("input").value+" added";
     setInterval(async()=>{const r=await fetch("/position");document.querySelector("button").style.marginLeft=(await r.text())+"px"},150);
     </script></body></html>""")

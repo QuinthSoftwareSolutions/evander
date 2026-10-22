@@ -1,9 +1,14 @@
 # Changelog
 
-## 2026-10-22 - Allow clean task ownership handoffs (0.119.1)
+## 2026-10-22 - Allow clean task ownership handoffs (0.119.2)
 
 - Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
 - Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+
+## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
+
+- Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
+- Publish Browser Sessions 0.9.4 with the corrected hosted controller and regression coverage for tab viewing and control handover.
 
 ## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 
