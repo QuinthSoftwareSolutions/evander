@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -10,13 +11,20 @@ import pytest
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.git_submissions import GitSubmissionStore
+from evander.models import utc_now
 from evander.worker.models import (
     WorkerRepoCloneRequest,
     WorkerSessionPaths,
     WorkerTaskWorktreeRequest,
 )
 from evander.worker.service import WorkerDaemon
-from evander_team_addon.models import AgentRuntime, ProjectGitConfig, TeamGitPreparationAttemptState
+from evander_team_addon.models import (
+    AgentRuntime,
+    ProjectGitConfig,
+    TeamDispatch,
+    TeamDispatchStatus,
+    TeamGitPreparationAttemptState,
+)
 from evander_team_addon.provider_git_contexts import _create_project_repo_git_work_contexts
 from evander_team_addon.provider_git_errors import DependencyGitPreparationError
 from evander_team_addon.provider_prompts import _build_prompt
@@ -62,6 +70,7 @@ def continuity(tmp_path, monkeypatch):
         "session-backend", WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo")
     )
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-backend")
+    homes = {"session-backend": paths.agent_home}
     requests = []
     dependencies = []
 
@@ -79,7 +88,7 @@ def continuity(tmp_path, monkeypatch):
         lambda *_args, **_kwargs: list(dependencies),
     )
 
-    _local_agent_python_transport(monkeypatch, paths.agent_home)
+    _local_agent_python_transport(monkeypatch, homes)
     store = GitSubmissionStore(repo.runtime_dir)
     managed = SimpleNamespace(
         reduce_commit_frontier=lambda *_args, **kwargs: {
@@ -96,20 +105,32 @@ def continuity(tmp_path, monkeypatch):
     )
     counter = 0
 
-    def run():
+    def run(agent_id="backend"):
         nonlocal counter
         counter += 1
         dispatch = f"dispatch-{counter}"
+        session_id = repo.read().agents[agent_id].session_id
+        if session_id not in homes:
+            daemon.clone_repo(
+                session_id, WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo")
+            )
+            homes[session_id] = WorkerSessionPaths.resolve(
+                tmp_path / "worker-root", session_id
+            ).agent_home
         repo.update(
-            lambda state: setattr(state.agent_runtimes["backend"], "active_dispatch_id", dispatch)
+            lambda state: setattr(
+                state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id)),
+                "active_dispatch_id",
+                dispatch,
+            )
         )
         state = repo.read()
         result, rows, _ = _create_project_repo_git_work_contexts(
             context,
             repo,
             state=state,
-            agent_id="backend",
-            session_id="session-backend",
+            agent_id=agent_id,
+            session_id=session_id,
             project_id="project",
             dispatch_id=dispatch,
             project_repo={
@@ -124,7 +145,15 @@ def continuity(tmp_path, monkeypatch):
         return result, rows[0]
 
     def physical(row):
-        return paths.agent_home / row["worktree_path"].removeprefix("/home/agent/")
+        session_id = repo.read().agents[row["agent_id"]].session_id
+        return homes[session_id] / row["worktree_path"].removeprefix("/home/agent/")
+
+    def handoff(agent_id):
+        def mutate(state):
+            state.agent_runtimes[state.tasks["task"].owner_agent_id].active_dispatch_id = None
+            state.tasks["task"].owner_agent_id = agent_id
+
+        repo.update(mutate)
 
     def edit():
         state = repo.read()
@@ -153,6 +182,7 @@ def continuity(tmp_path, monkeypatch):
         paths=paths,
         store=store,
         source=source,
+        handoff=handoff,
     )
 
 
@@ -462,6 +492,36 @@ def test_specification_race_rejects_pin_before_target_is_created(continuity, mon
     assert all(a.retained_work is None for a in h.repo.read().git_preparation_attempts.values())
 
 
+def test_clean_unchanged_checkout_allows_handoff_through_original_session(continuity, monkeypatch):
+    h = continuity
+    state, old = h.run()
+    original_context = state.git_work_contexts[old["id"]].model_dump(mode="json")
+    original_receipts = {
+        k: a.model_dump(mode="json") for k, a in state.git_preparation_attempts.items()
+    }
+    calls = []
+    execute = AgentExecEffectProvider.execute
+
+    def record(self, **kwargs):
+        effect = self._effect()
+        calls.append((effect.session_id, effect.command[3]))
+        return execute(self, **kwargs)
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", record)
+    h.handoff("lead")
+    state, new = h.run("lead")
+    assert ("session-backend", "probe") in calls
+    assert new["agent_id"] == "lead" and state.git_work_contexts[new["id"]].retained_work is None
+    assert git(h.physical(new), "rev-parse", "HEAD") == h.base
+    assert git(h.physical(old), "rev-parse", "HEAD") == h.base
+    assert git(h.physical(old), "status", "--porcelain") == ""
+    assert state.git_work_contexts[old["id"]].model_dump(mode="json") == original_context
+    assert {
+        k: state.git_preparation_attempts[k].model_dump(mode="json") for k in original_receipts
+    } == original_receipts
+    assert state.deliverables == {} and state.release_packages == {}
+
+
 def test_new_owner_cannot_automatically_import_previous_owners_work(continuity):
     h = continuity
     _, old = h.run()
@@ -495,6 +555,174 @@ def test_new_owner_cannot_automatically_import_previous_owners_work(continuity):
         )
     assert failure.value.cause == "policy_conflict"
     assert git(h.physical(old), "rev-parse", "HEAD") == retained
+
+
+@pytest.mark.parametrize(
+    "change", ["unstaged", "staged", "untracked", "committed", "missing", "advanced_base"]
+)
+def test_handoff_preserves_changed_or_unverifiable_previous_checkout(continuity, change):
+    h = continuity
+    _, old = h.run()
+    path = h.physical(old)
+    if change in {"unstaged", "staged", "untracked"}:
+        name = "new.txt" if change == "untracked" else "logic.txt"
+        (path / name).write_text("unpublished work\n")
+        if change == "staged":
+            git(path, "add", name)
+    elif change in {"committed", "advanced_base"}:
+        head = h.commit(path)
+        if change == "advanced_base":
+            # Same-owner legacy base advancement is not proof of an empty handoff.
+            git(path, "config", "--worktree", "evander.baseCommit", head)
+            h.repo.update(
+                lambda state: setattr(state.git_work_contexts[old["id"]], "base_commit", head)
+            )
+    else:
+        path.rename(path.with_name(path.name + "-preserved"))
+    before = (
+        None
+        if change == "missing"
+        else (
+            git(path, "rev-parse", "HEAD"),
+            git(path, "status", "--porcelain"),
+            {p.name: p.read_bytes() for p in path.iterdir() if p.is_file()},
+        )
+    )
+    count = len(h.requests)
+    h.handoff("lead")
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert (
+        failure.value.cause
+        == {
+            "unstaged": "workspace_dirty",
+            "staged": "workspace_dirty",
+            "untracked": "workspace_dirty",
+            "committed": "policy_conflict",
+            "missing": "workspace_missing",
+            "advanced_base": "workspace_receipt_mismatch",
+        }[change]
+    )
+    assert len(h.requests) == count
+    if before is not None:
+        assert (
+            git(path, "rev-parse", "HEAD"),
+            git(path, "status", "--porcelain"),
+            {p.name: p.read_bytes() for p in path.iterdir() if p.is_file()},
+        ) == before
+
+
+@pytest.mark.parametrize("status", [TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED])
+@pytest.mark.parametrize("reference", ["task", "receipt"])
+def test_handoff_waits_for_previous_task_writer(continuity, status, reference):
+    h = continuity
+    _, old = h.run()
+
+    def writer(state):
+        dispatch_id = (
+            state.git_work_contexts[old["id"]].dispatch_id
+            if reference == "receipt"
+            else "old-task-writer"
+        )
+        state.dispatches[dispatch_id] = TeamDispatch(
+            id=dispatch_id,
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="task",
+            task_ids=["task"] if reference == "task" else [],
+            status=status,
+            queued_at=utc_now(),
+            leased_at=utc_now() if status == TeamDispatchStatus.LEASED else None,
+            lease_expires_at=utc_now() + timedelta(minutes=15)
+            if status == TeamDispatchStatus.LEASED
+            else None,
+        )
+
+    h.repo.update(writer)
+    h.handoff("lead")
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
+    assert git(h.physical(old), "rev-parse", "HEAD") == h.base
+
+
+@pytest.mark.parametrize("mismatch", ["session", "namespace"])
+def test_handoff_rejects_foreign_provenance_before_any_session_probe(
+    continuity, monkeypatch, mismatch
+):
+    h = continuity
+    _, old = h.run()
+
+    def corrupt(state):
+        receipt = next(
+            a for a in state.git_preparation_attempts.values() if a.git_work_context_id == old["id"]
+        )
+        if mismatch == "namespace":
+            receipt.branch = state.git_work_contexts[old["id"]].agent_branch = (
+                "agents/session-lead/tasks/wrong-owner"
+            )
+        else:
+            setattr(receipt, mismatch + "_id", "different-" + mismatch)
+
+    h.repo.update(corrupt)
+    h.handoff("lead")
+    monkeypatch.setattr(
+        AgentExecEffectProvider,
+        "execute",
+        lambda *_a, **_kw: pytest.fail("invalid provenance reached a session"),
+    )
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
+
+
+def test_repeated_handoffs_check_every_historical_owner(continuity):
+    h = continuity
+    _, original = h.run()
+    h.handoff("lead")
+    _, middle = h.run("lead")
+    h.handoff("manager")
+    _, newest = h.run("manager")
+    assert all(
+        git(h.physical(row), "rev-parse", "HEAD") == h.base for row in (original, middle, newest)
+    )
+    retained = h.commit(h.physical(original))
+    h.handoff("lead")
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
+    assert git(h.physical(original), "rev-parse", "HEAD") == retained
+
+
+def test_handoff_rejects_receipted_work_even_if_checkout_was_reset(continuity):
+    h = continuity
+    _, original = h.run()
+    retained = h.commit(h.physical(original))
+    h.edit()
+    state, carried = h.run()
+    assert (
+        next(
+            a
+            for a in state.git_preparation_attempts.values()
+            if a.git_work_context_id == carried["id"]
+        ).head_commit_sha
+        == retained
+    )
+    # Simulate externally reset work in the disposable test repository.
+    for row in (original, carried):
+        git(h.physical(row), "reset", "--hard", h.base)
+    h.handoff("lead")
+    count = len(h.requests)
+    with pytest.raises(DependencyGitPreparationError) as failure:
+        h.run("lead")
+    assert failure.value.cause == "policy_conflict"
+    assert len(h.requests) == count
 
 
 @pytest.mark.parametrize("pinned", [False, True])

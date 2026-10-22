@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Allow clean task ownership handoffs (0.119.1)
+
+- Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
+- Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+
 ## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 
 - Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.
