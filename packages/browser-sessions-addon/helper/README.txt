@@ -20,7 +20,7 @@ Approve Chrome's local debugging connection prompt. Sharing still starts observe
 
 Only the registered Evander extension may start this helper. It connects to Chrome
 on loopback using DevToolsActivePort and binds one selected page target. The helper
-receives neither Truman host tokens nor voice-provider credentials, and exposes no
+receives neither Evander host tokens nor voice-provider credentials, and exposes no
 TCP listener. No remote-debugging URL should be published or forwarded to the internet.
 
 Production distributors should sign the executable/package using their normal release

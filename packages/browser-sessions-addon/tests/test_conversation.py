@@ -17,7 +17,7 @@ from evander_browser_sessions_addon.service import Bindings, Service
 
 
 @pytest.fixture(params=["effect:agent:enqueue-prompt", "effect:agent:prompt"])
-def conversations(tmp_path, request):
+def conversations(tmp_path, request, monkeypatch):
     now = datetime.now(UTC)
     owner = SessionManifest(
         session_id="owner",
@@ -46,9 +46,12 @@ def conversations(tmp_path, request):
             queued.append((args, kwargs)) or SimpleNamespace(queued=True)
         ),
     )
+    monkeypatch.setenv("EVANDER_CREDENTIALS_KEY_FILE", str(tmp_path.parent / (tmp_path.name + ".key")))
     service = Service(tmp_path, bindings=Bindings(tmp_path, admin))
+    service.credentials.store.initialize()
+    ref = service.credentials.create("root", "relay", "http://127.0.0.1:11890", "fixture-relay-token")["id"]
     service.store.save_settings(
-        "root", 0, Settings(enabled=True, public_base_url="https://control.test")
+        "root", 0, Settings(enabled=True, public_base_url="https://control.test", relay_credential_ref=ref)
     )
 
     def record(dispatch, thread):

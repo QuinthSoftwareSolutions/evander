@@ -206,6 +206,26 @@ The producer submits the evidence, then chooses the handoff the task actually re
   formal review handoff in one command.
 - <code>team_request_review</code> attaches a formal review to an existing deliverable.
 
+To share retained diagnostic files while a task is blocked, use the existing
+<code>team_submit_deliverable</code> with <code>evidence_only=true</code>, relative
+<code>artifact_paths</code>, and a <code>verification.status</code> of
+<code>failed</code>, <code>partial</code>, <code>not_run</code>, or <code>unknown</code>.
+This publishes an immutable evidence bundle and returns
+<code>published_evidence_artifacts</code> with its artifact-space reference, version,
+and archive hash. The superior and task requesters receive a progress notice.
+It creates no deliverable, acceptance request, formal review, or release, and
+leaves the task, blockers, and Git work context intact. Completion, outcomes,
+and product replacement fields are refused in this mode.
+
+The task must belong to the caller and either be in the current dispatch's task
+scope or have a pending task-specific question, status request, or operator directive
+selected in that dispatch. An inbox request authorizes only evidence publication;
+it does not grant general task mutation authority. Git references on an evidence
+receipt are agent-reported diagnostics, including retained contexts, and do not
+establish submitted or accepted Git provenance. Inspect source through managed Git.
+Retry with the same <code>request_id</code> and payload, including after a context
+rotation, to reuse the receipt without duplicating publication or notifications.
+
 A top-level agent with no direct superior cannot use the superior-acceptance form. It must use
 formal review for a reviewable deliverable, or finish support/coordination work directly without
 manufacturing one. Team prevents accidental duplicate active reviews of the same deliverable by

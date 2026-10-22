@@ -50,7 +50,7 @@ test("hosted viewer keeps text feedback usable when voice is disabled", async ()
     assert.equal(await page.getByRole("checkbox", {name:"Speak replies (AI voice)"}).isDisabled(),true);
     const composer = await page.getByRole("button", {name:"Send",exact:true}).boundingBox();
     assert.ok(composer.y + composer.height <= 1000, "The chat Send button must remain visible in the viewport");
-    const body = page.getByRole("textbox", { name: "Message Truman" });
+    const body = page.getByRole("textbox", { name: "Message agent" });
     await body.fill("   "); await body.press("Enter");
     assert.equal(received.length, 0);
     await body.fill("Draft"); await body.press("Shift+Enter");
@@ -145,7 +145,7 @@ for (const kind of ["hosted", "voice"]) {
       await firstRead;
       holdNext = true;
       await deadline(held, "Poll did not start");
-      const message = page.getByRole("textbox",{name:"Message Truman"});
+      const message = page.getByRole("textbox",{name:"Message agent"});
       await message.fill("Continue in this preview.");
       await page.getByRole("button",{name:"Send",exact:true}).click();
       await page.waitForFunction(id => document.getElementById(id).value === "", kind === "hosted" ? "chat-body" : "body");

@@ -128,6 +128,7 @@ def _project_repo_task_worktree_name(
     task_id: str,
     preparation_generation: str | None,
     identity_commit: str | None,
+    activation_sequence: int = 0,
 ) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
@@ -138,7 +139,29 @@ def _project_repo_task_worktree_name(
         if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
             raise ValueError("preparation_generation must be a 20-character hex fingerprint")
         generation_suffix = f"-prep-{normalized_generation[:12]}"
-    return f"{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
+    activation_suffix = f"-run-{activation_sequence}" if activation_sequence else ""
+    return f"{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}{activation_suffix}"
+
+
+def _project_repo_task_preparation_activation(
+    state: TeamState,
+    *,
+    task_id: str,
+    preparation_generation: str,
+) -> int:
+    """Keep retries stable without reusing a previous activation of a specification.
+
+    Legacy attempts default to zero and retain their existing identities. New
+    activations use a task-scoped sequence persisted with the preparation, not
+    timestamps or dispatch identities, to distinguish A -> B -> A checkouts.
+    """
+    attempts = [item for item in state.git_preparation_attempts.values() if item.task_id == task_id]
+    if not attempts:
+        return 0
+    latest = max(attempts, key=lambda item: (item.activation_sequence, item.created_at, item.id))
+    if latest.preparation_generation == preparation_generation:
+        return latest.activation_sequence
+    return latest.activation_sequence + 1
 
 
 def _project_repo_git_preparation_attempt_id(
@@ -181,10 +204,21 @@ def _ensure_project_repo_git_preparation_attempt(
     branch: str,
     base_ref: str,
     preparation_generation: str,
+    activation_sequence: int = 0,
 ) -> TeamState:
     now = datetime.now(UTC)
 
     def _mutate(state: TeamState) -> TeamState:
+        if _project_repo_task_preparation_activation(
+            state,
+            task_id=task_id,
+            preparation_generation=preparation_generation,
+        ) != activation_sequence:
+            raise DependencyGitPreparationError(
+                task_id=task_id,
+                cause="workspace_receipt_mismatch",
+                message="Task preparation activation changed before reservation; retry the current specification.",
+            )
         for prior in state.git_preparation_attempts.values():
             if (
                 prior.id == attempt_id
@@ -243,6 +277,7 @@ def _ensure_project_repo_git_preparation_attempt(
             branch=branch,
             base_ref=base_ref,
             preparation_generation=preparation_generation,
+            activation_sequence=activation_sequence,
             created_at=now,
             updated_at=now,
         )
@@ -262,6 +297,7 @@ def _ensure_project_repo_git_preparation_attempt(
             "branch",
             "base_ref",
             "preparation_generation",
+            "activation_sequence",
         )
         if any(getattr(existing, name) != getattr(expected, name) for name in identity_fields):
             raise DependencyGitPreparationError(task_id=task_id, cause="workspace_receipt_mismatch",
@@ -382,6 +418,9 @@ def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
     composition_manifest = payload.get("dependency_composition_manifest")
     if isinstance(composition_manifest, Mapping):
         row["dependency_composition_manifest"] = dict(composition_manifest)
+    retained_work = payload.get("retained_work")
+    if isinstance(retained_work, Mapping):
+        row["retained_work"] = dict(retained_work)
     return row
 
 

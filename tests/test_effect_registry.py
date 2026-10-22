@@ -6574,7 +6574,7 @@ def test_agent_create_upsert_can_switch_auth_modes_and_subscription_profiles(
         )
     )
     backend = _FakeContainerBackend()
-    profile_enabled = {"team-a": True, "team-b": True}
+    profile_enabled = {"default": True, "team-a": True, "team-b": True}
     profile_status_calls: list[str] = []
 
     def profile_status(profile_id: str) -> dict[str, object]:
@@ -6758,6 +6758,85 @@ def test_agent_create_upsert_can_switch_auth_modes_and_subscription_profiles(
     assert legacy_metered is not None
     assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
     assert legacy_metered.subscription_profile_id is None
+
+
+@pytest.mark.parametrize("existing_binding", [None, "other-profile", "expired"])
+def test_agent_create_does_not_save_a_binding_deleted_during_worker_preparation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, existing_binding: str | None,
+) -> None:
+    from evander.admin.services.codex_auth_admin_service import (
+        CodexAuthAdminDependencies,
+        CodexAuthAdminService,
+    )
+    from evander.execution.container_worker_client import ContainerWorkerClientError
+
+    config = GatewayConfig(
+        runtime_dir=tmp_path, execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test", model_provider_mode="openai_public",
+    )
+    repository = JsonSessionManifestRepository(config.session_store_path)
+    original = None
+    if existing_binding:
+        original = SessionManifest(
+            session_id="binding-race", vm_provider="container_worker_vm", allowed_tools=[],
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a" if existing_binding == "expired" else "team-old",
+            expires_at=datetime.now(UTC) + timedelta(hours=-1 if existing_binding == "expired" else 1),
+            metadata={"execution_backend": "container_worker_vm", "worker_url": "http://worker.test"},
+        )
+        repository.upsert_session(original)
+
+    class Worker:
+        base_url = "http://worker.test/"
+        deleted = False
+
+        def codex_auth_profile_status(self, profile_id):
+            if self.deleted:
+                raise ContainerWorkerClientError("Profile not found", status_code=404)
+            return {"profile_id": profile_id, "enabled": True}
+
+        def delete_codex_auth_profile(self, profile_id):
+            self.deleted = True
+            return {"profile_id": profile_id, "deleted": True}
+
+    worker = Worker()
+    profile_admin = CodexAuthAdminService(CodexAuthAdminDependencies(
+        provider_config=SimpleNamespace(
+            resolve_for_directory=lambda _path: config,
+            resolve_for_session_id=lambda _session: config,
+        ),
+        audit=SimpleNamespace(log=lambda _event: None), runtime_dir=tmp_path,
+        session_repository=repository, client_factory=lambda **_kwargs: worker,
+    ))
+    backend = _FakeContainerBackend()
+    backend.client = worker
+    prepare = backend.prepare_session
+
+    def delete_during_preparation(**kwargs):
+        assert profile_admin.delete_profile("root", "team-a", {
+            "expected_worker_url": "http://worker.test",
+        }, actor_user_id="owner@example.test")["deleted"]
+        return prepare(**kwargs)
+
+    backend.prepare_session = delete_during_preparation
+    monkeypatch.setattr("evander.effects.providers.agent_create.container_backend", lambda *_args: backend)
+    resolver = _ContainerResolverStub(config)
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=SimpleNamespace(runtime=SimpleNamespace(
+            session_repository=repository, provider_config=resolver,
+        )),
+    )
+    provider = factory.build(AgentCreateEffectDefinition(
+        id="agent-create-binding-race", display_name="Create", type="effect:agent:create",
+        execution_backend="container_worker_vm", session_id="binding-race",
+        existing_agent_behavior="upsert", codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        subscription_profile_id="team-a",
+    ))
+    with pytest.raises(ValueError, match="no longer exists"):
+        provider.execute()
+    assert worker.deleted
+    assert repository.get_session("binding-race") == original
 
 
 def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:

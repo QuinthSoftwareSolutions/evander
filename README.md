@@ -1310,6 +1310,12 @@ Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_revie
 write the file path and line number into the comment body; the tool attaches the provider-native
 line context.
 
+Azure DevOps `submit_pr_review` can also set the authenticated host reviewer's vote with
+`event=APPROVE`, `APPROVE_WITH_SUGGESTIONS`, `WAITING_FOR_AUTHOR`, or `RESET`. The PR must
+be bound to the session and the host identity must already be a reviewer. Reject is unsupported;
+omitting `event` keeps comment-only publication. See the
+[review workflow contract](docs/operations.md#review-request-workflow) for details.
+
 For Azure DevOps PRs, PR comment/reply/review tools accept staged `artifact_ids`. The gateway
 uploads each artifact to the PR attachments API and appends Markdown image/link references to the
 posted text.
@@ -1587,5 +1593,7 @@ The [Browser Sessions Add-on](packages/browser-sessions-addon/README.md) provide
 Optional shared-browser voice settings and host credential setup are described in [Browser Sessions voice](packages/browser-sessions-addon/docs/voice.md).
 
 Optional [multi-step decision execution](packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
+
+Application hosting and shared browsing are independent optional packages: [Application Environments](packages/application-environments-addon/README.md) and [Browser Sessions](packages/browser-sessions-addon/README.md). Existing combined previews require the coordinated cutover guide before upgrade.
 
 Assistant workflows can [start a fresh conversation context](docs/conversation-context-reset.md) with the existing prompt enqueue operation.

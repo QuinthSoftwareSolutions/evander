@@ -196,7 +196,7 @@
 }
 [data-admin-design] :is(.subscription-columns, .subscription-profile-summary) {
   display: grid;
-  grid-template-columns: minmax(140px, 1.15fr) minmax(150px, 1fr) minmax(70px, 0.5fr) minmax(115px, 0.7fr) minmax(105px, 0.55fr) minmax(90px, 0.5fr);
+  grid-template-columns: minmax(140px, 1.15fr) minmax(150px, 1fr) minmax(70px, 0.5fr) minmax(115px, 0.7fr) minmax(105px, 0.55fr) minmax(90px, 0.5fr) minmax(90px, 0.5fr);
   gap: 16px;
   padding: 12px 16px;
   align-items: center;
@@ -239,7 +239,7 @@
 [data-admin-design] .subscription-profile-summary .status-pill {
   margin-top: 4px;
 }
-[data-admin-design] :is(.subscription-weekly-remaining, .subscription-banked-resets) {
+[data-admin-design] :is(.subscription-weekly-remaining, .subscription-banked-resets, .subscription-credits) {
   font-weight: 600;
 }
 [data-admin-design] .subscription-profile[open] > summary {
@@ -254,7 +254,7 @@
 [data-admin-design] .subscription-profile-body .property-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
-@container (max-width: 800px) {
+@container (max-width: 920px) {
   [data-admin-design] .subscription-columns {
     display: none;
   }

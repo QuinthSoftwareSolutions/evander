@@ -64,11 +64,27 @@ class FakeManagedClient:
                     "limitId": "codex",
                     "limitName": "Codex",
                     "planType": "plus",
+                    "credits": {
+                        "hasCredits": True,
+                        "unlimited": False,
+                        "balance": "1250.50",
+                        "accessToken": "must-not-leak",
+                    },
                     "primary": {
                         "usedPercent": 73.5,
                         "windowDurationMins": 300,
                         "resetsAt": 1_800_000_000,
                         "accessToken": "must-not-leak",
+                    },
+                },
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "credits": {
+                            "hasCredits": False,
+                            "unlimited": False,
+                            "balance": "0",
+                            "refreshToken": "must-not-leak",
+                        },
                     },
                 },
                 "rateLimitResetCredits": {
@@ -293,6 +309,9 @@ def test_broker_has_one_durable_auth_file_and_one_owner(tmp_path: Path) -> None:
             CodexAuthBroker(auth_home=tmp_path / "codex-auth", client_factory=lambda *a, **k: None)
     finally:
         broker.close()
+    broker.close()
+    with pytest.raises(CodexAuthBrokerError, match="closed"):
+        broker.start_device_login()
 
 
 def test_concurrent_stale_token_refresh_happens_once(tmp_path: Path) -> None:
@@ -412,6 +431,16 @@ def test_status_reports_safe_account_limits_and_optional_usage_without_token_mat
     assert status["email"] == "owner@example.test"
     assert status["plan_type"] == "plus"
     assert status["rate_limits"]["default"]["primary"]["used_percent"] == 73.5
+    assert status["rate_limits"]["default"]["credits"] == {
+        "has_credits": True,
+        "unlimited": False,
+        "balance": "1250.50",
+    }
+    assert status["rate_limits"]["by_limit_id"]["codex"]["credits"] == {
+        "has_credits": False,
+        "unlimited": False,
+        "balance": "0",
+    }
     assert [method for method, _params in client.requests] == [
         "account/read",
         "account/rateLimits/read",

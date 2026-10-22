@@ -152,6 +152,72 @@ def test_logout_revocation_is_shared_between_auth_processes(admin):
     assert second.session_from_token(token) is None
 
 
+def test_browser_manager_cannot_select_secrets_or_change_connections(admin, domain):
+    app, auth = admin
+    service, _, peers = domain
+    users = auth.user_store
+    users.upsert_user(login="manager", display_name="Manager")
+    users.set_local_password(login="manager", password="manager-test-password")
+    users.upsert_group(group_id="managers", display_name="Managers")
+    users.set_group_permissions("managers", ["browser_sessions.manage"])
+    users.assign_user_group(login="manager", group_id="managers", directory_path="root/demo")
+    with TestClient(app, base_url="https://control.test") as client:
+        client.cookies.set(auth.config.cookie_name, auth.login("manager", "manager-test-password"))
+        path = "/api/addons/browser-sessions-addon/settings?directory=root/demo"
+        original = client.get(path).json()
+        assert original["can_manage_connections"] is False
+        for field, value in [("base_url", "https://collector.test"),
+                             ("credential_ref", "cred_" + "a" * 32),
+                             ("token_env", "EVANDER_ADMIN_WEB_SESSION_SECRET")]:
+            payload = {"expected_revision": original["revision"], "settings": __import__("copy").deepcopy(original["settings"])}
+            payload["settings"]["workers"]["worker-a"][field] = value
+            assert client.put(path, json=payload).status_code in {400, 403}
+        response = client.post("/api/addons/browser-sessions-addon/credentials?directory=root/demo", json={
+            "expected_revision": original["revision"], "purpose": "relay", "token": "untrusted-value",
+        })
+        assert response.status_code == 403
+        original["settings"]["idle_seconds"] = 120
+        assert client.put(path, json={"expected_revision": original["revision"], "settings": original["settings"]}).status_code == 200
+        assert peers.calls == []
+        assert service.store.settings("root/demo")[1].workers["worker-a"].base_url == "https://worker.test/browser"
+
+
+def test_owner_credential_changes_require_unlock_and_keep_values_private(admin, domain):
+    app, auth = admin
+    service, _, _ = domain
+    with TestClient(app, base_url="https://control.test") as client:
+        client.post("/api/auth/login")
+        path = "/api/addons/browser-sessions-addon/credentials?directory=root/demo"
+        revision, _ = service.store.settings("root/demo")
+        payload = {"expected_revision": revision, "purpose": "relay", "token": "new-private-relay-token"}
+        assert client.post(path, json=payload).status_code == 403
+        request = Request({"type": "http", "headers": [(b"cookie", (auth.config.cookie_name + "=" + client.cookies[auth.config.cookie_name]).encode())]})
+        auth.mark_privileged_for_request(request)
+        response = client.post(path, json=payload)
+        assert response.status_code == 200
+        assert payload["token"] not in response.text
+        ref = response.json()["settings"]["relay_credential_ref"]
+        assert service.credentials.store.metadata(ref)["owner_directory"] == "root/demo"
+        assert client.post(path, json=payload).status_code == 409
+
+
+def test_retargeted_saved_relay_cannot_open_a_websocket(admin, domain, hosted, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    app, _ = admin
+    service, _, _ = domain
+    private = service.store.private(hosted.id)
+    private["relay_url"] = "https://collector.test"
+    service.store.set_private(hosted.id, private)
+    async def connect(*args, **kwargs):
+        pytest.fail("A credential reached an unapproved WebSocket destination")
+    monkeypatch.setattr(web, "RelayWebSocket", connect)
+    with TestClient(app, base_url="https://control.test") as client:
+        client.post("/api/auth/login")
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/addons/browser-sessions-addon/sessions/" + hosted.id + "/stream", headers={"Origin": "https://control.test"}):
+                pass
+
+
 def test_private_relay_and_guest_roles_are_separate(domain, hosted, local):
     service, _, _ = domain
     app = relay_app(service.runtime_dir, service=service, internal_token="private-control-token")

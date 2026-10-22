@@ -25,7 +25,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
       stdio:["ignore","pipe","pipe"]});
     let controllerError=""; controller.stderr.on("data", d=>controllerError+=d);
     const path = "/test/"+config.session.id;
-    let state = await until(async()=>{const s=await f.api(path+"/state");return s.state==="ready"&&s;}, "hosted browser readiness");
+    let state = await until(async()=>{const s=await f.api(path+"/state");return s.state==="ready"&&s;}, "hosted browser readiness").catch(error=>{throw new Error(error.message+"; controller: "+controllerError);});
     const observe = ()=>f.api(path+"/command", command(state,"observe"));
     let observed = await observe();
     assert.ok(observed.elements.some(e=>e.role==="heading"&&e.name==="Station materials"));
@@ -53,7 +53,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const denied = await fetch(f.base+path+"/command",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(command(state,"click",{observation_id:observed.observation_id,ref:button.ref}))});
     assert.ok(denied.status>=400);
-    await viewer.getByRole("button",{name:"Hand back to Truman"}).click();
+    await viewer.getByRole("button",{name:"Hand back to agent"}).click();
     state=await until(async()=>{const s=await f.api(path+"/state");return s.controller==="agent:agent-a"&&s;}, "handback");
     observed=await observe();
     await f.api(path+"/command",command(state,"fill",{observation_id:observed.observation_id,
@@ -210,7 +210,7 @@ for (const failure of [
   });
 }
 
-test("guided launch-profile setup saves through the production settings API", async () => {
+test("guided browser-profile setup saves through the production settings API", async () => {
   const f = await fixture();
   let browser;
   try {
@@ -221,7 +221,7 @@ test("guided launch-profile setup saves through the production settings API", as
       { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     await page.getByRole("button", { name: "Add profile", exact: true }).click();
-    await page.getByLabel("Application image", { exact: true }).fill("seeded-preview:2");
+    await page.getByLabel("Browser image", { exact: true }).fill("seeded-preview:2");
     await page.getByLabel("Maximum steps",{exact:true}).fill("12");
     await page.getByLabel("Time limit (seconds)",{exact:true}).fill("15");
     const saved = page.waitForResponse(response =>
@@ -233,7 +233,7 @@ test("guided launch-profile setup saves through the production settings API", as
     await page.getByRole("status").getByText("Saved", { exact: true }).waitFor();
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Configure", exact: true }).click();
-    assert.equal(await page.getByLabel("Application image", { exact: true }).inputValue(),
+    assert.equal(await page.getByLabel("Browser image", { exact: true }).inputValue(),
       "seeded-preview:2");
     assert.equal(await page.getByLabel("Maximum steps",{exact:true}).inputValue(),"12");
     assert.equal(await page.getByLabel("Time limit (seconds)",{exact:true}).inputValue(),"15");
@@ -384,7 +384,7 @@ test("long hosted transcriptions leave typed chat controls reachable", async () 
     assert.ok(bounds && bounds.y>=0 && bounds.y+bounds.height<=page.viewportSize().height,
       "Send must remain inside the viewport after a long transcription");
     const followup="Please keep the button beside the material field.";
-    await page.getByRole("textbox",{name:"Message Truman",exact:true}).fill(followup);
+    await page.getByRole("textbox",{name:"Message agent",exact:true}).fill(followup);
     await send.click();
     await page.getByRole("log").getByText(followup,{exact:false}).waitFor();
     const messages=(await f.api("/test/"+config.session.id+"/messages")).messages;
@@ -444,7 +444,7 @@ test("Chrome extension records and plays voice in its sidebar without opening a 
     assert.equal(new URL(panel.url()).hash, "", "No voice capability belongs in extension URLs");
     assert.ok(!(await context.cookies()).some(cookie => cookie.name === "evander_admin_session"));
     const followup = "Continue using text.";
-    await panel.getByRole("textbox", { name: "Message Truman", exact: true }).fill(followup);
+    await panel.getByRole("textbox", { name: "Message agent", exact: true }).fill(followup);
     await panel.getByRole("button", { name: "Send", exact: true }).click();
     await panel.getByRole("log").getByText(followup, { exact: false }).waitFor();
     await panel.screenshot({ path: "test-output/local-sidebar-voice.png", fullPage: true });

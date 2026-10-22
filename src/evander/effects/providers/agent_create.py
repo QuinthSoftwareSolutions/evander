@@ -32,6 +32,7 @@ from evander.provider_config import (
 from evander.reasoning_effort import normalize_reasoning_effort
 from evander.services import parse_teams_target
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -681,7 +682,10 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 *codex_skill_files,
             ],
         )
-        session_repository.upsert_session(manifest)
+        save_session_with_subscription_profile(
+            config=config, repository=session_repository, session=manifest,
+            client=getattr(backend, "client", None),
+        )
         if existing_session is not None and (
             payload.get("_codex_auth_mode_provided")
             or payload.get("_subscription_profile_id_provided")

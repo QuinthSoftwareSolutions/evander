@@ -1,287 +1,121 @@
-"""Private, durable worker supervisor. No agent-supplied host paths or Docker options."""
+"""Browser-only worker. Applications are leased HTTP endpoints owned by other add-ons."""
 
-from __future__ import annotations
-
-from contextlib import contextmanager
-import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import secrets
 import shutil
 import socket
-import sqlite3
-import subprocess
-import sys
 import threading
-import time
 from urllib.parse import urlsplit
-
 import httpx
 from pydantic import Field, field_validator
+from evander.resources.container_runtime import ContainerSettings, ContainerSupervisor, RuntimeError
+from evander.resources.endpoints import Endpoints
+from evander.resources.jobs import Jobs
+from evander.resources.models import Lease, Owner, Profile
+from .models import BrowserError, Session, LaunchProfile, origin
 
-from .models import (
-    BrowserError,
-    Contract,
-    LaunchManifest,
-    LaunchProfile,
-    Session,
-    identifier,
-    relative_path,
-)
-from evander.session_dependencies import SessionDependencies
+CONTROL_PORT = 11895
 
 
-class WorkerSettings(Contract):
-    worker_id: str
-    worker_root: Path
-    runtime_dir: Path
+class WorkerSettings(ContainerSettings):
     token_env: str = "EVANDER_BROWSER_WORKER_TOKEN"
-    allocations_enabled: bool = False
     callback_url: str = "http://127.0.0.1:11891"
-    max_sessions: int = Field(default=1, ge=1, le=32)
-    container_user: str = "1000:1000"
     profiles: dict[str, LaunchProfile] = Field(default_factory=dict)
     relay_urls: list[str] = Field(default_factory=list)
-    sql_server: str | None = None
-    sql_admin_user: str = "sa"
-    sql_admin_password_env: str = "EVANDER_BROWSER_SQL_ADMIN_PASSWORD"
-    sqlcmd: str = "/opt/mssql-tools18/bin/sqlcmd"
+    http_target_browser_proxy_url: str | None = None
+    http_target_relay_url: str | None = None
 
-    @field_validator("container_user")
+    @field_validator("http_target_browser_proxy_url", "http_target_relay_url")
     @classmethod
-    def unprivileged_identity(cls, value):
-        parts = value.split(":")
-        if len(parts) != 2 or any(
-            not part.isascii() or not part.isdigit() or not 1 <= int(part) < 2**32 - 1
-            for part in parts
-        ):
-            raise ValueError("Expected an unprivileged numeric UID:GID")
-        return ":".join(str(int(part)) for part in parts)
+    def proxy_origin(cls, value):
+        if value is not None and origin(value) != value.rstrip("/"):
+            raise ValueError("Expected an HTTP origin")
+        return value.rstrip("/") if value else value
 
 
-def contained(root: Path, path: Path) -> Path:
-    try:
-        root, path = root.resolve(strict=True), path.resolve(strict=True)
-    except OSError:
-        raise BrowserError("Workspace is unavailable", "workspace_invalid", 409) from None
-    if path == root or root not in path.parents:
-        raise BrowserError("Workspace path escaped its owning session", "workspace_invalid", 409)
-    return path
+class Supervisor(ContainerSupervisor):
+    namespace = "browser-sessions"
 
-
-def bounded_json(path: Path, size=65536):
-    if not path.is_file() or path.stat().st_size > size:
-        raise BrowserError("Launch file is unavailable or too large", "manifest_invalid", 409)
-    return json.loads(path.read_text())
-
-
-class Supervisor:
-    def __init__(self, settings: WorkerSettings, *, command=None, now=time.time, probe=None):
-        self.settings, self.now = settings, now
-        self.command = command or self._command
-        self.probe = probe or self._probe
-        self.lock = threading.RLock()
-        self.operations = {}
-        self.root = settings.runtime_dir / "browser-sessions"
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.dependencies = SessionDependencies(settings.worker_root)
-        self.dbpath = self.root / "leases.db"
-        with self.db() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS leases(id TEXT PRIMARY KEY,payload TEXT)")
-        self.dbpath.chmod(0o600)
-
-    @contextmanager
-    def db(self):
-        db = sqlite3.connect(self.dbpath, timeout=10)
-        try:
-            yield db
-            db.commit()
-        finally:
-            db.close()
-
-    @staticmethod
-    def _command(*argv, check=True, env=None):
-        try:
-            return subprocess.run(
-                list(argv), check=check, capture_output=True, text=True, timeout=45, env=env
-            )
-        except (subprocess.SubprocessError, OSError):
-            raise BrowserError(
-                "Worker resource operation failed; inspect private diagnostics",
-                "worker_operation_failed",
-                503,
-            ) from None
-
-    def docker(self, *args, **kwargs):
-        return self.command("docker", *args, **kwargs)
-
-    def inspect(self, name, kind="container"):
-        result = self.docker(kind, "inspect", name, check=False)
-        if result.returncode:
-            # Missing is distinguishable from a stopped Docker daemon.
-            self.docker("info", "--format", "{{.ServerVersion}}")
-            return None
-        return json.loads(result.stdout)[0]
-
-    def save(self, lease):
-        with self.db() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO leases VALUES(?,?)", (lease["id"], json.dumps(lease))
-            )
-
-    def get(self, session_id):
-        identifier(session_id)
-        with self.db() as db:
-            row = db.execute("SELECT payload FROM leases WHERE id=?", (session_id,)).fetchone()
-        if not row:
-            raise BrowserError("Unknown worker browser session", "not_found", 404)
-        return json.loads(row[0])
-
-    def leases(self):
-        with self.db() as db:
-            return [json.loads(row[0]) for row in db.execute("SELECT payload FROM leases")]
-
-    def session_root(self, parent_id):
-        identifier(parent_id)
-        base = self.settings.worker_root / "sessions"
-        return contained(base, base / parent_id)
-
-    def workspaces(self, parent_id):
-        root = self.session_root(parent_id)
-        home = root / "agent_home"
-        if not home.exists():
-            return {"workspaces": []}
-        # Enumerate only repository roots, never arbitrary home or artifact mounts.
-        candidates = []
-        repos = home / "repos"
-        if repos.is_dir():
-            candidates.extend(p for p in repos.iterdir() if p.is_dir() and (p / ".git").exists())
-        receipts = root / "task-worktree-preparation-receipts"
-        if receipts.is_dir():
-            for receipt in receipts.glob("*.json"):
-                if receipt.is_symlink():
-                    continue
-                value = bounded_json(receipt)
-                target = value.get("target_dir", "")
-                if value.get("version") != 1 or not target.startswith("/home/agent/"):
-                    continue
-                candidates.append(home / target.removeprefix("/home/agent/"))
-        result = []
-        for candidate in candidates:
-            try:
-                actual = contained(home, candidate)
-                if not (actual / ".git").exists():
-                    continue
-                relative = actual.relative_to(home).as_posix()
-                ref = hashlib.sha256((parent_id + "\0" + relative).encode()).hexdigest()[:32]
-                result.append({"ref": ref, "path": "/home/agent/" + relative})
-            except (OSError, ValueError):
-                continue
-        return {"workspaces": list({item["ref"]: item for item in result}.values())}
-
-    def resolve_workspace(self, parent_id, ref):
-        for item in self.workspaces(parent_id)["workspaces"]:
-            if secrets.compare_digest(item["ref"], ref):
-                return contained(
-                    self.session_root(parent_id) / "agent_home",
-                    self.session_root(parent_id)
-                    / "agent_home"
-                    / item["path"].removeprefix("/home/agent/"),
-                )
-        raise BrowserError(
-            "Workspace reference does not belong to this agent", "workspace_invalid", 409
+    def __init__(self, settings, *, jobs=None, **kwargs):
+        super().__init__(settings, **kwargs)
+        self.endpoints = Endpoints(settings.worker_root / "runtime")
+        self.jobs = jobs or Jobs(
+            "browser-sessions-addon", settings.worker_root / "runtime/worker-jobs.db"
         )
+
+    def targets(self, session):
+        endpoints = []
+        for ref in session.endpoint_refs:
+            try:
+                endpoints.append(
+                    self.endpoints.resolve(
+                        ref,
+                        session_id=session.agent_session_id,
+                        directory=session.directory,
+                        worker_id=self.settings.worker_id,
+                    )
+                )
+            except ValueError:
+                if session.endpoint_origins.get(ref) in session.allowed_origins:
+                    raise
+        return endpoints
 
     def create(self, payload):
         session = Session.model_validate(payload["session"])
         profile = LaunchProfile.model_validate(payload["profile"])
+        if session.mode != "hosted" or session.worker_id != self.settings.worker_id:
+            raise BrowserError("Browser worker assignment mismatch")
         if not self.settings.allocations_enabled:
-            raise BrowserError("Worker preview allocations are disabled", "disabled", 409)
-        if session.worker_id != self.settings.worker_id or session.mode == "user_hosted":
-            raise BrowserError("Worker assignment mismatch", "worker_mismatch", 409)
-        approved = self.settings.profiles.get(session.profile_id)
-        if approved is None or approved != profile:
-            raise BrowserError(
-                "Launch profile differs from the worker-approved profile", "profile_mismatch", 409
-            )
+            raise BrowserError("Browser allocations are disabled")
+        if self.settings.profiles.get(session.profile_id) != profile:
+            raise BrowserError("Browser profile differs from worker approval")
         if not self.now() < session.expires_at <= self.now() + 86400:
-            raise BrowserError("Invalid preview lease")
-        relay = str(payload["relay_url"])
-        if relay not in self.settings.relay_urls:
-            raise BrowserError("Browser relay is not approved on this worker", "relay_denied", 403)
+            raise BrowserError("Invalid browser lease")
+        if payload["relay_url"] not in self.settings.relay_urls:
+            raise BrowserError("Browser relay is not approved")
+        if session.target_aliases and not self.settings.http_target_browser_proxy_url:
+            raise BrowserError("HTTP target browser proxy is not configured")
+        self.targets(session)
+        if origin(session.entry_url) not in session.allowed_origins:
+            raise BrowserError("Browser entry origin is not approved")
         with self.lock:
             try:
                 old = self.get(session.id)
-            except BrowserError as exc:
+            except RuntimeError as exc:
                 if exc.status != 404:
                     raise
                 old = None
             if old:
                 if old["session"] != session.model_dump() or old["profile"] != profile.model_dump():
-                    raise BrowserError("Preview identity conflict", "identity_conflict", 409)
+                    raise BrowserError("Browser identity conflict")
                 return self.receipt(old)
-            active = [item for item in self.leases() if item["state"] != "closed"]
+            active = [lease for lease in self.leases() if lease["state"] != "closed"]
             if len(active) >= self.settings.max_sessions or any(
-                item["session"]["agent_session_id"] == session.agent_session_id for item in active
+                lease["session"]["agent_session_id"] == session.agent_session_id for lease in active
             ):
-                raise BrowserError("Worker preview quota reached", "quota_exceeded", 409)
-            workspace = self.resolve_workspace(session.agent_session_id, session.workspace_ref)
-            manifest_path = contained(
-                workspace, workspace / relative_path(session.launch_manifest_path)
-            )
-            manifest = LaunchManifest.model_validate(bounded_json(manifest_path))
-            if manifest.database and (
-                not self.settings.sql_server
-                or not os.environ.get(self.settings.sql_admin_password_env)
-            ):
-                raise BrowserError(
-                    "Preview database service is not configured", "database_unavailable", 409
-                )
-            if manifest.database and not profile.database_enabled:
-                raise BrowserError(
-                    "This profile does not permit a database", "database_denied", 403
-                )
-            contained(
-                workspace, workspace / manifest.working_directory
-            ) if manifest.working_directory != "." else workspace
-            name = "evbs-" + session.id.removeprefix("browser-")
-            origins = [
-                f"http://{name}-app:{port}" for port in [manifest.port, *manifest.additional_ports]
-            ]
+                raise BrowserError("Browser quota reached")
             lease = {
                 "id": session.id,
-                "name": name,
+                "name": "evbs-" + session.id.removeprefix("browser-"),
                 "state": "accepted",
                 "session": session.model_dump(),
                 "profile": profile.model_dump(),
                 "container_user": self.settings.container_user,
-                "workspace": str(workspace),
-                "manifest": manifest.model_dump(),
-                "allowed_origins": origins,
-                "relay_url": relay,
-                "endpoint_token": payload["endpoint_token"],
                 "expires_at": session.expires_at,
+                "relay_url": payload["relay_url"],
+                "endpoint_token": payload["endpoint_token"],
+                "proxy_token": payload["proxy_token"],
+                "allowed_origins": session.allowed_origins,
                 "error": None,
+                "target_bindings": [],
+                "binding": None,
             }
-            lease["workspace_path"] = (
-                "/home/agent/"
-                + workspace.relative_to(
-                    self.session_root(session.agent_session_id) / "agent_home"
-                ).as_posix()
-            )
-            # Durable cleanup registrations precede every resource side effect.
-            callback = (
-                self.settings.callback_url.rstrip("/") + "/v1/sessions/" + session.id + "/close"
-            )
             self.dependencies.register(
-                session.agent_session_id, session.id + ":worker", callback, self.settings.token_env
-            )
-            self.dependencies.register(
-                "workspace:" + session.agent_session_id + ":" + lease["workspace_path"],
-                session.id + ":workspace",
-                callback,
+                session.agent_session_id,
+                session.id + ":worker",
+                self.settings.callback_url + "/v1/sessions/" + session.id + "/close",
                 self.settings.token_env,
             )
             self.save(lease)
@@ -292,126 +126,156 @@ class Supervisor:
             "id": lease["id"],
             "state": lease["state"],
             "allowed_origins": lease["allowed_origins"],
-            "workspace_path": lease["workspace_path"],
+            "control_generation": lease["session"]["control_generation"],
             "error": lease["error"],
         }
 
-    def host_mount_command(self, *args, **kwargs):
-        # Docker resolves bind sources in the host mount namespace. PrivateTmp
-        # places the supervisor in another namespace, so pin/cleanup explicitly there.
-        return self.command(
-            "nsenter", "--target=1", "--mount", "--root", "--wd", "--", *args, **kwargs
-        )
-
-    def ipt(self, *args, **kwargs):
-        return self.command("iptables", "-w", "5", *args, **kwargs)
-
-    def firewall(self, lease):
-        subnet = str(ipaddress.IPv4Network(lease["subnet"]))
-        chain = "EVBS_" + lease["name"][5:23]
-        # A private bridge plus filtering in FORWARD and INPUT. Bridge filtering
-        # must exist before containers can run; no fail-open fallback.
-        self.command("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1")
-        self.ipt("-N", chain, check=False)
-        for parent in ("DOCKER-USER", "INPUT"):
-            if self.ipt("-C", parent, "-j", chain, check=False).returncode:
-                self.ipt("-I", parent, "1", "-j", chain)
-        self.ipt("-F", chain)
-        self.ipt(
-            "-A",
-            chain,
-            "-s",
-            subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        )
-        # The bridge gateway is a host address inside this subnet. Permit only
-        # the browser's declared application ports; never accept the whole subnet
-        # in a chain also reached from INPUT.
-        for port in [lease["manifest"]["port"], *lease["manifest"]["additional_ports"]]:
-            self.ipt(
-                "-A", chain, "-s", lease["browser_ip"], "-d", lease["app_ip"],
-                "-p", "tcp", "--dport", str(port), "-j", "ACCEPT",
-            )
-        for source, host, port in lease["egress"]:
-            self.ipt(
-                "-A",
-                chain,
-                "-s",
-                source,
-                "-d",
-                str(ipaddress.IPv4Address(host)),
-                "-p",
-                "tcp",
-                "--dport",
-                str(port),
-                "-j",
-                "ACCEPT",
-            )
-        self.ipt("-A", chain, "-s", subnet, "-j", "DROP")
-        self.ipt(
-            "-A",
-            chain,
-            "-d",
-            subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        )
-        self.ipt("-A", chain, "-d", subnet, "-j", "DROP")
-
-    def remove_firewall(self, lease):
-        chain = "EVBS_" + lease["name"][5:23]
-        if self.ipt("-S", chain, check=False).returncode == 0:
-            for parent in ("DOCKER-USER", "INPUT"):
-                if self.ipt("-C", parent, "-j", chain, check=False).returncode == 0:
-                    self.ipt("-D", parent, "-j", chain)
-            self.ipt("-F", chain)
-            self.ipt("-X", chain)
-
-    def _sql(self, statement):
-        settings = self.settings
-        password = os.environ.get(settings.sql_admin_password_env)
-        if not settings.sql_server or not password:
+    def controller(self, lease, payload):
+        try:
+            with httpx.Client(timeout=15, trust_env=False) as client:
+                response = client.post(
+                    f"http://{lease['browser_ip']}:{CONTROL_PORT}/control",
+                    json=payload,
+                    headers={"Authorization": "Bearer " + lease["endpoint_token"]},
+                )
+                response.raise_for_status()
+                value = response.json()
+                if value.get("fenced") is not True:
+                    raise ValueError()
+                return value
+        except (httpx.HTTPError, ValueError):
             raise BrowserError(
-                "Preview database service is unavailable", "database_unavailable", 503
-            )
-        self.command(
-            settings.sqlcmd,
-            "-S",
-            settings.sql_server,
-            "-U",
-            settings.sql_admin_user,
-            "-b",
-            "-C",
-            "-Q",
-            statement,
-            env={**os.environ, "SQLCMDPASSWORD": password},
-        )
+                "Browser control fence is unconfirmed", "fence_unconfirmed", 503
+            ) from None
 
-    def provision_database(self, lease):
-        # Names/password are generated by the supervisor, never SQL identifiers
-        # from a repository or agent. Admin credentials remain in the worker.
-        name = "preview_" + lease["name"].removeprefix("evbs-")
-        password = lease.setdefault("database_password", secrets.token_urlsafe(32) + "Aa1!")
-        lease["database_name"] = name
+    def fence(self, session_id, payload):
+        with self.lock:
+            lease = self.get(session_id)
+            session = Session.model_validate(payload["session"])
+            if (
+                session.id != session_id
+                or session.agent_session_id != lease["session"]["agent_session_id"]
+                or session.control_generation < lease["session"]["control_generation"]
+            ):
+                raise BrowserError("Invalid browser control generation")
+            result = self.controller(lease, {"session": session.model_dump()})
+            lease["session"] = session.model_dump()
+            self.save(lease)
+            return result
+
+    def connect(self, session_id, payload):
+        with self.lock:
+            lease = self.get(session_id)
+            session = Session.model_validate(payload["session"])
+            profile = LaunchProfile.model_validate(lease["profile"])
+            if (
+                not profile.playwright_enabled
+                or session.id != session_id
+                or session.agent_session_id != lease["session"]["agent_session_id"]
+                or session.controller != "agent:" + session.agent_session_id
+                or session.state != "ready"
+            ):
+                raise BrowserError("Playwright control is unavailable", "control_required", 403)
+            self.targets(session)
+            owner = Owner(
+                key=session.agent_session_id,
+                session_id=session.agent_session_id,
+                directory=session.directory,
+                valid_until=session.expires_at,
+            )
+            job = self.jobs.current(owner)
+            if job is None:
+                raise BrowserError("Playwright requires the owner's current worker job")
+            if lease.get("binding"):
+                binding = Lease.model_validate(lease["binding"])
+                self.jobs.unbind(binding, lambda: self._save_binding(lease, binding))
+            token = secrets.token_urlsafe(32)
+            binding = Lease(
+                lease_id="rs-" + secrets.token_hex(16),
+                owner=owner,
+                profile_id=session.profile_id,
+                profile=Profile(),
+                created_at=self.now(),
+                expires_at=session.expires_at,
+                resources={"network": lease["name"]},
+            )
+            self._save_binding(lease, binding)
+            self.controller(lease, {"session": session.model_dump(), "automation_token": token})
+            connection = {
+                "browser": {
+                    "host": lease["browser_ip"],
+                    "port": CONTROL_PORT,
+                    "endpoint": f"ws://{lease['browser_ip']}:{CONTROL_PORT}/connect",
+                    "headers": {
+                        "Authorization": "Bearer " + token,
+                        "X-Evander-Control-Generation": str(session.control_generation),
+                    },
+                    "session_id": session.id,
+                    "generation": session.control_generation,
+                    "proxy": (
+                        {
+                            "server": self.settings.http_target_browser_proxy_url,
+                            "username": "proxy~" + session.id,
+                            "password": lease["proxy_token"],
+                            "bypass": ",".join(
+                                urlsplit(item.origin).hostname for item in self.targets(session)
+                            ),
+                        }
+                        if session.target_aliases
+                        else None
+                    ),
+                }
+            }
+            try:
+                self.jobs.bind(binding, job, connection, lambda: self._save_binding(lease, binding))
+            except Exception:
+                self.controller(lease, {"revoke_automation": True})
+                raise
+            lease["session"] = session.model_dump()
+            self.save(lease)
+            return {"config_path": binding.config_path}
+
+    def _save_binding(self, lease, binding):
+        lease["binding"] = binding.model_dump()
         self.save(lease)
-        # SQL Server resolves USE while compiling a batch, before CREATE
-        # DATABASE in that batch executes. Finish creation before selecting it.
-        self._sql(f"IF DB_ID('{name}') IS NULL CREATE DATABASE [{name}];")
-        self._sql(
-            f"IF SUSER_ID('{name}') IS NULL CREATE LOGIN [{name}] WITH PASSWORD='{password}'; "
-            f"USE [{name}]; IF USER_ID('{name}') IS NULL CREATE USER [{name}] FOR LOGIN [{name}]; "
-            f"ALTER ROLE db_owner ADD MEMBER [{name}];"
-        )
-        return f"Server={self.settings.sql_server};Database={name};User Id={name};Password={password};TrustServerCertificate=True"
+
+    def detach_resource(self, session_id, resource_id):
+        with self.lock:
+            lease = self.get(session_id)
+            matching = [
+                item for item in lease["target_bindings"] if item["resource_id"] == resource_id
+            ]
+            if not matching:
+                return {"released": True}
+            revoked = {item["origin"] for item in matching}
+            session = Session.model_validate(lease["session"])
+            session.allowed_origins = [url for url in session.allowed_origins if url not in revoked]
+            session.controller = None
+            session.control_generation += 1
+            session.state = "paused"
+            self.controller(lease, {"session": session.model_dump()})
+            for item in matching:
+                self._withdraw_target(lease, item)
+                lease["target_bindings"].remove(item)
+            lease["allowed_origins"] = session.allowed_origins
+            lease["session"] = session.model_dump()
+            self.save(lease)
+            return {"released": True}
+
+    def _withdraw_target(self, lease, item):
+        from evander.resources.projection import RESOURCE_CHAIN
+
+        for rule in item.get("rules", []):
+            status = self.ipt("-C", RESOURCE_CHAIN, *rule, check=False).returncode
+            if status not in {0, 1}:
+                raise BrowserError("Cannot verify endpoint network withdrawal")
+            if status == 0:
+                self.ipt("-D", RESOURCE_CHAIN, *rule)
+        # Docker network deletion remains guarded until this consumer detaches.
+        value = self.inspect(lease["name"] + "-browser")
+        if value and item["network"] in value.get("NetworkSettings", {}).get("Networks", {}):
+            self.docker("network", "disconnect", item["network"], lease["name"] + "-browser")
+        self.dependencies.remove(lease["id"] + ":target:" + item["ref"])
 
     def start(self, lease):
         with self.lock:
@@ -425,80 +289,116 @@ class Supervisor:
             if lease["state"] != "accepted":
                 return
             lease["state"] = "starting"
-            self.save(lease)
+            if not self.checkpoint(lease):
+                return
         try:
-            profile, manifest = (
-                LaunchProfile.model_validate(lease["profile"]),
-                LaunchManifest.model_validate(lease["manifest"]),
-            )
+            session = Session.model_validate(lease["session"])
+            profile = LaunchProfile.model_validate(lease["profile"])
+            endpoints = self.targets(session)
             folder = self.root / lease["id"]
             folder.mkdir(mode=0o700, exist_ok=True)
-            output = folder / "output"
-            output.mkdir(mode=0o700, exist_ok=True)
-            identity = lease.get("container_user", "1000:1000")
-            os.chown(output, *map(int, identity.split(":")))
             self.docker(
                 "network",
                 "create",
                 "--label",
-                "evander.browser=" + lease["id"],
+                "evander.resource=" + lease["id"],
                 "--opt",
                 "com.docker.network.bridge.enable_icc=false",
                 "--ipv6=false",
                 lease["name"],
             )
-            network = self.inspect(lease["name"], "network")
-            subnet = ipaddress.IPv4Network(network["IPAM"]["Config"][0]["Subnet"])
-            lease.update(
-                subnet=str(subnet),
-                app_ip=str(subnet.network_address + 2),
-                browser_ip=str(subnet.network_address + 3),
+            subnet = ipaddress.IPv4Network(
+                self.inspect(lease["name"], "network")["IPAM"]["Config"][0]["Subnet"]
             )
-            parsed = urlsplit(lease["relay_url"])
-            relay_ip = socket.gethostbyname(parsed.hostname)
-            egress = [
-                (
-                    lease["browser_ip"],
-                    relay_ip,
-                    parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
+            lease.update(subnet=str(subnet), browser_ip=str(subnet.network_address + 2), egress=[])
+            hosts = []
+            for url in [
+                lease["relay_url"],
+                self.settings.http_target_browser_proxy_url,
+                self.settings.http_target_relay_url,
+            ]:
+                if not url:
+                    continue
+                parsed = urlsplit(url)
+                address = socket.gethostbyname(parsed.hostname)
+                hosts += ["--add-host", parsed.hostname + ":" + address]
+                lease["egress"].append(
+                    (
+                        lease["browser_ip"],
+                        address,
+                        parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
+                    )
                 )
-            ]
-            for target in profile.egress_allowlist:
-                address, port = target.rsplit(":", 1)
-                address, port = str(ipaddress.IPv4Address(address)), int(port)
-                if not 1 <= port <= 65535:
-                    raise BrowserError("Invalid approved egress port")
-                egress.append((lease["app_ip"], address, port))
-            lease["egress"] = egress
-            self.save(lease)
-            self.firewall(lease)
-            environment = {
-                **profile.public_environment,
-                "EVANDER_PREVIEW_ORIGIN": lease["allowed_origins"][0],
-                "EVANDER_PREVIEW_ENTRY_URL": lease["allowed_origins"][0] + manifest.entry_path,
-                "EVANDER_PREVIEW_OUTPUT": "/run/preview-output",
-                "EVANDER_PREVIEW_SESSION_ID": lease["id"],
-            }
-            if manifest.database:
-                environment["EVANDER_PREVIEW_DATABASE"] = self.provision_database(lease)
-            envfile = folder / "app.env"
-            if any("\n" in value or "\r" in value for value in environment.values()):
-                raise BrowserError("Preview environment values must be single-line")
-            envfile.write_text(
-                "".join(key + "=" + value + "\n" for key, value in environment.items())
+            # Worker-only authenticated control, plus job-specific rules installed by Jobs.bind.
+            lease["egress"].append(
+                (str(subnet.network_address + 1), lease["browser_ip"], CONTROL_PORT)
             )
-            envfile.chmod(0o600)
-            common = [
+            if not self.checkpoint(lease):
+                return
+            self.firewall(lease)
+            config = {
+                "session": lease["session"],
+                "allowed_origins": lease["allowed_origins"],
+                "relay_url": lease["relay_url"],
+                "endpoint_token": lease["endpoint_token"],
+                "entry_url": session.entry_url,
+                "playwright_enabled": profile.playwright_enabled,
+                "proxy": (
+                    {
+                        "server": self.settings.http_target_browser_proxy_url,
+                        "username": "proxy~" + session.id,
+                        "password": lease["proxy_token"],
+                        "bypass": ",".join(urlsplit(item.origin).hostname for item in endpoints),
+                    }
+                    if session.target_aliases
+                    else None
+                ),
+                "website_session": {
+                    "relay_url": self.settings.http_target_relay_url,
+                    "session_id": "proxy~" + session.id,
+                    "token": lease["proxy_token"],
+                    "aliases": session.target_aliases,
+                },
+            }
+            configfile = folder / "browser.json"
+            configfile.write_text(json.dumps(config))
+            configfile.chmod(0o600)
+            os.chown(configfile, *map(int, lease["container_user"].split(":")))
+            mounts = []
+            from evander.worker.sandbox_profile import (
+                WorkerReadOnlyMount,
+                validate_worker_read_only_mount,
+            )
+
+            for source, target in profile.readonly_mounts.items():
+                validate_worker_read_only_mount(
+                    WorkerReadOnlyMount(host_path=source, container_path=target)
+                )
+                if target == "/run" or target.startswith("/run/"):
+                    raise BrowserError("Cache mount overlaps browser state")
+                mounts += ["--mount", f"type=bind,src={source},dst={target},readonly"]
+            startup = {item.startup_state_path for item in endpoints if item.startup_state_path}
+            if len(startup) == 1:
+                mounts += [
+                    "--mount",
+                    f"type=bind,src={next(iter(startup))},dst=/run/preview-output,readonly",
+                ]
+            self.docker(
+                "create",
+                "--name",
+                lease["name"] + "-browser",
                 "--label",
-                "evander.browser=" + lease["id"],
+                "evander.resource=" + lease["id"],
                 "--network",
                 lease["name"],
+                "--ip",
+                lease["browser_ip"],
+                "--user",
+                lease["container_user"],
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
-                "--user",
-                identity,
                 "--pids-limit",
                 "512",
                 "--dns",
@@ -506,167 +406,124 @@ class Supervisor:
                 "--init",
                 "--pull",
                 "never",
-                "--log-opt",
-                "max-size=10m",
-                "--log-opt",
-                "max-file=2",
-            ]
-            mounts = []
-            for source, target in profile.readonly_mounts.items():
-                from evander.worker.sandbox_profile import validate_worker_read_only_mount
-                from evander.worker.sandbox_profile import WorkerReadOnlyMount
-
-                validate_worker_read_only_mount(
-                    WorkerReadOnlyMount(host_path=source, container_path=target)
-                )
-                reserved = ("/workspace", "/run/browser.json", "/run/preview-output")
-                if any(
-                    target == path
-                    or target.startswith(path + "/")
-                    or path.startswith(target.rstrip("/") + "/")
-                    for path in reserved
-                ):
-                    raise BrowserError("Toolchain mount overlaps preview-owned paths")
-                if not Path(source).is_absolute() or not Path(source).exists():
-                    raise BrowserError("Approved toolchain mount is unavailable")
-                mounts += ["--mount", f"type=bind,src={source},dst={target},readonly"]
-            remaining = max(1, int(lease["expires_at"] - self.now()))
-            workspace = self.resolve_workspace(
-                lease["session"]["agent_session_id"], lease["session"]["workspace_ref"]
-            )
-            descriptor = os.open(
-                self.settings.worker_root, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
-            )
-            try:
-                for component in workspace.relative_to(self.settings.worker_root.resolve()).parts:
-                    next_descriptor = os.open(
-                        component, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
-                    )
-                    os.close(descriptor)
-                    descriptor = next_descriptor
-            except BaseException:
-                os.close(descriptor)
-                raise
-            mount_source = folder / "workspace"
-            try:
-                mount_source.mkdir(mode=0o700, exist_ok=True)
-                # libmount must not canonicalize the proc-fd back into an agent-
-                # controlled path. The kernel bind holds the already checked inode.
-                checked = os.fstat(descriptor)
-                self.host_mount_command(
-                    sys.executable, "-B", "-m", "evander_browser_sessions_addon.mount_pin",
-                    "--worker-root", str(self.settings.worker_root),
-                    "--relative", workspace.relative_to(self.settings.worker_root.resolve()).as_posix(),
-                    "--target", str(mount_source),
-                    "--device", str(checked.st_dev), "--inode", str(checked.st_ino),
-                )
-                self.docker(
-                    "run",
-                    "-d",
-                    "--name",
-                    lease["name"] + "-app",
-                    *common,
-                    "--ip",
-                    lease["app_ip"],
-                    "--network-alias",
-                    lease["name"] + "-app",
-                    "--cpus",
-                    str(profile.cpus),
-                    "--memory",
-                    str(profile.memory_mib) + "m",
-                    "--memory-swap",
-                    str(profile.memory_mib) + "m",
-                    "--env-file",
-                    str(envfile),
-                    "--mount",
-                    f"type=bind,src={mount_source},dst=/workspace",
-                    "--mount",
-                    f"type=bind,src={output},dst=/run/preview-output",
-                    *mounts,
-                    "--workdir",
-                    "/workspace/" + manifest.working_directory,
-                    "--entrypoint",
-                    "/usr/bin/timeout",
-                    profile.image,
-                    "--signal=TERM",
-                    "--kill-after=10",
-                    str(remaining),
-                    *manifest.command,
-                )
-            finally:
-                os.close(descriptor)
-            address = f"http://{lease['app_ip']}:{manifest.port}{manifest.readiness_path}"
-            deadline = min(self.now() + manifest.startup_seconds, lease["expires_at"])
-            while not self.probe(address):
-                if self.now() >= deadline:
-                    raise BrowserError(
-                        "Preview readiness deadline exceeded", "startup_timeout", 504
-                    )
-                if self.get(lease["id"])["state"] == "closing":
-                    return
-                time.sleep(1)
-            if self.get(lease["id"])["state"] == "closing":
-                return
-            state = dict(lease["session"], allowed_origins=lease["allowed_origins"])
-            config = {
-                "relay_url": lease["relay_url"],
-                "endpoint_token": lease["endpoint_token"],
-                "allowed_origins": lease["allowed_origins"],
-                "session": state,
-                "entry_url": lease["allowed_origins"][0] + manifest.entry_path,
-            }
-            configfile = folder / "browser.json"
-            configfile.write_text(json.dumps(config))
-            # Mounted as an individual file into a separate unprivileged container.
-            configfile.chmod(0o444)
-            self.docker(
-                "run",
-                "-d",
-                "--name",
-                lease["name"] + "-browser",
-                *common,
-                "--ip",
-                lease["browser_ip"],
-                "--add-host",
-                parsed.hostname + ":" + relay_ip,
                 "--memory",
-                str(profile.browser_memory_mib) + "m",
+                str(profile.memory_mib) + "m",
+                "--memory-swap",
+                str(profile.memory_mib) + "m",
                 "--cpus",
-                "1",
+                str(profile.cpus),
                 "--env",
                 "EVANDER_BROWSER_CONNECTION=/run/browser.json",
                 "--mount",
                 f"type=bind,src={configfile},dst=/run/browser.json,readonly",
-                "--mount",
-                f"type=bind,src={output},dst=/run/preview-output,readonly",
+                *hosts,
+                *sum(
+                    (
+                        ["--add-host", urlsplit(item.origin).hostname + ":" + item.address]
+                        for item in endpoints
+                    ),
+                    [],
+                ),
                 *mounts,
-                profile.browser_image,
+                profile.image,
             )
-            if self.get(lease["id"])["state"] != "closing":
-                lease["state"] = "running"
-                self.save(lease)
-        except Exception:
-            if self.get(lease["id"])["state"] != "closing":
-                lease["state"], lease["error"] = (
-                    "failed",
-                    "Preview startup failed; close to release resources",
-                )
-                self.save(lease)
+            from evander.resources.projection import RESOURCE_CHAIN
 
-    @staticmethod
-    def _probe(address):
-        try:
-            with httpx.Client(timeout=2, trust_env=False, follow_redirects=False) as client:
-                return client.get(address).status_code < 500
-        except httpx.HTTPError:
-            return False
+            networks = {}
+            for endpoint in endpoints:
+                if endpoint.network not in networks:
+                    network = self.inspect(endpoint.network, "network")
+                    address = str(
+                        ipaddress.IPv4Network(
+                            network["IPAM"]["Config"][0]["Subnet"]
+                        ).network_address
+                        + 3
+                    )
+                    self.docker(
+                        "network",
+                        "connect",
+                        "--ip",
+                        address,
+                        endpoint.network,
+                        lease["name"] + "-browser",
+                    )
+                    networks[endpoint.network] = address
+                rule = [
+                    "-s",
+                    networks[endpoint.network] + "/32",
+                    "-d",
+                    endpoint.address + "/32",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(endpoint.port),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    lease["id"] + ":" + endpoint.ref,
+                    "-j",
+                    "ACCEPT",
+                ]
+                rules = [rule]
+                # Docker may choose an attached application's bridge as the default
+                # route. Preserve only the same explicitly approved host services
+                # from that interface; its subnet remains otherwise denied.
+                for source, destination, port in lease["egress"]:
+                    if source != lease["browser_ip"]:
+                        continue
+                    rules.append(
+                        [
+                            "-s",
+                            networks[endpoint.network] + "/32",
+                            "-d",
+                            destination + "/32",
+                            "-p",
+                            "tcp",
+                            "--dport",
+                            str(port),
+                            "-m",
+                            "comment",
+                            "--comment",
+                            lease["id"] + ":" + endpoint.ref,
+                            "-j",
+                            "ACCEPT",
+                        ]
+                    )
+                item = {**endpoint.model_dump(), "rules": rules}
+                lease["target_bindings"].append(item)
+                if not self.checkpoint(lease):
+                    return
+                self.dependencies.register(
+                    "resource:" + endpoint.resource_id,
+                    lease["id"] + ":target:" + endpoint.ref,
+                    self.settings.callback_url
+                    + "/v1/sessions/"
+                    + lease["id"]
+                    + "/detach-"
+                    + endpoint.resource_id,
+                    self.settings.token_env,
+                )
+                for allowed in rules:
+                    self.jobs.allow_rule(RESOURCE_CHAIN, allowed)
+            self.docker("start", lease["name"] + "-browser")
+            lease["state"] = "running"
+            if not self.checkpoint(lease):
+                return
+        except Exception as error:
+            lease["diagnostic"] = self.diagnostic(error)
+            lease["state"], lease["error"] = (
+                "failed",
+                "Browser startup failed; close to release resources",
+            )
+            if not self.checkpoint(lease):
+                return
 
     def close(self, session_id):
         with self.lock:
             operation = self.operations.setdefault(session_id, threading.RLock())
             try:
                 lease = self.get(session_id)
-            except BrowserError as exc:
+            except RuntimeError as exc:
                 if exc.status == 404:
                     return {"released": True}
                 raise
@@ -675,57 +532,42 @@ class Supervisor:
             lease["state"] = "closing"
             self.save(lease)
         with operation:
-            try:
-                lease = self.get(session_id)
-            except BrowserError as exc:
-                if exc.status == 404:
-                    return {"released": True}
-                raise
+            lease = self.get(session_id)
             if lease["state"] == "closed":
                 return {"released": True}
             lease["state"] = "closing"
             self.save(lease)
             try:
-                for suffix in ("browser", "app"):
-                    name = lease["name"] + "-" + suffix
-                    value = self.inspect(name)
-                    if value:
-                        if value["Config"].get("Labels", {}).get("evander.browser") != session_id:
-                            raise BrowserError("Refusing to remove an unowned container")
-                        self.docker("rm", "--force", name)
+                if lease.get("binding"):
+                    binding = Lease.model_validate(lease["binding"])
+                    self.jobs.unbind(binding, lambda: self._save_binding(lease, binding))
+                for item in list(lease["target_bindings"]):
+                    self._withdraw_target(lease, item)
+                    lease["target_bindings"].remove(item)
+                    self.save(lease)
+                container = self.inspect(lease["name"] + "-browser")
+                if container:
+                    if container["Config"].get("Labels", {}).get("evander.resource") != session_id:
+                        raise BrowserError("Refusing to remove an unowned browser")
+                    self.docker("rm", "--force", lease["name"] + "-browser")
                 network = self.inspect(lease["name"], "network")
                 if network:
-                    if network.get("Labels", {}).get("evander.browser") != session_id:
+                    if network.get("Labels", {}).get("evander.resource") != session_id:
                         raise BrowserError("Refusing to remove an unowned network")
                     self.docker("network", "rm", lease["name"])
                 self.remove_firewall(lease)
-                if lease.get("database_name"):
-                    name = lease["database_name"]
-                    self._sql(
-                        f"IF DB_ID('{name}') IS NOT NULL BEGIN ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]; END; IF SUSER_ID('{name}') IS NOT NULL DROP LOGIN [{name}];"
-                    )
-                mount_source = self.root / session_id / "workspace"
-                if mount_source.exists():
-                    result = self.host_mount_command(
-                        "mountpoint", "-q", "--", str(mount_source), check=False
-                    )
-                    if result.returncode == 0:
-                        self.host_mount_command("umount", "--", str(mount_source))
-                    elif result.returncode != 32:  # util-linux: present, not a mountpoint
-                        raise BrowserError("Could not verify workspace mount cleanup")
-                shutil.rmtree(self.root / session_id, ignore_errors=False) if (
-                    self.root / session_id
-                ).exists() else None
+                folder = self.root / session_id
+                if folder.exists():
+                    shutil.rmtree(folder)
                 self.dependencies.remove(session_id + ":worker")
-                self.dependencies.remove(session_id + ":workspace")
                 lease["state"], lease["error"] = "closed", None
                 lease.pop("endpoint_token", None)
-                lease.pop("database_password", None)
+                lease.pop("proxy_token", None)
                 self.save(lease)
             except Exception:
                 lease["state"], lease["error"] = (
                     "cleanup_failed",
-                    "Worker cleanup failed; resources remain reserved",
+                    "Browser cleanup is unconfirmed; dependency retained",
                 )
                 self.save(lease)
                 raise BrowserError(lease["error"], "cleanup_failed", 503) from None
@@ -738,26 +580,35 @@ class Supervisor:
             if self.now() >= lease["expires_at"] or lease["state"] in {"closing", "cleanup_failed"}:
                 self.close(lease["id"])
             elif startup and lease["state"] == "starting":
-                # A crash may have run migrations. Never blindly replay startup.
                 lease["state"], lease["error"] = (
                     "failed",
-                    "Startup was interrupted; close and create a new preview",
+                    "Startup interrupted; close before retrying",
                 )
                 self.save(lease)
             elif lease["state"] == "accepted":
                 self.start(lease)
-            current = self.get(lease["id"])
-            if current["state"] == "running":
-                for suffix in ("app", "browser"):
-                    container = self.inspect(current["name"] + "-" + suffix)
-                    if container and container.get("State", {}).get("Running") is True:
-                        continue
-                    with self.lock:
-                        current = self.get(lease["id"])
-                        if current["state"] == "running":
-                            current["state"], current["error"] = (
-                                "failed",
-                                "Preview process exited; close to release resources",
+            elif lease["state"] == "running":
+                if lease.get("binding"):
+                    binding = Lease.model_validate(lease["binding"])
+                    if self.jobs.current(binding.owner) is None:
+                        self.controller(lease, {"revoke_automation": True})
+                        self.jobs.unbind(binding, lambda: self._save_binding(lease, binding))
+                try:
+                    self.targets(Session.model_validate(lease["session"]))
+                except ValueError:
+                    for item in list(lease["target_bindings"]):
+                        try:
+                            self.endpoints.resolve(
+                                item["ref"],
+                                session_id=lease["session"]["agent_session_id"],
+                                directory=lease["session"]["directory"],
                             )
-                            self.save(current)
-                    break
+                        except ValueError:
+                            self.detach_resource(lease["id"], item["resource_id"])
+                container = self.inspect(lease["name"] + "-browser")
+                if not container or not container.get("State", {}).get("Running"):
+                    lease["state"], lease["error"] = (
+                        "failed",
+                        "Browser exited; close to release resources",
+                    )
+                    self.save(lease)

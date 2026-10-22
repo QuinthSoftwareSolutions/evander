@@ -117,6 +117,12 @@ extension settings apply. The list/download calls are also restricted to the ses
 `metadata.pr_feedback_streams` entries and use the directory-scoped Azure DevOps organization,
 project, and `azure_devops_pr_pat_env` credential.
 
+Azure DevOps voting through `submit_pr_review` also requires an exact
+`metadata.pr_feedback_streams` entry for the target PR and the `submit_pr_review` tool grant.
+The configured PR credential's authenticated identity must already be an optional or required
+reviewer. Approve, approve with suggestions, waiting for author, and reset are supported;
+Reject is unavailable. See the [review workflow contract](operations.md#review-request-workflow).
+
 ## 1) Service environment files (`config/*.env.example`)
 
 These example files document env vars that services may still consume. The rendered systemd units
@@ -1380,7 +1386,10 @@ Omitting the field on an existing-agent upsert preserves its current profile.
 An upsert can select another enabled profile, and setting `codex_auth_mode` to
 `metered_api` clears the stored profile. Legacy profile-less subscription
 sessions resolve to reserved profile `default`; newly created subscription
-agents in Admin Web require a named selection.
+agents in Admin Web require a named selection. Workers do not create an empty
+Default profile. Admin Web can delete an unused profile and its saved worker
+login after active jobs, queued prompts, and unexpired session bindings have
+been removed. Deleted profiles are not recreated on worker restart.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime
@@ -1865,7 +1874,7 @@ extension restrictions from the directory's policy domain. Restrictions and
 selected-member MIME detection use the normalized delivered filename. Logical
 member sizes, including sparse files, also count against the hard attachment
 limit before reading.
-Images use Teams hosted content; other files use the same expiring signed Truman
+Images use Teams hosted content; other files use the same expiring signed Evander
 downloads as agent file posts. The published archive remains durable when a
 communication download expires. Workflow download links are verified using the
 persisted workflow directory, independently of the sender session. This host

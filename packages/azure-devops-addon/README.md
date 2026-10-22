@@ -30,6 +30,18 @@ explicit Azure DevOps operations report how to install or enable it.
 The existing ADO Activity add-on declares a dependency on this integration. It
 remains separately configured; its extraction is not part of this change.
 
+## Cast a PR review vote
+
+Grant `submit_pr_review` and bind the target provider, repository, and PR in the session's
+`metadata.pr_feedback_streams`. Once the directory's PR credential identity is assigned as
+an optional or required reviewer, the agent can submit a summary with `event=APPROVE`,
+`APPROVE_WITH_SUGGESTIONS`, `WAITING_FOR_AUTHOR`, or `RESET`. `REQUEST_CHANGES` is an alias
+for Waiting for author. Reject is unsupported. Omitted or `COMMENT` events publish comments
+without changing a vote. The host resolves its own reviewer identity, publishes the comments,
+then casts and confirms that identity's vote; agents never receive the credential or choose
+another reviewer. See the [review workflow contract](../../docs/operations.md#review-request-workflow)
+for response fields, permissions, and retry behavior.
+
 ## Deliver one issue
 
 1. Configure the organization's name, project, work-item/build credential and PR

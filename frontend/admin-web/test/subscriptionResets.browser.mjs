@@ -84,6 +84,95 @@ function row(page, displayName) {
   });
 }
 
+test("profile deletion requires unlock and confirmation, reports conflicts, and removes only the selected profile", { timeout: 60_000 }, async (t) => {
+  let profiles = [profile("remove", "Remove account", 0, { queued_prompt_count: 0 }),
+    profile("keep", "Keep account", 0, { queued_prompt_count: 0 })];
+  let deletes = 0;
+  const { page, errors } = await fixture(t, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    assert.equal(url.searchParams.get("directory_path"), "engineering");
+    if (request.method() === "DELETE") {
+      assert.equal(url.pathname, "/api/admin/codex-subscriptions/remove");
+      assert.deepEqual(request.postDataJSON(), { expected_worker_url: "http://worker.test" });
+      deletes += 1;
+      if (deletes === 1) return route.fulfill({ status: 409, json: { error: "Subscription profile is assigned to an unexpired session" } });
+      profiles = profiles.filter((p) => p.profile_id !== "remove");
+      return route.fulfill({ json: { profile_id: "remove", deleted: true } });
+    }
+    return route.fulfill({ json: { worker_url: "http://worker.test", profiles } });
+  });
+  const remove = row(page, "Remove account");
+  await remove.getByText("Remove account", { exact: true }).click();
+  await remove.getByRole("button", { name: "Delete", exact: true }).waitFor();
+  assert.equal(await remove.getByRole("button", { name: "Delete", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await remove.getByRole("button", { name: "Delete", exact: true }).click();
+  assert.equal(deletes, 0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await remove.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByText("Subscription profile is assigned to an unexpired session", { exact: true }).waitFor();
+  assert.equal(await remove.count(), 1);
+  page.once("dialog", (dialog) => dialog.accept());
+  await remove.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Deleted subscription profile" }).waitFor();
+  assert.equal(await remove.count(), 0);
+  assert.equal(await row(page, "Keep account").count(), 1);
+  assert.equal(deletes, 2);
+  assert.deepEqual(errors, []);
+});
+
+test("profiles with active jobs or queued prompts cannot be deleted", { timeout: 60_000 }, async (t) => {
+  const profiles = [profile("active", "Active account", 0, { active_job_count: 1, queued_prompt_count: 0 }),
+    profile("queued", "Queued account", 0, { queued_prompt_count: 1 })];
+  const { page, errors } = await fixture(t, (route) => {
+    assert.equal(route.request().method(), "GET");
+    return route.fulfill({ json: { worker_url: "http://worker.test", profiles } });
+  });
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  for (const name of ["Active account", "Queued account"]) {
+    const selected = row(page, name);
+    await selected.getByText(name, { exact: true }).click();
+    assert.equal(await selected.getByRole("button", { name: "Delete", exact: true }).isDisabled(), true);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test("a deletion finishing after a directory switch keeps the new worker visible", { timeout: 60_000 }, async (t) => {
+  let finishDelete;
+  const deleteGate = new Promise((resolve) => { finishDelete = resolve; });
+  const { page, errors } = await fixture(t, async (route) => {
+    const request = route.request();
+    const directory = new URL(request.url()).searchParams.get("directory_path");
+    if (request.method() === "DELETE") {
+      await deleteGate;
+      return route.fulfill({ json: { deleted: true, profile_id: "original" } });
+    }
+    const replacement = directory === "operations";
+    return route.fulfill({ json: {
+      worker_url: replacement ? "http://replacement.test" : "http://worker.test",
+      profiles: [profile(replacement ? "replacement" : "original",
+        replacement ? "Replacement account" : "Original account", 0, { queued_prompt_count: 0 })],
+    } });
+  });
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  await page.getByText("Original account", { exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await row(page, "Original account").getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByLabel("Directory").selectOption("operations");
+  await page.getByText("Replacement account", { exact: true }).waitFor();
+  await page.getByText("Replacement account", { exact: true }).click();
+  finishDelete();
+  await page.waitForFunction(() => [...document.querySelectorAll("button")].some(
+    (button) => button.textContent === "Delete" && !button.disabled,
+  ));
+  assert.equal(await row(page, "Replacement account").count(), 1);
+  assert.equal(await row(page, "Original account").count(), 0);
+  assert.equal(await page.getByText(/Deleted subscription profile/).count(), 0);
+  assert.deepEqual(errors, []);
+});
+
 test("signed-out profiles start login directly and reveal the pending login code", { timeout: 60_000 }, async (t) => {
   const selected = profile("connect", "Connect account", 0, { signed_in: false, account_id: null, email: null });
   const requests = [];
@@ -116,6 +205,74 @@ async function confirmClick(page, button, accept = true) {
     button.click(),
   ]);
 }
+
+test("credit balances show whole numbers, distinguish zero, unlimited, and unavailable and refresh with usage", { timeout: 60_000 }, async (t) => {
+  const selected = profile("balance", "Credit balance", 3);
+  selected.rate_limits.default.credits = { has_credits: true, unlimited: false, balance: "99" };
+  selected.rate_limits.by_limit_id = {
+    codex: { credits: { has_credits: true, unlimited: false, balance: "1250.50" } },
+  };
+  const legacy = profile("legacy", "Legacy balance", 0);
+  legacy.rate_limits.default.credits = { has_credits: true, unlimited: false, balance: "12.75" };
+  const empty = profile("empty", "No credits", 1);
+  empty.rate_limits.default.credits = { has_credits: false, unlimited: false, balance: null };
+  const unlimited = profile("unlimited", "Unlimited credits", 2);
+  unlimited.rate_limits.default.credits = { has_credits: true, unlimited: true, balance: null };
+  const missing = profile("missing", "Unknown balance", null, { rate_limits: null });
+  const olderWorker = profile("older", "Older worker", 4);
+  const otherBucket = profile("other", "Other bucket", 0);
+  otherBucket.rate_limits.default = {
+    limit_id: "other", credits: { has_credits: true, unlimited: false, balance: "500" },
+  };
+  otherBucket.rate_limits.by_limit_id = {
+    other: { credits: { has_credits: true, unlimited: false, balance: "500" } },
+  };
+  const cases = [
+    [selected, "1,251"], [legacy, "13"], [empty, "0"], [unlimited, "Unlimited"],
+    [missing, "Unavailable"], [olderWorker, "Unavailable"], [otherBucket, "Unavailable"],
+  ];
+  const { page, errors } = await fixture(t, async (route) => {
+    assert.equal(route.request().method(), "GET");
+    return route.fulfill({ json: { worker_url: "http://worker.test", profiles: cases.map(([entry]) => entry) } });
+  });
+  for (const [entry, expected] of cases) {
+    const creditCell = row(page, entry.display_name).locator(".subscription-credits");
+    await creditCell.waitFor();
+    assert.equal((await creditCell.innerText()).replace(/\s+/g, " "), `${expected} Credits`);
+  }
+  assert.match(await row(page, "Credit balance").innerText(), /20%\s+7-day remaining/);
+  assert.match(await row(page, "Credit balance").innerText(), /3\s+Banked resets/);
+
+  for (const width of [1600, 1100, 960, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    assert.equal(await row(page, "Credit balance").locator(".subscription-credits").isVisible(), true);
+    if (process.env.PLAYWRIGHT_ARTIFACT_DIR && [1600, 390].includes(width)) {
+      await mkdir(process.env.PLAYWRIGHT_ARTIFACT_DIR, { recursive: true });
+      await page.screenshot({ path: `${process.env.PLAYWRIGHT_ARTIFACT_DIR}/subscription-credits-${width}.png`, fullPage: true });
+    }
+  }
+  // A narrow content area needs the compact layout even in a wide browser.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.locator(".subscription-profiles").evaluate((element) => { element.style.maxWidth = "850px"; });
+  assert.equal(await page.locator(".subscription-columns").isVisible(), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  const creditCell = row(page, "Credit balance").locator(".subscription-credits");
+  for (const balance of [null, "", "  ", "unknown", "-1", "Infinity", "0x10", 10, { token: "secret" }]) {
+    selected.rate_limits.by_limit_id.codex.credits.balance = balance;
+    // Neither view has a usable balance, including when credits are known to exist.
+    selected.rate_limits.default.credits = null;
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await creditCell.filter({ hasText: /^Unavailable\s*Credits$/ }).waitFor();
+  }
+  for (const [balance, expected] of [["0", "0"], ["0.0001", "0"], [" 20.25 ", "20"]]) {
+    selected.rate_limits.by_limit_id.codex.credits.balance = balance;
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await creditCell.filter({ hasText: new RegExp(`^${expected.replace(".", "\\.")}\\s*Credits$`) }).waitFor();
+  }
+  assert.deepEqual(errors, []);
+});
 
 test("banked resets use the authoritative count and redemption retries consume once", { timeout: 60_000 }, async (t) => {
   let selected = profile("team-plus", "Team Plus", 3);

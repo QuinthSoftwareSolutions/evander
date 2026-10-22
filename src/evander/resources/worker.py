@@ -86,7 +86,11 @@ class WorkerService:
 
         cleanup_failed = False
         try:
-            if self.now() >= lease.expires_at:
+            if self.now() >= lease.expires_at or (
+                lease.owner.reference.get("workload_id")
+                and lease.owner.valid_until is not None
+                and self.now() >= lease.owner.valid_until
+            ):
                 lease.operation = {
                     "kind": "release",
                     "id": "expiry:" + lease.lease_id,

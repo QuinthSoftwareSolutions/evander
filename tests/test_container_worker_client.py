@@ -225,6 +225,7 @@ def test_container_worker_client_codex_auth_routes_use_worker_auth(
     assert worker.codex_profile_device_login_status("team-a", "login/1")["status"] == "pending"
     assert worker.cancel_codex_profile_device_login("team-a", "login/1")["status"] == "pending"
     assert worker.logout_codex_auth_profile("team-a")["signed_in"] is False
+    assert worker.delete_codex_auth_profile("team-a")["profile_id"] == "team-a"
     assert seen == [
         ("GET", "/v1/codex-auth"),
         ("POST", "/v1/codex-auth/device-login"),
@@ -239,6 +240,7 @@ def test_container_worker_client_codex_auth_routes_use_worker_auth(
         ("GET", "/v1/codex-auth/profiles/team-a/device-login/login/1"),
         ("DELETE", "/v1/codex-auth/profiles/team-a/device-login/login/1"),
         ("DELETE", "/v1/codex-auth/profiles/team-a/session"),
+        ("DELETE", "/v1/codex-auth/profiles/team-a"),
     ]
 
 

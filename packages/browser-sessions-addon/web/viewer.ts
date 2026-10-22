@@ -30,6 +30,7 @@ new MutationObserver(syncThemeToggle).observe(document.documentElement, {
 });
 syncThemeToggle();
 let session: any, actor = "", after = 0, pointing = false, annotation: any;
+let canManageConnections = false, savedSettings = "";
 let settings: any, settingsRevision = 0, websocket: WebSocket | undefined;
 let voice: VoiceControls | undefined;
 let frameURL = "", observation = "", pendingInput = Promise.resolve();
@@ -69,34 +70,50 @@ function update(value: any) {
   $("session-title").textContent = session.title;
   $("session-title").title = session.title;
   $("stop-run").hidden = !session.active_run; $("run-progress").hidden = !session.active_run;
-  $("run-progress").textContent = "Truman is working · " + (session.active_run?.step_count ?? 0) + " steps";
+  $("run-progress").textContent = "Agent is working · " + (session.active_run?.step_count ?? 0) + " steps";
   $("status").textContent = session.state.replaceAll("_", " ");
   $("status").dataset.state = session.state;
   $("application-url").textContent = session.current_url ?? "Preparing application";
   $("expiry").textContent = "Expires " + new Date(session.expires_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const yours = !!actor && session.controller === actor;
   const agent = session.controller?.startsWith("agent:");
-  $("claim").textContent = yours ? "Hand back to Truman" : "Take control";
+  $("claim").textContent = yours ? "Hand back to agent" : "Take control";
   $("claim").setAttribute("aria-pressed", String(yours));
   ($("claim") as HTMLButtonElement).disabled = !actor || ["closing", "closed", "expired", "failed", "cleanup_failed"].includes(session.state);
   $("control-help").textContent = yours ?
     "You control this browser. Click the application and type normally." : agent ?
-    "Truman controls this browser. You can point, chat, or take control." : session.controller ?
+    "The agent controls this browser. You can point, chat, or take control." : session.controller ?
     "Another viewer controls this browser. You can point, chat, or take control." :
     "Agent input is paused. Take control to use the application.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
     voice?.dispose();
     $("empty").hidden = false;
     $("empty").querySelector("h2")!.textContent = session.state === "cleanup_failed" ? "Cleanup needs attention" : "Session unavailable";
-    $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask Truman to start another session.";
+    $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask your agent to start another session.";
   }
 }
+function pageOptions(pages:any[]) {
+  if(!Array.isArray(pages))return;
+  $("page-picker").hidden=pages.length<2;
+  const select=$("pages") as HTMLSelectElement;
+  const signature=JSON.stringify(pages);
+  if(select.dataset.signature===signature)return;
+  select.dataset.signature=signature;select.replaceChildren();
+  for(const page of pages) {
+    const option=document.createElement("option");option.value=page.id;option.textContent=page.url;option.selected=page.selected;select.append(option);
+  }
+}
+$("pages").addEventListener("change",()=>{
+  observation="";
+  void api("/sessions/"+sessionId+"/select-page",{page_id:($("pages") as HTMLSelectElement).value}).then(result=>pageOptions(result.pages)).catch(showError);
+});
 async function command(action: string, options: any = {}) {
   const result = await api("/sessions/" + sessionId + "/command", {
     id: crypto.randomUUID(), generation: session.control_generation,
     action, observation_id: observation || null, ...options,
   });
   if (result.observation_id) observation = result.observation_id;
+  if(result.pages)pageOptions(result.pages);
   return result;
 }
 function serializeInput(action: string, options: any = {}) {
@@ -169,7 +186,7 @@ async function messages() {
       if (displayedMessages.has(message.id)) continue;
       const item = document.createElement("div"); item.className = "message" + (message.actor.startsWith("agent:") ? " agent" : "");
       const name = document.createElement("strong");
-      name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
+      name.textContent = message.actor.startsWith("agent:") ? "AGENT" : message.actor.replace(/^user:/, "");
       item.append(name, document.createTextNode(message.body)); $("messages").append(item);
       if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
       displayedMessages.add(message.id); appended = true;
@@ -229,6 +246,7 @@ async function openViewer() {
     const payload = JSON.parse(String(event.data));
     if (payload.kind === "state") { actor = payload.actor ?? actor; update(payload.session); }
     if (payload.kind === "frame") {
+      pageOptions(payload.pages);
       const image = new Image();
       image.src = "data:image/jpeg;base64," + payload.image;
       await image.decode();
@@ -250,11 +268,34 @@ async function openViewer() {
   await messages();
   setInterval(() => void messages().catch(showError), 2000);
 }
-function field(card: HTMLElement, label: string, value: any, updateValue: (value: string) => void, type = "text") {
+function field(card: HTMLElement, label: string, value: any, updateValue: (value: string) => void, type = "text", connectionOnly = false) {
   const element = document.createElement("label"); element.textContent = label;
   const box = document.createElement("input"); box.type = type; box.value = String(value ?? "");
+  box.disabled = connectionOnly && !canManageConnections;
   box.addEventListener("input", () => { updateValue(box.value); syncAdvanced(); });
   element.append(box); card.append(element);
+}
+function credentialField(card: HTMLElement, purpose: string, reference: string | null, workerId?: string) {
+  const label = document.createElement("label");
+  label.textContent = reference ? "Credential configured · replace value" : "New credential";
+  const secret = document.createElement("input"); secret.type = "password";
+  secret.autocomplete = "new-password"; secret.disabled = !canManageConnections;
+  label.append(secret); card.append(label);
+  const save = document.createElement("button"); save.type = "button";
+  save.className = "quiet"; save.textContent = "Store credential"; save.disabled = !canManageConnections;
+  save.addEventListener("click", async () => {
+    try {
+      if (JSON.stringify(settings) !== savedSettings) throw new Error("Save settings before storing a credential for this connection.");
+      if (!secret.value) throw new Error("Enter the credential value.");
+      const result = await api("/credentials?directory=" + encodeURIComponent(directory), {
+        expected_revision: settingsRevision, purpose, worker_id: workerId, token: secret.value,
+      }, "POST");
+      secret.value = ""; settings = result.settings; settingsRevision = result.revision;
+      savedSettings = JSON.stringify(settings); renderSettings();
+      $("settings-status").textContent = "Credential stored";
+    } catch (error) { secret.value = ""; showError(error); }
+  });
+  card.append(save);
 }
 function syncAdvanced() { input("advanced-settings").value = JSON.stringify(settings, null, 2); }
 function renderSettings() {
@@ -270,7 +311,6 @@ function renderSettings() {
   input("voice-enabled").onchange = () => { settings.voice.enabled = input("voice-enabled").checked; syncAdvanced(); };
   for (const [id, key, fallback] of [
     ["voice-provider", "api_base_url", "https://api.openai.com/v1"],
-    ["voice-key", "api_key_env", "EVANDER_BROWSER_VOICE_API_KEY"],
     ["voice-stt", "transcription_model", "gpt-transcribe"],
     ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
     ["voice-name", "voice", "onyx"],
@@ -285,11 +325,11 @@ function renderSettings() {
 
   input("enabled").checked = settings.enabled; input("guest-enabled").checked = settings.guest_enabled;
   input("public-url").value = settings.public_base_url; input("relay-url").value = settings.relay_url;
-  input("relay-token").value = settings.relay_token_env; input("lifetime").value = String(settings.lifetime_seconds / 60);
+  input("lifetime").value = String(settings.lifetime_seconds / 60);
   input("idle").value = String(settings.idle_seconds / 60); input("quota").value = String(settings.max_hosted_per_worker);
   for (const [id, key, convert] of [
     ["public-url", "public_base_url", String], ["relay-url", "relay_url", String],
-    ["relay-token", "relay_token_env", String], ["lifetime", "lifetime_seconds", (v: string) => Number(v) * 60],
+    ["lifetime", "lifetime_seconds", (v: string) => Number(v) * 60],
     ["idle", "idle_seconds", (v: string) => Number(v) * 60], ["quota", "max_hosted_per_worker", Number],
   ] as const) {
     input(id).oninput = () => { settings[key] = convert(input(id).value); syncAdvanced(); };
@@ -301,38 +341,42 @@ function renderSettings() {
     const card = document.createElement("div"); card.className = "config-card";
     const title = document.createElement("strong"); title.textContent = name; card.append(title);
     for (const [key, label] of [["parent_worker_url", "Assigned worker URL"], ["base_url", "Browser supervisor URL"],
-      ["token_env", "Credential environment variable"], ["relay_url", "Worker-reachable relay endpoint"]])
-      field(card, label, worker[key], (value) => worker[key] = value || null);
+      ["relay_url", "Worker-reachable relay endpoint"]])
+      field(card, label, worker[key], (value) => worker[key] = value || null, "text", true);
+    credentialField(card, "worker", worker.credential_ref, name);
     $("workers").append(card);
   }
   for (const [name, profile] of Object.entries(settings.profiles) as [string, any][]) {
     const card = document.createElement("div"); card.className = "config-card";
     const title = document.createElement("strong"); title.textContent = name; card.append(title);
-    field(card, "Application image", profile.image, (value) => profile.image = value);
-    field(card, "Browser image", profile.browser_image, (value) => profile.browser_image = value);
+    field(card, "Browser image", profile.image, (value) => profile.image = value);
     field(card, "CPUs", profile.cpus, (value) => profile.cpus = Number(value), "number");
     field(card, "Memory (MiB)", profile.memory_mib, (value) => profile.memory_mib = Number(value), "number");
     $("profiles").append(card);
   }
+  for (const id of ["public-url", "relay-url", "voice-provider", "add-worker"])
+    (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = !canManageConnections;
+  $("relay-credential").replaceChildren(); $("voice-credential").replaceChildren();
+  credentialField($("relay-credential"), "relay", settings.relay_credential_ref);
+  credentialField($("voice-credential"), "voice", settings.voice.credential_ref);
   syncAdvanced();
 }
 $("configure").addEventListener("click", async () => {
   try {
     const result = await api("/settings?directory=" + encodeURIComponent(directory));
     settings = result.settings; settingsRevision = result.revision;
+    canManageConnections = result.can_manage_connections; savedSettings = JSON.stringify(settings);
     renderSettings(); $("settings-panel").hidden = false;
   } catch (error) { showError(error); }
 });
 $("add-worker").addEventListener("click", () => {
   const name = "worker-" + (Object.keys(settings.workers).length + 1);
-  settings.workers[name] = { base_url: "", parent_worker_url: "", token_env: "EVANDER_BROWSER_WORKER_TOKEN", relay_url: null };
+  settings.workers[name] = { base_url: "", parent_worker_url: "", credential_ref: null, relay_url: null };
   renderSettings();
 });
 $("add-profile").addEventListener("click", () => {
   const name = "profile-" + (Object.keys(settings.profiles).length + 1);
-  settings.profiles[name] = { image: "evander-runner:latest", browser_image: "evander-browser-controller:latest",
-    cpus: 2, memory_mib: 4096, browser_memory_mib: 1536,
-    public_environment: {}, readonly_mounts: {}, egress_allowlist: [], database_enabled: false };
+  settings.profiles[name] = { image: "evander-browser-controller:latest", cpus: 1, memory_mib: 1536, readonly_mounts: {}, playwright_enabled: false };
   renderSettings();
 });
 $("apply-advanced").addEventListener("click", () => {
@@ -344,7 +388,8 @@ $("settings-form").addEventListener("submit", async (event) => {
     const result = await api("/settings?directory=" + encodeURIComponent(directory), {
       expected_revision: settingsRevision, settings,
     }, "PUT");
-    settingsRevision = result.revision; $("settings-status").textContent = "Saved";
+    settings = result.settings; settingsRevision = result.revision; savedSettings = JSON.stringify(settings);
+    canManageConnections = result.can_manage_connections; renderSettings(); $("settings-status").textContent = "Saved";
   } catch (error) { showError(error); }
 });
 let catalogSessions: any[] = [];
@@ -355,8 +400,8 @@ function renderCatalog() {
   $("session-list").replaceChildren();
   if (!visible.length) {
     const message = document.createElement("p"); message.className = "muted";
-    message.textContent = showClosed ? "No hosted sessions yet. Ask Truman to start a demonstration or preview." :
-      "No active hosted sessions. Ask Truman to start a demonstration or preview.";
+    message.textContent = showClosed ? "No hosted sessions yet. Ask your agent to start a demonstration or preview." :
+      "No active hosted sessions. Ask your agent to start a demonstration or preview.";
     $("session-list").append(message);
   }
   for (const item of [...visible].reverse()) {
@@ -364,7 +409,7 @@ function renderCatalog() {
     const status = document.createElement("span"); status.className = "status"; status.textContent = item.state.replaceAll("_", " ");
     status.dataset.state = item.state;
     const title = document.createElement("h2"); title.textContent = item.title;
-    const type = document.createElement("p"); type.textContent = item.mode === "hosted_development" ? "Live development" : "Guided demonstration";
+    const type = document.createElement("p"); type.textContent = "Shared browser";
     const expiry = document.createElement("p"); expiry.textContent = "Expires " + new Date(item.expires_at * 1000).toLocaleString();
     card.append(status, title, type, expiry); $("session-list").append(card);
   }

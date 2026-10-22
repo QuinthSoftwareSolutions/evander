@@ -60,13 +60,38 @@ Scopes follow directory/path order and contain at most 100 files or 512 KiB;
 an oversized file stays intact in a singleton scope. A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
 validation items. Every review uses an isolated SDK state directory and clone of
-the same commit, through the pinned public scoped Standard-scan API. Supporting
+the same source commit, through the pinned public scoped Standard-scan API. Supporting
 reads outside the assigned scope earn no file credit.
 
+The pinned SDK follows symlinks in path targets. A scope containing symlinks
+therefore uses a deterministic, temporary Git projection: only the assigned
+links become regular JSON metadata files at their original paths. Each record
+contains the original commit, mode, blob ID and exact target bytes. Targets are
+read from Git objects, never by following the links, so broken, external,
+cyclic and directory links can be assessed explicitly. Other tree entries remain
+unchanged, and the projection commit has the original snapshot as its parent.
+The source repository and the logical scan's revision and inventory stay unchanged.
+
+The host independently reconstructs the expected projection from its authorized
+managed repository without writing objects. Both the native revision and exact
+scope must match, and every link still needs its own justified `file:<path>`
+surface. Reviewing a destination gives no credit for the link. Unsupported or
+unresolved link review remains blocked, as do link payloads over 1 MiB. Native
+reports retain their derived revision unchanged; the aggregate manifest records the verified projection and
+its original link identities. Projection receipts survive restart and resume
+alongside the original snapshot, including after the default branch advances.
+Deploy the rebuilt scanner image with the matching host code; the projection
+runtime is included in the image cache fingerprint. Existing accepted receipts
+and historical archives are unchanged.
+
 Only a sealed native result matching the revision and exact scope can close a
-scope. It must report complete coverage with no exclusions, follow-up surfaces,
-open questions or deferred work. Binary/symlink/submodule dispositions also need
-explicit source-backed notes in `file:<path>` coverage surfaces. Unavailable
+scope. It must report complete coverage with no exclusions, follow-up surfaces
+or deferred work. Native `openQuestions` are advisory: they remain visible with
+their source receipts in the aggregate report and coverage ledger, without
+preventing an otherwise complete static review from closing. Partial coverage,
+deferred work and `needs_follow_up` surfaces still prevent completion, even when
+the report also contains advisory questions. Binary/symlink/submodule
+dispositions also need explicit source-backed notes in `file:<path>` coverage surfaces. Unavailable
 content remains blocked. Text cannot be dismissed as not applicable. Boundary
 results must explicitly resolve previously retained work using `deferred:<key>`
 surfaces. Architecture mapping itself earns no file coverage.
@@ -112,6 +137,20 @@ incompatible or expired sources cannot resume. Legacy scans without a journal
 require a new tracked scan. A continuation receives a fresh budget and linked
 scan ID; the source report and artifacts remain immutable. It always reviews the
 original commit even after the branch advances or is force-pushed.
+
+Older journals may have promoted advisory questions into required work. On
+continuation, the controller verifies their preserved native reports and removes
+only exact question-derived blockers with authenticated provenance; genuine
+deferred work and ambiguous records remain required. The same repair applies to
+active journals after an orchestrator restart. This does not grant file credit:
+previously uncredited scopes still require a complete validated review. Earlier
+finished runs and their published reports remain unchanged.
+
+If the saved evidence is missing or fails verification during this conversion,
+the run stops with partial coverage and still stops and cleans up its workers.
+An unreachable worker keeps the repository reservation until cleanup is confirmed.
+The journal and remaining evidence are retained for operator investigation;
+an aggregate archive cannot be published from unverifiable source reports.
 
 Existing managed-Git retained snapshots protect that commit. Journals and pins
 remain for seven days after the latest referencing run; active runs and their

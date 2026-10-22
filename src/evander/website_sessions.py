@@ -258,14 +258,30 @@ class ManagedWebsiteSessionService:
 
     def _grant(self, sid: str, alias: str, proof: str | None):
         try:
+            delegated = False
+            if sid.startswith("proxy~"):
+                from evander.resources.endpoints import ProxyGrants
+                from evander.resources.models import ResourceError
+
+                try:
+                    sid, aliases = ProxyGrants(
+                        self.resolver.config.runtime_dir, now=self.clock
+                    ).authenticate(sid[6:], proof or "")
+                    if alias not in aliases:
+                        raise ResourceError("Target not granted")
+                    delegated = True
+                except ResourceError:
+                    raise WebsiteSessionError("website_session_denied", 403) from None
             session = self.resolver.get_session_manifest(sid)
-            if not verify_mcp_session_proof_token(session, proof):
+            if not delegated and not verify_mcp_session_proof_token(session, proof):
                 raise WebsiteSessionError("website_session_denied", 403)
             if session.expires_at.timestamp() <= self.clock():
                 raise WebsiteSessionError("website_session_expired", 403)
             target = session.http_target(alias)
             profile_id = target.managed_website_session
-            profile = self.resolver.resolve_for_session_manifest(session).managed_website_sessions.get(profile_id)
+            profile = self.resolver.resolve_for_session_manifest(
+                session
+            ).managed_website_sessions.get(profile_id)
             if not profile_id or profile is None or not profile.enabled:
                 raise WebsiteSessionError("website_session_not_granted", 403)
             if website_origin(target.base_url) != profile.browser_origin:
@@ -286,11 +302,20 @@ class ManagedWebsiteSessionService:
                 if adapter is None:
                     raise WebsiteSessionError("website_login_adapter_unavailable", 403)
                 credentials = adapter.grant_context(session, profile)
-            fingerprint = hashlib.sha256(json.dumps([
-                session.directory_path, profile_id, profile.model_dump(mode="json"), credentials,
-                session.expires_at.isoformat(), session.created_at.isoformat(),
-            ], sort_keys=True).encode()).hexdigest()
-            return profile, credentials, fingerprint, session.expires_at.timestamp()
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    [
+                        session.directory_path,
+                        profile_id,
+                        profile.model_dump(mode="json"),
+                        credentials,
+                        session.expires_at.isoformat(),
+                        session.created_at.isoformat(),
+                    ],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            return profile, credentials, fingerprint, session.expires_at.timestamp(), session.session_id
         except WebsiteSessionError:
             raise
         except (ValueError, KeyError, TypeError):
@@ -315,7 +340,7 @@ class ManagedWebsiteSessionService:
         key = (sid, alias)
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            profile, credentials, fingerprint, session_expiry = self._grant(sid, alias, proof)
+            profile, credentials, fingerprint, session_expiry, owner_id = self._grant(sid, alias, proof)
             cached = self._cache.get(key)
             if cached and cached[0] == fingerprint and cached[1]["expiresAt"] > self.clock() + profile.renew_before_seconds:
                 self._cache.move_to_end(key)
@@ -325,7 +350,7 @@ class ManagedWebsiteSessionService:
                 raise WebsiteSessionError("website_login_retry_later", 503)
             try:
                 state = (await self._login(profile, credentials) if profile.adapter == "json" else
-                         await self.adapters[profile.adapter].login(sid, profile, credentials, session_expiry))
+                         await self.adapters[profile.adapter].login(owner_id, profile, credentials, session_expiry))
                 if profile.adapter != "json" or profile.cookies_response_pointer is not None:
                     state = validate_browser_state(state, profile.browser_origin, self.clock(),
                         min(session_expiry, self.clock() + profile.max_age_seconds))

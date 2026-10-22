@@ -2,6 +2,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BrowserEngine } from "../dist/engine.mjs";
 
+for (const transition of ["expand", "rename", "other-field", "pause"]) {
+  test("revalidated mouse-up permits own expansion and fences " + transition, async()=>{
+    const state={id:"b",controller:"agent:a",control_generation:1,allowed_origins:["https://application.test"],expires_at:Date.now()/1000+60};
+    let expanded=false,name="Picker",other="Original",engine;
+    const events=[];
+    const send=async(method,params)=>{
+      if(method==="Page.getFrameTree")return {frameTree:{frame:{url:"https://application.test/"}}};
+      if(method==="Accessibility.getFullAXTree")return {nodes:[
+        {backendDOMNodeId:1,role:{value:"combobox"},name:{value:name},value:{value:"First"},properties:[{name:"expanded",value:{value:expanded}}]},
+        {backendDOMNodeId:2,role:{value:"textbox"},name:{value:"Other field"},value:{value:other}}
+      ]};
+      if(method==="Page.getLayoutMetrics")return {cssVisualViewport:{clientWidth:800,clientHeight:600}};
+      if(method==="DOM.getBoxModel")return {model:{content:[10,10,50,10,50,30,10,30]}};
+      if(method==="Input.dispatchMouseEvent"){
+        events.push(params.type);
+        if(params.type==="mousePressed"){
+          expanded=true;
+          if(transition==="rename")name="Another picker";
+          if(transition==="other-field")other="Changed";
+          if(transition==="pause")engine.update({...state,controller:null,control_generation:2});
+        }
+      }
+      return {};
+    };
+    engine=new BrowserEngine(send,state,()=>{});
+    const o=await engine.execute({action:"observe",generation:1,include_image:false},"agent:a");
+    const command={action:"click",generation:1,revalidate:true,ref:"node-1",observation_id:o.observation_id};
+    if(transition==="expand")assert.equal((await engine.execute(command,"agent:a")).success,true);
+    else await assert.rejects(engine.execute(command,"agent:a"),/outcome_unknown|stale_control/);
+    assert.deepEqual(events,transition==="expand"?["mouseMoved","mousePressed","mouseReleased"]:["mouseMoved","mousePressed"]);
+  });
+}
+
 test("pause between focus and key dispatch prevents entering a value", async () => {
   let state = { id: "b", controller: "agent:a", control_generation: 1,
     allowed_origins: ["https://application.test"], expires_at: Date.now()/1000+60 };

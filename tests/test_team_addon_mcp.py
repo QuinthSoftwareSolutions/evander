@@ -657,6 +657,64 @@ def test_team_git_candidate_pinner_uses_deliverable_scoped_immutable_ref(
     ]
 
 
+def test_existing_handoff_tool_forwards_evidence_publication_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import evander_team_addon.providers as team_providers
+
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context, session_id="session-backend", allowed_tools=[TEAM_SUBMIT_DELIVERABLE_TOOL]
+    )
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Failed verification",
+        description="Retain diagnostic evidence.",
+        created_by_agent_id="lead",
+    )
+
+    def block(state):
+        state.tasks["task"].state = TeamTaskState.BLOCKED
+        return state
+
+    repo.update(block)
+    _lease_agent(repo, agent_id="backend", dispatch_id="diagnostic-handoff")
+    publications = []
+
+    def publish(runtime_context, **kwargs):
+        publications.append(kwargs)
+        return {"artifact_ref": "artifact-space:/teams/team/projects/project/evidence/retained"}
+
+    monkeypatch.setattr(team_providers, "_publish_deliverable_artifact_bundle", publish)
+    server = create_server(context)
+    result = _call_tool(
+        server,
+        TEAM_SUBMIT_DELIVERABLE_TOOL,
+        {
+            "session_id": "session-backend",
+            "task_id": "task",
+            "summary": "Retained failed run.",
+            "request_id": "failed-run-evidence",
+            "evidence_only": True,
+            "verification": {"status": "failed"},
+            "artifact_paths": ["results/test.log"],
+        },
+    )
+    assert result["success"] is True, result
+    assert result["evidence_only"] is True
+    assert len(publications) == 1
+    assert publications[0]["evidence_metadata"]["task_id"] == "task"
+    assert publications[0]["evidence_metadata"]["verification"]["status"] == "failed"
+    assert publications[0]["source_paths"] == ["results/test.log"]
+    assert repo.read().tasks["task"].state == TeamTaskState.BLOCKED
+    assert repo.read().deliverables == {}
+
+
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:
@@ -675,6 +733,10 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert not set(MCP_TOOL_NAMES) & core_tool_names
     assert set(MCP_TOOL_NAMES).issubset(visible)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+    evidence_option = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].parameters["properties"]["evidence_only"]
+    assert evidence_option["type"] == "boolean"
+    assert evidence_option["default"] is False
+    assert "evidence_only" not in tools[TEAM_SUBMIT_DELIVERABLE_TOOL].parameters["required"]
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
     decide_deliverable_description = tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""

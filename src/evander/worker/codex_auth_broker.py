@@ -87,6 +87,7 @@ class CodexAuthBroker:
         self._refresh_skew_seconds = max(0, int(refresh_skew_seconds))
         self._lock = threading.RLock()
         self._managed_client: CodexManagedAuthClient | None = None
+        self._closed = False
         self._device_logins: dict[str, dict[str, Any]] = {}
         self._login_notifications: SimpleQueue[dict[str, Any]] = SimpleQueue()
         self._lifecycle_file = (self.auth_home / ".broker.lock").open("a+")
@@ -260,6 +261,9 @@ class CodexAuthBroker:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self._managed_client is not None:
                 self._managed_client.close()
                 self._managed_client = None
@@ -269,6 +273,8 @@ class CodexAuthBroker:
                 self._lifecycle_file.close()
 
     def _ensure_client(self) -> CodexManagedAuthClient:
+        if self._closed:
+            raise CodexAuthBrokerError("Codex auth broker is closed")
         client = self._managed_client
         if client is not None and client.running:
             return client
@@ -424,6 +430,19 @@ def _safe_rate_limit_window(value: object) -> dict[str, Any] | None:
     }
 
 
+def _safe_credits_snapshot(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    has_credits = value.get("hasCredits")
+    unlimited = value.get("unlimited")
+    balance = value.get("balance")
+    return {
+        "has_credits": has_credits if isinstance(has_credits, bool) else None,
+        "unlimited": unlimited if isinstance(unlimited, bool) else None,
+        "balance": balance if isinstance(balance, str) else None,
+    }
+
+
 def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -431,6 +450,7 @@ def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
         "limit_id": value.get("limitId"),
         "limit_name": value.get("limitName"),
         "plan_type": value.get("planType"),
+        "credits": _safe_credits_snapshot(value.get("credits")),
         "primary": _safe_rate_limit_window(value.get("primary")),
         "secondary": _safe_rate_limit_window(value.get("secondary")),
         "rate_limit_reached_type": value.get("rateLimitReachedType"),

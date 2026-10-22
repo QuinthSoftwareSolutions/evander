@@ -1,9 +1,100 @@
 # Changelog
 
-## 2026-10-22 - Honor fresh-context assistant requests (0.115.0)
+## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 
 - Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.
 - Refresh queue-recovery fixtures with standard message metadata so batching and recovery during VM inventory failures reach their existing assertions.
+
+## 2026-10-22 - Preserve correction sources beside planning evidence (0.118.2)
+
+- Require a deliverable's own Git provenance before automatically including it as replacement or additional code for a rejected release. An inherited checkout base on artifact-only planning evidence no longer displaces the accepted coding correction or adds the plan back into its release.
+- Preserve immutable review and release validation for partial Git claims and real code recoveries, including those marked as not planned for an initial release.
+
+## 2026-10-22 - Bind shared-browser credentials to approved connections (0.118.1)
+
+- Replace directory-editable environment credential selectors with encrypted platform-managed references bound to the complete worker, relay or speech destination and directory scope. Require owner access and unlocked privileges for connection or credential changes, while preserving ordinary browser management and agent tools.
+- Resolve authorization before each HTTP, WebSocket, speech and cleanup request. Retain original session placement and reject legacy credential-bearing snapshots until explicitly migrated.
+- Add a reviewed, maintenance-only migration with protected recovery backups for settings, saved connections and cleanup callbacks. Publish Browser Sessions 0.9.3 with owner-only credential controls and relay key delivery; Chrome extension and native helper versions are unchanged.
+
+## 2026-10-22 - Delete unused subscription profiles (0.118.0)
+
+- Add a privileged Delete action and worker/Admin APIs that remove a profile and its saved login. Refuse deletion while it has active jobs, queued prompts, or unexpired session bindings, and reject a changed worker selection.
+- Stop creating an empty Default profile on worker startup. Preserve existing legacy logins, allow their profile to be deleted, and retain other profiles and recorded usage history.
+- Normalize worker deletion IDs before checking active jobs, and coordinate deletion with new, reassigned, or renewed session bindings across control-plane processes. Revalidate profiles before saving a new live binding.
+
+## 2026-10-22 - Preserve symlink identity in tracked security reviews (0.117.8)
+
+- Review assigned symlinks through deterministic Git metadata projections so the pinned SDK can assess internal, broken, external, cyclic and directory links without following their destinations.
+- Independently verify the projected revision and original link objects before granting coverage; retain explicit dispositions, immutable native reports and projection provenance across interruption and resume.
+- Package the projection runtime in scanner images and include it in cache invalidation.
+
+## 2026-10-22 - Preserve committed task work across preparation changes (0.117.7)
+
+- Carry clean, compatible committed work into a fresh task checkout after instruction changes. Verify the task owner, session, repository, directory, original base and exact dependency pins; retain commit authorship and normal acceptance and release gates.
+- Persist the selected source before transferring it, seal the restored HEAD in the normal preparation receipt, and expose its unreviewed provenance in the fresh Git context. Preserve dirty, divergent, missing or incompatible work for explicit recovery, and reuse the exact selected commit after interruption.
+- Give reactivated specifications a fresh, stable preparation identity so returning to earlier instructions retains newer compatible work without changing old receipts. Carry only compact restored-work provenance into final wake prompts, trim repeated guidance, guard prompt-size budgets, and refresh installed guidance for existing sessions.
+
+## 2026-10-22 - Preserve security-scan cleanup when saved evidence is unavailable (0.117.6)
+
+- Stop safely if older coverage evidence is missing or corrupt: prevent further reviews, continue worker cleanup, and hold the repository reservation until cleanup is confirmed. Report the archive as unavailable without publishing unverifiable evidence, and retain the failure details in private host logs.
+
+## 2026-10-22 - Keep advisory security questions separate from unfinished review (0.117.5)
+
+- Accept complete, sealed static security reviews that contain advisory open questions while continuing to require exact scope, revision, file dispositions and resolution of genuine deferred work. Retain the questions and their source receipts in aggregate reports and coverage ledgers.
+- Repair question-derived blockers in active or resumed legacy coverage journals using verified preserved reports. Preserve ambiguous and genuinely deferred work, existing file credit, original deadlines and immutable reports from earlier runs.
+
+## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.117.4)
+
+- Let the existing Team deliverable handoff publish retained failed or incomplete verification artifacts with `evidence_only=true`, returning immutable receipts and notifying the superior and task requesters while preserving task blockers, Git work contexts, acceptance, review, and release gates.
+- Authorize only that evidence operation from an owned task-specific request in the current dispatch. Retain ordinary task mutation boundaries, artifact path checks, and idempotent publication and wake recovery across context rotations.
+
+## 2026-10-22 - Ground browser decisions in control affordances (0.117.3)
+
+- Describe generic text replacement, character typing, picker activation and keyboard operations separately. Offer text entry only when an exact input and writable field exist, and reject incompatible action/target combinations before input. Keep operation, target and input selection in one bounded provider request.
+- Return metadata-only diagnostics for ambiguous choices, including the selected option, probability, threshold and up to three competing option IDs. Preserve them in retry/status receipts without retaining page labels or input literals.
+- Use snapshot-local target aliases and omit transport receipt IDs from classification evidence and no-progress detection; map commands back to the original browser references and preserve their execution fences. Allow supported keys to target the single observed focused control when no explicit target was selected.
+- Complete native picker clicks when mouse-down changes that control's selection/expansion, retaining checks on other form fields, target identity, document, origin and control generation. Publish Browser Sessions server package 0.9.2 and Chrome extension 0.6.2; native helper 0.4.0 remains compatible.
+
+## 2026-10-22 - Use generic agent wording throughout Browser Sessions (0.117.2)
+
+- Use generic agent labels and Evander platform naming in browser viewers, the Chrome extension, workflow help, and documentation.
+- Publish Browser Sessions server package 0.9.1 and Chrome extension 0.6.1 with refreshed viewer assets and extension download.
+
+## 2026-10-22 - Show whole subscription credits (0.117.1)
+
+- Round subscription credit balances to the nearest whole credit for display.
+
+## 2026-10-22 - Separate application environments from shared browsers (0.117.0)
+
+- Add an independent optional Application Environments project with bounded application leases, private HTTP endpoints, safe checkout mounts and SQL Server add-on resource binding beyond agent turns.
+- Make hosted Browser Sessions target approved external sites or leased application endpoints without requiring application recipes or hosting.
+- Add explicitly granted Playwright connections, retained browser contexts, managed-login tools and shared page selection with generation-fenced human takeover.
+- Supply independent deployment assets and a read-only coordinated migration checker; legacy creation calls must migrate after existing hosted previews drain.
+- Confirm expired application cleanup before reusing quota, require a fresh connection credential after browser detach, and drain or cancel hosted login commands before granting human control in every hosted profile, including when Playwright is disabled.
+
+## 2026-10-21 - Support bounded Azure DevOps review votes (0.116.0)
+
+- Let `submit_pr_review` approve, approve with suggestions, wait for the author, or reset the authenticated host identity's reviewer vote after publishing its comments. Preserve comment-only submissions and GitHub review behavior; reject unsupported votes, including Reject.
+- Restrict voting to session-bound PRs where the host identity is already a reviewer, confirm the returned identity and vote, and include the vote in tool results and audit records.
+- Mark positive votes as reapprovals so reviewing a new PR iteration records fresh approval even when the numeric vote is unchanged.
+
+## 2026-10-21 - Show subscription credit balances (0.115.0)
+
+- Show provider-reported credits beside seven-day remaining usage and banked resets on the Subscriptions page, including zero, unlimited, and unavailable balances.
+- Carry only the approved credit fields through worker telemetry, and keep the profile list readable on narrow screens.
+
+## 2026-10-21 - Keep browser decisions focused on page state and the next action (0.114.2)
+
+- Exclude random observation receipts, document epochs and command receipt IDs from decision-model evidence. Preserve current element references, values, context, action outcomes, browser fences, returned observations and usage attribution.
+- Ask for the next unfinished action and its target using current field state and the task's ordering dependencies. Clarify ordered objectives and observed control names in the shared agent guide and request schema, without application-specific selectors or workflows.
+- Publish Browser Sessions server package 0.8.2. Chrome extension and native helper versions are unchanged.
+
+## 2026-10-21 - Preserve valid browser decisions and publish agent operating guidance (0.114.1)
+
+- Offer explicit no-key/no-scroll choices for irrelevant batched decision questions, avoiding refusals caused by missing applicable answers. Keep probability thresholds and provider validation, and reject missing keys/directions before issuing input.
+- Explain exact named input values, prewritten text, empty-string clearing, bounded objectives and final verification in tool descriptions, argument schemas and missing-input results. Identify the relevant choice and probability when a decision falls below its threshold.
+- Package an application-neutral operating guide with the add-on. Any authorized agent receives it through profile discovery and session creation, or requests it from status without depending on personal-assistant prompts. Include the launch-manifest schema and cover hosting, local Chrome, control handover, chat, recovery and cleanup.
+- Publish Browser Sessions server package 0.8.1. Chrome extension and native helper versions are unchanged.
 
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
@@ -199,7 +290,7 @@
 ## 2026-10-16 - Deliver published workflow files to Teams (0.97.0)
 
 - Let host workflow messages send directory-owned published archives and selected report or image files directly through the existing Teams file-delivery path, without a delivery agent or model call.
-- Embed screenshots and send expiring Truman downloads for other files, preserving declared target capabilities and existing agent file-send policy.
+- Embed screenshots and send expiring Evander downloads for other files, preserving declared target capabilities and existing agent file-send policy.
 - Verify publication ownership, archive checksums, regular-file selection and file limits before staging; persist directory ownership with new publications.
 - Apply directory policy to delivered filenames, bound sparse-file reads, and retain workflow-directory signing for download verification.
 

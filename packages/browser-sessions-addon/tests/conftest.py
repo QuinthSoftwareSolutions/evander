@@ -19,6 +19,12 @@ class Bindings:
             agent, "root/demo", time.time() + 20000, "worker-a", "https://worker.test", "thread-123"
         )
 
+    def http_targets(self, agent):
+        return {
+            "app": SimpleNamespace(base_url="http://preview-app:4200"),
+            "other": SimpleNamespace(base_url="http://other-app:4200"),
+        }
+
     def close_support(self, session):
         self.closed.append(session.id)
 
@@ -34,7 +40,7 @@ class Peers:
     def __call__(self, base, token):
         return SimpleNamespace(
             call=lambda method, path, payload=None, **kw: self.call(
-                base, token, method, path, payload
+                base, token() if callable(token) else token, method, path, payload
             )
         )
 
@@ -46,13 +52,20 @@ class Peers:
             raise BrowserError("cleanup failed")
         if path == "/healthz":
             return {"capabilities": {"browser_sessions": 1}}
+        if path.endswith("/fence"):
+            return {"fenced": True}
         if method == "POST" and path.startswith("/v1/sessions"):
-            return {"allowed_origins": ["http://preview-app:4200"], "state": "accepted"}
+            return {"allowed_origins": payload["session"]["allowed_origins"], "state": "accepted"}
         return {"released": True, "state": "running", "success": True}
 
 
 @pytest.fixture
-def domain(tmp_path):
+def domain(tmp_path, monkeypatch):
+    from evander_browser_sessions_addon.credentials import Credentials
+    key = tmp_path.parent / (tmp_path.name + ".key")
+    monkeypatch.setenv("EVANDER_CREDENTIALS_KEY_FILE", str(key))
+    credentials = Credentials(tmp_path)
+    credentials.store.initialize()
     store = Store(tmp_path)
     settings = Settings(
         enabled=True,
@@ -61,11 +74,17 @@ def domain(tmp_path):
             "worker-a": {
                 "base_url": "https://worker.test/browser",
                 "parent_worker_url": "https://worker.test",
-                "token_env": "WORKER_TOKEN",
             }
         },
         profiles={"web": {"image": "seeded-web:1"}},
     )
+    settings.workers["worker-a"].credential_ref = credentials.create(
+        "root", "worker", settings.workers["worker-a"].base_url, "fixture-worker-token",
+        worker_id="worker-a", connection=settings.workers["worker-a"],
+    )["id"]
+    settings.relay_credential_ref = credentials.create(
+        "root", "relay", settings.relay_url, "fixture-relay-token"
+    )["id"]
     store.save_settings("root", 0, settings)
     bindings, peers = Bindings(), Peers()
     service = Service(tmp_path, store=store, bindings=bindings, peer_factory=peers)
@@ -80,11 +99,11 @@ def hosted(domain):
     result = service.create(
         "agent-a",
         CreateRequest(
-            mode="hosted_development",
+            mode="hosted",
             request_id="create",
             profile_id="web",
-            workspace_ref="a" * 32,
-            launch_manifest_path=".evander/preview.json",
+            target_aliases=["app"],
+            entry_url="http://preview-app:4200",
         ),
     )
     return service.store.mutate(result["id"], "test", lambda s: setattr(s, "state", "ready"))
@@ -112,7 +131,10 @@ def speech_provider(domain, monkeypatch):
     revision, settings = service.store.settings("root")
     settings.voice = VoiceSettings(enabled=True, api_base_url="https://speech.test/v1")
     service.store.save_settings("root", revision, settings)
-    monkeypatch.setenv("EVANDER_BROWSER_VOICE_API_KEY", "fixture-speech-secret")
+    settings.voice.credential_ref = service.credentials.create(
+        "root", "voice", settings.voice.api_base_url, "fixture-speech-secret"
+    )["id"]
+    service.store.save_settings("root", service.store.settings("root")[0], settings)
     output = io.BytesIO()
     with wave.open(output, "wb") as audio:
         audio.setnchannels(1)
@@ -133,6 +155,7 @@ def speech_provider(domain, monkeypatch):
         return httpx.Response(200, content=output.getvalue(), headers={"Content-Type": "audio/wav"})
 
     original = Voice.provider
+
     async def provider(self, *args, **kwargs):
         self.transport = httpx.MockTransport(respond)
         return await original(self, *args, **kwargs)

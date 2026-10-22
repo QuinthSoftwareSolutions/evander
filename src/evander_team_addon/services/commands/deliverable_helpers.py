@@ -547,6 +547,7 @@ def _publish_command_deliverable_artifacts(
     dispatch_id: str,
     artifact_paths: Sequence[str],
     artifact_publisher: TeamDeliverableArtifactPublisher | None,
+    evidence_metadata: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     del state
     safe_paths = _safe_deliverable_artifact_paths(artifact_paths)
@@ -570,6 +571,10 @@ def _publish_command_deliverable_artifacts(
             dispatch_id=dispatch_id,
             artifact_paths=list(safe_paths),
             source_paths=list(safe_paths),
+            **(
+                {"evidence_metadata": dict(evidence_metadata)}
+                if evidence_metadata is not None else {}
+            ),
         )
     except Exception as exc:
         raise TeamCommandValidationError(

@@ -106,7 +106,7 @@ def main() -> None:
         **{
             name: PACKAGE / "evander_codex_security_addon" / name
             for name in (
-                "runner.py", "codex_bridge.py", "configure.mjs", "coverage_runner.py", "coverage_sdk.mjs"
+                "runner.py", "codex_bridge.py", "configure.mjs", "coverage_runner.py", "coverage_sdk.mjs", "coverage_projection.py"
             )
         },
     }

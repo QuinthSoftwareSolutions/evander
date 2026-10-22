@@ -8,9 +8,11 @@ from typing import Any
 from evander.events.provider_models import SessionRenewIfExpiredEffectDefinition
 from evander.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from evander.session_expiry import ensure_utc_datetime
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 from .agent_session import (
     effective_config_for_directory,
+    effective_config_for_session,
     normalize_optional_string,
     runtime_session_repository,
 )
@@ -73,8 +75,14 @@ class SessionRenewIfExpiredEffectProvider(EffectProviderBase):
 
         if extended:
             new_expires_at = now + duration
-            session.expires_at = new_expires_at
-            repository.upsert_session(session)
+            session = session.model_copy(update={"expires_at": new_expires_at})
+            save_session_with_subscription_profile(
+                config=effective_config_for_session(
+                    context, session.session_id, fallback_directory_path=session.directory_path
+                ),
+                repository=repository,
+                session=session,
+            )
 
         vm_name = normalize_optional_string(getattr(session, "vm_id", None))
         return {

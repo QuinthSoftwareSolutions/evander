@@ -23,6 +23,7 @@ def register_addon():
             "evander-gateway",
             "evander-admin-web",
             "evander-effect-orchestrator",
+            "evander-trigger-orchestrator",
         ),
         metadata={
             "description": "Authenticated hosted previews and explicitly shared local Chrome tabs."

@@ -1,6 +1,6 @@
 {
   "name": "evander-browser-sessions",
-  "version": "0.6.0",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,8 @@
     "esbuild": "0.25.12",
     "playwright": "1.59.1",
     "typescript": "5.9.3",
-    "@types/node": "22.15.3"
+    "@types/node": "22.15.3",
+    "ws": "8.18.3",
+    "@types/ws": "8.18.1"
   }
 }

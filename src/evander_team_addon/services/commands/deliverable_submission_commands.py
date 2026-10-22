@@ -22,6 +22,7 @@ from .deliverable_helpers import (
     _validate_command_deliverable_submission_pre_publication,
 )
 from .executor import TeamCommandExecutor
+from .evidence_handoff import publish_task_evidence
 from .types import (
     TeamCommandApplyResult,
     TeamCommandContext,
@@ -291,6 +292,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
         outcomes: Sequence[Mapping[str, Any]] | None = None,
         source_deliverable_ids: Sequence[str] | None = None,
         completion: Mapping[str, Any] | None = None,
+        evidence_only: bool = False,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -298,6 +300,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_request_id = _required_text(request_id, "request_id")
+        if not isinstance(evidence_only, bool):
+            raise ValueError("evidence_only must be a boolean")
         normalized_deliverable = _normalize_deliverable_submission_mapping(
             {
                 "id": id,
@@ -334,6 +338,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             correlation_id=context.correlation_id,
             causation_id=context.causation_id,
         )
+        # Preserve the established payload digest for ordinary submissions.
+        if evidence_only:
+            normalized_payload["evidence_only"] = True
 
         def _apply(
             state: TeamState,
@@ -345,6 +352,16 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 agent=agent,
                 task_id=normalized_deliverable["task_id"],
             )
+            if evidence_only:
+                return publish_task_evidence(
+                    state,
+                    agent=agent,
+                    task=task,
+                    deliverable=normalized_deliverable,
+                    request_id=normalized_request_id,
+                    dispatch_id=resolved.dispatch_id,
+                    artifact_publisher=artifact_publisher,
+                )
             deliverable_id = _command_deliverable_id(
                 state,
                 deliverable=normalized_deliverable,
@@ -476,7 +493,8 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
-            reject_stale_source_evidence=True,
+            reject_stale_source_evidence=not evidence_only,
+            agent_scoped_idempotency=evidence_only,
         )
 
     def decide_deliverable_command(

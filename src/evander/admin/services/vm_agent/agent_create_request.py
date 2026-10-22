@@ -40,6 +40,7 @@ from evander.reasoning_effort import (
     validate_session_reasoning_effort,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.subscription_profile_bindings import save_session_with_subscription_profile
 
 
 def _connector_grants_for_admin_agent(
@@ -551,7 +552,10 @@ class VmAgentCreateRequestMixin:
                 *codex_skill_files,
             ],
         )
-        session_repository.upsert_session(manifest)
+        save_session_with_subscription_profile(
+            config=backend.config, repository=session_repository, session=manifest,
+            client=getattr(backend, "client", None),
+        )
         _sync_added_discord_session_cursors(
             self.runtime,
             previous_session=None,
