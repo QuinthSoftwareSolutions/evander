@@ -111,6 +111,26 @@ def current_recovery(state):
     )
 
 
+def test_checkout_retry_upgrade_preserves_accepted_recovery(recovered_role_repo, monkeypatch):
+    from evander_team_addon.services.domain import preparation_failures
+
+    state = recovered_role_repo.read()
+    original = current_recovery(state).model_dump(mode="json")
+    git_generation = preparation_failures.task_git_work_context_generation(state, "recovered")
+    prior_failure = preparation_failures.task_preparation_failure_generation(
+        state, "recovered", reason_code="dependency_git_preparation_failed",
+    )
+    monkeypatch.setattr(
+        preparation_failures, "TASK_GIT_PREPARATION_RETRY_VERSION",
+        preparation_failures.TASK_GIT_PREPARATION_RETRY_VERSION + 1,
+    )
+    assert preparation_failures.task_preparation_failure_generation(
+        state, "recovered", reason_code="dependency_git_preparation_failed",
+    ) != prior_failure
+    assert preparation_failures.task_git_work_context_generation(state, "recovered") == git_generation
+    assert current_recovery(state).model_dump(mode="json") == original
+
+
 def test_role_queue_keeps_accepted_recovery_across_release_and_peer_claim(recovered_role_repo):
     repo = recovered_role_repo
     original = current_recovery(repo.read()).model_dump()

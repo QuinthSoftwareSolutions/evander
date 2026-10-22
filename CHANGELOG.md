@@ -4,6 +4,7 @@
 
 - Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
 - Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+- Give existing checkout-preparation blockers one corrected retry after deployment without changing checkout identities, accepted recoveries or composition-conflict bindings. Suppress a persistent failure again after that attempt.
 
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
