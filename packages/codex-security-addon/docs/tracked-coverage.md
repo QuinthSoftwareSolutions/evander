@@ -125,6 +125,12 @@ active journals after an orchestrator restart. This does not grant file credit:
 previously uncredited scopes still require a complete validated review. Earlier
 finished runs and their published reports remain unchanged.
 
+If the saved evidence is missing or fails verification during this conversion,
+the run stops with partial coverage and still stops and cleans up its workers.
+An unreachable worker keeps the repository reservation until cleanup is confirmed.
+The journal and remaining evidence are retained for operator investigation;
+an aggregate archive cannot be published from unverifiable source reports.
+
 Existing managed-Git retained snapshots protect that commit. Journals and pins
 remain for seven days after the latest referencing run; active runs and their
 ancestors are protected. The effect orchestrator performs retention maintenance

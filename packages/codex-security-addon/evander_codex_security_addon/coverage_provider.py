@@ -6,6 +6,7 @@ import hashlib
 import gzip
 import io
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -51,6 +52,8 @@ from .coverage import (
     valid_path,
 )
 from .report_files import public_report_path
+
+LOG = logging.getLogger(__name__)
 
 
 class CoverageController:
@@ -568,12 +571,25 @@ class CoverageController:
             state = self.store.get(scan_id, self.directory)
             if state["finished_at"]:
                 self.cleanup(state)
-                if not state["archive_key"]:
+                if not state["archive_key"] and not state.get("migration_error"):
                     self.publish(state)
                 self.store.save(state)
                 return self.output(state)
             if "open_questions" not in state:
-                self.restore_open_questions(state)
+                try:
+                    self.restore_open_questions(state)
+                except (ValueError, KeyError, OSError, tarfile.TarError):
+                    LOG.warning(
+                        "Could not verify stored security coverage for scan %s",
+                        scan_id,
+                        exc_info=True,
+                    )
+                    # Keep all existing credit and evidence untouched, but do
+                    # not let unverifiable history bypass cancellation cleanup.
+                    state["migration_error"] = (
+                        "Stored review evidence could not be verified; aggregate report unavailable"
+                    )
+                    state["stop_reason"] = state["stop_reason"] or state["migration_error"]
                 self.store.save(state)
             from evander.security_scans import SecurityScanRequest
 
@@ -733,7 +749,8 @@ class CoverageController:
                     state["cleanup_finished_at"] = state["finished_at"]
                 state["phase"] = "finished"
                 self.store.save(state)
-                self.publish(state)
+                if not state.get("migration_error"):
+                    self.publish(state)
             self.store.save(state)
             return self.output(state)
 
@@ -844,6 +861,9 @@ class CoverageController:
     def output(self, state):
         findings, counts, _ = aggregate(state)
         finished = bool(state["finished_at"])
+        error = state["stop_reason"]
+        if state.get("migration_error") and state["migration_error"] != error:
+            error = f"{error}; {state['migration_error']}" if error else state["migration_error"]
         return SecurityScanResult(
             status=("completed" if complete(state) else "failed") if finished else "running",
             coverage="complete" if complete(state) else "partial",
@@ -852,7 +872,7 @@ class CoverageController:
             severity_counts=counts,
             coverage_progress=progress(state),
             cleanup_confirmed=state["cleanup_confirmed"],
-            error=state["stop_reason"],
+            error=error,
             artifacts=(
                 {
                     "archive_key": state["archive_key"],
