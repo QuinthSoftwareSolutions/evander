@@ -282,7 +282,9 @@ worker egress policies allow only the configured control-plane subscription prox
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
 
-The same page shows remaining weekly usage and banked resets. With privileged operations unlocked,
+The same page shows remaining weekly usage, banked resets, and the provider-reported credit
+balance. Credits display **Unlimited** when reported, **0** for an explicit absence of credits,
+and **Unavailable** when the balance is missing or invalid. With privileged operations unlocked,
 expand an enabled, signed-in profile and choose **Redeem one reset** to use an available reset.
 The page refreshes its counts and usage, and recovered capacity makes queued work eligible again.
 If the response fails, **Retry reset redemption** checks the same attempt without consuming a

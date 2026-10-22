@@ -1310,6 +1310,12 @@ Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_revie
 write the file path and line number into the comment body; the tool attaches the provider-native
 line context.
 
+Azure DevOps `submit_pr_review` can also set the authenticated host reviewer's vote with
+`event=APPROVE`, `APPROVE_WITH_SUGGESTIONS`, `WAITING_FOR_AUTHOR`, or `RESET`. The PR must
+be bound to the session and the host identity must already be a reviewer. Reject is unsupported;
+omitting `event` keeps comment-only publication. See the
+[review workflow contract](docs/operations.md#review-request-workflow) for details.
+
 For Azure DevOps PRs, PR comment/reply/review tools accept staged `artifact_ids`. The gateway
 uploads each artifact to the PR attachments API and appends Markdown image/link references to the
 posted text.

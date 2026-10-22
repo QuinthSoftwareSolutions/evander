@@ -47,6 +47,14 @@ from evander.integration_services.pull_requests import (
     _as_int_or_none,
 )
 
+_AZURE_DEVOPS_REVIEW_VOTES = {
+    "APPROVE": 10,
+    "APPROVE_WITH_SUGGESTIONS": 5,
+    "WAITING_FOR_AUTHOR": -5,
+    "REQUEST_CHANGES": -5,
+    "RESET": 0,
+}
+
 def _upload_azure_devops_pr_attachments(
     *,
     client: httpx.Client,
@@ -1368,6 +1376,13 @@ class AzureDevOpsPrPublishProvider:
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        normalized_event = str(event or "COMMENT").strip().upper() or "COMMENT"
+        if normalized_event != "COMMENT" and normalized_event not in _AZURE_DEVOPS_REVIEW_VOTES:
+            raise ValueError(
+                "Azure DevOps PR review event must be one of: COMMENT, "
+                + ", ".join(_AZURE_DEVOPS_REVIEW_VOTES)
+            )
+        vote = _AZURE_DEVOPS_REVIEW_VOTES.get(normalized_event)
         normalized_body = body_text.strip()
         normalized_comments = _normalize_pr_review_comments(comments)
         if not normalized_body and not normalized_comments:
@@ -1387,6 +1402,12 @@ class AzureDevOpsPrPublishProvider:
         uploaded_attachments: list[dict[str, Any]] = []
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            reviewer_id = None
+            reviewer_url = None
+            if vote is not None:
+                reviewer_id, reviewer_url = self._reviewer_vote_target(
+                    client=client, repo=repo, pr_id=pr_id
+                )
             resolved_summary_mentions = resolve_ado_mentions(
                 client=client,
                 organization_url=self.organization_url,
@@ -1507,12 +1528,32 @@ class AzureDevOpsPrPublishProvider:
                 summary_resolved_mentions = list(summary_result.get("resolved_mentions") or [])
                 uploaded_attachments.extend(summary_result.get("uploaded_attachments") or [])
 
+            if vote is not None:
+                vote_request = {"id": reviewer_id, "vote": vote}
+                if vote > 0:
+                    vote_request["isReapprove"] = True
+                vote_response = client.put(
+                    reviewer_url,
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                    json=vote_request,
+                )
+                vote_response.raise_for_status()
+                vote_payload = vote_response.json()
+                if (
+                    not isinstance(vote_payload, dict)
+                    or str(vote_payload.get("id") or "").casefold() != reviewer_id.casefold()
+                    or type(vote_payload.get("vote")) is not int
+                    or vote_payload["vote"] != vote
+                ):
+                    raise ValueError("Azure DevOps did not confirm the requested reviewer vote")
+
             comment_ids.extend(inline_comment_ids)
             comment_urls.extend(inline_comment_urls)
             published_feedback_ids.extend(inline_published_feedback_ids)
 
         review_url = summary_comment_url or (comment_urls[0] if comment_urls else None)
-        return {
+        result = {
             "status": "posted",
             "provider": "azure_devops",
             "repo": repo,
@@ -1530,7 +1571,44 @@ class AzureDevOpsPrPublishProvider:
             "published_feedback_ids": published_feedback_ids,
             "uploaded_attachments": uploaded_attachments,
         }
+        if vote is not None:
+            result.update({"reviewer_id": reviewer_id, "vote": vote})
+        return result
 
+    def _reviewer_vote_target(
+        self, *, client: httpx.Client, repo: str, pr_id: str
+    ) -> tuple[str, str]:
+        response = client.get(
+            f"{self.organization_url}/_apis/connectionData",
+            params={"api-version": "7.1-preview.1"},
+            auth=("", self.pat),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        identity = payload.get("authenticatedUser") if isinstance(payload, dict) else None
+        reviewer_id = (
+            _normalize_optional_text(identity.get("id")) if isinstance(identity, dict) else None
+        )
+        if not reviewer_id:
+            raise ValueError("Azure DevOps did not return an authenticated reviewer identity")
+        reviewer_url = (
+            f"{self.organization_url}/{self.project}/_apis/git/repositories/"
+            f"{self._repo_identifier(repo)}/pullRequests/{pr_id}/reviewers/"
+            f"{quote(reviewer_id, safe='')}"
+        )
+        response = client.get(reviewer_url, params={"api-version": "7.1"}, auth=("", self.pat))
+        if response.status_code == 404:
+            raise ValueError(
+                "The authenticated Azure DevOps identity must already be a PR reviewer"
+            )
+        response.raise_for_status()
+        reviewer = response.json()
+        if (
+            not isinstance(reviewer, dict)
+            or str(reviewer.get("id") or "").casefold() != reviewer_id.casefold()
+        ):
+            raise ValueError("Azure DevOps did not confirm the assigned reviewer identity")
+        return reviewer_id, reviewer_url
 
 
 def _ado_resolved_mention_payloads(

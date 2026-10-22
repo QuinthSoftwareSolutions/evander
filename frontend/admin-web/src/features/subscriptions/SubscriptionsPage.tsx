@@ -45,6 +45,28 @@ function weeklyRemainingPercent(rateLimits: Record<string, unknown> | null): num
 }
 
 const percentFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+const creditsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 20 });
+
+function remainingCredits(rateLimits: Record<string, unknown> | null): string {
+  const byLimitId = rateLimits?.by_limit_id;
+  const codexLimit = byLimitId && typeof byLimitId === "object"
+    ? (byLimitId as Record<string, unknown>).codex
+    : null;
+  for (const bucket of [codexLimit, rateLimits?.default]) {
+    if (!bucket || typeof bucket !== "object") continue;
+    const { limit_id: limitId, credits } = bucket as Record<string, unknown>;
+    if (limitId != null && limitId !== "codex") continue;
+    if (!credits || typeof credits !== "object") continue;
+    const { unlimited, balance, has_credits: hasCredits } = credits as Record<string, unknown>;
+    if (unlimited === true) return "Unlimited";
+    if (typeof balance === "string" && /^\d+(?:\.\d+)?$/.test(balance.trim())) {
+      const amount = Number(balance);
+      if (Number.isFinite(amount)) return creditsFormatter.format(amount);
+    }
+    if (hasCredits === false) return "0";
+  }
+  return "Unavailable";
+}
 
 function bankedResetCount(rateLimits: Record<string, unknown> | null): number | null {
   const credits = rateLimits?.reset_credits;
@@ -322,7 +344,7 @@ export function SubscriptionsPage() {
         </details>
 
         <div className="subscription-profiles">
-          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span><span>7-day remaining</span><span>Banked resets</span></div>
+          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span><span>7-day remaining</span><span>Banked resets</span><span>Credits</span></div>
           {profiles.map((profile) => {
             const login = pendingLogins[profile.profile_id];
             const remainingPercent = weeklyRemainingPercent(profile.rate_limits);
@@ -362,6 +384,10 @@ export function SubscriptionsPage() {
                   <span className="subscription-banked-resets">
                     {resetCount === null ? "Unavailable" : resetCount}
                     <small>Banked resets</small>
+                  </span>
+                  <span className="subscription-credits">
+                    {remainingCredits(profile.rate_limits)}
+                    <small>Credits</small>
                   </span>
                 </summary>
                 <div className="subscription-profile-body">

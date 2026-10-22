@@ -19,6 +19,13 @@ The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual 
 
 ## Agent usage
 
+All authorized agents receive the add-on's packaged [operating guide](evander_browser_sessions_addon/agent-guide.md)
+and browser-creation schema through `browser_session_profiles` and
+`browser_session_create`. To resume an existing session, request
+`browser_session_status` with `include_guidance: true`. This is the shared source
+of operating instructions for all agent roles; application-specific recipes stay
+in operator-owned storage.
+
 1. Grant desired browser_session tools explicitly and discover browser profiles.
 2. For an external application, select the owning agent's approved HTTP target aliases.
 3. For hosted application code, create it through the independent Application Environments add-on and await its endpoint references.
@@ -79,9 +86,9 @@ for capability checks, receipt recovery and Teams workflow activation.
 
 ## Faster multi-step interaction
 
-Browser Sessions 0.5.0 adds optional `browser_session_run` and
-`browser_session_cancel_run`. The PA chooses short multi-step objectives, supplies
-exact input values and verifies the result; the directory's Jev or OpenAI
+The optional tools `browser_session_run` and
+`browser_session_cancel_run` let the owning agent choose short multi-step objectives, supply
+exact input values and verify the result; the directory's Jev or OpenAI
 Decisions provider selects intermediate typed actions in the existing shared
 browser. This is disabled by default. See [setup, agent guidance, limits and
 benchmarks](docs/fast-execution.md).
