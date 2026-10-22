@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Separate application environments from shared browsers (0.115.0)
+
+- Add an independent optional Application Environments project with bounded application leases, private HTTP endpoints, safe checkout mounts and SQL Server add-on resource binding beyond agent turns.
+- Make hosted Browser Sessions target approved external sites or leased application endpoints without requiring application recipes or hosting.
+- Add explicitly granted Playwright connections, retained browser contexts, managed-login tools and shared page selection with generation-fenced human takeover.
+- Supply independent deployment assets and a read-only coordinated migration checker; legacy creation calls must migrate after existing hosted previews drain.
+
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
 - Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, lossless boundaries between bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.

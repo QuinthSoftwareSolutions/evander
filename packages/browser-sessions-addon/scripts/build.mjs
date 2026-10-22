@@ -10,6 +10,7 @@ for (const [entry, outfile, platform] of [
   ["web/voice-page.ts", "evander_browser_sessions_addon/ui_static/voice.js", "browser"],
   ["web/viewer.ts", "evander_browser_sessions_addon/ui_static/viewer.js", "browser"],
   ["web/styles.css", "evander_browser_sessions_addon/ui_static/styles.css", "browser"],
+  ["controller/automation.ts", "dist/automation.mjs", "node"],
   ["controller/hosted.ts", "evander_browser_sessions_addon/controller/hosted.mjs", "node"],
   ["extension/background.ts", "dist/extension/background.js", "browser"],
   ["extension/capture.ts", "dist/extension/capture.js", "browser"],
@@ -17,7 +18,8 @@ for (const [entry, outfile, platform] of [
   ["extension/microphone-page.ts", "dist/extension/microphone.js", "browser"],
 ]) {
   await build({ entryPoints: [entry], outfile, bundle: true, format: "esm", platform,
-    target: platform === "node" ? "node22" : "chrome125", sourcemap: false });
+    target: platform === "node" ? "node22" : "chrome125", sourcemap: false,
+    ...(platform === "node" ? {banner:{js:"import { createRequire as evanderCreateRequire } from 'node:module'; const require = evanderCreateRequire(import.meta.url);"}} : {}) });
 }
 for (const name of ["index.html", "join.html", "voice.html", "voice.css"])
   await cp("web/" + name, "evander_browser_sessions_addon/ui_static/" + name);

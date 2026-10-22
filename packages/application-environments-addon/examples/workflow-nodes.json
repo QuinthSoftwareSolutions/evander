@@ -1,0 +1,45 @@
+{
+  "description": "Node fragments. Poll application_status through the workflow's bounded readiness branch until state=ready; only then enter browser. On completion close the browser, then close the application. Deliver browser.viewer_url through existing configured delivery.",
+  "nodes": [
+    {
+      "id": "application",
+      "display_name": "Launch application",
+      "type": "effect:application-environment:ensure",
+      "config": {
+        "agent_session_id": "${{request.payload.agent_session_id}}",
+        "request": {
+          "request_id": "${{request.event_id}}",
+          "profile_id": "web",
+          "workspace_ref": "${{request.payload.workspace_ref}}",
+          "launch_manifest_path": ".evander/preview.json"
+        }
+      }
+    },
+    {
+      "id": "application_status",
+      "display_name": "Wait for application readiness",
+      "type": "query:application-environment:status",
+      "config": {
+        "agent_session_id": "${{request.payload.agent_session_id}}",
+        "environment_id": "${{application.id}}"
+      }
+    },
+    {
+      "id": "browser",
+      "display_name": "Share application browser",
+      "type": "effect:browser-session:ensure",
+      "config": {
+        "agent_session_id": "${{request.payload.agent_session_id}}",
+        "request": {
+          "mode": "hosted",
+          "request_id": "${{request.event_id}}",
+          "profile_id": "browser",
+          "endpoint_refs": [
+            "${{application_status.endpoints.0.ref}}"
+          ],
+          "entry_url": "${{application_status.endpoints.0.origin}}/"
+        }
+      }
+    }
+  ]
+}

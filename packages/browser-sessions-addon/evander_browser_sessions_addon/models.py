@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 ADDON_ID = "browser-sessions-addon"
 PROTOCOL_VERSION = 1
 TERMINAL = frozenset({"closed", "expired"})
-Mode = Literal["hosted_demo", "hosted_development", "user_hosted"]
+Mode = Literal["hosted", "hosted_demo", "hosted_development", "user_hosted"]
 State = Literal[
     "starting",
     "ready",
@@ -104,31 +104,19 @@ class WorkerConnection(Contract):
 
 
 class LaunchProfile(Contract):
-    image: str = Field(min_length=1, max_length=256)
-    browser_image: str = Field(default="evander-browser-controller:latest", min_length=1)
-    cpus: float = Field(default=2, gt=0, le=16)
-    memory_mib: int = Field(default=4096, ge=512, le=65536)
-    browser_memory_mib: int = Field(default=1536, ge=512, le=8192)
-    public_environment: dict[str, str] = Field(default_factory=dict)
-    readonly_mounts: dict[str, str] = Field(default_factory=dict)
-    # Host-owned, named destinations; never supplied by an agent launch manifest.
-    egress_allowlist: list[str] = Field(default_factory=list, max_length=64)
-    database_enabled: bool = False
+    """Browser-only authority; application images and launch commands are separate."""
 
-    @field_validator("image", "browser_image")
+    image: str = Field(default="evander-browser-controller:latest", min_length=1, max_length=256)
+    cpus: float = Field(default=1, gt=0, le=8)
+    memory_mib: int = Field(default=1536, ge=512, le=8192)
+    readonly_mounts: dict[str, str] = Field(default_factory=dict)
+    playwright_enabled: bool = False
+
+    @field_validator("image")
     @classmethod
     def image_ref(cls, value):
-        if value.startswith("-") or any(char.isspace() for char in value):
-            raise ValueError("Invalid approved image reference")
-        return value
-
-    @field_validator("public_environment")
-    @classmethod
-    def environment(cls, value):
-        if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) for key in value):
-            raise ValueError("Invalid environment variable name")
-        if set(value) & {"LD_PRELOAD", "LD_LIBRARY_PATH", "NODE_OPTIONS", "PYTHONPATH"}:
-            raise ValueError("Loader overrides are unavailable")
+        if value.startswith("-") or any(c.isspace() for c in value):
+            raise ValueError("Invalid approved browser image")
         return value
 
 
@@ -239,44 +227,6 @@ class Settings(Contract):
         return value
 
 
-class LaunchManifest(Contract):
-    command: list[str] = Field(min_length=1, max_length=128)
-    working_directory: str = "."
-    entry_path: str = "/"
-    port: int = Field(default=4200, ge=1024, le=65535)
-    readiness_path: str = "/"
-    additional_ports: list[int] = Field(default_factory=list, max_length=8)
-
-    @field_validator("additional_ports")
-    @classmethod
-    def ports(cls, values):
-        if any(type(port) is not int or not 1024 <= port <= 65535 for port in values):
-            raise ValueError("Application ports must be between 1024 and 65535")
-        return list(dict.fromkeys(values))
-
-    startup_seconds: int = Field(default=600, ge=10, le=1800)
-    database: str | None = Field(default=None, pattern=IDENTIFIER)
-
-    @field_validator("working_directory")
-    @classmethod
-    def directory(cls, value):
-        return relative_path(value)
-
-    @field_validator("entry_path", "readiness_path")
-    @classmethod
-    def path(cls, value):
-        if not value.startswith("/") or value.startswith("//") or "\\" in value or "\x00" in value:
-            raise ValueError("Expected an application-relative URL path")
-        return value
-
-    @field_validator("command")
-    @classmethod
-    def argv(cls, value):
-        if any(not item or "\x00" in item or len(item) > 8192 for item in value):
-            raise ValueError("Invalid application command")
-        return value
-
-
 class Session(Contract):
     id: str = Field(pattern=IDENTIFIER)
     directory: str
@@ -285,6 +235,10 @@ class Session(Contract):
     # Retained only to clean up support agents belonging to pre-upgrade sessions.
     support_agent_session_id: str | None = None
     mode: Mode
+    target_aliases: list[str] = Field(default_factory=list, max_length=32)
+    endpoint_refs: list[str] = Field(default_factory=list, max_length=16)
+    entry_url: str | None = None
+    endpoint_origins: dict[str, str] = Field(default_factory=dict)
     title: str = Field(default="Shared browser", max_length=160)
     worker_id: str | None = None
     workspace_ref: str | None = None
@@ -316,21 +270,34 @@ class Session(Contract):
 
 
 class CreateRequest(Contract):
-    mode: Mode
+    mode: Literal["hosted", "user_hosted"]
     request_id: str = Field(pattern=IDENTIFIER)
     title: str = Field(default="Shared browser", max_length=160)
     profile_id: str | None = None
-    workspace_ref: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    launch_manifest_path: str | None = None
+    target_aliases: list[str] = Field(default_factory=list, max_length=32)
+    endpoint_refs: list[str] = Field(default_factory=list, max_length=16)
+    entry_url: str | None = Field(default=None, max_length=8192)
 
     @model_validator(mode="after")
-    def hosted_workspace(self):
-        if self.mode != "user_hosted" and not all(
-            (self.profile_id, self.workspace_ref, self.launch_manifest_path)
-        ):
-            raise ValueError("Hosted sessions require a profile, workspace and launch manifest")
-        if self.launch_manifest_path:
-            relative_path(self.launch_manifest_path)
+    def targets(self):
+        if self.mode == "hosted":
+            if (
+                not self.profile_id
+                or not self.entry_url
+                or not (self.target_aliases or self.endpoint_refs)
+            ):
+                raise ValueError(
+                    "Hosted browsers require a browser profile, approved targets and entry URL"
+                )
+            origin(self.entry_url)
+        elif self.profile_id or self.target_aliases or self.endpoint_refs or self.entry_url:
+            raise ValueError("Local Chrome sharing does not accept hosted browser configuration")
+        for alias in self.target_aliases:
+            identifier(alias)
+        import re
+
+        if any(not re.fullmatch(r"ep-[a-f0-9]{32}", ref) for ref in self.endpoint_refs):
+            raise ValueError("Invalid resource endpoint reference")
         return self
 
 
@@ -351,7 +318,12 @@ class BrowserCommand(Contract):
         "dialog",
         "highlight",
         "reload",
+        "pages",
+        "select_page",
+        "authenticate",
     ]
+    target_alias: str | None = Field(default=None, pattern=IDENTIFIER)
+    page_id: str | None = Field(default=None, max_length=128)
     observation_id: str | None = Field(default=None, max_length=128)
     ref: str | None = Field(default=None, max_length=128)
     url: str | None = Field(default=None, max_length=8192)
@@ -370,7 +342,7 @@ class BrowserCommand(Contract):
 
     @property
     def observing(self):
-        return self.action in {"observe", "highlight"}
+        return self.action in {"observe", "highlight", "pages", "select_page"}
 
 
 class MessageRequest(Contract):
@@ -386,3 +358,5 @@ class Frame(Contract):
     height: int = Field(ge=1, le=4096)
     page_epoch: str = Field(max_length=128)
     url: str = Field(max_length=8192)
+    page_id: str | None = None
+    pages: list[dict[str, str | bool]] = Field(default_factory=list, max_length=64)

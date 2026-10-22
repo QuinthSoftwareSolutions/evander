@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander_browser_sessions_addon.mount_pin import open_checked_workspace, pin_workspace
+from evander.resources.mount_pin import open_checked_workspace, pin_workspace
 
 
 def test_pinning_uses_the_checked_inode_when_the_path_is_replaced(tmp_path, monkeypatch):

@@ -1,0 +1,1 @@
+html{color-scheme:light dark}body{font:16px system-ui;margin:2rem;background:Canvas;color:CanvasText}main{max-width:1100px;margin:auto}input,textarea,button{font:inherit;padding:.5rem;border:1px solid GrayText;background:Canvas;color:CanvasText}textarea{display:block;width:95%;font-family:monospace}button{cursor:pointer;margin:.5rem}#notice{min-height:1.5em}label{display:block}

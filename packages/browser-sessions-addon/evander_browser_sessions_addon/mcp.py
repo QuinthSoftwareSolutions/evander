@@ -1,4 +1,4 @@
-"""Session-bound browser tools. Typed actions only; no arbitrary script or CDP."""
+"""Session-bound browser tools. Typed actions and a separately granted private Playwright connection."""
 
 import json
 import uuid
@@ -17,9 +17,10 @@ from .models import IDENTIFIER, BrowserCommand, BrowserError, CreateRequest, Run
 from .service import Service
 
 TOOLS = {
-    "browser_session_profiles": "List approved preview profile names and modes for this agent's directory.",
-    "browser_session_workspaces": "List opaque workspace references on this agent's pinned worker. Write a repo-local launch manifest before creating a hosted preview.",
-    "browser_session_create": "Create a hosted demo, hosted development preview or local Chrome session for this agent. Local sharing starts with observation; the user must grant input. Reuse request_id for safe retries.",
+    "browser_session_profiles": "List approved browser profile names and modes for this agent's directory.",
+    "browser_session_create": "Create a browser for approved HTTP targets or application endpoints, or a local Chrome session for this agent. Local sharing starts with observation; the user must grant input. Reuse request_id for safe retries.",
+    "browser_session_connect": "Grant this job a private Playwright connection to the shared Chromium browser. Requires explicit permission and browser-profile enablement. Human takeover disconnects it; observe before reconnecting or retrying any action.",
+    "browser_session_authenticate": "Open this browser with an explicitly granted managed website login for a selected HTTP target alias. Host passwords are not returned. Requires agent control.",
     "browser_session_invite": "Issue a short-lived single-use invitation for the local Chrome host. Hosted links always require Admin UI sign-in.",
     "browser_session_status": "Read shared browser state, control generation, expiry and viewer URL. Does not renew activity.",
     "browser_session_observe": "Observe the current approved page: screenshot and accessible element references. Does not save a recording.",
@@ -29,7 +30,7 @@ TOOLS = {
     "browser_session_save_screenshot": "Explicitly retain one current screenshot as a normal expiring artifact.",
     "browser_session_run": "Execute a short multi-step browser goal using the directory decision provider. Prefer this over individual action calls for multi-step objectives when enabled. Supply exact named text values; never put secrets in the goal. Reuse request_id only to read its receipt, never replay uncertain actions. The PA must verify the final observation (or observe again if observation_current is false) before claiming success. Stop/pause cancels the objective; do not resume without a new user instruction.",
     "browser_session_cancel_run": "Stop this agent's active browser objective and pause agent input. Safe to repeat. Does not undo already issued input.",
-    "browser_session_close": "Close this agent's preview and release its dependent resources.",
+    "browser_session_close": "Close this browser and release its browser resources; applications remain independent.",
 }
 MCP_TOOL_CATALOG = tuple(
     AddonMcpTool(
@@ -38,9 +39,7 @@ MCP_TOOL_CATALOG = tuple(
         description=description,
         group="Shared browsers",
         audit_metadata_only=name == "browser_session_run",
-        discovery_for=("browser_session_create",)
-        if name in {"browser_session_profiles", "browser_session_workspaces"}
-        else (),
+        discovery_for=("browser_session_create",) if name == "browser_session_profiles" else (),
     )
     for name, description in TOOLS.items()
 )
@@ -68,22 +67,47 @@ def register_mcp_tools(server, context):
             settings = service.settings(parent.directory)[1]
             return {
                 "profiles": [
-                    {"id": key, "database_enabled": value.database_enabled}
+                    {"id": key, "playwright_enabled": value.playwright_enabled}
                     for key, value in settings.profiles.items()
                 ],
-                "modes": ["hosted_demo", "hosted_development"]
-                + (["user_hosted"] if settings.guest_enabled else []),
+                "modes": ["hosted"] + (["user_hosted"] if settings.guest_enabled else []),
             }
 
         return invoke(ctx, "browser_session_profiles", run)
 
-    @server.tool(description=TOOLS["browser_session_workspaces"])
-    def browser_session_workspaces(ctx: Context) -> dict:
-        return invoke(ctx, "browser_session_workspaces", service.workspaces)
-
     @server.tool(description=TOOLS["browser_session_create"])
     def browser_session_create(request: CreateRequest, ctx: Context) -> dict:
         return invoke(ctx, "browser_session_create", lambda agent: service.create(agent, request))
+
+    @server.tool(description=TOOLS["browser_session_connect"])
+    def browser_session_connect(
+        browser_session_id: str, observation_id: str, generation: int, ctx: Context
+    ) -> dict:
+        return invoke(
+            ctx,
+            "browser_session_connect",
+            lambda agent: service.connect(agent, browser_session_id, observation_id, generation),
+        )
+
+    @server.tool(description=TOOLS["browser_session_authenticate"])
+    def browser_session_authenticate(
+        browser_session_id: str, target_alias: str, generation: int, ctx: Context
+    ) -> dict:
+        return invoke(
+            ctx,
+            "browser_session_authenticate",
+            lambda agent: execute(
+                agent,
+                browser_session_id,
+                "browser_session_authenticate",
+                BrowserCommand(
+                    id=str(uuid.uuid4()),
+                    generation=generation,
+                    action="authenticate",
+                    target_alias=target_alias,
+                ),
+            ),
+        )
 
     @server.tool(description=TOOLS["browser_session_invite"])
     def browser_session_invite(browser_session_id: str, ctx: Context) -> dict:
@@ -129,7 +153,7 @@ def register_mcp_tools(server, context):
 
     @server.tool(description=TOOLS["browser_session_act"])
     def browser_session_act(browser_session_id: str, command: BrowserCommand, ctx: Context) -> dict:
-        if command.observing:
+        if command.action in {"observe", "highlight"}:
             raise ToolError("Use the observe or highlight tool")
         return invoke(
             ctx,
