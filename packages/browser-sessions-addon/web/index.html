@@ -7,7 +7,8 @@
 <h1>Browser sessions</h1><p class="muted">Explore an application with your agent, or refine a change together.</p></div>
 <div class="catalog-actions"><label class="catalog-filter"><input type="checkbox" id="show-closed">Show closed sessions</label>
 <button id="configure">Configure</button></div></div><div id="session-list" class="session-list"></div>
-<section id="settings-panel" class="settings-panel" hidden><h2>Browser session settings</h2><form id="settings-form">
+<section id="settings-panel" class="settings-panel" hidden><h2>Browser session settings</h2>
+<p class="muted">Connection addresses and credentials require owner access and unlocked privileges. Save an address before storing its credential. Existing sessions retain their original connection.</p><form id="settings-form">
 <div class="settings-toggles">
 <label class="check"><input type="checkbox" id="enabled">Enable browser sessions</label>
 <label class="check"><input type="checkbox" id="guest-enabled">Allow invited local hosts</label></div>
@@ -15,7 +16,7 @@
 <div class="form-grid">
 <label>Public control-plane URL<input id="public-url" type="url" required placeholder="https://control.example.org"></label>
 <label>Private relay URL<input id="relay-url" type="url" required></label>
-<label class="full-width">Relay credential environment variable<input id="relay-token" required></label></div></section>
+<div id="relay-credential" class="full-width"></div></div></section>
 <section class="settings-section" aria-labelledby="limits-heading"><h3 id="limits-heading">Session limits</h3>
 <div class="form-grid session-limits">
 <label>Lifetime in minutes<input id="lifetime" type="number" min="5" max="1440"></label>
@@ -35,7 +36,7 @@
 <div class="settings-toggles"><label class="check"><input type="checkbox" id="voice-enabled">Enable voice for this directory</label></div>
 <div class="form-grid">
 <label>Speech API base URL<input id="voice-provider" type="url"></label>
-<label>Speech credential environment variable<input id="voice-key"></label>
+<div id="voice-credential"></div>
 <label>Transcription model<input id="voice-stt"></label>
 <label>Speech model<input id="voice-tts"></label>
 <label>Voice name<input id="voice-name"></label>

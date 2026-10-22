@@ -4,11 +4,11 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.8 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.9.3 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
 In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and onyx. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
 
-Provision the environment variable named by api_key_env (default EVANDER_BROWSER_VOICE_API_KEY) in both Admin Web and the browser relay service environments. Speech uses that provider credential independently of the agent's model authentication. The worker, extension and page receive no speech API credential. No additional worker ports or service are needed.
+An owner stores the speech credential with **Store credential** after saving the provider address and unlocking privileged operations. Admin Web and the browser relay resolve its managed reference from the shared platform credential store. Speech uses that credential independently of the agent's model authentication. The worker, extension and page receive no speech API credential. No additional worker ports or service are needed.
 
 Use HTTPS for the public control-plane URL and remote speech providers. Chrome microphone capture requires a secure context and explicit browser permission. Review speech-provider data handling before enabling it for the intended directory.
 
@@ -51,3 +51,5 @@ If microphone access is denied, repair the site's Chrome microphone permission a
 The automated suite uses a real Chrome microphone recorder with a synthetic input device, incremental PCM and legacy WAV playback, actual extension pairing, sidebar capture, microphone permission cancellation/retry, scoped legacy companion access and a loopback speech provider. Unit/HTTP checks cover login, permissions, origin validation, bounded uploads, request deduplication, provider failure, rate limits and cancellation. No billable speech API call is made by these tests. Real microphone devices, provider credentials, selected languages/voices and enterprise browser policy still need deployment qualification.
 
 Precise narration timing alongside agent actions remains a future extension. Physical microphone sensitivity, background noise and speaker echo need qualification on the intended device.
+
+Speech credentials use the same encrypted platform store and exact destination binding as worker and relay connections. Provision them through **Shared Browsers → Configure → Voice → Store credential**, with owner access and privileged operations unlocked. The Admin Web and browser relay service accounts need the platform store and its systemd-delivered key. See [credential migration](credentials.md) for existing installations.

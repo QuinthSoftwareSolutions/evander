@@ -864,6 +864,8 @@ var actor = "";
 var after = 0;
 var pointing = false;
 var annotation;
+var canManageConnections = false;
+var savedSettings = "";
 var settings;
 var settingsRevision = 0;
 var websocket;
@@ -1172,18 +1174,56 @@ async function openViewer() {
   await messages();
   setInterval(() => void messages().catch(showError), 2e3);
 }
-function field(card, label, value, updateValue, type = "text") {
+function field(card, label, value, updateValue, type = "text", connectionOnly = false) {
   const element = document.createElement("label");
   element.textContent = label;
   const box = document.createElement("input");
   box.type = type;
   box.value = String(value ?? "");
+  box.disabled = connectionOnly && !canManageConnections;
   box.addEventListener("input", () => {
     updateValue(box.value);
     syncAdvanced();
   });
   element.append(box);
   card.append(element);
+}
+function credentialField(card, purpose, reference, workerId) {
+  const label = document.createElement("label");
+  label.textContent = reference ? "Credential configured \xB7 replace value" : "New credential";
+  const secret = document.createElement("input");
+  secret.type = "password";
+  secret.autocomplete = "new-password";
+  secret.disabled = !canManageConnections;
+  label.append(secret);
+  card.append(label);
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "quiet";
+  save.textContent = "Store credential";
+  save.disabled = !canManageConnections;
+  save.addEventListener("click", async () => {
+    try {
+      if (JSON.stringify(settings) !== savedSettings) throw new Error("Save settings before storing a credential for this connection.");
+      if (!secret.value) throw new Error("Enter the credential value.");
+      const result = await api("/credentials?directory=" + encodeURIComponent(directory), {
+        expected_revision: settingsRevision,
+        purpose,
+        worker_id: workerId,
+        token: secret.value
+      }, "POST");
+      secret.value = "";
+      settings = result.settings;
+      settingsRevision = result.revision;
+      savedSettings = JSON.stringify(settings);
+      renderSettings();
+      $("settings-status").textContent = "Credential stored";
+    } catch (error) {
+      secret.value = "";
+      showError(error);
+    }
+  });
+  card.append(save);
 }
 function syncAdvanced() {
   input("advanced-settings").value = JSON.stringify(settings, null, 2);
@@ -1210,7 +1250,6 @@ function renderSettings() {
   };
   for (const [id, key, fallback] of [
     ["voice-provider", "api_base_url", "https://api.openai.com/v1"],
-    ["voice-key", "api_key_env", "EVANDER_BROWSER_VOICE_API_KEY"],
     ["voice-stt", "transcription_model", "gpt-transcribe"],
     ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
     ["voice-name", "voice", "onyx"],
@@ -1226,14 +1265,12 @@ function renderSettings() {
   input("guest-enabled").checked = settings.guest_enabled;
   input("public-url").value = settings.public_base_url;
   input("relay-url").value = settings.relay_url;
-  input("relay-token").value = settings.relay_token_env;
   input("lifetime").value = String(settings.lifetime_seconds / 60);
   input("idle").value = String(settings.idle_seconds / 60);
   input("quota").value = String(settings.max_hosted_per_worker);
   for (const [id, key, convert] of [
     ["public-url", "public_base_url", String],
     ["relay-url", "relay_url", String],
-    ["relay-token", "relay_token_env", String],
     ["lifetime", "lifetime_seconds", (v) => Number(v) * 60],
     ["idle", "idle_seconds", (v) => Number(v) * 60],
     ["quota", "max_hosted_per_worker", Number]
@@ -1262,10 +1299,10 @@ function renderSettings() {
     for (const [key, label] of [
       ["parent_worker_url", "Assigned worker URL"],
       ["base_url", "Browser supervisor URL"],
-      ["token_env", "Credential environment variable"],
       ["relay_url", "Worker-reachable relay endpoint"]
     ])
-      field(card, label, worker[key], (value) => worker[key] = value || null);
+      field(card, label, worker[key], (value) => worker[key] = value || null, "text", true);
+    credentialField(card, "worker", worker.credential_ref, name);
     $("workers").append(card);
   }
   for (const [name, profile] of Object.entries(settings.profiles)) {
@@ -1279,6 +1316,12 @@ function renderSettings() {
     field(card, "Memory (MiB)", profile.memory_mib, (value) => profile.memory_mib = Number(value), "number");
     $("profiles").append(card);
   }
+  for (const id of ["public-url", "relay-url", "voice-provider", "add-worker"])
+    document.getElementById(id).disabled = !canManageConnections;
+  $("relay-credential").replaceChildren();
+  $("voice-credential").replaceChildren();
+  credentialField($("relay-credential"), "relay", settings.relay_credential_ref);
+  credentialField($("voice-credential"), "voice", settings.voice.credential_ref);
   syncAdvanced();
 }
 $("configure").addEventListener("click", async () => {
@@ -1286,6 +1329,8 @@ $("configure").addEventListener("click", async () => {
     const result = await api("/settings?directory=" + encodeURIComponent(directory));
     settings = result.settings;
     settingsRevision = result.revision;
+    canManageConnections = result.can_manage_connections;
+    savedSettings = JSON.stringify(settings);
     renderSettings();
     $("settings-panel").hidden = false;
   } catch (error) {
@@ -1294,7 +1339,7 @@ $("configure").addEventListener("click", async () => {
 });
 $("add-worker").addEventListener("click", () => {
   const name = "worker-" + (Object.keys(settings.workers).length + 1);
-  settings.workers[name] = { base_url: "", parent_worker_url: "", token_env: "EVANDER_BROWSER_WORKER_TOKEN", relay_url: null };
+  settings.workers[name] = { base_url: "", parent_worker_url: "", credential_ref: null, relay_url: null };
   renderSettings();
 });
 $("add-profile").addEventListener("click", () => {
@@ -1317,7 +1362,11 @@ $("settings-form").addEventListener("submit", async (event) => {
       expected_revision: settingsRevision,
       settings
     }, "PUT");
+    settings = result.settings;
     settingsRevision = result.revision;
+    savedSettings = JSON.stringify(settings);
+    canManageConnections = result.can_manage_connections;
+    renderSettings();
     $("settings-status").textContent = "Saved";
   } catch (error) {
     showError(error);
