@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { automationBridge } from "./automation.js";
 import { BrowserEngine } from "../shared/engine.js";
+import { commandAuthority } from "./commands.js";
 
 const config = JSON.parse(await readFile(process.env.EVANDER_BROWSER_CONNECTION!, "utf8"));
 const requirePlaywright = createRequire(import.meta.url);
@@ -59,6 +60,7 @@ await context.route("**/*", async (route: any) => {
 let socket: WebSocket | undefined;
 let shuttingDown = false;
 let state = config.session;
+const commands = commandAuthority(() => state);
 const send = (value:any)=>{if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify(value));};
 const pages=new Map<string,any>();
 const known=new WeakMap<any,string>();
@@ -109,7 +111,7 @@ const page=await context.newPage();await register(page);
 const cdp=engines.get(known.get(page)!)!.cdp;
 const bridge=automationBridge(config,version.webSocketDebuggerUrl,async next=>{
   state=next;for(const current of engines.values())current.engine.update(state);
-},state,async target=>{const id=targetPages.get(target);if(id && active!==id)await select(id);});
+},state,async target=>{const id=targetPages.get(target);if(id && active!==id)await select(id);},()=>commands.fence());
 for(const signal of ["SIGTERM","SIGINT"] as const)process.on(signal,()=>{
   shuttingDown=true;socket?.close();void bridge.close().finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
 });
@@ -138,34 +140,51 @@ async function join() {
       void bridge.setState(state).catch(()=>socket?.close());
       for(const current of engines.values())current.engine.update(state);
     } else if (message.kind === "command") {
+      const execute=commands.capture(message.command,message.actor);
       commandChain = commandChain.then(async () => {
         try {
-          if(!["observe","highlight","pages","select_page"].includes(message.command.action) && bridge.active())throw new Error("automation_controls_browser");
-          let result:any;
-          if(message.command.action==="authenticate") {
-            const alias=message.command.target_alias, login=config.website_session;
-            if(!login.relay_url || !login.aliases.includes(alias))throw new Error("website_session_not_granted");
-            const response=await fetch(login.relay_url+"/session/"+encodeURIComponent(login.session_id)+"/website-session/"+encodeURIComponent(alias),{method:"POST",redirect:"error",headers:{"x-evander-mcp-session-token":login.token},signal:AbortSignal.timeout(90000)});
-            if(!response.ok)throw new Error("website_session_unavailable");
-            const auth=await response.json() as any;
-            if(!config.allowed_origins.includes(auth.origin) || auth.expiresAt<=Date.now()/1000)throw new Error("website_session_unavailable");
-            const managed=await browser.newContext({storageState:auth.storageState,acceptDownloads:false,serviceWorkers:"block",...(config.proxy?{proxy:config.proxy}:{})});
-            await managed.addInitScript(({origin,values}:any)=>{if(window.location.origin===origin)for(const [key,value] of Object.entries(values))window.sessionStorage.setItem(key,String(value));},{origin:auth.origin,values:auth.sessionStorage});
-            managed.on("page",(page:any)=>void register(page));
-            const target=await managed.newPage();await register(target);await target.goto(auth.origin,{waitUntil:"domcontentloaded"});await select(known.get(target)!);
-            result={success:true,pages:pageList(),generation:state.control_generation};
-          }
-          else if(message.command.action==="pages") result={pages:pageList(),generation:state.control_generation};
-          else if(message.command.action==="select_page") {
-            if(!pageList().some(item=>item.id===message.command.page_id))throw new Error("page_unavailable");
-            await select(message.command.page_id);result={pages:pageList(),generation:state.control_generation};
-          } else {
-            const target=message.command.page_id??active;
-            if(target!==active)await select(target);
-            const current=engines.get(target);if(!current)throw new Error("page_unavailable");
-            result=await current.engine.execute(message.command,message.actor);
-            result.page_id=target;result.pages=pageList();
-          }
+          const result=await execute(async(guard,signal)=>{
+            guard();
+            if(!["observe","highlight","pages","select_page"].includes(message.command.action) && bridge.active())throw new Error("automation_controls_browser");
+            let result:any;
+            if(message.command.action==="authenticate") {
+              const alias=message.command.target_alias, login=config.website_session;
+              if(!login.relay_url || !login.aliases.includes(alias))throw new Error("website_session_not_granted");
+              const response=await fetch(login.relay_url+"/session/"+encodeURIComponent(login.session_id)+"/website-session/"+encodeURIComponent(alias),{method:"POST",redirect:"error",headers:{"x-evander-mcp-session-token":login.token},signal:AbortSignal.any([signal,AbortSignal.timeout(90000)])});
+              if(!response.ok)throw new Error("website_session_unavailable");
+              const auth=await response.json() as any;
+              guard();
+              if(!config.allowed_origins.includes(auth.origin) || auth.expiresAt<=Date.now()/1000)throw new Error("website_session_unavailable");
+              let managed:any;
+              try {
+                managed=await browser.newContext({storageState:auth.storageState,acceptDownloads:false,serviceWorkers:"block",...(config.proxy?{proxy:config.proxy}:{})});
+                guard();
+                await managed.addInitScript(({origin,values}:any)=>{if(window.location.origin===origin)for(const [key,value] of Object.entries(values))window.sessionStorage.setItem(key,String(value));},{origin:auth.origin,values:auth.sessionStorage});
+                guard();
+                managed.on("page",(page:any)=>void register(page));
+                const target=await managed.newPage();guard();
+                await register(target);guard();
+                await target.goto(auth.origin,{waitUntil:"domcontentloaded"});guard();
+                await select(known.get(target)!);guard();
+                result={success:true,pages:pageList(),generation:state.control_generation};
+              } catch(error) {
+                await managed?.close().catch(()=>{});
+                throw error;
+              }
+            }
+            else if(message.command.action==="pages") result={pages:pageList(),generation:state.control_generation};
+            else if(message.command.action==="select_page") {
+              if(!pageList().some(item=>item.id===message.command.page_id))throw new Error("page_unavailable");
+              await select(message.command.page_id);result={pages:pageList(),generation:state.control_generation};
+            } else {
+              const target=message.command.page_id??active;
+              if(target!==active)await select(target);
+              const current=engines.get(target);if(!current)throw new Error("page_unavailable");
+              result=await current.engine.execute(message.command,message.actor);
+              result.page_id=target;result.pages=pageList();
+            }
+            return result;
+          });
           send({ kind: "result", id: message.command.id, result });
         } catch (error: any) {
           send({ kind: "result", id: message.command.id, error: true,
@@ -176,7 +195,7 @@ async function join() {
   });
   return new Promise<void>((resolve) => socket!.addEventListener("close", () => {
     state = { ...state, controller: null, control_generation: state.control_generation + 1 };
-    void bridge.revoke();
+    void bridge.revoke().catch(()=>{});
     for(const current of engines.values())current.engine.update(state); resolve();
   }));
 }

@@ -130,6 +130,15 @@ class Store:
                 (json.dumps(record), record["session"]["id"]),
             )
 
+    def active(self, worker_id):
+        with self.db() as db:
+            records = [json.loads(row[0]) for row in db.execute("SELECT payload FROM environments")]
+        return [
+            record for record in records
+            if record["session"]["worker_id"] == worker_id
+            and record["state"] not in {"closed", "expired"}
+        ]
+
     def list(self, directory):
         with self.db() as db:
             return [

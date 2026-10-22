@@ -68,7 +68,9 @@ explicitly using `browser_session_close`.
 
 Human takeover revokes the automation token and connection. Previously dispatched
 actions can have completed; the fence waits for their acknowledgements before
-human input is enabled. If that cannot be confirmed, control stays paused. A
+human input is enabled. Pending managed login is cancelled, and dispatched typed
+commands must settle before takeover is acknowledged. If the fence cannot be
+confirmed, control stays paused. A
 subsequent handback needs a fresh observation and explicit connection. Scripts
 must treat a disconnection as interruption, never automatically replay a test
 button or other side effect. Closing, pausing and losing the relay also revoke

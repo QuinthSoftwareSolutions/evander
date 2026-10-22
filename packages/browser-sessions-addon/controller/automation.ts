@@ -7,7 +7,7 @@ function equal(a: string, b: string) {
   const x=Buffer.from(a), y=Buffer.from(b);
   return !!a && x.length===y.length && timingSafeEqual(x,y);
 }
-export function automationBridge(config: any, endpoint: string, update: (state:any)=>Promise<void>, initial: any, focus: (target:string)=>Promise<void>=async()=>{}) {
+export function automationBridge(config: any, endpoint: string, update: (state:any)=>Promise<void>, initial: any, focus: (target:string)=>Promise<void>=async()=>{}, fenceCommands: ()=>Promise<void>=async()=>{}) {
   let state=initial, token="";
   const clients=new Set<any>();
   const upstreams=new Set<any>();
@@ -19,16 +19,17 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
     clients.clear();
     // The agent cannot enqueue input after this point. Already dispatched commands
     // may have completed; do not acknowledge human control until they settle.
-    if(pending.size) {
-      let timer:ReturnType<typeof setTimeout>|undefined;
-      try {await Promise.race([Promise.all([...pending]),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("fence_unconfirmed")),10000);})]);}
-      finally {if(timer)clearTimeout(timer);}
-    }
+    const settling=[...pending,fenceCommands()];
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try {await Promise.race([Promise.all(settling),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("fence_unconfirmed")),10000);})]);}
+    finally {if(timer)clearTimeout(timer);}
   };
   const setState=async(next:any)=>{
     if(next.id!==state.id || next.control_generation<state.control_generation)throw new Error("stale_control");
-    if(next.control_generation!==state.control_generation || next.controller!==state.controller)await revoke();
+    const changed=next.control_generation!==state.control_generation || next.controller!==state.controller;
+    // Withdraw the old command authority before awaiting pending browser work.
     state=next;config.allowed_origins=state.allowed_origins;await update(state);
+    if(changed)await revoke();
   };
   const server=createServer(async(req,res)=>{
     const respond=(status:number,body:any)=>{res.writeHead(status,{"Content-Type":"application/json","Cache-Control":"no-store"});res.end(JSON.stringify(body));};
@@ -93,6 +94,9 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
     upstream.addEventListener("close",()=>{for(const done of waits.values()) done();waits.clear();upstreams.delete(upstream);client.close(1011,"browser_disconnected");});
     upstream.addEventListener("error",()=>upstream.close());
     client.on("close",()=>{
+      // A descriptor authorizes one connection. An old close notification must
+      // also never revoke a replacement credential issued during handover.
+      if(equal(clientToken,token))token="";
       clients.delete(client);
       // Pending CDP requests settle on the upstream before disposal. Contexts use
       // disposeOnDetach=false, so closing this transport preserves pages and login.

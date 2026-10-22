@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import hashlib
 import time
 import pytest
 from evander.resources.endpoints import Endpoints
@@ -31,7 +32,7 @@ class Peer:
             "state": "accepted" if method == "POST" else "running",
             "workspace_path": "/home/agent/repos/app",
             "endpoints": [
-                {"ref": "ep-" + "a" * 32, "origin": "http://application:4200", "port": 4200}
+                {"ref": "ep-" + hashlib.sha256(id.encode()).hexdigest()[:32], "origin": "http://application:4200", "port": 4200}
             ],
         }
 
@@ -191,3 +192,58 @@ def test_registered_workflow_nodes_share_the_application_lifecycle(domain, monke
     assert ready["state"] == "ready" and ready["result"]["endpoints"]
     closed = execute("effect:application-environment:close", {"environment_id": ready["id"]})
     assert closed["state"] == "closed" and closed["id"] == created["id"]
+
+
+def test_expired_owner_releases_quota_only_after_pinned_worker_confirms_cleanup(domain):
+    service, peers, request = domain
+    first = service.create("agent-a", request)
+    ready = service.status("agent-a", first["id"])
+    endpoint = ready["endpoints"][0]["ref"]
+    service.now = lambda: first["expires_at"] + 1
+    original_parent = service.parent
+
+    def parent(id, tool=None):
+        if id == "agent-a":
+            raise ResourceError("The owning session expired")
+        return original_parent(id, tool)
+
+    service.parent = parent
+    with pytest.raises(ResourceError, match="expired"):
+        service.status("agent-a", first["id"])
+    revision, settings = service.store.settings("root")
+    settings.workers["worker-a"].base_url = "https://replacement.test"
+    service.store.save_settings("root", revision, settings)
+    second = service.create("agent-b", request)
+    assert second["id"] != first["id"] and second["state"] == "accepted"
+    assert service.store.get(first["id"])["state"] == "closed"
+    closes = [(base, path) for base, _, path, _ in peers.calls if path.endswith("/close")]
+    assert closes == [("https://application-worker.test", "/v1/environments/" + first["id"] + "/close")]
+    service.dependencies.release("agent-a")
+    with pytest.raises(ResourceError):
+        service.endpoints.resolve(endpoint, session_id="agent-a", directory="root/example")
+
+
+@pytest.mark.parametrize("failure", ["offline", "unconfirmed"])
+def test_expired_cleanup_uncertainty_retains_quota_and_dependency_until_retry(domain, failure, monkeypatch):
+    monkeypatch.delenv("APPLICATION_TOKEN", raising=False)
+    service, peers, request = domain
+    first = service.create("agent-a", request)
+    service.now = lambda: first["expires_at"] + 1
+    original = peers.call
+
+    def call(base, method, path, payload):
+        if path.endswith("/close"):
+            if failure == "offline":
+                raise ResourceError("Worker unavailable")
+            return {"released": False}
+        return original(base, method, path, payload)
+
+    peers.call = call
+    with pytest.raises(ResourceError, match="quota"):
+        service.create("agent-b", request)
+    assert service.store.get(first["id"])["state"] == "cleanup_failed"
+    with pytest.raises(ValueError, match="credentials"):
+        service.dependencies.release("agent-a")
+    peers.call = original
+    assert service.create("agent-b", request)["state"] == "accepted"
+    assert service.store.get(first["id"])["state"] == "closed"

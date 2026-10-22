@@ -38,7 +38,10 @@ The default hard lifetime is four hours, capped by the owning session's expiry.
 There is no application inactivity extension from viewer frames or status reads.
 Defaults allow one application per worker and owning session. Startup never pulls
 images or grants general Internet access. Workspaces retain inode-checked mount
-pins and durable cleanup dependencies until release is confirmed.
+pins and durable cleanup dependencies until release is confirmed. On the next
+allocation, expired records on that worker are reconciled through their saved
+cleanup connection before quota is reused. Unconfirmed cleanup retains capacity
+and dependencies.
 
 Applications without database recipes do not need the SQL Server add-on. For a
 recipe's `database` alias, the application profile selects an operator-approved

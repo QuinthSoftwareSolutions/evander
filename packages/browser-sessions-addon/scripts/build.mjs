@@ -11,6 +11,7 @@ for (const [entry, outfile, platform] of [
   ["web/viewer.ts", "evander_browser_sessions_addon/ui_static/viewer.js", "browser"],
   ["web/styles.css", "evander_browser_sessions_addon/ui_static/styles.css", "browser"],
   ["controller/automation.ts", "dist/automation.mjs", "node"],
+  ["controller/commands.ts", "dist/commands.mjs", "node"],
   ["controller/hosted.ts", "evander_browser_sessions_addon/controller/hosted.mjs", "node"],
   ["extension/background.ts", "dist/extension/background.js", "browser"],
   ["extension/capture.ts", "dist/extension/capture.js", "browser"],

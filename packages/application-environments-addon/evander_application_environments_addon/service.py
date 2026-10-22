@@ -48,6 +48,7 @@ class Service:
         profile = settings.profiles.get(request.profile_id)
         if profile is None:
             raise ResourceError("Select an approved application profile")
+        self.reconcile_expired(worker_id)
         now = self.now()
         environment = Environment(
             id="environment-" + secrets.token_hex(12),
@@ -112,6 +113,23 @@ class Service:
                     )
                     self.store.put(record)
         return self.receipt(record)
+
+    def reconcile_expired(self, worker_id):
+        # Worker expiry and parent cleanup call the pinned worker directly. Confirm
+        # release here before reusing its quota, even after the old owner expires.
+        for candidate in self.store.active(worker_id):
+            id = candidate["session"]["id"]
+            with self.store.locked(id):
+                record = self.store.get(id)
+                if (
+                    record["state"] not in {"closed", "expired"}
+                    and self.now() >= record["session"]["expires_at"]
+                ):
+                    try:
+                        self._close(id)
+                    except ResourceError:
+                        # Unconfirmed cleanup still reserves capacity and guards.
+                        pass
 
     def update(self, record, result):
         if result.get("id") != record["session"]["id"]:

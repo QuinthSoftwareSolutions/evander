@@ -55,6 +55,13 @@ test("Playwright shares actual pages, takeover preserves login and fences old in
     await agent.close();agent=undefined;
     assert.equal(observer.isConnected(),true);
     assert.equal(observer.contexts().flatMap(c=>c.pages()).length,2);
+    // A normal detach also consumes its descriptor; reconnection needs a new grant.
+    await assert.rejects(chromium.connectOverCDP(url,{headers:{Authorization:"Bearer fresh-agent-proof","X-Evander-Control-Generation":"2"},timeout:500}));
+    await control({session:state,automation_token:"reconnected-agent-proof"});
+    agent=await chromium.connectOverCDP(url,{headers:{Authorization:"Bearer reconnected-agent-proof","X-Evander-Control-Generation":"2"}});
+    const reconnected=agent.contexts().flatMap(c=>c.pages()).find(p=>p.url()===origin+"/");
+    assert.equal(await reconnected.evaluate(()=>sessionStorage.getItem("operator")),"1");
+    assert.equal(await reconnected.evaluate(()=>fetch("/identity").then(r=>r.text())),"signed-in");
   } finally {
     await agent?.close().catch(()=>{});await bridge?.close();await observer?.close();await owner?.close();
     await new Promise(resolve=>fixture.close(resolve));
