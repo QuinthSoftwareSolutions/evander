@@ -367,6 +367,14 @@ class AdminRuntimeProviderAdapter:
             enabled=enabled,
         )
 
+    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]) -> Any:
+        return self._call_required(
+            self._delegate_method("update_session_model_settings", self._operations_admin()),
+            "update_session_model_settings",
+            target,
+            settings,
+        )
+
     def promote_agent_branch(self, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("promote_agent_branch"),
@@ -527,6 +535,9 @@ def build_provider_runtime_ports(
         session_lookup=_pick(provider_runtime, "session_lookup", admin_adapter),
         issue_updater=_pick(provider_runtime, "issue_updater", admin_adapter),
         session_metadata_updater=_pick(provider_runtime, "session_metadata_updater", admin_adapter),
+        session_model_settings_updater=_pick(
+            provider_runtime, "session_model_settings_updater", admin_adapter
+        ),
         session_image_generation_policy_updater=_pick(
             provider_runtime,
             "session_image_generation_policy_updater",
