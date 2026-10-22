@@ -18,7 +18,7 @@ export function commandAuthority(current: () => State) {
           if (command.deadline_at && Date.now() / 1000 >= command.deadline_at) throw new Error("run_deadline");
           if (Date.now() / 1000 >= state.expires_at) throw new Error("session_expired");
           if (command.generation !== state.control_generation) throw new Error("stale_control");
-          if (!["observe", "highlight", "pages"].includes(command.action) && state.controller !== actor)
+          if (!["observe", "highlight", "pages", "select_page"].includes(command.action) && state.controller !== actor)
             throw new Error("control_required");
         };
         guard();
