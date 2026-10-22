@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Use generic agent wording throughout Browser Sessions (0.114.1)
+
+- Use generic agent labels and Evander platform naming in browser viewers, the Chrome extension, workflow help, and documentation.
+- Publish Browser Sessions server package 0.8.1 and Chrome extension 0.6.1 with refreshed viewer assets and extension download.
+
 ## 2026-10-21 - Add hands-free browser voice and smooth speech playback (0.114.0)
 
 - Add opt-in hands-free voice in the Chrome sidebar and shared viewers, with local speech detection, a short lead-in, lossless boundaries between bounded clips, ordered transcription, and spoken-reply interruption when the user starts speaking. Idle periods produce no audio uploads.
@@ -194,7 +199,7 @@
 ## 2026-10-16 - Deliver published workflow files to Teams (0.97.0)
 
 - Let host workflow messages send directory-owned published archives and selected report or image files directly through the existing Teams file-delivery path, without a delivery agent or model call.
-- Embed screenshots and send expiring Truman downloads for other files, preserving declared target capabilities and existing agent file-send policy.
+- Embed screenshots and send expiring Evander downloads for other files, preserving declared target capabilities and existing agent file-send policy.
 - Verify publication ownership, archive checksums, regular-file selection and file limits before staging; persist directory ownership with new publications.
 - Apply directory policy to delivered filenames, bound sparse-file reads, and retain workflow-directory signing for download verification.
 

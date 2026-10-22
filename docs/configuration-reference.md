@@ -1865,7 +1865,7 @@ extension restrictions from the directory's policy domain. Restrictions and
 selected-member MIME detection use the normalized delivered filename. Logical
 member sizes, including sparse files, also count against the hard attachment
 limit before reading.
-Images use Teams hosted content; other files use the same expiring signed Truman
+Images use Teams hosted content; other files use the same expiring signed Evander
 downloads as agent file posts. The published archive remains durable when a
 communication download expires. Workflow download links are verified using the
 persisted workflow directory, independently of the sender session. This host

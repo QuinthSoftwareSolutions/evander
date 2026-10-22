@@ -30,7 +30,7 @@ The browser suite uses loopback fixtures, ephemeral Chrome profiles, the actual 
 
 For local support, create mode user_hosted and call browser_session_invite. The user opens their app tab and extension, pastes the invitation and approves the control-plane connection. It starts in observe mode. Only that host grants input, approves another origin or stops sharing. The agent that creates the session observes and interacts with it using its existing context and browser tool grants. Extension chat resumes that same agent and its originating thread; replies remain in the extension transcript. No separate support agent is created.
 
-After upgrading, existing local sessions can be observed by their creating agent. Use **Allow Truman to interact** again to grant that agent input; legacy support agents are removed when their session closes.
+After upgrading, existing local sessions can be observed by their creating agent. Use **Allow agent to interact** again to grant that agent input; legacy support agents are removed when their session closes.
 
 For scanner-style keyboard input and clicks inside scrollable containers, update and reload Chrome extension **0.2.4** or later. The type action sends character keystrokes; use fill to replace a specific text field and key with Enter to submit. Hosted browser controllers also need the updated package before starting a new preview.
 
@@ -40,7 +40,7 @@ Workflow nodes effect:browser-session:ensure, query:browser-session:status and e
 
 ## Hosted viewer
 
-The standalone viewer fills the page with a compact browser toolbar, the shared application and chat, without a separate page header, footer or session-list link. Session details stay in the toolbar. One button indicates control ownership and toggles between **Take control** and **Hand back to Truman**. The theme button beside **Talk with Truman** remembers the light/dark preference used by Admin Web; embedded views follow their host's theme. This changes the viewer's appearance, independently of the shared application's own theme.
+The standalone viewer fills the page with a compact browser toolbar, the shared application and chat, without a separate page header, footer or session-list link. Session details stay in the toolbar. One button indicates control ownership and toggles between **Take control** and **Hand back to agent**. The theme button beside **Talk with your agent** remembers the light/dark preference used by Admin Web; embedded views follow their host's theme. This changes the viewer's appearance, independently of the shared application's own theme.
 
 Enter sends a non-empty message; Shift+Enter inserts a newline. Observe-only clicks show a brief reminder, and other errors remain dismissible inside the toolbar without covering chat.
 
