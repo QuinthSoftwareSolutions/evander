@@ -56,6 +56,8 @@ Workflow nodes effect:browser-session:ensure, query:browser-session:status and e
 
 The standalone viewer fills the page with a compact browser toolbar, the shared application and chat, without a separate page header, footer or session-list link. Session details stay in the toolbar. One button indicates control ownership and toggles between **Take control** and **Hand back to agent**. The theme button beside **Talk with your agent** remembers the light/dark preference used by Admin Web; embedded views follow their host's theme. This changes the viewer's appearance, independently of the shared application's own theme.
 
+Viewers can switch between shared tabs without taking control. Selecting a tab changes the shared view and preserves the current input controller.
+
 Enter sends a non-empty message; Shift+Enter inserts a newline. Observe-only clicks show a brief reminder, and other errors remain dismissible inside the toolbar without covering chat.
 
 ## Voice

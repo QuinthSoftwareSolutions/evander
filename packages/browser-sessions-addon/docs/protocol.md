@@ -6,6 +6,8 @@ Hosted HTML, APIs and WebSockets use Admin UI identity. Signed-out links redirec
 
 Assign browser_sessions.view, browser_sessions.control and browser_sessions.manage through directory-scoped groups. Owners have all three. View permits observation; control permits input/chat; management permits configuration, creation and termination.
 
+Page enumeration and selection are viewing actions. Selecting a shared page changes the stream without granting input or changing control ownership; live generation and expiry checks still apply.
+
 Guest invitations cannot access hosted sessions. Random tokens are hashed, single-use and expiring; invitation tokens stay in URL fragments. Pairing exchanges one for distinct endpoint and host credentials in Chrome session storage. Each endpoint role and host capability is bound to one local session.
 
 The creating agent owns both hosted and local sessions. Browser tools still require its configured grants; another agent cannot inspect or operate the session. Local hosts grant and revoke input to that creating agent. Extension messages resume the owner's original thread and reply only to the browser transcript. Legacy support-agent IDs are retained solely for cleanup.

@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {commandAuthority} from "../dist/commands.mjs";
 
-function fixture() {
-  let state={id:"browser-test",controller:"agent:agent-a",control_generation:0,allowed_origins:["https://test.example.test"],expires_at:Date.now()/1000+60};
+function fixture(controller="agent:agent-a") {
+  let state={id:"browser-test",controller,control_generation:0,allowed_origins:["https://test.example.test"],expires_at:Date.now()/1000+60};
   const authority=commandAuthority(()=>state);
   return {authority,handover(){state={...state,controller:"user:operator",control_generation:1};}};
 }
@@ -38,8 +38,21 @@ test("takeover aborts a pending login and drains dispatched browser work before 
   assert.equal(cleaned,true);assert.equal(changed,false);assert.equal(fenced,true);
 });
 
-test("page selection requires the current controller while page enumeration remains readable",async()=>{
-  const f=fixture();f.handover();await f.authority.fence();
-  await assert.rejects(f.authority.capture({action:"select_page",generation:1},"agent:agent-a")(async()=>{}),/control_required/);
-  assert.equal(await f.authority.capture({action:"pages",generation:1},"agent:agent-a")(async()=>"pages"),"pages");
-});
+for (const controller of ["agent:agent-a", "user:other", null]) {
+  test(`viewers can select shared pages while control belongs to ${controller}`,async()=>{
+    const f=fixture(controller), actor="user:viewer";
+    for (const action of ["pages", "select_page"]) {
+      assert.equal(await f.authority.capture({action,generation:0},actor)(async()=>"viewed"),"viewed");
+    }
+    for (const action of ["navigate", "click", "type", "authenticate"]) {
+      let applied=false;
+      await assert.rejects(f.authority.capture({action,generation:0},actor)(async()=>{applied=true;}),/control_required/);
+      assert.equal(applied,false,"Viewing pages must not grant browser input");
+    }
+    const queued=f.authority.capture({action:"select_page",generation:0},actor);
+    f.handover();await f.authority.fence();
+    let selected=false;
+    await assert.rejects(queued(async()=>{selected=true;}),/stale_control/);
+    assert.equal(selected,false,"Page selection must retain the control-generation fence");
+  });
+}

@@ -4133,7 +4133,7 @@ function commandAuthority(current) {
           if (command.deadline_at && Date.now() / 1e3 >= command.deadline_at) throw new Error("run_deadline");
           if (Date.now() / 1e3 >= state2.expires_at) throw new Error("session_expired");
           if (command.generation !== state2.control_generation) throw new Error("stale_control");
-          if (!["observe", "highlight", "pages"].includes(command.action) && state2.controller !== actor)
+          if (!["observe", "highlight", "pages", "select_page"].includes(command.action) && state2.controller !== actor)
             throw new Error("control_required");
         };
         guard();

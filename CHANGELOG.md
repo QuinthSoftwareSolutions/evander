@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
+
+- Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
+- Publish Browser Sessions 0.9.4 with the corrected hosted controller and regression coverage for tab viewing and control handover.
+
 ## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 
 - Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.
