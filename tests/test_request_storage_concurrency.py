@@ -232,14 +232,17 @@ def test_concurrent_calls_consume_one_use_approval_once(runtime):
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_cancelled_sync_tool_keeps_its_final_audit(runtime, monkeypatch, fails):
+@pytest.mark.parametrize("supplies_summary", [False, True])
+def test_cancelled_sync_tool_keeps_its_final_audit(
+    runtime, monkeypatch, fails, supplies_summary
+):
     request = session(runtime)
     entered, release = threading.Event(), threading.Event()
     effects = []
-    register = gateway_server.register_connector_tools
+    register = gateway_server.register_approval_tools
 
-    def register_probe(server, context, service):
-        register(server, context, service)
+    def register_probe(server, context, service, **callbacks):
+        register(server, context, service, **callbacks)
 
         @server.tool()
         def probe(session_id: str) -> dict:
@@ -247,11 +250,21 @@ def test_cancelled_sync_tool_keeps_its_final_audit(runtime, monkeypatch, fails):
             entered.set()
             assert release.wait(3), "tool was not released after cancellation"
             if fails:
+                if supplies_summary:
+                    callbacks["audit_failure"](
+                        session_id, "probe", {"session_id": session_id},
+                        "failure after mutation", decision="error",
+                        error_class="adapter_http_error",
+                    )
                 raise ValueError("failure after mutation")
+            if supplies_summary:
+                callbacks["audit_success"](
+                    session_id, "probe", {"session_id": session_id}, {"count": 1}
+                )
             return {"ok": True}
 
     # Register before gateway setup so the real synchronous-tool wrapper is used.
-    monkeypatch.setattr(gateway_server, "register_connector_tools", register_probe)
+    monkeypatch.setattr(gateway_server, "register_approval_tools", register_probe)
     server = create_server(runtime)
     runtime.policy.set_extra_mcp_tool_names({"probe"})
 
@@ -288,6 +301,89 @@ def test_cancelled_sync_tool_keeps_its_final_audit(runtime, monkeypatch, fails):
     assert len(calls) == 1
     assert calls[0]["session_id"] == "session-1"
     assert calls[0]["decision"] == ("error" if fails else "allowed")
+    if supplies_summary:
+        assert calls[0]["result"] == (
+            {"error": "failure after mutation", "error_class": "adapter_http_error"}
+            if fails else {"count": 1}
+        )
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("failure_mode", [None, "provider", "audit_store"])
+def test_tool_audit_keeps_normalized_summary_for_direct_and_managed_calls(
+    runtime, monkeypatch, direct, failure_mode
+):
+    request = session(runtime)
+    register = gateway_server.register_approval_tools
+    if failure_mode == "audit_store":
+        log = runtime.audit.log
+
+        def fail_success_write(event):
+            if event.tool_name == "probe" and event.decision == "allowed":
+                raise OSError("audit unavailable")
+            log(event)
+
+        monkeypatch.setattr(runtime.audit, "log", fail_success_write)
+
+    def register_probe(server, context, service, **callbacks):
+        register(server, context, service, **callbacks)
+
+        @server.tool()
+        def probe(session_id: str, label: str) -> dict:
+            args = {"session_id": session_id, "label": label.strip()}
+            if failure_mode == "provider":
+                callbacks["audit_failure"](
+                    session_id, "probe", args, "provider unavailable",
+                    decision="error", error_class="adapter_http_error",
+                )
+                raise ValueError("provider unavailable")
+            try:
+                callbacks["audit_success"](session_id, "probe", args, {"count": 1})
+            except OSError as exc:
+                callbacks["audit_failure"](
+                    session_id, "probe", args, str(exc),
+                    decision="error", error_class="unexpected_error",
+                )
+                raise
+            return {"items": ["response contents belong outside the audit summary"]}
+
+    monkeypatch.setattr(gateway_server, "register_approval_tools", register_probe)
+    server = create_server(runtime)
+    runtime.policy.set_extra_mcp_tool_names({"probe"})
+
+    async def exercise():
+        token = _MCP_REQUEST_CONTEXT.set(None if direct else request)
+        try:
+            async def invoke():
+                if direct:
+                    return await server._tool_manager._tools["probe"].fn(
+                        session_id="session-1", label=" normalized "
+                    )
+                return await call_probe(server, {"label": " normalized "}, request)
+
+            if failure_mode is not None:
+                direct_error = OSError if failure_mode == "audit_store" else ValueError
+                error = "audit unavailable" if failure_mode == "audit_store" else "provider unavailable"
+                with pytest.raises(direct_error if direct else ToolError, match=error):
+                    await invoke()
+            else:
+                await invoke()
+        finally:
+            _MCP_REQUEST_CONTEXT.reset(token)
+
+    asyncio.run(exercise())
+    events = [json.loads(line) for line in runtime.audit.path.read_text().splitlines()]
+    calls = [event for event in events if event.get("tool_name") == "probe"]
+    assert len(calls) == 1
+    assert calls[0]["args"] == {"session_id": "session-1", "label": "normalized"}
+    assert calls[0]["decision"] == ("error" if failure_mode is not None else "allowed")
+    assert calls[0]["result"] == (
+        {"error": "audit unavailable", "error_class": "unexpected_error"}
+        if failure_mode == "audit_store"
+        else {"error": "provider unavailable", "error_class": "adapter_http_error"}
+        if failure_mode == "provider"
+        else {"count": 1}
+    )
 
 
 def test_offloaded_calls_keep_each_sessions_identity_and_audit(runtime):

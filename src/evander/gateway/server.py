@@ -280,7 +280,8 @@ from evander.gateway.session_context import (
 from evander.gateway.tool_audit import (
     _TOOL_CALL_AUDIT_CONTEXT,
     _ToolCallAuditContext,
-    _mark_tool_call_audited,
+    _mark_tool_call_audited as _mark_tool_call_audited,
+    _record_tool_call_audit,
     _tool_call_arguments_dict,
     _tool_call_audit_fields,
     _tool_call_context,
@@ -652,44 +653,57 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return verify_mcp_session_proof_token(session, supplied_token)
         return verify_mcp_session_token(session, supplied_token)
 
+    def build_tool_audit_event(
+        session_id: str | None,
+        tool_name: McpToolName | None,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        decision: str,
+        reason: str | None = None,
+        default_status: str | None = None,
+        session: Any = None,
+    ) -> AuditEvent:
+        if session is None and session_id:
+            session = context.session_repository.get_session(session_id)
+        redacted_keys = redacted_keys_for_session_id(session_id)
+        audit_result = (
+            _assistant_mutation_audit_result(
+                tool_name, args, result, redacted_keys, default_status=default_status
+            )
+            if default_status is not None
+            else _redact_nested_value(redacted_keys, result)
+        )
+        return AuditEvent(
+            event_type="tool_call",
+            session_id=session_id,
+            vm_id=None if session is None else session.vm_id,
+            directory_path=None if session is None else session.directory_path,
+            agent_role=_session_actor_role(session),
+            tool_name=tool_name_value(tool_name) if tool_name is not None else None,
+            actor_user_id=_session_actor_user_id(session),
+            **_tool_call_audit_fields(
+                session=session, tool_name=tool_name, args=args, result=audit_result
+            ),
+            decision=decision,
+            reason=reason,
+            args=_redact_args(redacted_keys, args),
+            result=audit_result,
+        )
+
     def audit_success(
         session_id: str,
         tool_name: McpToolName,
         args: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        session = context.session_repository.get_session(session_id)
-        actor_user_id = _session_actor_user_id(session) if session is not None else None
-        redacted_keys = redacted_keys_for_session_id(session_id)
-        redacted_args = _redact_args(redacted_keys, args)
-        audit_result = _assistant_mutation_audit_result(
-            tool_name,
-            args,
-            result,
-            redacted_keys,
-            default_status="success",
+        _record_tool_call_audit(
+            context.audit.log,
+            build_tool_audit_event(
+                session_id, tool_name, args, result,
+                decision="allowed", default_status="success",
+            ),
         )
-        context.audit.log(
-            AuditEvent(
-                event_type="tool_call",
-                session_id=session_id,
-                vm_id=None if session is None else session.vm_id,
-                directory_path=None if session is None else session.directory_path,
-                agent_role=_session_actor_role(session),
-                tool_name=tool_name_value(tool_name),
-                actor_user_id=actor_user_id,
-                **_tool_call_audit_fields(
-                    session=session,
-                    tool_name=tool_name,
-                    args=args,
-                    result=audit_result,
-                ),
-                decision="allowed",
-                args=redacted_args,
-                result=audit_result,
-            )
-        )
-        _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
             tool_name_value(tool_name),
@@ -705,39 +719,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         decision: str = "denied",
         error_class: str = "policy_error",
     ) -> None:
-        session = context.session_repository.get_session(session_id) if session_id else None
-        vm_id = None if session is None else session.vm_id
-        actor_user_id = _session_actor_user_id(session) if session is not None else None
-        redacted_keys = redacted_keys_for_session_id(session_id)
-        redacted_args = _redact_args(redacted_keys, args)
-        failure_result = _assistant_mutation_audit_result(
-            tool_name,
-            args,
-            {"error": error, "error_class": error_class},
-            redacted_keys,
-            default_status="failed",
+        _record_tool_call_audit(
+            context.audit.log,
+            build_tool_audit_event(
+                session_id, tool_name, args,
+                {"error": error, "error_class": error_class},
+                decision=decision, default_status="failed",
+            ),
         )
-        context.audit.log(
-            AuditEvent(
-                event_type="tool_call",
-                session_id=session_id,
-                vm_id=vm_id,
-                directory_path=None if session is None else session.directory_path,
-                agent_role=_session_actor_role(session),
-                tool_name=tool_name_value(tool_name),
-                actor_user_id=actor_user_id,
-                **_tool_call_audit_fields(
-                    session=session,
-                    tool_name=tool_name,
-                    args=args,
-                    result=failure_result,
-                ),
-                decision=decision,
-                args=redacted_args,
-                result=failure_result,
-            )
-        )
-        _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=%s tool=%s session_id=%s reason=%s error_class=%s",
             decision,
@@ -1120,30 +1109,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         decision: str,
         reason: str | None = None,
     ) -> None:
-        tool_value = tool_name_value(tool_name)
-        redacted_keys = redacted_keys_for_session_id(session_id)
-        context.audit.log(
-            AuditEvent(
-                event_type="tool_call",
-                session_id=session_id,
-                vm_id=None if session is None else session.vm_id,
-                directory_path=None if session is None else session.directory_path,
-                agent_role=_session_actor_role(session),
-                tool_name=tool_value,
-                actor_user_id=_session_actor_user_id(session),
-                **_tool_call_audit_fields(
-                    session=session,
-                    tool_name=tool_name,
-                    args=raw_args,
-                    result=result,
-                ),
-                decision=decision,
-                reason=reason,
-                args=_redact_args(redacted_keys, raw_args),
-                result=_redact_nested_value(redacted_keys, result),
-            )
+        _record_tool_call_audit(
+            context.audit.log,
+            build_tool_audit_event(
+                session_id, tool_name, raw_args, result,
+                decision=decision, reason=reason, session=session,
+            ),
         )
-        _mark_tool_call_audited()
 
     def audit_tool_argument_policy_denial(
         *,
@@ -1166,28 +1138,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "field_path": error.path,
             "payload_summary": _redact_nested_value(redacted_keys, sanitized_arguments),
         }
-        context.audit.log(
-            AuditEvent(
-                event_type="tool_call",
-                session_id=session_id,
-                vm_id=None if session is None else session.vm_id,
-                directory_path=None if session is None else session.directory_path,
-                agent_role=_session_actor_role(session),
-                tool_name=tool_value,
-                actor_user_id=_session_actor_user_id(session),
-                **_tool_call_audit_fields(
-                    session=session,
-                    tool_name=tool_name,
-                    args=raw_args,
-                    result=denial_result,
-                ),
-                decision="denied",
-                reason=str(error),
-                args=_redact_args(redacted_keys, raw_args),
-                result=denial_result,
-            )
+        _record_tool_call_audit(
+            context.audit.log,
+            build_tool_audit_event(
+                session_id, tool_name, raw_args, denial_result,
+                decision="denied", reason=str(error), session=session,
+            ),
         )
-        _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=denied tool=%s session_id=%s reason=%s error_class=%s",
             tool_value,
@@ -1450,41 +1407,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
         tool_name: McpToolName | None = (
             ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name or None
         )
-        session = (
-            context.session_repository.get_session(call_context.session_id)
-            if call_context.session_id
-            else None
-        )
-        redacted_keys = redacted_keys_for_session_id(call_context.session_id)
-        audit_result = _assistant_mutation_audit_result(
-            tool_name,
-            raw_arguments,
-            result if isinstance(result, dict) else {"result": result},
-            redacted_keys,
-            default_status="error" if error is not None else "success",
-        )
-        context.audit.log(
-            AuditEvent(
-                event_type="tool_call",
-                session_id=call_context.session_id,
-                vm_id=None if session is None else session.vm_id,
-                directory_path=None if session is None else session.directory_path,
-                agent_role=_session_actor_role(session),
-                tool_name=raw_tool_name or None,
-                actor_user_id=_session_actor_user_id(session),
-                **_tool_call_audit_fields(
-                    session=session,
-                    tool_name=tool_name,
-                    args=raw_arguments,
-                    result=audit_result,
-                ),
+        _record_tool_call_audit(
+            context.audit.log,
+            build_tool_audit_event(
+                call_context.session_id, tool_name, raw_arguments,
+                result if isinstance(result, dict) else {"result": result},
                 decision="error" if error is not None else "allowed",
                 reason=error,
-                args=_redact_args(redacted_keys, raw_arguments),
-                result=_redact_nested_value(redacted_keys, audit_result),
-            )
+                default_status="error" if error is not None else "success",
+            ),
         )
-        _mark_tool_call_audited()
         if error is None:
             logger.info(
                 "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",

@@ -35,10 +35,15 @@ DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = dict(
 
 
 class EffectProviderRegistry:
-    def __init__(self, initial: Mapping[EffectType, EffectProviderClass] | None = None) -> None:
-        self._providers: dict[EffectType, EffectProviderClass] = dict(
-            initial or DEFAULT_EFFECT_PROVIDER_REGISTRY
-        )
+    def __init__(
+        self,
+        initial: Mapping[EffectType, EffectProviderClass] | None = None,
+        *,
+        defaults_when_empty: bool = True,
+    ) -> None:
+        if initial is None or (defaults_when_empty and not initial):
+            initial = DEFAULT_EFFECT_PROVIDER_REGISTRY
+        self._providers: dict[EffectType, EffectProviderClass] = dict(initial)
 
     def register(self, effect_type: EffectType, provider_class: EffectProviderClass) -> None:
         self._providers[effect_type] = provider_class

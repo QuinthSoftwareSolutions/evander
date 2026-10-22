@@ -30,10 +30,15 @@ DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = dic
 
 
 class TriggerProviderRegistry:
-    def __init__(self, initial: Mapping[TriggerType, TriggerProviderClass] | None = None) -> None:
-        self._providers: dict[TriggerType, TriggerProviderClass] = dict(
-            initial or DEFAULT_TRIGGER_PROVIDER_REGISTRY
-        )
+    def __init__(
+        self,
+        initial: Mapping[TriggerType, TriggerProviderClass] | None = None,
+        *,
+        defaults_when_empty: bool = True,
+    ) -> None:
+        if initial is None or (defaults_when_empty and not initial):
+            initial = DEFAULT_TRIGGER_PROVIDER_REGISTRY
+        self._providers: dict[TriggerType, TriggerProviderClass] = dict(initial)
 
     def register(self, trigger_type: TriggerType, provider_class: TriggerProviderClass) -> None:
         self._providers[trigger_type] = provider_class

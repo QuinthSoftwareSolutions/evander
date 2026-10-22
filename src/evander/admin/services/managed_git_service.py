@@ -22,8 +22,16 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from evander.admin.services.ado_user_connections import AdoUserConnectionService
+from evander.admin.services.pr_publication_service import (
+    PrPublicationDependencies,
+    PrPublicationService,
+)
+from evander.admin.services.pr_feedback_binding_service import (
+    PrFeedbackBindingDependencies,
+    PrFeedbackBindingService,
+)
 from evander.admin.services.pr_publication_policy import (
-    PrPublicationPolicy,
+    PrPublicationPolicy as PrPublicationPolicy,
 )
 
 from evander.admin.services.managed_git_common import (
@@ -59,7 +67,7 @@ from evander.admin.services.managed_git_ref_migration import (
 )
 from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import managed_git_grants_from_metadata
-from evander.models import DirectoryPath, ToolName
+from evander.models import DirectoryPath, ToolName as ToolName
 from evander.pr_tracking import PrMapStore
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.storage import JsonObjectStore
@@ -202,6 +210,39 @@ class ManagedGitAdminService:
             runtime_dir = self.project_dir / runtime_dir
         self.runtime_dir = runtime_dir.resolve(strict=False)
         self.ado_user_connections = AdoUserConnectionService(self.runtime_dir, config=config)
+        self._feedback_bindings = PrFeedbackBindingService(
+            PrFeedbackBindingDependencies(
+                pr_map_store=lambda: PrMapStore(self._pr_map_path()),
+                resolve_session=lambda session_id: self._resolve_pr_tracking_session(session_id),
+                github_slug=lambda url: self._github_slug(url),
+                azure_repository_parts=lambda url: self._azure_repository_parts(url),
+            )
+        )
+        self._publication = PrPublicationService(
+            PrPublicationDependencies(
+                require_scoped_record=lambda repo_id, directory: self._require_scoped_record(
+                    repo_id, directory
+                ),
+                normalize_branch=lambda value, **kwargs: _normalize_branch(value, **kwargs),
+                resolve_publication=lambda *args, **kwargs: (
+                    self.ado_user_connections.resolve_publication(*args, **kwargs)
+                ),
+                azure_repository_parts=lambda url: self._azure_repository_parts(url),
+                resolve_pr_tracking_session=lambda sid: self._resolve_pr_tracking_session(sid),
+                azure_work_item_id=lambda explicit, sid: self._azure_work_item_id(explicit, sid),
+                target_lock=lambda repo_id, target: self._target_lock(repo_id, target),
+                push_branch=lambda *args, **kwargs: self.push_branch(*args, **kwargs),
+                create_or_reuse_github_pr=lambda *args, **kwargs: (
+                    self._create_or_reuse_github_pr(*args, **kwargs)
+                ),
+                create_or_reuse_azure_pr=lambda *args, **kwargs: (
+                    self._create_or_reuse_azure_pr(*args, **kwargs)
+                ),
+                persist_pr_tracking=lambda *args, **kwargs: self._persist_pr_tracking(
+                    *args, **kwargs
+                ),
+            )
+        )
         self._managed_root = self.runtime_dir / "managed-git"
         self._worktree_root = self.runtime_dir / "git-worktrees"
         self._lock_root = self.runtime_dir / "managed-git-locks"
@@ -2715,111 +2756,22 @@ class ManagedGitAdminService:
         publication_context_id: str | None = None,
         publication_policy: str = "allow_bot_fallback",
     ) -> dict[str, Any]:
-        policy = PrPublicationPolicy(publication_policy)
-        record = self._require_scoped_record(managed_repo_id, directory_path)
-        destination = _normalize_branch(destination_branch, field_name="destination_branch")
-        base = _normalize_branch(
-            base_branch or str(record.get("default_branch") or "main"),
-            field_name="base_branch",
+        return self._publication.create(
+            managed_repo_id=managed_repo_id,
+            source_ref=source_ref,
+            expected_commit_sha=expected_commit_sha,
+            destination_branch=destination_branch,
+            directory_path=directory_path,
+            base_branch=base_branch,
+            session_id=session_id,
+            work_item_id=work_item_id,
+            title=title,
+            body=body,
+            draft=draft,
+            fill=fill,
+            publication_context_id=publication_context_id,
+            publication_policy=publication_policy,
         )
-        expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
-        normalized_session_id = str(session_id or "").strip()
-        normalized_work_item_id = str(work_item_id or "").strip()
-        normalized_title = str(title or "").strip() or f"Merge {destination} into {base}"
-        title_explicit = bool(str(title or "").strip())
-        normalized_body = str(body or "")
-        provider = str(record.get("provider") or "").strip()
-        if provider not in {"github", "azure_devops"}:
-            raise ValueError(
-                f"Managed PR creation is unsupported for provider {provider or 'generic'}"
-            )
-        if publication_context_id or policy == PrPublicationPolicy.REQUIRE_PERSONAL:
-            if provider != "azure_devops":
-                raise ValueError("Personal PR attribution requires an Azure DevOps repository")
-        if publication_context_id:
-            self.ado_user_connections.resolve_publication(publication_context_id,
-                managed_repo_id=managed_repo_id, commit_sha=expected,
-                directory_path=directory_path,
-                organization=self._azure_repository_parts(record["canonical_repository_url"])[0])
-        tracking_session = self._resolve_pr_tracking_session(normalized_session_id)
-        if provider == "azure_devops":
-            normalized_work_item_id = self._azure_work_item_id(
-                normalized_work_item_id,
-                normalized_session_id,
-            )
-        destination_ref = f"refs/heads/{destination}"
-        with self._target_lock(managed_repo_id, f"upstream:{destination_ref}"):
-            if policy == PrPublicationPolicy.REQUIRE_PERSONAL:
-                # Validate credentials and any existing PR's creator before pushing a ref.
-                self._create_or_reuse_azure_pr(
-                    record,
-                    destination_branch=destination,
-                    base_branch=base,
-                    expected_commit_sha=expected,
-                    title=normalized_title,
-                    body=normalized_body,
-                    draft=bool(draft),
-                    publication_context_id=publication_context_id,
-                    publication_directory_path=directory_path,
-                    publication_policy=policy,
-                    preflight_only=True,
-                )
-            published = self.push_branch(
-                managed_repo_id,
-                source_ref,
-                expected,
-                destination,
-                directory_path,
-                _target_lock_held=True,
-            )
-            if not published.get("success"):
-                return dict(published)
-            if provider == "github":
-                pr = self._create_or_reuse_github_pr(
-                    record,
-                    destination_branch=destination,
-                    base_branch=base,
-                    expected_commit_sha=expected,
-                    title=normalized_title,
-                    body=normalized_body,
-                    draft=bool(draft),
-                    fill=fill,
-                )
-            elif provider == "azure_devops":
-                pr = self._create_or_reuse_azure_pr(
-                    record,
-                    destination_branch=destination,
-                    base_branch=base,
-                    expected_commit_sha=expected,
-                    title=normalized_title,
-                    body=normalized_body,
-                    draft=bool(draft),
-                    title_explicit=title_explicit,
-                    work_item_id=normalized_work_item_id,
-                    **({"publication_context_id": publication_context_id,
-                        "publication_directory_path": directory_path} if publication_context_id else {}),
-                    **({"publication_policy": policy} if policy == PrPublicationPolicy.REQUIRE_PERSONAL else {}),
-                )
-            self._persist_pr_tracking(
-                record,
-                pr=pr,
-                source_branch=destination,
-                target_branch=base,
-                session_id=normalized_session_id,
-                directory_path=directory_path,
-                tracking_session=tracking_session,
-            )
-        return {
-            "success": True,
-            "managed_repo_id": managed_repo_id,
-            "source_ref": published.get("source_ref") or _normalize_ref(source_ref, field_name="source_ref"),
-            "destination_branch": destination,
-            "expected_commit_sha": expected,
-            "base_branch": base,
-            "session_id": normalized_session_id or None,
-            "work_item_id": normalized_work_item_id or None,
-            **pr,
-        }
 
     def _create_or_reuse_github_pr(
         self,
@@ -3094,62 +3046,14 @@ class ManagedGitAdminService:
         directory_path: str,
         tracking_session: tuple[Any, Any] | None = None,
     ) -> None:
-        provider = str(pr.get("provider") or record.get("provider") or "").strip()
-        pr_id = str(pr.get("pr_id") or "").strip()
-        if not provider or not pr_id:
-            raise RuntimeError("Pull request provider did not return tracking identity")
-        canonical_url = str(record.get("canonical_repository_url") or "")
-        if provider == "github":
-            repo = self._github_slug(canonical_url)
-        elif provider == "azure_devops":
-            repo = "/".join(self._azure_repository_parts(canonical_url))
-        else:
-            raise ValueError(f"Unsupported PR tracking provider: {provider}")
-        if session_id and tracking_session is None:
-            tracking_session = self._resolve_pr_tracking_session(session_id)
-        tracking_directory_path = directory_path
-        if session_id:
-            assert tracking_session is not None
-            tracking_directory_path = (
-                str(tracking_session[1].directory_path or "").strip() or "root"
-            )
-        PrMapStore(self._pr_map_path()).upsert_binding(
-            provider=provider,
-            repo=repo,
-            pr_id=pr_id,
-            pr_url=str(pr.get("pr_url") or "").strip() or None,
+        self._feedback_bindings.bind(
+            record,
+            pr=pr,
             source_branch=source_branch,
             target_branch=target_branch,
             session_id=session_id,
-            directory_path=tracking_directory_path,
-        )
-        if not session_id:
-            return
-        assert tracking_session is not None
-        repository, manifest = tracking_session
-        stream = {"provider": provider, "repo": repo, "pr_id": pr_id}
-        metadata = dict(manifest.metadata)
-        streams = metadata.get("pr_feedback_streams")
-        streams = list(streams) if isinstance(streams, list) else []
-        if stream not in streams:
-            streams.append(stream)
-        metadata["pr_feedback_streams"] = streams
-        allowed_tools = list(manifest.allowed_tools)
-        for tool in (
-            ToolName.HAS_PENDING_FEEDBACK,
-            ToolName.LIST_PULL_REQUESTS,
-            ToolName.GET_PULL_REQUEST,
-            ToolName.LIST_UNREAD_FEEDBACK,
-            ToolName.LIST_ALL_FEEDBACK,
-            ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
-            ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
-            ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
-            ToolName.POST_PR_FEEDBACK_REPLY,
-        ):
-            if tool not in allowed_tools:
-                allowed_tools.append(tool)
-        repository.upsert_session(
-            manifest.model_copy(update={"metadata": metadata, "allowed_tools": allowed_tools})
+            directory_path=directory_path,
+            tracking_session=tracking_session,
         )
 
     def _resolve_pr_tracking_session(self, session_id: str) -> tuple[Any, Any] | None:

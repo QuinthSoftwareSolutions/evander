@@ -26,13 +26,14 @@ from evander.events.models import (
     TriggerEvent,
     validate_output_mapping_keys,
 )
+# Retain historical daemon imports for callers using the adapter API.
 from evander.orchestration.adapters import (
-    TriggerCompletionPublisherAdapter,
-    TriggerDependencyResolverAdapter,
-    TriggerEventFetcherAdapter,
-    TriggerExecutionRecorderAdapter,
+    TriggerCompletionPublisherAdapter as TriggerCompletionPublisherAdapter,
+    TriggerDependencyResolverAdapter as TriggerDependencyResolverAdapter,
+    TriggerEventFetcherAdapter as TriggerEventFetcherAdapter,
+    TriggerExecutionRecorderAdapter as TriggerExecutionRecorderAdapter,
 )
-from evander.workflow.engine import OrchestrationLoop
+from evander.workflow.engine import OrchestrationLoop as OrchestrationLoop
 from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.runtime_config import (
     provider_loader_signature as _provider_loader_signature,
@@ -238,7 +239,9 @@ class TriggerOrchestratorWorker:
         events_published = 0
         published_event_ids_by_trigger_id: dict[str, list[str]] = {}
 
-        def _resolve_and_execute(trigger: TriggerDefinitionDiscriminated, event: Any) -> Any | None:
+        def publish_trigger_event(
+            trigger: TriggerDefinitionDiscriminated, event: TriggerEvent
+        ) -> bool:
             trace_id = _normalize_trace_id(getattr(event, "trace_id", None))
             event = event.model_copy(update={"trace_id": trace_id})
             try:
@@ -254,7 +257,7 @@ class TriggerOrchestratorWorker:
                     event.event_id,
                     trace_id,
                 )
-                return None
+                return False
             publish_result = self.event_queue.publish_result(
                 event,
                 config_revision=config_revision,
@@ -282,41 +285,14 @@ class TriggerOrchestratorWorker:
                     trace_id,
                 )
                 self._effect_wake_notifier.notify()
-                return {"published": True}
-            return None
+                return True
+            return False
 
         def _poll_triggers(
             triggers: list[TriggerDefinitionDiscriminated],
-        ):
+        ) -> tuple[int, int]:
             empty_polls: list[TriggerPollCheckpoint] = []
 
-            def record_empty_poll(trigger, discovered, event_ids):
-                empty_polls.append(TriggerPollCheckpoint(
-                    trigger_id=trigger.id,
-                    trigger_type=trigger.type,
-                    discovered=discovered,
-                    event_ids=list(event_ids),
-                    polled_at=datetime.now(UTC),
-                ))
-
-            loop = OrchestrationLoop[
-                TriggerDefinitionDiscriminated,
-                Any,
-                Any,
-            ](
-                event_fetcher=TriggerEventFetcherAdapter(triggers=triggers),
-                dependency_resolver=TriggerDependencyResolverAdapter(
-                    providers_by_id=providers,
-                    update_cursor_state=record_empty_poll,
-                    on_poll_error=lambda trigger: logger.exception(
-                        "Trigger poll failed trigger_id=%s trigger_type=%s",
-                        trigger.id,
-                        trigger.type,
-                    ),
-                ),
-                execution_recorder=TriggerExecutionRecorderAdapter(),
-                completion_publisher=TriggerCompletionPublisherAdapter(),
-            )
             def flush_empty_polls():
                 # Only empty-poll telemetry is deferred. Published events keep
                 # their immediate durable checkpoint before the next provider.
@@ -333,9 +309,36 @@ class TriggerOrchestratorWorker:
                             polled_at=poll.polled_at,
                         )
             try:
-                result = loop.run_once(
-                    max_events=len(triggers), resolve_and_execute=_resolve_and_execute
-                )
+                discovered = 0
+                published = 0
+                for trigger in triggers:
+                    provider = providers.get(trigger.id)
+                    if provider is None:
+                        continue
+                    try:
+                        events = provider.poll()
+                    except Exception as error:
+                        if is_storage_busy(error):
+                            raise
+                        logger.exception(
+                            "Trigger poll failed trigger_id=%s trigger_type=%s",
+                            trigger.id,
+                            trigger.type,
+                        )
+                        continue
+                    if not events:
+                        empty_polls.append(TriggerPollCheckpoint(
+                            trigger_id=trigger.id,
+                            trigger_type=trigger.type,
+                            discovered=0,
+                            event_ids=[],
+                            polled_at=datetime.now(UTC),
+                        ))
+                    events = list(events)
+                    discovered += len(events)
+                    for event in events:
+                        if publish_trigger_event(trigger, event):
+                            published += 1
             except Exception:
                 try:
                     flush_empty_polls()
@@ -345,11 +348,9 @@ class TriggerOrchestratorWorker:
                     logger.warning("Failed to flush empty trigger polls after cycle failure", exc_info=True)
                 raise
             flush_empty_polls()
-            return result
+            return discovered, published
 
-        loop_result = _poll_triggers(configured_triggers)
-        events_discovered = loop_result.dependencies_resolved
-        events_published = loop_result.executions_recorded
+        events_discovered, events_published = _poll_triggers(configured_triggers)
         scheduled_events_published_after_poll = self._publish_due_scheduled_internal_events(
             active_config
         )
@@ -357,9 +358,9 @@ class TriggerOrchestratorWorker:
             internal_event_triggers = [
                 trigger for trigger in configured_triggers if trigger.type == "trigger:event"
             ]
-            immediate_result = _poll_triggers(internal_event_triggers)
-            events_discovered += immediate_result.dependencies_resolved
-            events_published += immediate_result.executions_recorded
+            discovered, published = _poll_triggers(internal_event_triggers)
+            events_discovered += discovered
+            events_published += published
 
         sleep_config = previous_config if config_changed else latest_config
         next_sleep_seconds = _compute_trigger_cycle_sleep_seconds(

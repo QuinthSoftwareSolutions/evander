@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Simplify control-plane ownership boundaries (0.120.3)
+
+- Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
+- Run workflow workers directly, distinguish empty provider catalogs from omitted defaults, and centralize managed tool audit emission while preserving summaries, cancellation handling, durable ordering, and legacy Team action compatibility.
+- Consolidate workflow inspector draft state and split pricing and Teams authentication out of the configuration screen, preserving incomplete drafts, revision checks, and navigation behavior.
+
 ## 2026-10-22 - Update vulnerable dependencies and toolchains (0.120.2)
 
 - Raise Python runtime, development and build dependency security floors across the core and independent add-ons, and refresh the Python and affected npm lockfiles.
