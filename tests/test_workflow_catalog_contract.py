@@ -1924,3 +1924,10 @@ def test_workflow_catalog_effect_vm_bootstrap_frontend(catalog_payload) -> None:
         "directory_path",
         "metadata",
     }
+
+
+def test_pr_create_catalog_exposes_optional_bindable_project_scope(catalog_payload) -> None:
+    node = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:pr:create")
+    field = next(field for field in node["fields"] if field["key"] == "directory_path")
+    assert field["bindable"] is True
+    assert field["required"] is False

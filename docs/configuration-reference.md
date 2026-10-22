@@ -1091,7 +1091,7 @@ Type-specific keys:
 | `effect:git:ensure-managed-repo` | `directory_path`, `repo_source` | `outputs` |
 | `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` | `outputs` |
 | `effect:git:push-branch` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `outputs` |
-| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `base_branch`, `session_id`, `work_item_id`, `publication_context_id`, `publication_policy`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
+| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `directory_path`, `base_branch`, `session_id`, `work_item_id`, `publication_context_id`, `publication_policy`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
 
 `effect:git:ensure-managed-repo` is the only managed workflow surface that accepts a transient
 repository source. It registers or refreshes that source inside `directory_path` and returns a
@@ -1100,6 +1100,11 @@ and Team nodes do not accept host checkout or bare-repository paths and do not e
 temporary paths.
 
 Promotion and publication must receive the exact SHA from the triggering/reviewed event.
+For `effect:pr:create`, optional `directory_path` selects the owning project directory within
+the workflow directory or one of its descendants. Omission uses the workflow directory. Shared
+ancestor workflows should bind the routed project directory so commit-bound publication
+attribution and directory-specific credentials resolve in that scope. Child workflows cannot
+select an ancestor or sibling directory; repository and publication-context checks still apply.
 For Azure DevOps, `publication_policy` is a static enum: `allow_bot_fallback` (default) or
 `require_personal`. The latter requires a commit-bound `publication_context_id`, a captured
 assignee and a usable personal OAuth/PAT connection; it rejects existing PRs with a different

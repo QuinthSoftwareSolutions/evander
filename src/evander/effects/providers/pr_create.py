@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, scoped_effect_directory_path
 
 
 class PrCreateEffectProvider(EffectProviderBase):
@@ -26,6 +26,9 @@ class PrCreateEffectProvider(EffectProviderBase):
             )
 
         context = self._context()
+        directory_path = scoped_effect_directory_path(
+            context, self._normalize_optional_string(payload.get("directory_path"))
+        )
         pr_create = getattr(context.pull_request_creator, "pr_create", None)
         if not callable(pr_create):
             raise RuntimeError("Admin runtime pr_create is not available")
@@ -39,7 +42,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             source_ref=source_ref,
             expected_commit_sha=expected_commit_sha,
             destination_branch=destination_branch,
-            directory_path=str(context.metadata.get("directory_path") or "root"),
+            directory_path=directory_path,
             base_branch=self._normalize_optional_string(payload.get("base_branch")),
             session_id=self._normalize_optional_string(payload.get("session_id")),
             work_item_id=self._normalize_optional_string(payload.get("work_item_id")),
@@ -55,6 +58,7 @@ class PrCreateEffectProvider(EffectProviderBase):
         output = self._coerce_result(result)
         output.setdefault("success", False)
         output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("directory_path", directory_path)
         output.setdefault("source_ref", source_ref)
         output.setdefault("expected_commit_sha", expected_commit_sha)
         output.setdefault("destination_branch", destination_branch)
@@ -65,6 +69,7 @@ class PrCreateEffectProvider(EffectProviderBase):
         effect = self.effect_definition
         for field_name in (
             "managed_repo_id",
+            "directory_path",
             "source_ref",
             "expected_commit_sha",
             "destination_branch",
