@@ -28,7 +28,11 @@ test("real Chrome: rich observations, row context, keyboard selection and stale-
     assert.ok(remove[0].context.some(c=>c.text.includes("Account A")));
     assert.ok(remove[1].context.some(c=>c.text.includes("Account B")));
     const select=o.elements.find(e=>e.role==="combobox");
+    await engine.execute(command("click",{observation_id:o.observation_id,revalidate:true,ref:select.ref}),"agent:a");
+    o=await engine.execute(command("observe",{include_image:false}),"agent:a");
     await engine.execute(command("key",{observation_id:o.observation_id,revalidate:true,ref:select.ref,text:"ArrowDown"}),"agent:a");
+    o=await engine.execute(command("observe",{include_image:false}),"agent:a");
+    await engine.execute(command("key",{observation_id:o.observation_id,revalidate:true,ref:select.ref,text:"Enter"}),"agent:a");
     assert.equal(await page.locator("select").inputValue(),"South");
     o=await engine.execute(command("observe",{include_image:false}),"agent:a");
     const target=o.elements.find(e=>e.role==="button" && e.name==="Remove");

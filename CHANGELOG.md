@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Ground browser decisions in control affordances (0.117.3)
+
+- Describe generic text replacement, character typing, picker activation and keyboard operations separately. Offer text entry only when an exact input and writable field exist, and reject incompatible action/target combinations before input. Keep operation, target and input selection in one bounded provider request.
+- Return metadata-only diagnostics for ambiguous choices, including the selected option, probability, threshold and up to three competing option IDs. Preserve them in retry/status receipts without retaining page labels or input literals.
+- Use snapshot-local target aliases and omit transport receipt IDs from classification evidence and no-progress detection; map commands back to the original browser references and preserve their execution fences. Allow supported keys to target the single observed focused control when no explicit target was selected.
+- Complete native picker clicks when mouse-down changes that control's selection/expansion, retaining checks on other form fields, target identity, document, origin and control generation. Publish Browser Sessions server package 0.9.2 and Chrome extension 0.6.2; native helper 0.4.0 remains compatible.
+
 ## 2026-10-22 - Use generic agent wording throughout Browser Sessions (0.117.2)
 
 - Use generic agent labels and Evander platform naming in browser viewers, the Chrome extension, workflow help, and documentation.

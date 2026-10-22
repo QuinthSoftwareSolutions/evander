@@ -3924,17 +3924,24 @@ var BrowserEngine = class {
       if (!this.state.allowed_origins.includes(new URL(current).origin)) throw new Error("origin_denied");
       return current;
     };
-    let edited = false, inputStarted = false;
+    let edited = false, mousePressed = false, inputStarted = false;
     const validateTarget = async () => {
       if (!command.revalidate || !command.ref) return;
       const { nodes } = await this.send("Accessibility.getFullAXTree");
       const elements = accessibleElements(nodes ?? []).elements;
       const fresh = elements.find((item) => item.ref === command.ref);
-      if (!edited && pageSignature(elements) !== this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const saved = this.signatures.get(command.ref);
       if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
-      if (edited) for (const key of ["value", "checked", "selected", "expanded"]) {
+      const context2 = mousePressed ? elements.map((item) => item.ref === command.ref ? {
+        ...item,
+        value: before.value,
+        checked: before.checked,
+        selected: before.selected,
+        expanded: before.expanded
+      } : item) : elements;
+      if (!edited && pageSignature(context2) !== this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (edited || mousePressed) for (const key of ["value", "checked", "selected", "expanded"]) {
         delete before[key];
         delete after[key];
       }
@@ -3949,6 +3956,7 @@ var BrowserEngine = class {
         return await this.send(method, params);
       } finally {
         if (method === "Input.insertText" || method === "Input.dispatchKeyEvent" && params.type === "keyDown") edited = true;
+        if (method === "Input.dispatchMouseEvent" && params.type === "mousePressed") mousePressed = true;
       }
     };
     const press = async (key, text, code, keyCode) => {

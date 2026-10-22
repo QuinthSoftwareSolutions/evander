@@ -9,10 +9,13 @@ application-specific prepared workflow or extra support agent is required.
 
 ## Enable after qualification
 
-Deploy Browser Sessions 0.8.2 for the updated decision questions and operating
+Deploy Browser Sessions 0.9.2 for control-aware decision questions and the operating
 guide. Fast execution requires a hosted controller supporting capability version
 1, Chrome extension 0.5.0 or later, or native helper 0.4.0 or later when selected.
-This server-side correction does not require an extension or helper update.
+Use Chrome extension 0.6.2 for the native-picker mouse-down/mouse-up correction in
+local sharing, including when using native helper 0.4.0. Hosted controllers receive
+the same correction from the updated server package/image. The decision questions
+and diagnostics are control-plane changes; the native helper needs no update.
 Connections advertise `fast_execution: 1`; old endpoints keep their direct
 tools and return `endpoint_upgrade_required` for a run.
 
@@ -46,11 +49,42 @@ run budget and provider timeout. Automatic provider retries are disabled.
 The selected option's probability must meet the threshold for every relevant
 choice; vendor confidence fields do not override that check.
 
-Decision evidence contains semantic page state, current element references and
-completed action outcomes. Random observation/command receipt IDs and document
-epochs stay in the execution and accounting paths rather than the model input.
+Operation descriptions distinguish ordinary field replacement from requested
+character-key typing and dropdown keyboard interaction. Each target advertises
+its allowed actions; missing literals, readonly fields and non-editable
+comboboxes cannot become fill/type commands. The server checks the selected
+action against the target before dispatch in addition to endpoint revalidation.
+The platform uses no application-specific names, label rules or prepared workflows.
+
+Operation, target, supplied input, key and scroll direction remain separate
+questions batched in one provider request. Only choices needed by the selected
+operation are scored. Waiting, readiness for verification and assistance do not
+need a target or input. Every conditional question includes an explicit
+no-operation option. All eligible targets remain available up to the 200-target
+cap; truncation yields to the owning agent instead of discarding controls.
+
+When a relevant choice is below threshold, the durable receipt includes a
+`decision` object with `question`, `choice`, `probability`, `threshold` and at most
+three `alternatives` (`choice`/`probability`). These contain bounded option IDs,
+never option descriptions, page labels, screenshots or supplied text values.
+Target choices can include `target_ref`, the original endpoint reference
+associated with that model-local option. An implicit keyboard target is resolved
+only from a uniquely focused observed control and is sent as an explicitly
+referenced, revalidated command.
+Identical retries and session status retain those diagnostics for the owning
+agent. A confidence failure still yields before input; probabilities are neither
+combined across alternatives nor relaxed.
+
+Decision evidence contains semantic page state, snapshot-local target aliases and
+completed action outcomes. The server alone maps aliases back to original endpoint
+references; prior actions whose controls are no longer present retain their action
+and outcome with a previous-target marker. Random observation/command receipt IDs,
+document epochs and shared-page IDs stay in the execution and accounting paths.
 The original observation IDs, generations and target checks still fence every
 browser command.
+Native mouse-down may change its own control's mutable selection/expansion before
+mouse-up. That transition is permitted within the click; other form changes and
+target identity, document, origin and generation changes still stop further input.
 
 ## Agent guidance
 

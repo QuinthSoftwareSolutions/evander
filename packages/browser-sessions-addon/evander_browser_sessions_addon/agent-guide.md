@@ -109,6 +109,18 @@ text yourself first. The decision model chooses intermediate actions and inputs;
 it cannot compose instructions, invent missing data or generate text from a goal.
 Split large tasks into concrete objectives.
 
+Use normal field replacement for form edits. Request character typing or appending
+explicitly when the task needs those semantics, such as keyboard-event input.
+Non-editable dropdowns use activation and supported keys/options rather than text
+replacement. The loop derives available actions from current control roles and
+state; these rules apply without application-specific workflows.
+Operation, target and literal-input choices are batched in one provider request.
+Only choices needed for the selected operation must meet the probability
+threshold. A readiness result still requires your independent verification.
+An implicit keyboard target is accepted only when exactly one current control is
+observed as focused. The resulting command still references and revalidates that
+control before input.
+
 Use the current page's visible control names and state to describe the objective.
 State ordering dependencies explicitly: update the requested fields first, then
 submit once, and describe the expected resulting page. The model chooses the
@@ -151,6 +163,14 @@ available. `browser_session_cancel_run` stops its named run and pauses input.
 - `needs_pa` is the historical API name for returning control to the owning
   agent, regardless of its role. Inspect the reason and current state, resolve
   missing inputs or ambiguity, then use direct tools or a fresh bounded objective.
+  An ambiguous receipt includes `decision` with the relevant question, selected
+  option ID, probability, threshold and up to three competing option IDs. Use that
+  evidence with the current observation; option IDs are not permanent selectors.
+  For target choices, `target_ref` maps the model-local option back to the original
+  endpoint reference when available; obtain a fresh observation before direct input.
+  These diagnostics retain no page labels or text values. Resolve the ambiguity
+  before making a deliberately new request instead of retrying to seek a higher
+  score or lowering the confidence threshold.
 - `cancelled` requires a new user instruction before resuming.
 - `outcome_unknown` means input may already have happened. Observe and reconcile
   the result before deciding what remains; never blindly repeat a submission.
