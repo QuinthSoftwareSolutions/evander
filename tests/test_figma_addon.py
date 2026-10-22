@@ -14,8 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.requests import Request
 
@@ -258,13 +258,13 @@ class Canvas:
                         content=[
                             SimpleNamespace(
                                 type="image",
-                                mimeType="image/png",
+                                mime_type="image/png",
                                 data=base64.b64encode(PNG).decode(),
                             )
                         ]
                     )
                 if name == "get_variable_defs":
-                    return SimpleNamespace(structuredContent={"brand": "#112233"}, content=[])
+                    return SimpleNamespace(structured_content={"brand": "#112233"}, content=[])
                 payload = canvas.interpreter.execute(canvas.state, arguments["code"])
                 canvas.state = payload["state"]
                 if payload.get("error"):
@@ -273,7 +273,7 @@ class Canvas:
                 if canvas.lose_next_write and '"action": "edit"' in arguments["code"]:
                     canvas.lose_next_write = False
                     raise FigmaError("Simulated lost response after the mutation")
-                return SimpleNamespace(structuredContent=payload["result"], content=[])
+                return SimpleNamespace(structured_content=payload["result"], content=[])
 
             def comments(self, _):
                 return json.loads(json.dumps(canvas.comments_list))
@@ -945,7 +945,7 @@ def test_mcp_uses_normal_tool_policy_without_session_grants(studio, monkeypatch)
     )
     runtime = service().store.runtime_dir
     policy = session_policy(runtime)
-    server = FastMCP("figma-policy-test")
+    server = MCPServer("figma-policy-test")
     server._evander_transport_session_map = {"transport-1": "fresh-agent"}
     figma_mcp.register_mcp_tools(
         server,
@@ -1099,8 +1099,8 @@ def test_official_mcp_transport_client_identity_and_schema_validation(tmp_path, 
     @asynccontextmanager
     async def transport(url, **kwargs):
         assert url == "https://mcp.figma.com/mcp"
-        assert kwargs["headers"] == {"Authorization": "Bearer synthetic-token"}
-        yield None, None, None
+        assert kwargs["http_client"].headers["Authorization"] == "Bearer synthetic-token"
+        yield None, None
 
     class Session:
         def __init__(self, *_, client_info):
@@ -1115,15 +1115,15 @@ def test_official_mcp_transport_client_identity_and_schema_validation(tmp_path, 
         async def initialize(self):
             pass
 
-        async def list_tools(self, cursor=None):
-            if cursor is None:
-                return SimpleNamespace(tools=[], nextCursor="second")
+        async def list_tools(self, *, params=None):
+            if params is None:
+                return SimpleNamespace(tools=[], next_cursor="second")
             return SimpleNamespace(
-                nextCursor=None,
+                next_cursor=None,
                 tools=[
                     SimpleNamespace(
                         name="use_figma",
-                        inputSchema={
+                        input_schema={
                             "type": "object",
                             "required": ["fileKey"],
                             "properties": {"fileKey": {"type": "string"}},
@@ -1134,9 +1134,9 @@ def test_official_mcp_transport_client_identity_and_schema_validation(tmp_path, 
 
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
-            return SimpleNamespace(isError=False, model_dump_json=lambda: "{}")
+            return SimpleNamespace(is_error=False, model_dump_json=lambda: "{}")
 
-    monkeypatch.setattr(module, "streamablehttp_client", transport)
+    monkeypatch.setattr(module, "streamable_http_client", transport)
     monkeypatch.setattr(module, "ClientSession", Session)
     client = FigmaClient(
         SimpleNamespace(token=lambda *_: "synthetic-token"),

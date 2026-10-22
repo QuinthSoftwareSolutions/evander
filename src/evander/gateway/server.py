@@ -20,9 +20,11 @@ from uuid import uuid4
 
 from anyio import CancelScope
 import httpx
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult
 from mcp.types import Tool as MCPTool
+from pydantic import ValidationError
 from pydantic import Field as PydanticField
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -459,6 +461,8 @@ def _tool_policy_context_from_request(
 def _payload_from_result(result: Any) -> dict[str, Any] | None:
     if result is None:
         return None
+    if isinstance(result, CallToolResult):
+        return result.model_dump(mode="json", by_alias=True)
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
     if isinstance(result, dict):
@@ -521,13 +525,8 @@ def _assistant_mutation_audit_result(
     return audit_result
 
 
-def create_server(context: RuntimeContext) -> FastMCP:
-    server = FastMCP(
-        "Evander Gateway",
-        host=context.config.host,
-        port=context.config.port,
-        streamable_http_path="/mcp",
-    )
+def create_server(context: RuntimeContext) -> MCPServer:
+    server = MCPServer("Evander Gateway")
     transport_session_map: dict[str, str] = {}
     if context.mcp_transport_bindings is not None:
         for transport_session_id, binding in context.mcp_transport_bindings.read_all().items():
@@ -1004,26 +1003,39 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return function(*args, **kwargs)
         return await run_in_threadpool(function, *args, **kwargs)
 
-    def _offload_synchronous_tools() -> None:
-        """Keep blocking MCP tool implementations off the transport event loop."""
+    def _prepare_tool_functions() -> None:
+        """Offload blocking calls and expose deliberate policy denials as tool errors."""
 
-        def _threaded_tool(sync_fn: Any) -> Any:
+        def _tool_function(function: Any, is_async: bool) -> Any:
             async def _run(**kwargs: Any) -> Any:
-                if _MCP_REQUEST_CONTEXT.get() is None:
-                    # Direct in-process calls are used by administrative code and
-                    # unit tests; only transport requests share the MCP event loop.
-                    return sync_fn(**kwargs)
-                return await run_in_threadpool(sync_fn, **kwargs)
+                try:
+                    if is_async:
+                        return await function(**kwargs)
+                    if _MCP_REQUEST_CONTEXT.get() is None:
+                        # Administrative callers do not share the transport event loop.
+                        return function(**kwargs)
+                    return await run_in_threadpool(function, **kwargs)
+                except PolicyError as exc:
+                    # SDK v2 sanitizes unexpected exceptions. A policy rejection is
+                    # an expected, actionable failure for the caller.
+                    raise ToolError(str(exc)) from exc
+                except ValidationError as exc:
+                    # Domain request models are validated inside the tool body.
+                    # Omit Pydantic input dumps while retaining field diagnostics.
+                    details = "; ".join(
+                        f"{'.'.join(str(part) for part in error['loc']) or 'arguments'}: "
+                        f"{error['msg']}"
+                        for error in exc.errors(include_input=False, include_url=False)
+                    )
+                    raise ToolError(f"Invalid tool arguments: {details}") from exc
 
             return _run
 
         for tool in server._tool_manager.list_tools():
-            if tool.is_async:
-                continue
-            tool.fn = _threaded_tool(tool.fn)
+            tool.fn = _tool_function(tool.fn, tool.is_async)
             tool.is_async = True
 
-    _offload_synchronous_tools()
+    _prepare_tool_functions()
 
     original_list_tools = server._tool_manager.list_tools
 
@@ -1093,11 +1105,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
     async def list_tools() -> list[MCPTool]:
         return await run_request_storage(build_tool_list)
 
-    # FastMCP registered its original bound method during construction. Replace
-    # both the public method and the protocol handler so discovery shares the
-    # same nonblocking boundary as tool execution.
+    # The SDK's protocol handler calls this method dynamically. Keep discovery
+    # behind the same nonblocking storage boundary as tool execution.
     server.list_tools = list_tools
-    server._mcp_server.list_tools()(list_tools)
 
     def audit_approval_gate(
         *,

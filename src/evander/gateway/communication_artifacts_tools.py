@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable
 from typing import Any
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from evander.gateway.dependencies import _compat_gateway_attr
 from evander.events.agent_artifacts import (
     AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,

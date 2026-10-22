@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.host_directories.service import (
@@ -17,7 +17,7 @@ from evander.runtime import RuntimeContext
 
 
 def register_host_directory_tools(
-    server: FastMCP,
+    server: MCPServer,
     context: RuntimeContext,
     service: HostDirectoryService,
 ) -> None:

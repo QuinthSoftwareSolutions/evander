@@ -5,12 +5,13 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from evander.models import (
     ToolName,
 )
 from evander.policy import PolicyError
 from evander.services import (
+    TeamsAuthenticationError,
     normalize_teams_mention_refs,
     parse_teams_target,
     resolve_teams_send_target,
@@ -155,6 +156,10 @@ def create_teams_tools(
                 decision="error",
                 error_class="adapter_http_error",
             )
+            if isinstance(exc, TeamsAuthenticationError):
+                raise ToolError(
+                    "Teams authentication is unavailable; ask an operator to check the configured credentials."
+                ) from exc
             raise
 
     def teams_post_status(
@@ -208,6 +213,10 @@ def create_teams_tools(
                 decision="error",
                 error_class="adapter_http_error",
             )
+            if isinstance(exc, TeamsAuthenticationError):
+                raise ToolError(
+                    "Teams authentication is unavailable; ask an operator to check the configured credentials."
+                ) from exc
             raise
         except Exception as exc:
             audit_failure(
@@ -367,6 +376,10 @@ def create_teams_tools(
                 decision="error",
                 error_class="adapter_http_error",
             )
+            if isinstance(exc, TeamsAuthenticationError):
+                raise ToolError(
+                    "Teams authentication is unavailable; ask an operator to check the configured credentials."
+                ) from exc
             raise
         except (ToolError, RuntimeError, ValueError) as exc:
             if meeting_id_for_error is not None and not isinstance(exc, ToolError):
@@ -473,6 +486,10 @@ def create_teams_tools(
                 decision="error",
                 error_class="adapter_http_error",
             )
+            if isinstance(exc, TeamsAuthenticationError):
+                raise ToolError(
+                    "Teams authentication is unavailable; ask an operator to check the configured credentials."
+                ) from exc
             raise
         except (ToolError, RuntimeError, ValueError) as exc:
             if meeting_id_for_error is not None and not isinstance(exc, ToolError):

@@ -43,6 +43,34 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
 | Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
 
+## MCP SDK compatibility
+
+The gateway and installed add-ons use MCP Python SDK `>=2.3.0,<3`. The checked-in
+`uv.lock` records the tested dependencies; local development can install them with
+`uv sync --frozen --extra dev`. SDK 2 retains the legacy `initialize` protocol, so
+existing clients can continue using their session-scoped gateway URLs.
+A bare `GET /mcp` can return HTTP 400 (missing protocol session ID), or 406 on
+older transports; either proves endpoint reachability, not an authenticated tool
+call. The CLI health check already accepts these responses.
+
+Clients using MCP `2026-07-28` send independent requests without an MCP transport
+session ID. They must carry the Evander session identity and its proof token on
+each request, normally through the existing scoped URL or
+`x-evander-session-id` and `x-evander-mcp-session-token` headers. Tool discovery and
+invocation still evaluate current grants, workflow approval leases and exact
+invocation approvals. An Evander session is distinct from an SDK transport session;
+the absence of the latter does not grant access to another Evander session.
+
+Policy and domain-validation failures remain actionable tool errors. Unexpected
+provider failures return a generic SDK error; inspect the corresponding operator
+audit record for the provider failure and its classification. Domain-validation replies include field diagnostics without Pydantic input dumps.
+
+The Figma and Miro MCP transports use HTTPX 2, which verifies TLS using the host OS
+trust store. Install any required private CA in that trust store, or configure
+`SSL_CERT_FILE`/`SSL_CERT_DIR`; their ordinary REST transports continue using HTTPX.
+Verify the Ansible package-install path in an isolated environment as well as the
+locked test environment before deploying a new SDK release.
+
 For contextual release reintegration, verifier recovery, retained logs and staged worker
 toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
 

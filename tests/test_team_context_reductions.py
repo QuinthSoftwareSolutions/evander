@@ -5,7 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.gateway import create_server
 from evander_team_addon import mcp as team_mcp

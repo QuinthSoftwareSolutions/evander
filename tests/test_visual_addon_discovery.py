@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig, AddonMcpTool, AddonRegistration
 from evander.admin.composition import build_admin_runtime

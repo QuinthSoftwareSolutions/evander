@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Support MCP SDK 2 and modern protocol requests (0.122.0)
+
+- Migrate the gateway and add-on MCP surfaces to SDK 2.3 while retaining legacy clients. Enforce session proof, current tool grants, workflow leases, exact invocation approvals and auditing on modern requests without a transport session ID.
+- Update the Figma and Miro MCP clients for HTTPX 2, explicit pagination and the SDK's response models, preserving authenticated destinations and bounded timeouts. Constrain the SDK to the supported major version and refresh the dependency lock.
+- Preserve actionable policy and domain-validation errors without Pydantic input dumps. Unexpected adapter failures retain their operator audit details and use the SDK's sanitized caller-facing errors.
+
 ## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
 
 - Add the optional, bindable `resume_subscription_profile_id` input for a deliberately requested ChatGPT-subscription handoff on a linked tracked-coverage resume. It must match the new scanner session; ordinary resumes still require the original profile.

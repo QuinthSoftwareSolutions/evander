@@ -1,5 +1,5 @@
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from typing import Annotated
 from pydantic import Field
 

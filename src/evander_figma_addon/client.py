@@ -10,10 +10,11 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
+import httpx2
 import jsonschema
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.types import Implementation
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types import Implementation, PaginatedRequestParams
 
 from .auth import MCP_URL, OAuth
 from .models import FigmaError, FigmaRejected, FigmaUnavailable
@@ -36,33 +37,37 @@ class FigmaClient:
         token = self.oauth.token(self.directory, self.connection_id, self.config)
 
         async def invoke():
-            async with streamablehttp_client(
-                MCP_URL,
-                headers={"Authorization": "Bearer " + token},
-                timeout=30,
-                sse_read_timeout=90,
-            ) as (read, write, _):
+            async with (
+                httpx2.AsyncClient(
+                    headers={"Authorization": "Bearer " + token},
+                    timeout=httpx2.Timeout(30, read=90),
+                    follow_redirects=False,
+                ) as http_client,
+                streamable_http_client(MCP_URL, http_client=http_client) as (read, write),
+            ):
                 async with ClientSession(
                     read, write, client_info=Implementation(name="evander", version="1")
                 ) as session:
                     await session.initialize()
                     cursor, tool = None, None
                     for _ in range(16):
-                        listing = await session.list_tools(cursor=cursor)
+                        listing = await session.list_tools(
+                            params=PaginatedRequestParams(cursor=cursor) if cursor else None
+                        )
                         tool = next((tool for tool in listing.tools if tool.name == name), None)
-                        if tool or not listing.nextCursor:
+                        if tool or not listing.next_cursor:
                             break
-                        cursor = listing.nextCursor
+                        cursor = listing.next_cursor
                     if not tool:
                         raise FigmaUnavailable(
                             "The Figma connection does not expose the required tool"
                         )
-                    jsonschema.validate(arguments, tool.inputSchema)
+                    jsonschema.validate(arguments, tool.input_schema)
                     return await session.call_tool(name, arguments)
 
         try:
             result = asyncio.run(asyncio.wait_for(invoke(), timeout=120))
-            if result.isError:
+            if result.is_error:
                 raise FigmaError("Figma rejected the operation; inspect before retrying any write")
             if len(result.model_dump_json()) > MAX_BYTES * 2:
                 raise FigmaError("Figma result exceeds the response limit")
@@ -94,7 +99,7 @@ class FigmaClient:
                 "skillNames": "figma-use",
             },
         )
-        value = result.structuredContent
+        value = result.structured_content
         if value is None:
             for part in result.content:
                 if part.type == "text":
@@ -149,7 +154,7 @@ class FigmaClient:
     def screenshot(self, file_key, node_id):
         result = self._mcp("get_screenshot", {"fileKey": file_key, "nodeId": node_id})
         for part in result.content:
-            if part.type == "image" and part.mimeType == "image/png":
+            if part.type == "image" and part.mime_type == "image/png":
                 data = base64.b64decode(part.data, validate=True)
                 if len(data) <= MAX_BYTES and data.startswith(b"\x89PNG\r\n\x1a\n"):
                     return data
@@ -158,7 +163,7 @@ class FigmaClient:
     def variables(self, file_key, node_id):
         result = self._mcp("get_variable_defs", {"fileKey": file_key, "nodeId": node_id})
         return {
-            "variables_and_styles": result.structuredContent
+            "variables_and_styles": result.structured_content
             or [part.text for part in result.content if part.type == "text"]
         }
 

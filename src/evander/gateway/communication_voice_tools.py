@@ -5,8 +5,8 @@ import base64
 import json
 from collections.abc import Callable
 from typing import Any
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ImageContent, TextContent
 from evander.email.http_utils import ProviderRequestError
 from evander.gateway.session_context import _resolve_session_id_from_context

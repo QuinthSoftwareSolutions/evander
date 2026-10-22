@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from zipfile import ZipFile
 
 from evander.addons import AddonContext
@@ -16,7 +16,7 @@ from evander_browser_sessions_addon.service import Bindings
 
 def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
     addon = register_addon()
-    server = FastMCP("browser-test")
+    server = MCPServer("browser-test")
     context = AddonContext(
         addon_id=addon.addon_id,
         runtime_dir=tmp_path,
@@ -30,12 +30,12 @@ def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
         == {item.name for item in addon.mcp_tool_catalog}
     )
     action = next(tool for tool in tools if tool.name == "browser_session_act")
-    assert action.inputSchema["properties"]["command"]["$ref"]
-    serialized = json.dumps(action.inputSchema)
+    assert action.input_schema["properties"]["command"]["$ref"]
+    serialized = json.dumps(action.input_schema)
     assert "observation_id" in serialized and "generation" in serialized
     assert "evaluate" not in serialized
     run = next(tool for tool in tools if tool.name == "browser_session_run")
-    schema = run.inputSchema["$defs"]["RunRequest"]["properties"]
+    schema = run.input_schema["$defs"]["RunRequest"]["properties"]
     assert {
         "request_id",
         "generation",
@@ -51,22 +51,22 @@ def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
         )
         assert any(value.value == "" for value in request.values.values())
     status = next(tool for tool in tools if tool.name == "browser_session_status")
-    assert status.inputSchema["properties"]["include_guidance"]["default"] is False
+    assert status.input_schema["properties"]["include_guidance"]["default"] is False
 
 
 def test_any_owning_agent_can_discover_packaged_guidance_without_a_pa_prompt(domain, monkeypatch):
     import re
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
     from evander_browser_sessions_addon import mcp
 
     service, bindings, _ = domain
     monkeypatch.setattr(mcp, "Service", lambda *args: service)
     monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-a")
-    server = FastMCP("generic-browser-agent")
+    server = MCPServer("generic-browser-agent")
     mcp.register_mcp_tools(server, SimpleNamespace(runtime_dir=service.runtime_dir, service=None))
 
     def call(name, **payload):
-        return asyncio.run(server._tool_manager.call_tool(name, payload))
+        return asyncio.run(server._tool_manager.call_tool(name, payload, context=None))
 
     profiles = call("browser_session_profiles")
     created = call("browser_session_create", request={"mode": "user_hosted", "request_id": "share"})

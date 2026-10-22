@@ -9,8 +9,9 @@ from urllib.parse import parse_qs, urlsplit
 import xml.etree.ElementTree as ET
 
 import httpx
+import httpx2
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -239,7 +240,7 @@ def test_addon_discovery_catalog_and_real_mcp_schemas(tmp_path):
     addon = register_addon()
     catalog = load_addons(AddonLoaderConfig(modules=["evander_miro_addon"]), base_dir=tmp_path)
     assert any(item.addon_id == "miro-addon" for item in catalog.registrations)
-    server = FastMCP("test")
+    server = MCPServer("test")
     names = addon.mcp_tools(
         server,
         AddonContext(
@@ -255,12 +256,12 @@ def test_addon_discovery_catalog_and_real_mcp_schemas(tmp_path):
         == {tool.name for tool in tools}
         == {tool.name for tool in addon.mcp_tool_catalog}
     )
-    schema = next(tool.inputSchema for tool in tools if tool.name == "miro_update_canvas")
+    schema = next(tool.input_schema for tool in tools if tool.name == "miro_update_canvas")
     assert {"snapshot_id", "operation_key", "board_id", "connection_id", "svg"} <= set(
         schema["required"]
     )
     assert "ctx" not in schema["properties"]
-    discovery = next(tool.inputSchema for tool in tools if tool.name == "miro_list_connections")
+    discovery = next(tool.input_schema for tool in tools if tool.name == "miro_list_connections")
     assert not discovery.get("required")
     assert "connection_id" not in discovery["properties"]
 
@@ -336,7 +337,7 @@ def test_legacy_session_lists_do_not_gate_or_survive_connection_saves(setup, leg
 def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monkeypatch):
     from datetime import UTC, datetime, timedelta
 
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
     from starlette.requests import Request
 
     from evander.config import GatewayConfig
@@ -380,7 +381,7 @@ def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monke
         "evander_miro_addon.mcp.MiroService",
         lambda store, access, **kwargs: MiroService(store, access, remote.client, **kwargs),
     )
-    server = FastMCP("miro-policy-test")
+    server = MCPServer("miro-policy-test")
     server._evander_transport_session_map = {"transport-author": session.session_id}
     register_addon().mcp_tools(
         server,
@@ -1807,11 +1808,11 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
 
     def handle(request):
         if request.method != "POST":
-            return httpx.Response(405)
+            return httpx2.Response(405)
         payload = json.loads(request.content)
         requests.append(payload)
         if "id" not in payload:
-            return httpx.Response(202)
+            return httpx2.Response(202)
         if payload["method"] == "initialize":
             result = {
                 "protocolVersion": "2025-06-18",
@@ -1843,18 +1844,18 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
             )
             assert payload["params"]["arguments"]["widget_ids"] == ["item1"]
             result = {"content": [{"type": "text", "text": SVG}]}
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
 
     async def scenario():
         async with MiroClient(
-            store, record, http_transport=httpx.MockTransport(handle)
+            store, record, http_transport=httpx2.MockTransport(handle)
         ).open() as client:
             result = await client.call(
                 "read_canvas", board_id="board1", frame_id="frame1", item_ids=["item1"]
             )
             assert result["text"] == SVG
         with pytest.raises(MiroError, match="source snapshot"):
-            async with MiroClient(store, record, http_transport=httpx.MockTransport(handle)).open():
+            async with MiroClient(store, record, http_transport=httpx2.MockTransport(handle)).open():
                 raise MiroError("conflict", "changed source snapshot")
 
     run(scenario())
@@ -1895,10 +1896,10 @@ def test_create_board_miro_url_through_mcp_and_workflow(
 
     def handle(request):
         if request.method != "POST":
-            return httpx.Response(405)
+            return httpx2.Response(405)
         payload = json.loads(request.content)
         if "id" not in payload:
-            return httpx.Response(202)
+            return httpx2.Response(202)
         if payload["method"] == "initialize":
             result = {
                 "protocolVersion": "2025-06-18",
@@ -1983,12 +1984,12 @@ def test_create_board_miro_url_through_mcp_and_workflow(
                 if response_format == "structured"
                 else {"content": [{"type": "text", "text": json.dumps(data)}]}
             )
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
 
     original_init = MiroClient.__init__
 
     def init_client(self, store, record):
-        original_init(self, store, record, http_transport=httpx.MockTransport(handle))
+        original_init(self, store, record, http_transport=httpx2.MockTransport(handle))
 
     monkeypatch.setattr(MiroOAuth, "access_token", token)
     monkeypatch.setattr(MiroClient, "__init__", init_client)
@@ -2016,9 +2017,7 @@ def test_create_board_miro_url_through_mcp_and_workflow(
 
         def invoke(operation, arguments):
             return run(
-                server._tool_manager.call_tool(
-                    "miro_" + operation, {"session_id": "author", **arguments}
-                )
+                server._tool_manager.call_tool('miro_' + operation, {'session_id': 'author', **arguments}, context=None)
             )
 
     else:
@@ -2388,7 +2387,7 @@ def test_real_client_reads_offset_comment_pages_before_snapshot(setup, metadata,
             data = {"comments": comments[offset : offset + arguments["limit"]]}
             if metadata:
                 data["pagination"] = {"offset": offset, "limit": 50, "total": count}
-            return SimpleNamespace(isError=False, structuredContent=data)
+            return SimpleNamespace(is_error=False, structured_content=data)
 
     def factory(store, record):
         client = MiroClient(store, record)

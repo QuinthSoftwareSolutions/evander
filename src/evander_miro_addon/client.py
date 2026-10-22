@@ -8,10 +8,11 @@ import json
 import re
 from typing import Any
 
-import httpx
+import httpx2
 from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import PaginatedRequestParams
 from referencing import Registry
 
 from .auth import MiroOAuth
@@ -81,12 +82,12 @@ def find_miro_error(error: Exception) -> MiroError | None:
 
 
 def result_data(result: Any) -> Any:
-    if result.isError:
+    if result.is_error:
         raise MiroError(
             "upstream_error",
             "Miro rejected the operation; inspect the board before retrying a write",
         )
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if structured is not None:
         data = structured
     else:
@@ -115,10 +116,10 @@ class MiroClient:
         token = await MiroOAuth(self.store).access_token(self.record)
         try:
             async with asyncio.timeout(120):
-                async with httpx.AsyncClient(
+                async with httpx2.AsyncClient(
                     transport=self.http_transport,
                     headers={"Authorization": "Bearer " + token},
-                    timeout=httpx.Timeout(45, read=60),
+                    timeout=httpx2.Timeout(45, read=60),
                     follow_redirects=False,
                 ) as client:
                     async with streamable_http_client(MCP_URL, http_client=client) as streams:
@@ -127,13 +128,15 @@ class MiroClient:
                             await session.initialize()
                             cursor = None
                             for _ in range(10):
-                                response = await session.list_tools(cursor=cursor)
+                                response = await session.list_tools(
+                                    params=PaginatedRequestParams(cursor=cursor) if cursor else None
+                                )
                                 for tool in response.tools:
                                     if tool.name in set(UPSTREAM_TOOLS.values()) | {
                                         "canvas_load_format_skill"
                                     }:
-                                        self.schemas[tool.name] = tool.inputSchema
-                                cursor = response.nextCursor
+                                        self.schemas[tool.name] = tool.input_schema
+                                cursor = response.next_cursor
                                 if not cursor:
                                     break
                             else:

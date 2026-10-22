@@ -262,7 +262,10 @@ def _install_mcp_http_logging(
 
 def create_app(context: RuntimeContext) -> Starlette:
     server = create_server(context)
-    mcp_app = server.streamable_http_app()
+    mcp_app = server.streamable_http_app(
+        host=context.config.host,
+        streamable_http_path="/mcp",
+    )
 
     async def retell_webhook(request: Request) -> PlainTextResponse | JSONResponse:
         raw_body = await request.body()
@@ -830,7 +833,7 @@ def create_app(context: RuntimeContext) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         # Starlette does not automatically run lifespan handlers for mounted sub-apps.
-        # The FastMCP streamable HTTP transport requires its lifespan to initialize the
+        # The MCPServer streamable HTTP transport requires its lifespan to initialize the
         # session manager task group before any /mcp request is served.
         async with mcp_app.router.lifespan_context(mcp_app):
             yield

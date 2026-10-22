@@ -29,7 +29,7 @@ Git, and HTTP surfaces.
 - Optional [integration contracts](docs/optional-integrations.md) for add-on settings,
   host credentials, readiness checks, worker factories and editable workflow starters
 
-- A Python MCP gateway with policy-gated Discord and email tool surfaces
+- A Python MCP SDK 2 gateway with policy-gated Discord and email tool surfaces, supporting legacy sessions and modern per-request MCP clients
 - Optional [Teams message editing](packages/teams-graph-addon/README.md#edit-a-message-sent-by-an-agent-session)
   through a session-owned MCP tool and workflow effect, with preserved rich content and guarded revisions
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
