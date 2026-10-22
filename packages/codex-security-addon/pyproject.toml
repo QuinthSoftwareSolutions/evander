@@ -18,7 +18,7 @@ where = ["."]
 include = ["evander_codex_security_addon*"]
 
 [tool.setuptools.package-data]
-evander_codex_security_addon = ["addon.json", "runner.py", "codex_bridge.py", "configure.mjs", "coverage_runner.py", "coverage_sdk.mjs"]
+evander_codex_security_addon = ["addon.json", "runner.py", "codex_bridge.py", "configure.mjs", "coverage_runner.py", "coverage_sdk.mjs", "coverage_projection.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

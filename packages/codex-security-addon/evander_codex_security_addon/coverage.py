@@ -501,6 +501,13 @@ def aggregate(state):
                 "finding_id": finding["findingId"],
                 "occurrence_id": finding.get("occurrenceId"),
             }
+            if proof.get("source_projection"):
+                # Preserve native locations/line numbers while making their
+                # derived review revision visible to downstream summarizers.
+                source["source_projection"] = {
+                    k: proof["source_projection"][k]
+                    for k in ("source_revision", "revision", "paths")
+                }
             if source not in record["sources"]:
                 record["sources"].append(source)
     counts = dict.fromkeys(SEVERITIES, 0)

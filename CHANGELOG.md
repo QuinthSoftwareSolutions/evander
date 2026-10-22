@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Preserve symlink identity in tracked security reviews (0.117.8)
+
+- Review assigned symlinks through deterministic Git metadata projections so the pinned SDK can assess internal, broken, external, cyclic and directory links without following their destinations.
+- Independently verify the projected revision and original link objects before granting coverage; retain explicit dispositions, immutable native reports and projection provenance across interruption and resume.
+- Package the projection runtime in scanner images and include it in cache invalidation.
+
 ## 2026-10-22 - Preserve committed task work across preparation changes (0.117.7)
 
 - Carry clean, compatible committed work into a fresh task checkout after instruction changes. Verify the task owner, session, repository, directory, original base and exact dependency pins; retain commit authorship and normal acceptance and release gates.

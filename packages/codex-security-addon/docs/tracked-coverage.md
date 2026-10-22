@@ -60,8 +60,29 @@ Scopes follow directory/path order and contain at most 100 files or 512 KiB;
 an oversized file stays intact in a singleton scope. A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
 validation items. Every review uses an isolated SDK state directory and clone of
-the same commit, through the pinned public scoped Standard-scan API. Supporting
+the same source commit, through the pinned public scoped Standard-scan API. Supporting
 reads outside the assigned scope earn no file credit.
+
+The pinned SDK follows symlinks in path targets. A scope containing symlinks
+therefore uses a deterministic, temporary Git projection: only the assigned
+links become regular JSON metadata files at their original paths. Each record
+contains the original commit, mode, blob ID and exact target bytes. Targets are
+read from Git objects, never by following the links, so broken, external,
+cyclic and directory links can be assessed explicitly. Other tree entries remain
+unchanged, and the projection commit has the original snapshot as its parent.
+The source repository and the logical scan's revision and inventory stay unchanged.
+
+The host independently reconstructs the expected projection from its authorized
+managed repository without writing objects. Both the native revision and exact
+scope must match, and every link still needs its own justified `file:<path>`
+surface. Reviewing a destination gives no credit for the link. Unsupported or
+unresolved link review remains blocked, as do link payloads over 1 MiB. Native
+reports retain their derived revision unchanged; the aggregate manifest records the verified projection and
+its original link identities. Projection receipts survive restart and resume
+alongside the original snapshot, including after the default branch advances.
+Deploy the rebuilt scanner image with the matching host code; the projection
+runtime is included in the image cache fingerprint. Existing accepted receipts
+and historical archives are unchanged.
 
 Only a sealed native result matching the revision and exact scope can close a
 scope. It must report complete coverage with no exclusions, follow-up surfaces

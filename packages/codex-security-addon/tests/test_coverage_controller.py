@@ -54,6 +54,7 @@ def native_archive(
     missing_files=(),
     extra_records=(),
     native_coverage=None,
+    native_paths=None,
 ):
     prefix = f"security-scans/{scan_id}/reports/review/"
     documents = {
@@ -85,11 +86,11 @@ def native_archive(
                 "threatModel": receipt.get("architecture", {}).get("threat_model"),
                 "target": {
                     "kind": "git_revision",
-                    "revision": "e" * 40 if bad_revision else receipt["revision"],
+                    "revision": "e" * 40 if bad_revision else receipt.get("source_projection", {}).get("revision", receipt["revision"]),
                     "targetId": "logical-source",
                 },
                 "scope": {
-                    "includePaths": ["."] if receipt["kind"] == "architecture" else receipt["paths"]
+                    "includePaths": native_paths if native_paths is not None else (["."] if receipt["kind"] == "architecture" else receipt["paths"])
                 },
                 "artifacts": [
                     {"path": name, "sha256": hashlib.sha256(body).hexdigest()}

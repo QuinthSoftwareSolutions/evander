@@ -29,6 +29,7 @@ def image_builder(tmp_path):
         "evander_codex_security_addon/configure.mjs",
         "evander_codex_security_addon/coverage_runner.py",
         "evander_codex_security_addon/coverage_sdk.mjs",
+        "evander_codex_security_addon/coverage_projection.py",
     ]:
         target = package / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +124,7 @@ def test_unchanged_scan_image_reuses_archive_without_install_or_docker(image_bui
     assert manifest["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     staged = json.loads(image_builder[3].read_text())
     assert staged["runner.py"] == (PACKAGE / "evander_codex_security_addon/runner.py").read_text()
+    assert staged["coverage_projection.py"] == (PACKAGE / "evander_codex_security_addon/coverage_projection.py").read_text()
     assert staged["node_modules/locked-package"] == "pinned runtime"
     assert not (image_builder[0] / "node_modules").exists()
     assert all(mode & 0o022 == 0 for mode in staged["modes"].values())
@@ -143,7 +145,7 @@ def test_unchanged_scan_image_reuses_archive_without_install_or_docker(image_bui
 
 
 @pytest.mark.parametrize(
-    "changed", ["base", "node", "runner", "bridge", "configure", "coverage_runner", "coverage_sdk", "lock", "builder", "dockerfile"]
+    "changed", ["base", "node", "runner", "bridge", "configure", "coverage_runner", "coverage_sdk", "coverage_projection", "lock", "builder", "dockerfile"]
 )
 def test_changed_runtime_or_base_rebuilds(image_builder, changed):
     assert run_builder(image_builder).returncode == 0
@@ -156,6 +158,7 @@ def test_changed_runtime_or_base_rebuilds(image_builder, changed):
         "configure": package / "evander_codex_security_addon/configure.mjs",
         "coverage_runner": package / "evander_codex_security_addon/coverage_runner.py",
         "coverage_sdk": package / "evander_codex_security_addon/coverage_sdk.mjs",
+        "coverage_projection": package / "evander_codex_security_addon/coverage_projection.py",
         "lock": package / "package-lock.json",
         "builder": package / "scripts/build-runtime.sh",
         "dockerfile": package / "examples/Dockerfile",
