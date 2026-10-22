@@ -117,7 +117,7 @@ async function confirmClick(page, button, accept = true) {
   ]);
 }
 
-test("credit balances distinguish zero, unlimited, and unavailable and refresh with usage", { timeout: 60_000 }, async (t) => {
+test("credit balances show whole numbers, distinguish zero, unlimited, and unavailable and refresh with usage", { timeout: 60_000 }, async (t) => {
   const selected = profile("balance", "Credit balance", 3);
   selected.rate_limits.default.credits = { has_credits: true, unlimited: false, balance: "99" };
   selected.rate_limits.by_limit_id = {
@@ -139,7 +139,7 @@ test("credit balances distinguish zero, unlimited, and unavailable and refresh w
     other: { credits: { has_credits: true, unlimited: false, balance: "500" } },
   };
   const cases = [
-    [selected, "1,250.5"], [legacy, "12.75"], [empty, "0"], [unlimited, "Unlimited"],
+    [selected, "1,251"], [legacy, "13"], [empty, "0"], [unlimited, "Unlimited"],
     [missing, "Unavailable"], [olderWorker, "Unavailable"], [otherBucket, "Unavailable"],
   ];
   const { page, errors } = await fixture(t, async (route) => {
@@ -177,7 +177,7 @@ test("credit balances distinguish zero, unlimited, and unavailable and refresh w
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await creditCell.filter({ hasText: /^Unavailable\s*Credits$/ }).waitFor();
   }
-  for (const [balance, expected] of [["0", "0"], ["0.0001", "0.0001"], [" 20.25 ", "20.25"]]) {
+  for (const [balance, expected] of [["0", "0"], ["0.0001", "0"], [" 20.25 ", "20"]]) {
     selected.rate_limits.by_limit_id.codex.credits.balance = balance;
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await creditCell.filter({ hasText: new RegExp(`^${expected.replace(".", "\\.")}\\s*Credits$`) }).waitFor();

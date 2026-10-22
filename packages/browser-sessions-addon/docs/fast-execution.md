@@ -9,10 +9,10 @@ application-specific prepared workflow or extra support agent is required.
 
 ## Enable after qualification
 
-Deploy Browser Sessions 0.9.1 for control-aware decision questions and the operating
+Deploy Browser Sessions 0.9.2 for control-aware decision questions and the operating
 guide. Fast execution requires a hosted controller supporting capability version
 1, Chrome extension 0.5.0 or later, or native helper 0.4.0 or later when selected.
-Use Chrome extension 0.6.1 for the native-picker mouse-down/mouse-up correction in
+Use Chrome extension 0.6.2 for the native-picker mouse-down/mouse-up correction in
 local sharing, including when using native helper 0.4.0. Hosted controllers receive
 the same correction from the updated server package/image. The decision questions
 and diagnostics are control-plane changes; the native helper needs no update.

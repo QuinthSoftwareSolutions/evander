@@ -69,26 +69,26 @@ function update(value: any) {
   $("session-title").textContent = session.title;
   $("session-title").title = session.title;
   $("stop-run").hidden = !session.active_run; $("run-progress").hidden = !session.active_run;
-  $("run-progress").textContent = "Truman is working · " + (session.active_run?.step_count ?? 0) + " steps";
+  $("run-progress").textContent = "Agent is working · " + (session.active_run?.step_count ?? 0) + " steps";
   $("status").textContent = session.state.replaceAll("_", " ");
   $("status").dataset.state = session.state;
   $("application-url").textContent = session.current_url ?? "Preparing application";
   $("expiry").textContent = "Expires " + new Date(session.expires_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const yours = !!actor && session.controller === actor;
   const agent = session.controller?.startsWith("agent:");
-  $("claim").textContent = yours ? "Hand back to Truman" : "Take control";
+  $("claim").textContent = yours ? "Hand back to agent" : "Take control";
   $("claim").setAttribute("aria-pressed", String(yours));
   ($("claim") as HTMLButtonElement).disabled = !actor || ["closing", "closed", "expired", "failed", "cleanup_failed"].includes(session.state);
   $("control-help").textContent = yours ?
     "You control this browser. Click the application and type normally." : agent ?
-    "Truman controls this browser. You can point, chat, or take control." : session.controller ?
+    "The agent controls this browser. You can point, chat, or take control." : session.controller ?
     "Another viewer controls this browser. You can point, chat, or take control." :
     "Agent input is paused. Take control to use the application.";
   if (["closed", "expired", "cleanup_failed", "failed"].includes(session.state)) {
     voice?.dispose();
     $("empty").hidden = false;
     $("empty").querySelector("h2")!.textContent = session.state === "cleanup_failed" ? "Cleanup needs attention" : "Session unavailable";
-    $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask Truman to start another session.";
+    $("empty").querySelector("p")!.textContent = session.error ?? "Return to the session list or ask your agent to start another session.";
   }
 }
 function pageOptions(pages:any[]) {
@@ -185,7 +185,7 @@ async function messages() {
       if (displayedMessages.has(message.id)) continue;
       const item = document.createElement("div"); item.className = "message" + (message.actor.startsWith("agent:") ? " agent" : "");
       const name = document.createElement("strong");
-      name.textContent = message.actor.startsWith("agent:") ? "TRUMAN" : message.actor.replace(/^user:/, "");
+      name.textContent = message.actor.startsWith("agent:") ? "AGENT" : message.actor.replace(/^user:/, "");
       item.append(name, document.createTextNode(message.body)); $("messages").append(item);
       if (!message.actor.startsWith("agent:")) item.dataset.messageId = message.id;
       displayedMessages.add(message.id); appended = true;
@@ -369,8 +369,8 @@ function renderCatalog() {
   $("session-list").replaceChildren();
   if (!visible.length) {
     const message = document.createElement("p"); message.className = "muted";
-    message.textContent = showClosed ? "No hosted sessions yet. Ask Truman to start a demonstration or preview." :
-      "No active hosted sessions. Ask Truman to start a demonstration or preview.";
+    message.textContent = showClosed ? "No hosted sessions yet. Ask your agent to start a demonstration or preview." :
+      "No active hosted sessions. Ask your agent to start a demonstration or preview.";
     $("session-list").append(message);
   }
   for (const item of [...visible].reverse()) {

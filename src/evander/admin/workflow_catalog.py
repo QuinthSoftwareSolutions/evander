@@ -4174,7 +4174,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description=(
                     "Optional Teams files from directory-owned published artifacts. Each item has key, "
                     "optional relative archive path, optional filename, and optional=false. "
-                    "Images are embedded; other files use expiring Truman downloads."
+                    "Images are embedded; other files use expiring Evander downloads."
                 ),
             ),
             _field(
