@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-22 - Show whole subscription credits (0.117.1)
+
+- Round subscription credit balances to the nearest whole credit for display.
+
 ## 2026-10-22 - Separate application environments from shared browsers (0.117.0)
 
 - Add an independent optional Application Environments project with bounded application leases, private HTTP endpoints, safe checkout mounts and SQL Server add-on resource binding beyond agent turns.
