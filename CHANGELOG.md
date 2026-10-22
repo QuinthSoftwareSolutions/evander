@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Share failed verification evidence from blocked Team tasks (0.117.4)
+
+- Let the existing Team deliverable handoff publish retained failed or incomplete verification artifacts with `evidence_only=true`, returning immutable receipts and notifying the superior and task requesters while preserving task blockers, Git work contexts, acceptance, review, and release gates.
+- Authorize only that evidence operation from an owned task-specific request in the current dispatch. Retain ordinary task mutation boundaries, artifact path checks, and idempotent publication and wake recovery across context rotations.
+
 ## 2026-10-22 - Ground browser decisions in control affordances (0.117.3)
 
 - Describe generic text replacement, character typing, picker activation and keyboard operations separately. Offer text entry only when an exact input and writable field exist, and reject incompatible action/target combinations before input. Keep operation, target and input selection in one bounded provider request.

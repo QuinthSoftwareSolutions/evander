@@ -145,6 +145,7 @@ class TeamCommandExecutor:
         require_active_dispatch: bool,
         reject_stale_high_priority_inbox: bool = False,
         reject_stale_source_evidence: bool = False,
+        agent_scoped_idempotency: bool = False,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_context = _normalize_team_command_context(context)
         normalized_handled_ids = _unique_text_list(
@@ -176,13 +177,20 @@ class TeamCommandExecutor:
             if resolved is None:  # pragma: no cover - defensive guard
                 raise RuntimeError("command context resolution did not produce a result")
 
+            # Diagnostic receipts survive context rotation. Authorization still
+            # uses the current dispatch; a replay only returns the committed receipt.
+            request_scope_kind = resolved.scope_kind
+            request_scope_id = resolved.scope_id
+            if agent_scoped_idempotency and resolved.agent is not None:
+                request_scope_kind = "agent"
+                request_scope_id = resolved.agent.id
             if normalized_context.request_id is not None:
                 try:
                     replay = tx.get_idempotency_record(
                         tool_name=normalized_context.tool_name,
                         caller_identity=resolved.caller_identity,
-                        scope_kind=resolved.scope_kind,
-                        scope_id=resolved.scope_id,
+                        scope_kind=request_scope_kind,
+                        scope_id=request_scope_id,
                         request_id=normalized_context.request_id,
                     )
                     if replay is not None:
@@ -190,8 +198,8 @@ class TeamCommandExecutor:
                             raise TeamIdempotencyConflictError(
                                 tool_name=normalized_context.tool_name,
                                 caller_identity=resolved.caller_identity,
-                                scope_kind=resolved.scope_kind,
-                                scope_id=resolved.scope_id,
+                                scope_kind=request_scope_kind,
+                                scope_id=request_scope_id,
                                 request_id=normalized_context.request_id,
                                 existing_digest=replay.normalized_payload_digest,
                                 attempted_digest=payload_digest,
@@ -327,8 +335,8 @@ class TeamCommandExecutor:
                         id=f"idempotency-{uuid4().hex}",
                         tool_name=normalized_context.tool_name,
                         caller_identity=resolved.caller_identity,
-                        scope_kind=resolved.scope_kind,
-                        scope_id=resolved.scope_id,
+                        scope_kind=request_scope_kind,
+                        scope_id=request_scope_id,
                         request_id=normalized_context.request_id,
                         normalized_payload_digest=payload_digest,
                         response_payload=response,
@@ -389,7 +397,12 @@ class TeamCommandExecutor:
         _validate_dispatch_task_scope(
             state,
             dispatch=dispatch,
-            task_ids=targets["task_ids"],
+            task_ids=targets["task_ids"] - _inbox_authorized_evidence_task_ids(
+                state,
+                dispatch=dispatch,
+                tool_name=resolved.context.tool_name,
+                payload=normalized_payload,
+            ),
             require_actionable=(resolved.context.tool_name not in _DELIVERABLE_SUBMISSION_TOOLS),
             allow_role_queue_management=resolved.context.tool_name
             in {
@@ -1069,6 +1082,46 @@ class TeamCommandExecutor:
             "errors": [error_payload],
             "correction_context": dict(error.correction_context),
         }
+
+
+def _inbox_authorized_evidence_task_ids(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    tool_name: str,
+    payload: Mapping[str, Any],
+) -> set[str]:
+    """An owned task request grants evidence publication, never task mutation."""
+
+    if tool_name != "team_submit_deliverable" or payload.get("evidence_only") is not True:
+        return set()
+    deliverable = payload.get("deliverable")
+    if not isinstance(deliverable, Mapping):
+        return set()
+    task_id = _optional_text(deliverable.get("task_id"))
+    task = state.tasks.get(task_id or "")
+    if (
+        task is None
+        or task.owner_agent_id != dispatch.agent_id
+        or task.project_id not in dispatch.project_ids
+    ):
+        return set()
+    for inbox_id in dispatch.inbox_item_ids:
+        item = state.inbox.get(inbox_id)
+        if (
+            item is not None
+            and item.recipient_agent_id == dispatch.agent_id
+            and item.task_id == task.id
+            and item.state == TeamInboxItemState.PENDING
+            and item.response_requested
+            and item.item_type in {
+                TeamInboxItemType.QUESTION,
+                TeamInboxItemType.STATUS_REQUEST,
+                TeamInboxItemType.OPERATOR_DIRECTIVE,
+            }
+        ):
+            return {task.id}
+    return set()
 
 
 _TASK_SCOPE_TOOLS = frozenset(

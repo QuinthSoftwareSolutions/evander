@@ -57,17 +57,21 @@ def _publish_deliverable_artifact_bundle(
     deliverable_id: str,
     dispatch_id: str,
     source_paths: list[str],
+    evidence_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime_dir = _runtime_dir(context)
     safe_team_id = _artifact_space_path_segment(team_id, "team_id")
     safe_project_id = _artifact_space_path_segment(project_id, "project_id")
     safe_deliverable_id = _artifact_space_path_segment(deliverable_id, "deliverable_id")
     safe_dispatch_id = _artifact_space_path_segment(dispatch_id, "dispatch_id")
+    evidence_segment = "evidence/" if evidence_metadata is not None else ""
     artifact_key = (
-        f"team/{safe_team_id}/{safe_project_id}/{safe_deliverable_id}/{safe_dispatch_id}/bundle"
+        f"team/{safe_team_id}/{safe_project_id}/{evidence_segment}"
+        f"{safe_deliverable_id}/{safe_dispatch_id}/bundle"
     )
+    record_collection = "evidence" if evidence_metadata is not None else "deliverables"
     artifact_ref_path = (
-        f"/teams/{safe_team_id}/projects/{safe_project_id}/deliverables/{safe_deliverable_id}"
+        f"/teams/{safe_team_id}/projects/{safe_project_id}/{record_collection}/{safe_deliverable_id}"
     )
     artifact_ref = f"artifact-space:{artifact_ref_path}"
     store = PublishedArtifactStore(runtime_dir)
@@ -106,9 +110,10 @@ def _publish_deliverable_artifact_bundle(
         project_id=project_id,
         deliverable_id=deliverable_id,
         agent_id=_required_text(agent.get("id"), "agent_id"),
+        evidence_metadata=evidence_metadata,
     )
     return {
-        "deliverable_id": deliverable_id,
+        ("evidence_id" if evidence_metadata is not None else "deliverable_id"): deliverable_id,
         "project_id": project_id,
         "team_id": team_id,
         "artifact_key": artifact_key,
@@ -627,18 +632,23 @@ def _ensure_deliverable_artifact_space_version(
     project_id: str,
     deliverable_id: str,
     agent_id: str,
+    evidence_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     subject = f"team-agent:{agent_id}"
     store = ArtifactSpaceStore(runtime_dir)
+    metadata = {
+        **dict(evidence_metadata or {}),
+        "team_id": team_id,
+        "project_id": project_id,
+        ("evidence_id" if evidence_metadata is not None else "deliverable_id"): deliverable_id,
+        "source": "team_addon",
+    }
     state = store.ensure_space(
         path=space_path,
-        display_name=f"Deliverable {deliverable_id}",
-        metadata={
-            "team_id": team_id,
-            "project_id": project_id,
-            "deliverable_id": deliverable_id,
-            "source": "team_addon",
-        },
+        display_name=(
+            f"{'Evidence' if evidence_metadata is not None else 'Deliverable'} {deliverable_id}"
+        ),
+        metadata=metadata,
         subject=subject,
     )
     for version in state.versions_for_space(space_path, artifact_id="bundle"):
@@ -649,12 +659,7 @@ def _ensure_deliverable_artifact_space_version(
         artifact_id="bundle",
         artifact_key=artifact_key,
         created_by_subject=subject,
-        metadata={
-            "team_id": team_id,
-            "project_id": project_id,
-            "deliverable_id": deliverable_id,
-            "source": "team_addon",
-        },
+        metadata=metadata,
     )
     return state.versions_for_space(space_path, artifact_id="bundle")[-1].model_dump(mode="json")
 
