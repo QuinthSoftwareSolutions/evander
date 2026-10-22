@@ -3621,6 +3621,40 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
     assert "teams:chat-1:agent_thread_id" not in updated.metadata
 
 
+@pytest.mark.parametrize("explicit_thread", [None, "explicit-old-thread"])
+def test_agent_enqueue_new_context_replaces_saved_thread_and_later_resumes(explicit_thread) -> None:
+    admin = _AdminServiceStub(
+        create_vm_calls=[], clone_repo_into_vm_calls=[], bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[], resume_calls=[],
+    )
+    original = admin._sessions["session-42"]
+    admin._sessions["session-42"] = original.model_copy(update={"metadata": {
+        "agent_thread_ids": {"conversation-a": "old-thread", "conversation-b": "other-thread"},
+        "preferences": {"language": "Swedish"},
+    }})
+    admin.list_vms = lambda **kw: []
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin)
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="fresh", display_name="Fresh turn", type="effect:agent:enqueue-prompt",
+        session_id="session-42", prompt="Confirm fresh context", resume_mode="new_context",
+        resume_thread_id=explicit_thread, resume_thread_metadata_key="conversation-a",
+    )
+    output = factory.build(effect).execute()
+    assert admin.resume_calls[0]["resume_mode"] == "new_context"
+    assert admin.resume_calls[0]["resume_thread_id"] is None
+    assert output["thread_id"] == "thread-new-123"
+    saved = admin._sessions["session-42"]
+    assert saved.metadata["agent_thread_ids"] == {
+        "conversation-a": "thread-new-123", "conversation-b": "other-thread",
+    }
+    assert saved.model == original.model and saved.allowed_tools == original.allowed_tools
+    assert saved.metadata["preferences"] == {"language": "Swedish"}
+    factory.build(effect.model_copy(update={
+        "id": "later", "resume_mode": "same_context", "resume_thread_id": None,
+    })).execute()
+    assert admin.resume_calls[1]["resume_thread_id"] == "thread-new-123"
+
+
 def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata_key() -> None:
     effect = AgentEnqueuePromptEffectDefinition(
         id="effect-prompt",

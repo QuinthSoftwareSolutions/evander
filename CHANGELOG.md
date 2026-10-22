@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
+
+- Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.
+- Refresh queue-recovery fixtures with standard message metadata so batching and recovery during VM inventory failures reach their existing assertions.
+
 ## 2026-10-22 - Preserve correction sources beside planning evidence (0.118.2)
 
 - Require a deliverable's own Git provenance before automatically including it as replacement or additional code for a rejected release. An inherited checkout base on artifact-only planning evidence no longer displaces the accepted coding correction or adds the plan back into its release.

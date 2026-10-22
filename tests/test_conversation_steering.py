@@ -741,3 +741,127 @@ def test_cancellation_waits_for_an_inflight_send_receipt(tmp_path):
         assert first.result(timeout=10)["delivery_status"] == "steered"
         assert cancelled.result(timeout=10)["delivery_status"] == "steered"
     assert len(c.calls) == 1
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_fresh_context_uses_existing_queue_then_later_turn_resumes(tmp_path, monkeypatch, busy):
+    from datetime import UTC, datetime, timedelta
+
+    from evander.daemons.effect_orchestrator import SqliteExecutionStore
+    from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+    from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+    from evander.effects.providers.base import EffectRuntimeContext
+    from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+    from evander.effects.providers.schemas import AgentEnqueuePromptEffectDefinition
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+    b, client = backend(tmp_path)
+    config, key = b.config, "conversation-a"
+    old = b.repository.get("exec-1")
+    old.metadata["conversation_key"] = key
+    if not busy:
+        old.last_status = "exited"
+    b.repository.put(old)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(SessionManifest(
+        session_id="session-1", allowed_tools=[], model="fixture",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"execution_backend": "container_worker_vm", "agent_thread_ids": {
+            key: "thread-1", "conversation-b": "unrelated-thread",
+        }},
+    ))
+    resolver = SimpleNamespace(resolve_for_directory=lambda _: config, resolve_for_session_id=lambda _: config)
+    context = EffectRuntimeContext(resolved_config=config, provider_config_resolver=resolver)
+    monkeypatch.setattr("evander.effects.providers.agent_enqueue_prompt.container_backend", lambda *args: b)
+    monkeypatch.setattr("evander.effects.providers.lifecycle_hooks.build_execution_backend", lambda *args, **kw: b)
+    launches = []
+    b.prepare = lambda spec: launches.append(spec) or SimpleNamespace(execution_id=spec.target_name)
+    b.start = lambda handle: handle
+    worker = SimpleNamespace(
+        config=config, provider_config_resolver=resolver,
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
+        provider_factory=SimpleNamespace(admin_service=SimpleNamespace(
+            runtime=SimpleNamespace(session_repository=sessions),
+        )),
+    )
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="enqueue", display_name="Fresh turn", type="effect:agent:enqueue-prompt",
+        session_id="session-1", prompt="Confirm fresh context", dispatch_id="fresh",
+        delivery_mode="steer_if_running", conversation_key=key, resume_mode="new_context",
+        resume_thread_id="explicit-old-thread", resume_thread_metadata_key=key,
+    )
+    provider = AgentEnqueuePromptEffectProvider()
+    provider.initialize(effect, context)
+    result = provider.execute()
+    assert result["queued"] == busy
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    later = effect.model_copy(update={
+        "dispatch_id": "later", "prompt": "Next task", "resume_mode": "same_context",
+        "resume_thread_id": None,
+    })
+    if busy:
+        provider.initialize(later, context)
+        assert provider.execute()["queued"]
+        rows = list(queue.read_all().values())
+        assert [(r.dispatch_id, r.prompt) for r in rows] == [
+            ("fresh", "Confirm fresh context"), ("later", "Next task"),
+        ]
+        row = rows[0]
+        assert row.prompt == "Confirm fresh context" and row.dispatch_id == "fresh"
+        assert not hook._dispatch_container_record_if_idle(
+            worker=worker, queue_store=queue, queue_key=row.queue_key, record=row,
+        )
+        assert launches == [] and b.repository.get("exec-1").last_status == "running"
+        b.repository.put(old.model_copy(update={"last_status": "exited"}))
+        # Reopen the queue to exercise persisted fresh-context intent after restart.
+        queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+        row = next(r for r in queue.read_all().values() if r.dispatch_id == "fresh")
+        assert hook._dispatch_container_record_if_idle(
+            worker=worker, queue_store=queue, queue_key=row.queue_key, record=row,
+        )
+    [spec] = launches
+    assert spec.codex_turn.resume_thread_id is None
+    assert spec.codex_turn.resume_mode == "new_context"
+    assert "codex exec resume" not in spec.command
+    assert client.calls == []
+
+    class Threads:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, params):
+            self.calls.append((method, params))
+            if method == "thread/start":
+                return {"thread": {"id": "fresh-native-thread"}}
+            if method == "thread/resume":
+                return {"thread": {"id": params["threadId"]}}
+            raise AssertionError(method)  # In particular, no latest-thread lookup.
+
+    process = Threads()
+    native = runner(tmp_path)
+    native.turn = spec.codex_turn
+    fresh_id = native._open_thread(process)
+    assert fresh_id == "fresh-native-thread"
+    AgentPromptEffectProvider._persist_container_session_thread_id(
+        worker=worker, session_id="session-1", thread_id=fresh_id,
+        record=SimpleNamespace(resolved_config={"resume_thread_metadata_key": key},
+                               input_payload={}, outputs={}),
+    )
+    assert sessions.get_session("session-1").metadata["agent_thread_ids"] == {
+        key: "fresh-native-thread", "conversation-b": "unrelated-thread",
+    }
+    if busy:
+        [row] = queue.read_all().values()
+        assert row.dispatch_id == "later" and row.prompt == "Next task"
+        assert hook._dispatch_container_record_if_idle(
+            worker=worker, queue_store=queue, queue_key=row.queue_key, record=row,
+        )
+    else:
+        provider.initialize(later, context)
+        assert not provider.execute()["queued"]
+    native.turn = launches[-1].codex_turn
+    assert native._open_thread(process) == "fresh-native-thread"
+    assert [method for method, _ in process.calls] == ["thread/start", "thread/resume"]
+    assert queue.read_all() == {}

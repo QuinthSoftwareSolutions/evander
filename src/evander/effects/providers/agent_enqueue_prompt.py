@@ -311,6 +311,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             route=effective_config.model_provider_mode,
         )
         effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_mode=resume_mode,
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
@@ -691,6 +692,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             route=effective_config.model_provider_mode,
         )
         effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_mode=resume_mode,
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
             resume_thread_metadata_collection=resume_thread_metadata_collection,
@@ -1401,6 +1403,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     def _effective_resume_thread_id(
         self,
         *,
+        resume_mode: str | None = None,
         resume_thread_id: str | None,
         resume_thread_metadata_key: str | None,
         resume_thread_metadata_collection: str,
@@ -1408,6 +1411,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         session_id: str | None,
         session: Any | None,
     ) -> str | None:
+        if resume_mode == "new_context":
+            return None
         explicit = self._usable_resume_thread_id(resume_thread_id)
         if explicit:
             return explicit
