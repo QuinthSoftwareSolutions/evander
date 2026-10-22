@@ -659,6 +659,12 @@ def test_settled_parallel_remediations_are_combined_into_one_successor() -> None
     state = _candidate_correction_state(gate_kind="review")
     first = _independent_remediation(state)
     second = _independent_remediation(state, suffix="-second", commit_sha="b" * 40)
+    second.initial_release_disposition = DeliverableInitialReleaseDisposition(
+        state="not_planned",
+        decided_at=datetime.now(tz=UTC),
+        decided_by_actor="coder",
+        reason="Release this code only through the candidate successor.",
+    )
     result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
 
     release_id = _build_release_package(
@@ -1787,7 +1793,14 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert state.git_work_contexts[context_id].base_commit == CORRECTION_COMMIT
 
 
-def _downstream_planning_evidence(state: TeamState) -> Deliverable:
+def _downstream_planning_evidence(
+    state: TeamState, *, planning_base: str = "correction"
+) -> Deliverable:
+    base_branch, base_commit = (
+        ("team/team/releases/release-predecessor", CANDIDATE_COMMIT)
+        if planning_base == "candidate"
+        else ("agents/session-coder/correction", CORRECTION_COMMIT)
+    )
     task = AgentTask(
         id="downstream-plan",
         owner_agent_id="coder",
@@ -1798,8 +1811,8 @@ def _downstream_planning_evidence(state: TeamState) -> Deliverable:
         description="Inspect the accepted correction and publish a plan.",
         created_by_agent_id="lead",
         originating_task_id="correction-task",
-        git_base_branch="agents/session-coder/correction",
-        git_base_commit_sha=CORRECTION_COMMIT,
+        git_base_branch=base_branch,
+        git_base_commit_sha=base_commit,
         deliverable_ids=["planning-evidence"],
     )
     deliverable = Deliverable(
@@ -1807,6 +1820,7 @@ def _downstream_planning_evidence(state: TeamState) -> Deliverable:
         task_id=task.id,
         producer_agent_id="coder",
         summary="Accepted phase plan without source changes.",
+        artifact_refs=["artifact:phase-plan"],
         state=TeamRecordState.ACCEPTED,
     )
     state.tasks[task.id] = task
@@ -1817,21 +1831,23 @@ def _downstream_planning_evidence(state: TeamState) -> Deliverable:
         task_id=task.id,
         agent_branch="agents/session-coder/planning",
         base_branch=task.git_base_branch,
-        base_commit=CORRECTION_COMMIT,
+        base_commit=base_commit,
     )
     return deliverable
 
 
 @pytest.mark.parametrize("gate_kind", ["verification", "review"])
 @pytest.mark.parametrize("not_planned", [False, True])
+@pytest.mark.parametrize("planning_base", ["correction", "candidate"])
 def test_artifact_only_downstream_plan_preserves_reviewed_correction_successor(
     tmp_path: Path,
     gate_kind: str,
     not_planned: bool,
+    planning_base: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
     seeded = _candidate_correction_state(gate_kind=gate_kind)
-    plan = _downstream_planning_evidence(seeded)
+    plan = _downstream_planning_evidence(seeded, planning_base=planning_base)
     if not_planned:
         plan.initial_release_disposition = DeliverableInitialReleaseDisposition(
             state="not_planned",
@@ -1876,13 +1892,15 @@ def test_artifact_only_downstream_plan_preserves_reviewed_correction_successor(
         "composition",
     ],
 )
+@pytest.mark.parametrize("planning_base", ["correction", "candidate"])
 def test_downstream_git_claim_without_review_still_blocks_successor(
     tmp_path: Path,
     git_claim: str,
+    planning_base: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
     seeded = _candidate_correction_state(gate_kind="verification")
-    deliverable = _downstream_planning_evidence(seeded)
+    deliverable = _downstream_planning_evidence(seeded, planning_base=planning_base)
     if git_claim == "review_manifest":
         deliverable.review_manifest = DeliverableReviewManifest(
             base_commit_sha=CORRECTION_COMMIT,
