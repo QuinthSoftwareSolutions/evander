@@ -1,3 +1,4 @@
+import { useInspectorDraft } from "./features/workflow-editor/useInspectorDraft";
 import {
   applyEdgeChanges,
   Background,
@@ -70,40 +71,7 @@ import {
   WORKFLOW_TUTORIAL_PROGRESS_API_PATH,
   WORKFLOW_UNDO_HISTORY_LIMIT,
 } from "./features/workflow-editor/editorConstants";
-import {
-  type CanvasPoint,
-  type CompactActivePanel,
-  type CompactCanvasMode,
-  type CompactCanvasTouchMode,
-  type CompactPanePanState,
-  type CopiedWorkflowSelection,
-  type EffectTargetKey,
-  type GraphNodeData,
-  type InspectorDraftSnapshot,
-  type JsonDisplayMode,
-  type NodeConnectionMenuState,
-  type OperatorSteeringNote,
-  type OperatorSteeringNoteListResponse,
-  type OperatorSteeringNoteMutationResponse,
-  type PendingConnectionRole,
-  type PendingConnectionState,
-  type RuntimePulseContext,
-  type SaveState,
-  type ScreenPoint,
-  type SessionListMetadataRuleDraftRow,
-  type StringMapDraftRow,
-  type TutorialBubbleSize,
-  type TutorialEditorSnapshot,
-  type WorkflowGeneratorState,
-  type WorkflowPackFormState,
-  type WorkflowPackModalMode,
-  type WorkflowRunDetailLookupKind,
-  type WorkflowRunSearchScopeOption,
-  type WorkflowTutorialChooserStatus,
-  type WorkflowTutorialProgress,
-  type WorkflowUndoEntry,
-  type WorkflowValidationCacheEntry,
-} from "./features/workflow-editor/editorTypes";
+import { type CanvasPoint, type CompactActivePanel, type CompactCanvasMode, type CompactCanvasTouchMode, type CompactPanePanState, type CopiedWorkflowSelection, type EffectTargetKey, type GraphNodeData, type InspectorDraftSnapshot, type JsonDisplayMode, type NodeConnectionMenuState, type OperatorSteeringNote, type OperatorSteeringNoteListResponse, type OperatorSteeringNoteMutationResponse, type PendingConnectionRole, type PendingConnectionState, type RuntimePulseContext, type SaveState, type ScreenPoint, type SessionListMetadataRuleDraftRow, type TutorialBubbleSize, type TutorialEditorSnapshot, type WorkflowGeneratorState, type WorkflowPackFormState, type WorkflowPackModalMode, type WorkflowRunDetailLookupKind, type WorkflowRunSearchScopeOption, type WorkflowTutorialChooserStatus, type WorkflowTutorialProgress, type WorkflowUndoEntry, type WorkflowValidationCacheEntry } from "./features/workflow-editor/editorTypes";
 import { getCatalogEntry, trimNonEmpty } from "./features/workflow-editor/editorValues";
 import {
   activeEffectTargetKey,
@@ -165,7 +133,7 @@ import {
 import { createTutorialPanelRenderers } from "./features/workflow-editor/tutorialPanelRenderers";
 import { useNodeExecutionHistory } from "./features/workflow-editor/useNodeExecutionHistory";
 import { useWorkflowWorkbench } from "./features/workflow-editor/useWorkflowWorkbench";
-import { type MapTemplateDraftRow } from "./features/workflow-editor/mapTemplateDraft";
+
 import { createWorkflowPackActions } from "./features/workflow-editor/workflowPackActions";
 import {
   type WorkflowConfig,
@@ -358,26 +326,33 @@ export default function App() {
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
   const [graphDirectoryDraft, setGraphDirectoryDraft] = useState("");
   const [graphUsersDraft, setGraphUsersDraft] = useState("");
-  const [inspectorNodeId, setInspectorNodeId] = useState("");
-  const [inspectorDisplayName, setInspectorDisplayName] = useState("");
-  const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
+  const inspector = useInspectorDraft();
+  const {
+    inspectorDisplayName,
+    inspectorKnownValues,
+    inspectorUnknownValues,
+    inspectorJsonDrafts,
+    inspectorMapTemplateDrafts,
+    inspectorToolArgumentPolicyDrafts,
+    inspectorJsonDisplayModes,
+    inspectorStringListDrafts,
+    inspectorStringMapDrafts,
+    inspectorSessionListMetadataRules,
+    inspectorSessionListMetadataRawMode,
+    inspectorFieldModes,
+    inspectorEffectTargetKey,
+    rawJsonDraft,
+    inspectorDraftError,
+  } = inspector.state;
+  const {
+    setInspectorDisplayName,
+    setInspectorJsonDrafts,
+    setInspectorMapTemplateDrafts,
+    setInspectorJsonDisplayModes,
+    setInspectorSessionListMetadataRawMode,
+    setInspectorDraftError,
+  } = inspector.setters;
   const [agentWorkerCatalog, setAgentWorkerCatalog] = useState<{ key: string; catalog: WorkflowEditorCatalog } | null>(null);
-  const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
-  const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
-  const [inspectorMapTemplateDrafts, setInspectorMapTemplateDrafts] = useState<Record<string, MapTemplateDraftRow[]>>({});
-  const [inspectorToolArgumentPolicyDrafts, setInspectorToolArgumentPolicyDrafts] = useState<
-    Record<string, ToolArgumentPolicyDraftRow[]>
-  >({});
-  const [inspectorJsonDisplayModes, setInspectorJsonDisplayModes] = useState<Record<string, JsonDisplayMode>>({});
-  const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
-  const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
-  const [inspectorSessionListMetadataRules, setInspectorSessionListMetadataRules] = useState<
-    SessionListMetadataRuleDraftRow[]
-  >([]);
-  const [inspectorSessionListMetadataRawMode, setInspectorSessionListMetadataRawMode] = useState(false);
-  const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
-  const [inspectorEffectTargetKey, setInspectorEffectTargetKey] = useState<EffectTargetKey>("target");
-  const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
   const [outputCopyError, setOutputCopyError] = useState<string | null>(null);
   const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
@@ -385,7 +360,6 @@ export default function App() {
   const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [inspectorDraftError, setInspectorDraftError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const editLocked = !privilegedUnlocked;
@@ -1018,23 +992,7 @@ export default function App() {
   });
 
   const nodeDraftActions = createNodeDraftActions({
-    inspectorMapTemplateDrafts,
-    setInspectorMapTemplateDrafts,
-    setInspectorDraftError,
-    setInspectorNodeId,
-    setInspectorDisplayName,
-    setInspectorKnownValues,
-    setInspectorUnknownValues,
-    setInspectorJsonDrafts,
-    setInspectorToolArgumentPolicyDrafts,
-    setInspectorJsonDisplayModes,
-    setInspectorStringListDrafts,
-    setInspectorStringMapDrafts,
-    setInspectorSessionListMetadataRules,
-    setInspectorSessionListMetadataRawMode,
-    setInspectorFieldModes,
-    setInspectorEffectTargetKey,
-    setRawJsonDraft,
+    inspector,
     selectedNode,
     hasCollapsedTargetUi,
     selectedCatalogEntry,
@@ -1053,52 +1011,22 @@ export default function App() {
     nodeEditOrigins,
     deleteNodes,
     catalog,
-    inspectorNodeId,
-    inspectorDisplayName,
-    inspectorKnownValues,
-    inspectorUnknownValues,
-    inspectorEffectTargetKey,
-    inspectorJsonDrafts,
-    inspectorToolArgumentPolicyDrafts,
-    inspectorJsonDisplayModes,
-    inspectorStringListDrafts,
-    inspectorStringMapDrafts,
   });
 
   const nodeFieldActions = createNodeFieldActions({
+    inspector,
     selectedNode,
-    inspectorKnownValues,
-    setInspectorKnownValues,
     stageInspectorDraft,
-    inspectorJsonDrafts,
-    setInspectorJsonDrafts,
     tutorialCurrentRequiredAction,
     isTutorialMode,
     completeTutorialAction,
-    inspectorUnknownValues,
-    setInspectorUnknownValues,
-    inspectorStringListDrafts,
-    setInspectorStringListDrafts,
-    inspectorToolArgumentPolicyDrafts,
-    setInspectorToolArgumentPolicyDrafts,
-    inspectorJsonDisplayModes,
-    setInspectorJsonDisplayModes,
-    setInspectorDraftError,
     setError,
-    setInspectorFieldModes,
     selectedNodeBindingOptions,
     setCopiedBindingExpression,
     setOutputCopyError,
     effectTargetKey,
-    inspectorFieldModes,
     effectTargetField,
-    setInspectorEffectTargetKey,
     workflowMutationLocked,
-    inspectorStringMapDrafts,
-    setInspectorStringMapDrafts,
-    setInspectorSessionListMetadataRules,
-    setInspectorSessionListMetadataRawMode,
-    inspectorSessionListMetadataRules,
   });
 
   useEffect(() => {

@@ -3,6 +3,17 @@ from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import *  # noqa: F403
 
+from evander.admin.services.agent_create_operation_service import (
+    AgentCreateOperationDependencies,
+    AgentCreateOperationService,
+)
+
+
+from evander.admin.services.vm_agent_log_snapshot_service import (
+    VmAgentLogSnapshotDependencies,
+    VmAgentLogSnapshotService,
+)
+
 from evander.admin.services.vm_agent.agent_actions import VmAgentActionMixin
 from evander.admin.services.vm_agent.agent_create import VmAgentCreateMixin
 from evander.admin.services.vm_agent.chat_assistant import VmAgentChatAssistantMixin
@@ -37,11 +48,30 @@ class VmAgentAdminService(
         self._workflow_config_admin: Any | None = None
         self._directory_admin: Any | None = None
         self._skill_library: Any | None = None
-        self._agent_create_operations: Any | None = None
-        self._agent_create_operation_owner_id_value: str | None = None
-        self._agent_create_operation_payloads_value: dict[str, dict[str, Any]] | None = None
-        self._agent_create_operation_payloads_lock_value: Any | None = None
-        self._agent_create_executor_value: Any | None = None
+        self._vm_log_snapshots = VmAgentLogSnapshotService(
+            VmAgentLogSnapshotDependencies(
+                resolve_vm_name=lambda target: self._resolve_vm_name_from_target(target),
+                control_ssh_users=lambda user: self._control_ssh_users(user),
+            )
+        )
+        self._agent_creation_operations = AgentCreateOperationService(
+            AgentCreateOperationDependencies(
+                operation_details=lambda payload: self._agent_create_operation_details(payload),
+                serialize_payload=lambda payload: self._agent_create_operation_worker_payload(
+                    payload
+                ),
+                normalize_directory=lambda directory: self._normalize_directory_path(directory),
+                now=lambda: self._current_utc_now(),
+                create_agent=lambda payload: self._agent_create_port().create_admin_agent(payload),
+                finish_copy=lambda sid, configuration: self._finish_admin_agent_copy(
+                    sid, configuration
+                ),
+                effective_tool_policy=lambda sid: self.effective_tool_policy_payload(
+                    self.runtime.session_repository.get_session(sid)
+                ),
+                owner_is_alive=lambda pid: self._agent_create_operation_owner_is_alive(pid),
+            )
+        )
         self._execution_backend_instance: Any | None = None
         self._project_dir_provider: Any | None = None
 
@@ -68,11 +98,13 @@ class VmAgentAdminService(
         self._workflow_config_admin = workflow_config_admin
         self._directory_admin = directory_admin
         self._skill_library = skill_library
-        self._agent_create_operations = agent_create_operations
-        self._agent_create_operation_owner_id_value = agent_create_operation_owner_id
-        self._agent_create_operation_payloads_value = agent_create_operation_payloads
-        self._agent_create_operation_payloads_lock_value = agent_create_operation_payloads_lock
-        self._agent_create_executor_value = agent_create_executor
+        self._agent_creation_operations.configure(
+            store=agent_create_operations,
+            owner_id=agent_create_operation_owner_id,
+            payloads=agent_create_operation_payloads,
+            payloads_lock=agent_create_operation_payloads_lock,
+            executor=agent_create_executor,
+        )
         self._project_dir_provider = project_dir_provider
 
     @property
@@ -121,33 +153,23 @@ class VmAgentAdminService(
 
     @property
     def agent_create_operations(self) -> Any:
-        if self._agent_create_operations is None:
-            raise RuntimeError(
-                "VmAgentAdminService agent_create_operations store is not configured"
-            )
-        return self._agent_create_operations
+        return self._agent_creation_operations.store
 
     @property
     def _agent_create_operation_owner_id(self) -> str:
-        return self._agent_create_operation_owner_id_value or "vm-agent-admin"
+        return self._agent_creation_operations.owner_id
 
     @property
     def _agent_create_operation_payloads(self) -> dict[str, dict[str, Any]]:
-        if self._agent_create_operation_payloads_value is None:
-            self._agent_create_operation_payloads_value = {}
-        return self._agent_create_operation_payloads_value
+        return self._agent_creation_operations.payloads
 
     @property
     def _agent_create_operation_payloads_lock(self) -> Any:
-        if self._agent_create_operation_payloads_lock_value is None:
-            raise RuntimeError("VmAgentAdminService agent create payload lock is not configured")
-        return self._agent_create_operation_payloads_lock_value
+        return self._agent_creation_operations.payloads_lock
 
     @property
     def _agent_create_executor(self) -> Any:
-        if self._agent_create_executor_value is None:
-            raise RuntimeError("VmAgentAdminService agent create executor is not configured")
-        return self._agent_create_executor_value
+        return self._agent_creation_operations.executor
 
     def _vm_lifecycle_port(self) -> VmLifecyclePort:
         return self._deps.vm_lifecycle or self

@@ -550,6 +550,13 @@ class _CustomSchemaProvider(EffectProviderBase):
         return effect_definition
 
 
+def test_empty_registry_preserves_legacy_defaults_unless_catalog_is_explicit() -> None:
+    assert EffectProviderRegistry(initial={}).registered_types() == tuple(
+        DEFAULT_EFFECT_PROVIDER_REGISTRY
+    )
+    assert EffectProviderRegistry(initial={}, defaults_when_empty=False).registered_types() == ()
+
+
 def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
         "effect:ado:build-wait",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 - Simplify control-plane ownership boundaries (0.119.1)
+
+- Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
+- Run workflow workers directly, distinguish empty provider catalogs from omitted defaults, and centralize managed tool audit emission while preserving summaries, cancellation handling, durable ordering, and legacy Team action compatibility.
+- Consolidate workflow inspector draft state and split pricing and Teams authentication out of the configuration screen, preserving incomplete drafts, revision checks, and navigation behavior.
+
 ## 2026-10-22 - Honor fresh-context assistant requests (0.119.0)
 
 - Honor explicit `new_context` on immediate and queued prompts even when a saved or explicit resume thread is available. Reuse the existing queue, delivery receipts and thread persistence for workflow reset requests.

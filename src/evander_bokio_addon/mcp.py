@@ -10,7 +10,7 @@ from evander.communication_artifacts import CommunicationArtifactStore
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.policy import PolicyError
 
-from .api import _execute_prepared_action
+from .execution_service import execute_prepared_action as _execute_prepared_action
 from .client import BokioClient
 from .duplicate_checks import (
     DEFAULT_DUPLICATE_CHECK_MAX_AGE_SECONDS,

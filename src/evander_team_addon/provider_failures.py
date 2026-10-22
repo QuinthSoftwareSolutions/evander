@@ -27,8 +27,8 @@ from .provider_values import (
 from .repository import (
     TeamStateRepository,
 )
-from .services.agent_action_service import (
-    TeamAgentActionService,
+from .services.agent_failure_service import (
+    record_agent_wake_failure,
 )
 from .services.commands.outbox import (
     _team_event_outbox_records,
@@ -71,11 +71,10 @@ def _record_wake_failure(
             error=error,
             delivery_not_started=delivery_not_started,
         )
-    state, _result = TeamAgentActionService(repo).apply_agent_action(
-        action={},
+    state = record_agent_wake_failure(
+        repo,
         session_id=_required_text(lease["agent"].get("session_id"), "session_id"),
         dispatch_id=dispatch_id,
-        valid=False,
         error=error,
     )
     if current_dispatch is not None:

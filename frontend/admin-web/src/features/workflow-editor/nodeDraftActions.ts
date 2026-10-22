@@ -1,3 +1,6 @@
+import { inspectorDraftFromNode } from "./inspectorDraftHydration";
+
+import type { InspectorDraftController } from "./useInspectorDraft";
 import { type Dispatch, type SetStateAction } from "react";
 import {
   type WorkflowConfig,
@@ -12,43 +15,14 @@ import {
 } from "../../types";
 import { rewriteWorkflowConfigBindingReferences, workflowObjectListItemsForEdit } from "../../workflowBindings";
 import { workflowCommunicationTargetInspectorState } from "../../workflowCommunicationTargets";
-import { workflowJsonFieldDraftFallback, workflowJsonFieldFallbackValue } from "../../workflowFieldDefaults";
-import {
-  type ToolArgumentPolicyDraftRow,
-  toolArgumentPolicyDraftRowsFromValue,
-  toolArgumentPolicyDraftRowsToValue,
-} from "../../workflowToolArgumentPolicies";
+import { workflowJsonFieldFallbackValue } from "../../workflowFieldDefaults";
+import { toolArgumentPolicyDraftRowsToValue } from "../../workflowToolArgumentPolicies";
 import { type WorkflowTutorialRequiredAction, type WorkflowTutorialSession } from "../../workflowTutorials";
 import { AGENT_CREATE_NODE_TYPE, EFFECT_TARGET_KEYS } from "./editorConstants";
-import { mapTemplateDraftRowsFromValue, mapTemplateDraftRowsToValue, parseMapTemplateJson, type MapTemplateDraftRow } from "./mapTemplateDraft";
-import {
-  type InspectorDraftSnapshot,
-  type JsonDisplayMode,
-  type SessionListMetadataRuleDraftRow,
-  type StringMapDraftRow,
-} from "./editorTypes";
-import {
-  formatJson,
-  getCatalogEntry,
-  isRecord,
-  objectListJsonDraftKey,
-  removeUndefinedValues,
-} from "./editorValues";
-import {
-  activeEffectTargetKey,
-  fieldValueMode,
-  isAdoQueryModeNodeType,
-  isCommunicationEffectNodeType,
-  isExactBindingValue,
-  parseJsonDraft,
-  parseStringMapDraftRows,
-  pruneAdoQueryModeHiddenFieldValues,
-  pruneAgentCreateBackendFieldValues,
-  sessionListMetadataRuleDraftRowsFromValues,
-  stringMapDraftRows,
-  supportsStructuredToolArgumentPolicies,
-  toolArgumentPolicyValidationErrorSummary,
-} from "./fieldModels";
+import { mapTemplateDraftRowsToValue, parseMapTemplateJson } from "./mapTemplateDraft";
+import { type InspectorDraftSnapshot } from "./editorTypes";
+import { getCatalogEntry, isRecord, objectListJsonDraftKey, removeUndefinedValues } from "./editorValues";
+import { activeEffectTargetKey, fieldValueMode, isAdoQueryModeNodeType, isCommunicationEffectNodeType, isExactBindingValue, parseJsonDraft, parseStringMapDraftRows, pruneAdoQueryModeHiddenFieldValues, pruneAgentCreateBackendFieldValues, supportsStructuredToolArgumentPolicies, toolArgumentPolicyValidationErrorSummary } from "./fieldModels";
 import {
   cloneConfig,
   cloneLayout,
@@ -62,22 +36,7 @@ import {
 } from "./graphModel";
 
 type NodeDraftActionsInputs = {
-  setInspectorDraftError: Dispatch<SetStateAction<string | null>>;
-  setInspectorNodeId: Dispatch<SetStateAction<string>>;
-  setInspectorDisplayName: Dispatch<SetStateAction<string>>;
-  setInspectorKnownValues: Dispatch<SetStateAction<Record<string, unknown>>>;
-  setInspectorUnknownValues: Dispatch<SetStateAction<Record<string, unknown>>>;
-  setInspectorJsonDrafts: Dispatch<SetStateAction<Record<string, string>>>;
-  setInspectorToolArgumentPolicyDrafts: Dispatch<SetStateAction<Record<string, ToolArgumentPolicyDraftRow[]>>>;
-  setInspectorMapTemplateDrafts: Dispatch<SetStateAction<Record<string, MapTemplateDraftRow[]>>>;
-  setInspectorJsonDisplayModes: Dispatch<SetStateAction<Record<string, JsonDisplayMode>>>;
-  setInspectorStringListDrafts: Dispatch<SetStateAction<Record<string, string>>>;
-  setInspectorStringMapDrafts: Dispatch<SetStateAction<Record<string, StringMapDraftRow[]>>>;
-  setInspectorSessionListMetadataRules: Dispatch<SetStateAction<SessionListMetadataRuleDraftRow[]>>;
-  setInspectorSessionListMetadataRawMode: Dispatch<SetStateAction<boolean>>;
-  setInspectorFieldModes: Dispatch<SetStateAction<Record<string, "literal" | "bind" | "template">>>;
-  setInspectorEffectTargetKey: Dispatch<SetStateAction<"target" | "session_id" | "vm_name">>;
-  setRawJsonDraft: Dispatch<SetStateAction<string>>;
+  inspector: InspectorDraftController;
   selectedNode: WorkflowNodeConfig | undefined;
   hasCollapsedTargetUi: boolean;
   selectedCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined;
@@ -96,37 +55,11 @@ type NodeDraftActionsInputs = {
   nodeEditOrigins: Record<string, string>;
   deleteNodes: (nodeIds: string[]) => void;
   catalog: WorkflowEditorCatalog;
-  inspectorNodeId: string;
-  inspectorDisplayName: string;
-  inspectorKnownValues: Record<string, unknown>;
-  inspectorUnknownValues: Record<string, unknown>;
-  inspectorEffectTargetKey: "target" | "session_id" | "vm_name";
-  inspectorJsonDrafts: Record<string, string>;
-  inspectorToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
-  inspectorMapTemplateDrafts: Record<string, MapTemplateDraftRow[]>;
-  inspectorJsonDisplayModes: Record<string, JsonDisplayMode>;
-  inspectorStringListDrafts: Record<string, string>;
-  inspectorStringMapDrafts: Record<string, StringMapDraftRow[]>;
 };
 
 /** Binds node draft actions to the current render state. */
 export function createNodeDraftActions({
-  setInspectorDraftError,
-  setInspectorNodeId,
-  setInspectorDisplayName,
-  setInspectorKnownValues,
-  setInspectorUnknownValues,
-  setInspectorJsonDrafts,
-  setInspectorToolArgumentPolicyDrafts,
-  setInspectorMapTemplateDrafts,
-  setInspectorJsonDisplayModes,
-  setInspectorStringListDrafts,
-  setInspectorStringMapDrafts,
-  setInspectorSessionListMetadataRules,
-  setInspectorSessionListMetadataRawMode,
-  setInspectorFieldModes,
-  setInspectorEffectTargetKey,
-  setRawJsonDraft,
+  inspector,
   selectedNode,
   hasCollapsedTargetUi,
   selectedCatalogEntry,
@@ -145,145 +78,28 @@ export function createNodeDraftActions({
   nodeEditOrigins,
   deleteNodes,
   catalog,
-  inspectorNodeId,
-  inspectorDisplayName,
-  inspectorKnownValues,
-  inspectorUnknownValues,
-  inspectorEffectTargetKey,
-  inspectorJsonDrafts,
-  inspectorToolArgumentPolicyDrafts,
-  inspectorMapTemplateDrafts,
-  inspectorJsonDisplayModes,
-  inspectorStringListDrafts,
-  inspectorStringMapDrafts,
 }: NodeDraftActionsInputs) {
+  const {
+    inspectorNodeId,
+    inspectorDisplayName,
+    inspectorKnownValues,
+    inspectorUnknownValues,
+    inspectorJsonDrafts,
+    inspectorMapTemplateDrafts,
+    inspectorToolArgumentPolicyDrafts,
+    inspectorJsonDisplayModes,
+    inspectorStringListDrafts,
+    inspectorStringMapDrafts,
+    inspectorEffectTargetKey,
+  } = inspector.state;
+  const {
+    setInspectorDraftError,
+  } = inspector.setters;
   function hydrateInspectorDraftFromNode(
     nextNode: WorkflowNodeConfig | undefined,
     nextCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
   ) {
-    if (!nextNode) {
-      setInspectorDraftError(null);
-      setInspectorNodeId("");
-      setInspectorDisplayName("");
-      setInspectorKnownValues({});
-      setInspectorUnknownValues({});
-      setInspectorJsonDrafts({});
-      setInspectorToolArgumentPolicyDrafts({});
-      setInspectorMapTemplateDrafts({});
-      setInspectorJsonDisplayModes({});
-      setInspectorStringListDrafts({});
-      setInspectorStringMapDrafts({});
-      setInspectorSessionListMetadataRules([]);
-      setInspectorSessionListMetadataRawMode(false);
-      setInspectorFieldModes({});
-      setInspectorEffectTargetKey("target");
-      setRawJsonDraft("{}");
-      return;
-    }
-
-    const extras: Record<string, unknown> = {
-      ...nextNode.config,
-      ...(nextNode.outputs === undefined ? {} : { outputs: nextNode.outputs }),
-    };
-    const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
-    if (nextNode.type.startsWith("trigger:")) {
-      knownFieldKeys.add("enabled");
-    }
-    const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
-    const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
-    const nextJsonDrafts: Record<string, string> = {};
-    const nextToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]> = {};
-    const nextMapTemplateDrafts: Record<string, MapTemplateDraftRow[]> = {};
-    const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
-    const nextStringListDrafts: Record<string, string> = {};
-    const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
-    const nextSessionListMetadataRules = nextNode.type === "query:session:list"
-      ? sessionListMetadataRuleDraftRowsFromValues(nextKnownValues).rows
-      : [];
-    const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
-    for (const field of nextCatalogEntry?.fields ?? []) {
-      nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
-      if (field.kind !== "json") continue;
-      if (nextNode.type === "gate:map" && field.key === "template") {
-        const value = nextKnownValues.template ?? {};
-        const rows = mapTemplateDraftRowsFromValue(value);
-        nextJsonDisplayModes.template = rows ? "structured" : "raw";
-        nextMapTemplateDrafts.template = rows ?? [];
-        nextJsonDrafts.template = JSON.stringify(value, null, 2);
-        continue;
-      }
-      if (isExactBindingValue(nextKnownValues[field.key])) {
-        const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
-        const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
-        nextJsonDrafts[field.key] = formatJson(nextKnownValues[field.key], fallbackDraft);
-        if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(nextNode.type)) {
-          nextJsonDisplayModes[field.key] = "raw";
-        }
-        continue;
-      }
-      if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(nextNode.type)) {
-        const fieldValue = nextKnownValues[field.key] ?? workflowJsonFieldFallbackValue(field, {});
-        const structuredRows = toolArgumentPolicyDraftRowsFromValue(fieldValue, field.options.map((option) => option.value));
-        if (structuredRows) {
-          nextToolArgumentPolicyDrafts[field.key] = structuredRows;
-          nextJsonDisplayModes[field.key] = "structured";
-          const validation = toolArgumentPolicyDraftRowsToValue(structuredRows);
-          nextJsonDrafts[field.key] = JSON.stringify(validation.value ?? {}, null, 2);
-        } else {
-          nextJsonDisplayModes[field.key] = "raw";
-          nextJsonDrafts[field.key] = JSON.stringify(fieldValue, null, 2);
-        }
-        continue;
-      }
-      const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
-      const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
-      nextJsonDrafts[field.key] = nextKnownValues[field.key] === undefined
-        ? fallbackDraft
-        : formatJson(nextKnownValues[field.key], fallbackDraft);
-    }
-    for (const field of nextCatalogEntry?.fields ?? []) {
-      if (field.kind !== "object_list") continue;
-      const items: unknown[] = Array.isArray(nextKnownValues[field.key]) ? (nextKnownValues[field.key] as unknown[]) : [];
-      items.forEach((item: unknown, index: number) => {
-        const itemValue = isRecord(item) ? item : {};
-        field.item_fields.forEach((itemField) => {
-          if (itemField.kind !== "json") return;
-          const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
-          const nestedValue = itemValue[itemField.key];
-          const fallbackValue = itemField.required ? {} : undefined;
-          const fallbackDraft = workflowJsonFieldDraftFallback(itemField, fallbackValue);
-          nextJsonDrafts[draftKey] = nestedValue === undefined
-            ? fallbackDraft
-            : formatJson(nestedValue, fallbackDraft);
-        });
-      });
-    }
-    for (const field of nextCatalogEntry?.fields ?? []) {
-      if (field.kind !== "string_list") continue;
-      nextStringListDrafts[field.key] = Array.isArray(nextKnownValues[field.key])
-        ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
-        : "";
-    }
-    for (const field of nextCatalogEntry?.fields ?? []) {
-      if (field.kind !== "string_map") continue;
-      nextStringMapDrafts[field.key] = stringMapDraftRows(nextKnownValues[field.key]);
-    }
-    setInspectorNodeId(nextNode.id);
-    setInspectorDisplayName(nextNode.display_name);
-    setInspectorKnownValues(nextKnownValues);
-    setInspectorUnknownValues(nextUnknownValues);
-    setInspectorJsonDrafts(nextJsonDrafts);
-    setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
-    setInspectorMapTemplateDrafts(nextMapTemplateDrafts);
-    setInspectorJsonDisplayModes(nextJsonDisplayModes);
-    setInspectorStringListDrafts(nextStringListDrafts);
-    setInspectorStringMapDrafts(nextStringMapDrafts);
-    setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
-    setInspectorSessionListMetadataRawMode(false);
-    setInspectorFieldModes(nextFieldModes);
-    setInspectorEffectTargetKey(activeEffectTargetKey(nextKnownValues));
-    setRawJsonDraft(JSON.stringify(extras, null, 2));
-    setInspectorDraftError(null);
+    inspector.replace(inspectorDraftFromNode(nextNode, nextCatalogEntry));
   }
 
   function materializeInspectorNodeFromDraft(draft: InspectorDraftSnapshot): WorkflowNodeConfig {

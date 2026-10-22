@@ -46,6 +46,45 @@ from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
 
 
+def test_bokio_execution_service_and_legacy_api_share_durable_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander_bokio_addon.api import _execute_prepared_action
+    from evander_bokio_addon.execution_service import execute_prepared_action
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "payment-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    context = AddonContext(
+        addon_id="bokio-addon",
+        runtime_dir=tmp_path,
+        addon_runtime_dir=tmp_path / "addons" / "bokio-addon",
+        config=GatewayConfig(runtime_dir=tmp_path),
+        service=SimpleNamespace(),
+    )
+    store = PreparedActionStore(tmp_path)
+    action = store.create_action(kind="bank_payment", payload={"amount": 100}, source="admin")
+
+    with pytest.raises(ValueError, match="approved"):
+        execute_prepared_action(context, action["action_id"])
+    assert requests == []
+
+    result = execute_prepared_action(context, action["action_id"], approve=True)
+    replay = _execute_prepared_action(context, action["action_id"])
+
+    assert result["action"]["status"] == "executed"
+    assert replay["result"]["id"] == "payment-1"
+    assert replay["result"]["bankid_signing_required"] is True
+    assert replay["idempotent"] is True
+    assert len(requests) == 1
+
+
 def test_bokio_client_uses_private_integration_bearer_token(monkeypatch) -> None:
     requests: list[httpx.Request] = []
 

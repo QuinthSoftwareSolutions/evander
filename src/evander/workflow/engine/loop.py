@@ -19,10 +19,9 @@ class OrchestrationLoopResult:
 
 
 class OrchestrationLoop(Generic[TEvent, TDependency, TExecution]):
-    """Domain-agnostic orchestration loop primitive.
+    """Compatibility loop for callers of the original four-stage adapter API.
 
-    Concrete orchestrators provide adapters for event fetch, dependency resolution,
-    execution recording, and completion publication.
+    Host workers own their polling and durable-checkpoint loops directly.
     """
 
     def __init__(

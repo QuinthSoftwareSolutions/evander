@@ -42,6 +42,9 @@ from evander.admin.payloads import (
     WorkflowRunClearPayload,
     WorkflowRunResumePayload,
 )
+from evander.admin.services.workflow_target_preparation_service import (
+    WorkflowTargetPreparationCoordinator,
+)
 from evander.admin.services.workflow_pack_history_service import (
     WorkflowPackChangeActor,
     WorkflowPackHistoryFileState,
@@ -166,6 +169,10 @@ class WorkflowConfigAdminService:
         self._addon_catalog = dependencies.addon_catalog
         self._managed_git_admin = dependencies.managed_git_admin
         self._teams_admin = dependencies.teams_admin
+        self._workflow_target_preparation = WorkflowTargetPreparationCoordinator(
+            teams_admin=lambda: self._teams_admin,
+            normalize_graphs=lambda **kwargs: self._workflow_editor_graphs_for_config(**kwargs),
+        )
         self._codex_auth_admin: Any | None = None
         self.event_schemas = EventSchemaService(self.config, self._event_schema_defaults)
         history_runtime_dir = _resolve_path_setting(
@@ -2752,48 +2759,9 @@ class WorkflowConfigAdminService:
         return validation
 
     def _prepare_direct_chat_drafts_for_validation(
-        self,
-        config: dict[str, object],
+        self, config: dict[str, object]
     ) -> tuple[dict[str, object], bool]:
-        candidate = json.loads(json.dumps(config))
-        if not isinstance(candidate, dict):
-            raise ValueError("Workflow config must be a JSON object.")
-        triggers = candidate.get("triggers")
-        if not isinstance(triggers, list):
-            return candidate, False
-
-        has_direct_chat_drafts = False
-        for trigger in triggers:
-            if not isinstance(trigger, dict):
-                continue
-            if str(trigger.get("type") or "").strip() != "trigger:teams:direct-message":
-                continue
-            trigger_config = trigger.get("config")
-            if not isinstance(trigger_config, dict):
-                continue
-            mode = str(trigger_config.get("chat_target_mode") or "explicit").strip()
-            if mode != "direct":
-                continue
-
-            display_name = str(
-                trigger.get("display_name") or trigger.get("id") or "Teams direct message"
-            )
-            raw_upns = trigger_config.get("direct_chat_user_upns")
-            if not isinstance(raw_upns, list):
-                raise ValueError(f"{display_name}: direct chat users must be a list of UPNs.")
-            user_upns = [
-                str(value or "").strip()
-                for value in raw_upns
-                if str(value or "").strip()
-            ]
-            if not user_upns:
-                raise ValueError(f"{display_name}: add at least one direct chat user UPN.")
-
-            has_direct_chat_drafts = True
-            trigger_config["direct_chat_user_upns"] = user_upns
-            trigger_config["sender_user_ids"] = ["pending-direct-chat-user"]
-            trigger_config["targets"] = [{"target": "chat:pending-direct-chat"}]
-        return candidate, has_direct_chat_drafts
+        return self._workflow_target_preparation.prepare_validation_config(config)
 
     def _restore_direct_chat_draft_fields(
         self,
@@ -2801,120 +2769,14 @@ class WorkflowConfigAdminService:
         validated_config: dict[str, object],
         source_config: dict[str, object],
     ) -> dict[str, object]:
-        candidate = json.loads(json.dumps(validated_config))
-        if not isinstance(candidate, dict):
-            raise ValueError("Validated workflow config must be a JSON object.")
-
-        source_triggers = source_config.get("triggers")
-        validated_triggers = candidate.get("triggers")
-        if not isinstance(source_triggers, list) or not isinstance(validated_triggers, list):
-            return candidate
-        source_by_id = {
-            str(trigger.get("id") or "").strip(): trigger
-            for trigger in source_triggers
-            if isinstance(trigger, dict) and str(trigger.get("id") or "").strip()
-        }
-        for trigger in validated_triggers:
-            if not isinstance(trigger, dict):
-                continue
-            node_id = str(trigger.get("id") or "").strip()
-            source_trigger = source_by_id.get(node_id)
-            if not isinstance(source_trigger, dict):
-                continue
-            source_node_config = source_trigger.get("config")
-            validated_node_config = trigger.get("config")
-            if not isinstance(source_node_config, dict) or not isinstance(
-                validated_node_config, dict
-            ):
-                continue
-            mode = str(source_node_config.get("chat_target_mode") or "explicit").strip()
-            if mode != "direct":
-                continue
-
-            raw_upns = source_node_config.get("direct_chat_user_upns")
-            if isinstance(raw_upns, list):
-                validated_node_config["direct_chat_user_upns"] = [
-                    str(value or "").strip()
-                    for value in raw_upns
-                    if str(value or "").strip()
-                ]
-            else:
-                validated_node_config["direct_chat_user_upns"] = []
-            for field_name in ("sender_user_ids", "targets"):
-                raw_value = source_node_config.get(field_name)
-                validated_node_config[field_name] = (
-                    json.loads(json.dumps(raw_value)) if isinstance(raw_value, list) else []
-                )
-        return candidate
+        return self._workflow_target_preparation.restore_draft_fields(
+            validated_config=validated_config, source_config=source_config
+        )
 
     def _resolve_direct_chat_drafts(
-        self,
-        *,
-        config: dict[str, object],
-        graphs: object,
+        self, *, config: dict[str, object], graphs: object
     ) -> dict[str, object]:
-        candidate = json.loads(json.dumps(config))
-        if not isinstance(candidate, dict):
-            raise ValueError("Workflow config must be a JSON object.")
-        triggers = candidate.get("triggers")
-        if not isinstance(triggers, list):
-            return candidate
-
-        normalized_graphs = self._workflow_editor_graphs_for_config(
-            config=candidate,
-            graphs=graphs,
-            strict=False,
-        )
-        directory_by_node_id = {
-            node_id: graph.directory_path
-            for graph in normalized_graphs
-            for node_id in graph.node_ids
-        }
-        for trigger in triggers:
-            if not isinstance(trigger, dict):
-                continue
-            if str(trigger.get("type") or "").strip() != "trigger:teams:direct-message":
-                continue
-            trigger_config = trigger.get("config")
-            if not isinstance(trigger_config, dict):
-                continue
-            mode = str(trigger_config.get("chat_target_mode") or "explicit").strip()
-            if mode != "direct":
-                continue
-
-            node_id = str(trigger.get("id") or "").strip()
-            display_name = str(
-                trigger.get("display_name") or node_id or "Teams direct message"
-            )
-            raw_upns = trigger_config.get("direct_chat_user_upns")
-            if not isinstance(raw_upns, list):
-                raise ValueError(f"{display_name}: direct chat users must be a list of UPNs.")
-            user_upns = [
-                str(value or "").strip()
-                for value in raw_upns
-                if str(value or "").strip()
-            ]
-            if not user_upns:
-                raise ValueError(f"{display_name}: add at least one direct chat user UPN.")
-            if self._teams_admin is None:
-                raise ValueError("Teams direct-chat resolution is unavailable in this runtime.")
-
-            resolutions = self._teams_admin.resolve_direct_chat_targets(
-                directory=directory_by_node_id.get(node_id, "root"),
-                user_refs=user_upns,
-            )
-            if not resolutions:
-                raise ValueError(f"{display_name}: no Teams direct chats were resolved.")
-            trigger_config["direct_chat_user_upns"] = [
-                resolution["user_principal_name"] for resolution in resolutions
-            ]
-            trigger_config["sender_user_ids"] = [
-                resolution["user_id"] for resolution in resolutions
-            ]
-            trigger_config["targets"] = [
-                {"target": resolution["chat_target"]} for resolution in resolutions
-            ]
-        return candidate
+        return self._workflow_target_preparation.resolve_config(config=config, graphs=graphs)
 
     def _save_workflow_editor_document_unlocked(
         self,
@@ -2971,12 +2833,10 @@ class WorkflowConfigAdminService:
             )
         else:
             resolution_graphs = self._workflow_editor_stored_graphs(raw_config)
-        preflight_config, has_direct_chat_drafts = (
-            self._prepare_direct_chat_drafts_for_validation(config)
-        )
-        if has_direct_chat_drafts:
+
+        def preflight_targets(candidate: dict[str, object]) -> None:
             preflight_validation = self._validate_workflow_editor_document(
-                config=preflight_config,
+                config=candidate,
                 layout=layout,
                 graphs=graphs,
                 base_config=None if selected_reference is not None else raw_config,
@@ -2989,9 +2849,11 @@ class WorkflowConfigAdminService:
                     selected_reference=selected_reference,
                     selected_validation=preflight_validation,
                 )
-        config = self._resolve_direct_chat_drafts(
+
+        config = self._workflow_target_preparation.prepare_for_save(
             config=config,
             graphs=resolution_graphs,
+            preflight=preflight_targets,
         )
         validation = self._validate_workflow_editor_document(
             config=config,
