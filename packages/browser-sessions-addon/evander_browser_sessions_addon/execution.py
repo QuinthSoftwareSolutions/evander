@@ -10,6 +10,12 @@ from urllib.parse import quote, quote_plus
 
 from evander.classification.models import ClassificationError
 
+from .choices import (
+    ACTION_TARGET_INSTRUCTIONS,
+    action_options,
+    decision_page,
+    target_actions,
+)
 from .models import BrowserCommand, BrowserError
 
 KEYS = (
@@ -53,6 +59,9 @@ TARGET_INSTRUCTIONS = (
     "do not refill an already-correct field merely because it is focused. "
     "Follow requested order rather than selecting the goal's final submission control "
     "while an earlier requested input is still unfinished. "
+    "To open a closed combobox, target the combobox rather than an option in its collapsed list. "
+    "For dropdown keyboard navigation, target the combobox rather than an option or a later Apply button. "
+    "For a key sent to the uniquely focused control, choose that control or _none. "
     "Choose _none when no target is needed or none is suitable, and _page for main-page scrolling."
 )
 
@@ -93,7 +102,22 @@ def question(instructions, criteria):
 
 
 class AmbiguousDecision(BrowserError):
-    def __init__(self, name, probability, threshold):
+    def __init__(self, name, answer, threshold):
+        selected = answer["choice"]
+        probability = (answer.get("probabilities") or {}).get(selected, 0)
+        self.decision = {
+            "question": name,
+            "choice": selected,
+            "probability": probability,
+            "threshold": threshold,
+            "alternatives": [
+                {"choice": choice, "probability": score}
+                for choice, score in sorted(
+                    (answer.get("probabilities") or {}).items(), key=lambda item: -item[1]
+                )
+                if choice != selected
+            ][:3],
+        }
         super().__init__(
             f"The {name} choice had probability {probability:.3f}, below the required {threshold:.3f}. "
             "Inspect the page and resolve missing inputs or narrow the objective before continuing.",
@@ -172,6 +196,7 @@ class BrowserRun:
         observation = None
         observation_current = False
         mutating = False
+        decision = None
         terminal, reason = "needs_pa", "Step budget exhausted"
         unchanged, previous = 0, None
         try:
@@ -179,10 +204,8 @@ class BrowserRun:
                 self.check(agent, session_id, run)
                 observation = self.observe(session_id, actor, run)
                 observation_current = True
-                state_key = json.dumps(
-                    {k: v for k, v in observation.items() if k not in {"observation_id", "image"}},
-                    sort_keys=True,
-                )
+                page, aliases = decision_page(observation)
+                state_key = json.dumps(page, sort_keys=True)
                 unchanged = unchanged + 1 if state_key == previous else 0
                 previous = state_key
                 if unchanged >= 5:
@@ -191,7 +214,7 @@ class BrowserRun:
                 targets = [
                     e
                     for e in observation.get("elements", [])
-                    if e.get("role") in TARGET_ROLES and not e.get("disabled")
+                    if e.get("role") in TARGET_ROLES and e.get("disabled") not in (True, "true")
                 ]
                 if observation.get("truncated") or len(targets) > 200:
                     reason = "Observation or target candidates were truncated; the owning agent must inspect the page"
@@ -200,13 +223,7 @@ class BrowserRun:
                 state = redact(
                     {
                         "goal": request.goal,
-                        # Receipt IDs fence execution, but random transport
-                        # metadata is not evidence about the page or task.
-                        "page": {
-                            key: value
-                            for key, value in observation.items()
-                            if key not in {"observation_id", "page_epoch"}
-                        },
+                        "page": page,
                         "inputs": {
                             k: {
                                 "description": v.description,
@@ -215,46 +232,32 @@ class BrowserRun:
                             for k, v in values.items()
                         },
                         "completed_actions": [
-                            {key: value for key, value in step.items() if key != "command_id"}
+                            {
+                                key: aliases.get(value, "_previous_target")
+                                if key == "ref"
+                                else value
+                                for key, value in step.items()
+                                if key != "command_id"
+                            }
                             for step in self.store.run_get(session_id, run_id)["steps"][-10:]
                         ],
                     },
                     secrets,
                 )
                 criteria = {
-                    e["ref"]: {k: v for k, v in e.items() if k != "fingerprint"} for e in targets
+                    aliases[e["ref"]]: {
+                        **{k: v for k, v in e.items() if k != "fingerprint"},
+                        "ref": aliases[e["ref"]],
+                        "allowed_actions": target_actions(e, has_values=bool(values)),
+                    }
+                    for e in targets
                 }
                 criteria["_none"] = "No target needed, no suitable target or missing information"
                 criteria["_page"] = "Scroll the main page"
                 questions = {
                     "action": question(
-                        INSTRUCTIONS,
-                        {
-                            k: v
-                            for k, v in (
-                                ("click", "Click a referenced control"),
-                                ("hover", "Hover a referenced control"),
-                                ("fill", "Replace an editable field using an exact supplied input"),
-                                (
-                                    "type",
-                                    "Focus an editable field and type an exact supplied input as keystrokes",
-                                ),
-                                ("key", "Send a supported key to a referenced/focused control"),
-                                (
-                                    "scroll",
-                                    "Scroll at the referenced container/control or main page",
-                                ),
-                                ("wait", "Wait 500ms for pending page updates"),
-                                (
-                                    "done",
-                                    "Return current state for the owning agent's verification",
-                                ),
-                                (
-                                    "help",
-                                    "Return to the owning agent for missing information, ambiguity or unsupported UI",
-                                ),
-                            )
-                        },
+                        INSTRUCTIONS + ACTION_TARGET_INSTRUCTIONS,
+                        action_options(targets, values),
                     ),
                     "target": question(TARGET_INSTRUCTIONS, criteria),
                     "input": question(
@@ -319,7 +322,13 @@ class BrowserRun:
                     if value not in questions[name]["criteria"]:
                         raise ClassificationError("Decision choice is outside the supplied options")
                     if probability < threshold:
-                        raise AmbiguousDecision(name, probability, threshold)
+                        error = AmbiguousDecision(name, answer, threshold)
+                        if name == "target":
+                            original = {alias: ref for ref, alias in aliases.items()}
+                            for item in [error.decision, *error.decision["alternatives"]]:
+                                if item["choice"] in original:
+                                    item["target_ref"] = original[item["choice"]]
+                        raise error
                     return value
 
                 action = choice("action")
@@ -328,7 +337,10 @@ class BrowserRun:
                     reason = (
                         "The owning agent must verify the resulting page"
                         if action == "done"
-                        else "Decision model requested assistance from the owning agent"
+                        else (
+                            "Decision model requested assistance from the owning agent. "
+                            "Inspect the page and supply any missing literals in request.values."
+                        )
                     )
                     break
                 if action == "wait":
@@ -338,19 +350,21 @@ class BrowserRun:
                     )
                     continue
                 target = choice("target")
-                element = next((e for e in targets if e["ref"] == target), None)
+                element = next((e for e in targets if aliases[e["ref"]] == target), None)
+                if element is None and action == "key" and target == "_none":
+                    focused = [e for e in targets if e.get("focused") in (True, "true")]
+                    if len(focused) == 1:
+                        element = focused[0]
                 if element is None and not (action == "scroll" and target == "_page"):
                     reason = "No suitable current target; the owning agent must inspect the page"
+                    break
+                if element and action not in target_actions(element, has_values=bool(values)):
+                    reason = "The selected action is unavailable for this control; inspect the page before continuing"
                     break
                 options = {"ref": element["ref"]} if element else {}
                 if action in {"fill", "type"}:
                     input_id = choice("input")
-                    if (
-                        input_id not in values
-                        or element["role"] not in {"textbox", "combobox"}
-                        or element.get("readonly")
-                        or (element["role"] == "combobox" and not element.get("editable"))
-                    ):
+                    if input_id not in values:
                         reason = (
                             "An exact request.values entry or editable target is missing. "
                             "Supply every literal in request.values, including an empty string to clear a field; "
@@ -390,6 +404,7 @@ class BrowserRun:
                 reason = "Step budget exhausted"
         except AmbiguousDecision as exc:
             terminal, reason = "needs_pa", exc.code + ": " + str(exc)
+            decision = exc.decision
         except BrowserError as exc:
             terminal = "outcome_unknown" if mutating and exc.code != "stale_target" else "needs_pa"
             reason = exc.code + ": inspect current state before continuing"
@@ -416,7 +431,9 @@ class BrowserRun:
                     observation_current = True
                 except Exception:
                     pass
-            result = self.store.update_run(session_id, run_id, status=terminal, reason=reason)
+            result = self.store.update_run(
+                session_id, run_id, status=terminal, reason=reason, decision=decision
+            )
         return {
             **result,
             "observation": redact(observation, secrets),

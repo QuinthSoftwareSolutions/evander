@@ -36,18 +36,23 @@ export class BrowserEngine {
       if (!this.state.allowed_origins.includes(new URL(current).origin)) throw new Error("origin_denied");
       return current;
     };
-    let edited = false, inputStarted = false;
+    let edited = false, mousePressed = false, inputStarted = false;
     const validateTarget = async () => {
       if (!command.revalidate || !command.ref) return;
       const {nodes} = await this.send("Accessibility.getFullAXTree");
       const elements = accessibleElements(nodes ?? []).elements;
       const fresh = elements.find(item => item.ref===command.ref);
-      if (!edited && pageSignature(elements)!==this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const saved = this.signatures.get(command.ref);
       if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
+      // Mouse-down can expand/select its own control before mouse-up. Keep
+      // every other form control fenced while allowing that one transition.
+      const context = mousePressed ? elements.map(item=>item.ref===command.ref ? {
+        ...item,value:before.value,checked:before.checked,selected:before.selected,expanded:before.expanded
+      } : item) : elements;
+      if (!edited && pageSignature(context)!==this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       // Key-down/text can change a field's mutable state as part of this command.
-      if (edited) for (const key of ["value","checked","selected","expanded"]) { delete before[key]; delete after[key]; }
+      if (edited || mousePressed) for (const key of ["value","checked","selected","expanded"]) { delete before[key]; delete after[key]; }
       if (JSON.stringify(before)!==JSON.stringify(after)) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
     };
     const input = async (method: string, params: Record<string, unknown> = {}) => {
@@ -59,6 +64,7 @@ export class BrowserEngine {
         return await this.send(method, params);
       } finally {
         if (method === "Input.insertText" || method === "Input.dispatchKeyEvent" && params.type === "keyDown") edited=true;
+        if (method === "Input.dispatchMouseEvent" && params.type === "mousePressed") mousePressed=true;
       }
     };
     const press = async (key: string, text?: string, code?: string, keyCode?: number) => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 - Ground browser decisions in control affordances (0.117.1)
+
+- Describe generic text replacement, character typing, picker activation and keyboard operations separately. Offer text entry only when an exact input and writable field exist, and reject incompatible action/target combinations before input. Keep operation, target and input selection in one bounded provider request.
+- Return metadata-only diagnostics for ambiguous choices, including the selected option, probability, threshold and up to three competing option IDs. Preserve them in retry/status receipts without retaining page labels or input literals.
+- Use snapshot-local target aliases and omit transport receipt IDs from classification evidence and no-progress detection; map commands back to the original browser references and preserve their execution fences. Allow supported keys to target the single observed focused control when no explicit target was selected.
+- Complete native picker clicks when mouse-down changes that control's selection/expansion, retaining checks on other form fields, target identity, document, origin and control generation. Publish Browser Sessions server package 0.9.1 and Chrome extension 0.6.1; native helper 0.4.0 remains compatible.
+
 ## 2026-10-22 - Separate application environments from shared browsers (0.117.0)
 
 - Add an independent optional Application Environments project with bounded application leases, private HTTP endpoints, safe checkout mounts and SQL Server add-on resource binding beyond agent turns.
