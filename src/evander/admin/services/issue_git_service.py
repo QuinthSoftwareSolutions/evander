@@ -510,6 +510,7 @@ class IssueGitAdminService:
             "created_at": manifest.created_at.isoformat(),
             "expires_at": manifest.expires_at.isoformat(),
             "model": manifest.model,
+            "reasoning_effort": manifest.reasoning_effort,
         }
         if include_activity:
             from evander.admin.services.conversation_delivery_service import active_conversation
