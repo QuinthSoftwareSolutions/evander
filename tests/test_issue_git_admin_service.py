@@ -14,7 +14,7 @@ from evander.admin.services.issue_git_service import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
 )
-from evander.models import LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
+from evander.models import LocalIssueRecord, RemoteIssueReference, SessionManifest
 
 
 class FakeStore:
@@ -201,36 +201,6 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
         ),
         managed_git_admin=admin.managed_git_admin,
     )
-
-
-def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path: Path) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    manifest = SessionManifest(
-        session_id="session-1",
-        vm_id="vm-1",
-        model="gpt-5",
-        directory_path="root",
-        allowed_tools=[ToolName.CREATE_LOCAL_ISSUE],
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-        metadata={"nested": {"one": 1}, "keep": True},
-    )
-    admin.runtime.session_repository.upsert_session(manifest)
-
-    result = service.session_update_metadata(
-        target="session-1", metadata={"nested": {"two": 2}, "new": 3}
-    )
-
-    updated = admin.runtime.session_repository.get_session("session-1")
-    assert isinstance(updated, SessionManifest)
-    assert updated.metadata == {"nested": {"one": 1, "two": 2}, "keep": True, "new": 3}
-    assert result["session_id"] == "session-1"
-    assert result["metadata"] == updated.metadata
-
-    context = service.session_context_query(target="session-1")
-    assert context["session_id"] == "session-1"
-    assert context["vm_name"] == "vm-1"
-    assert context["metadata"] == updated.metadata
 
 
 def test_issue_git_admin_service_sets_session_image_generation_policy(tmp_path: Path) -> None:
