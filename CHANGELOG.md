@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Reconcile session policy from workflow settings (0.126.0)
+
+- Add `effect:session:reconcile-policy` to apply settings-owned tool grants, argument restrictions, approvals, connector grants, and metadata to an existing session without replacing its identity, model, conversation, or workspace.
+- Reconcile atomically against the latest manifest, enforce workflow directory scope, preserve unmentioned fields, and avoid writes when the policy already matches.
+
 ## 2026-10-23 - Configure tracked-review text budgets per scan (0.125.0)
 
 - Add the bindable workflow input `max_batch_text_bytes` for tracked security scans: integer budgets from 1 MiB to 2 MiB, with 1 MiB for new scans and the saved budget inherited on resume when omitted. Reject unsupported providers and coverage modes before launching work.

@@ -45,6 +45,7 @@ __all__ = [
     "SessionApproveMcpToolsForRunEffectProvider",
     "SessionRevokeMcpToolApprovalLeaseEffectProvider",
     "SessionRenewIfExpiredEffectProvider",
+    "SessionReconcilePolicyEffectProvider",
     "SessionSetImageGenerationEnabledEffectProvider",
     "SessionSetReasoningEffortEffectProvider",
     "EventScheduleEffectProvider",
@@ -100,6 +101,7 @@ _EXPORT_MODULES = {
     "SessionApproveMcpToolsForRunEffectProvider": ".session_approve_mcp_tools",
     "SessionRevokeMcpToolApprovalLeaseEffectProvider": (".session_revoke_mcp_tool_approval_lease"),
     "SessionRenewIfExpiredEffectProvider": ".session_renew_if_expired",
+    "SessionReconcilePolicyEffectProvider": ".session_reconcile_policy",
     "SessionSetReasoningEffortEffectProvider": ".session_set_reasoning_effort",
     "SessionSetImageGenerationEnabledEffectProvider": (
         ".session_set_image_generation_enabled"

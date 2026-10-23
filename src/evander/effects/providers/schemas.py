@@ -1380,6 +1380,20 @@ class WebsiteSessionEnsureProfileEffectDefinition(EffectDefinition):
         return value if "${{" in value else profile_origin(value)
 
 
+class SessionReconcilePolicyEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:reconcile-policy"]
+    session_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    policy: ConfigValue
+
+    @field_validator("policy")
+    @classmethod
+    def validate_policy(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError("policy must be a JSON object or workflow binding")
+        return value
+
+
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     type: Literal["effect:session:update-metadata"]
     target: ConfigValue | None = None
