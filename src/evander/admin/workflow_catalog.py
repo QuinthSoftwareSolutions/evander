@@ -2597,10 +2597,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "subscription_profile_id",
                 "Subscription profile",
                 "enum",
-                bindable=False,
+                bindable=True,
                 description=(
-                    "Immutable worker-owned ChatGPT subscription profile. Create a new "
-                    "agent session to change this selection."
+                    "Worker-owned ChatGPT subscription profile, selected literally or from "
+                    "a workflow binding. Bind a resumed scan's retained subscription to keep "
+                    "its account. The resolved profile must exist and be enabled on this worker."
                 ),
                 options=[],
                 metadata={
@@ -2608,7 +2609,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "agent_providers": ["codex"],
                     "model_provider_modes": ["openai_public"],
                     "codex_auth_modes": ["chatgpt_subscription"],
-                    "immutable": True,
                 },
             ),
             _field(

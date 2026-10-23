@@ -628,6 +628,19 @@ different account. Broker status uses App Server `account/read`, `account/rateLi
 `account/usage/read` and returns only safe identity, plan, limit/reset, and summarized usage fields.
 Tokens are never returned, and reset credits are reported but never consumed automatically.
 
+Worker admission and queued-prompt recovery use the same read-only capacity
+decision. Exhausted included windows can continue using existing purchased usage
+credits reported in that rate-limit bucket: `unlimited: true`, or
+`has_credits: true` with a positive finite balance when one is exposed. An absent
+optional balance can use the provider's positive availability flag; malformed or
+contradictory balances cannot establish purchased capacity. Credits in another
+bucket do not clear an exhausted window. Explicit provider rate-limit or spend
+blocks still defer work even when credits are present. Without usable purchased
+capacity, the latest future reset among exhausted windows controls retry timing.
+This does not purchase credits, redeem reset credits, change profiles or select
+metered API billing. The profile's enabled, sign-in and account-pin checks still
+apply. An operator's scan budget and capacity policy can impose stricter stops.
+
 Workflows can read this telemetry with `query:codex:subscription-quota`. The
 node defaults to the seven-day Codex window and returns a remaining percentage,
 reset time, and observation timestamp, or an explicit unavailable result.

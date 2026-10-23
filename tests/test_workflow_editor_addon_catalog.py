@@ -9,7 +9,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from config_helpers import write_runtime_config
+from config_helpers import canonical_workflow_payload, write_runtime_config
 
 
 def _prepare_runtime_config(tmp_path: Path, *, addon_module: str | None = None) -> Path:
@@ -357,7 +357,37 @@ def test_workflow_editor_tool_selectors_include_enabled_addon_tools(tmp_path: Pa
     )
 
 
-def test_workflow_editor_agent_create_uses_fixed_enabled_worker_profile_options(
+def test_workflow_editor_validates_retained_scan_subscription_binding(tmp_path: Path) -> None:
+    runtime = build_admin_runtime(_prepare_runtime_config(tmp_path))
+    payload = canonical_workflow_payload({
+        "runtime_dir": str(tmp_path / "runtime"),
+        "triggers": [], "gates": [],
+        "queries": [{
+            "id": "scan", "display_name": "Saved scan", "type": "query:security:scan",
+            "scan_id": "a" * 32,
+        }],
+        "effects": [{
+            "id": "scanner", "display_name": "Resume scanner", "type": "effect:agent:create",
+            "execution_backend": "container_worker_vm", "agent_provider": "codex",
+            "model_provider_mode": "openai_public", "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": "${{scan.execution_configuration.subscription_profile_id}}",
+        }],
+        "edges": [{"source_id": "scan", "target_id": "scanner"}],
+        "workflow_graphs": [{
+            "id": "saved-scan", "name": "Saved scan", "directory_path": "root",
+            "node_ids": ["scan", "scanner"],
+        }],
+    })
+    validation = runtime.workflow_config_admin.validate_workflow_editor_document(
+        config=payload, layout={"nodes": {}},
+    )
+    assert not [item for item in validation.validation_diagnostics if item["severity"] == "error"]
+    assert validation.config["effects"][0]["config"]["subscription_profile_id"] == (
+        "${{scan.execution_configuration.subscription_profile_id}}"
+    )
+
+
+def test_workflow_editor_agent_create_supports_bindings_and_enabled_worker_profile_options(
     tmp_path: Path,
 ) -> None:
     _write_trigger_config(tmp_path, enable_team_addon=False)
@@ -394,8 +424,7 @@ def test_workflow_editor_agent_create_uses_fixed_enabled_worker_profile_options(
         item for item in agent_create["fields"] if item["key"] == "subscription_profile_id"
     )
 
-    assert field["bindable"] is False
-    assert field["metadata"]["immutable"] is True
+    assert field["bindable"] is True
     assert field["options"] == [
         {
             "value": "team-a",

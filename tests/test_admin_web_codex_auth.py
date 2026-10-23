@@ -323,8 +323,20 @@ def test_subscription_profile_recovery_actions_wake_queue_reconciliation() -> No
     assert wakes == ["wake", "wake", "wake"]
 
 
+@pytest.mark.parametrize(
+    ("used_percent", "credits", "block", "ready"),
+    [
+        (25, None, {}, True),
+        (100, {"has_credits": True, "balance": "25.50"}, {}, True),
+        (100, {"unlimited": True}, {}, True),
+        (100, {"has_credits": False, "balance": "0"}, {}, False),
+        (100, None, {}, False),
+        (100, {"unlimited": True}, {"rate_limit_reached_type": "rate_limit_reached"}, False),
+        (25, {"unlimited": True}, {"spend_control_reached": True}, False),
+    ],
+)
 def test_subscription_profile_refresh_makes_recovered_capacity_immediately_eligible(
-    tmp_path: Path,
+    tmp_path: Path, used_percent: int, credits: object, block: dict, ready: bool,
 ) -> None:
     class ReadyWorker(FakeWorkerClient):
         def list_codex_auth_profiles(self) -> dict[str, object]:
@@ -337,7 +349,11 @@ def test_subscription_profile_refresh_makes_recovered_capacity_immediately_eligi
                         "available": True,
                         "signed_in": True,
                         "rate_limits": {
-                            "default": {"primary": {"used_percent": 25}},
+                            "default": {
+                                "primary": {"used_percent": used_percent},
+                                "credits": credits,
+                                **block,
+                            },
                             "by_limit_id": {},
                         },
                     }
@@ -359,16 +375,18 @@ def test_subscription_profile_refresh_makes_recovered_capacity_immediately_eligi
         retry_at=datetime.now(UTC) + timedelta(minutes=10),
     )
     wakes: list[str] = []
+    worker = ReadyWorker()
     service = _service(
-        ReadyWorker(),
+        worker,
         runtime_dir=tmp_path,
         wake_reconciliation=lambda: wakes.append("wake"),
     ).codex_auth_admin
 
     service.list_profiles("root")
 
-    assert queue_store.get("session-a").retry_not_before is None
+    assert (queue_store.get("session-a").retry_not_before is None) is ready
     assert wakes == ["wake"]
+    assert worker.reset_requests == []
 
 
 def test_subscription_profile_queue_recovery_is_scoped_to_selected_worker(
@@ -384,6 +402,12 @@ def test_subscription_profile_queue_recovery_is_scoped_to_selected_worker(
                         "enabled": True,
                         "available": True,
                         "signed_in": True,
+                        "rate_limits": {
+                            "default": {
+                                "primary": {"used_percent": 100},
+                                "credits": {"has_credits": True, "balance": "1"},
+                            }
+                        },
                     }
                 ]
             }
