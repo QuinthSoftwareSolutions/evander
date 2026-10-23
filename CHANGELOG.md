@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Larger tracked-coverage batches on continuation (0.124.2)
+
+- Raise the optional Codex Security add-on's tracked-review text budget to 1 MiB while preserving the 100-entry cap, intact oversized files and two-child concurrency limit.
+- On explicit continuation, upgrade unstarted root scopes from earlier batching policies without changing accepted coverage, native proofs, attempted scopes, split refinements or source journals. Record batching version 3 and retain strict snapshot, route, cleanup and idempotency checks. This host-only policy change does not require a scanner-image rebuild.
+
 ## 2026-10-23 - Preserve resumed scan subscriptions and admit purchased capacity (0.124.1)
 
 - Allow agent-creation workflows to bind the saved subscription profile when resuming a scan. Validate the resolved profile on its selected worker and reject missing bindings instead of falling back to the legacy default; ordinary resumes retain strict scan configuration compatibility.

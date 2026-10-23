@@ -57,9 +57,9 @@ deadline and model/access route. SQLite transactions and per-scan process locks
 serialize updates and repository claims across orchestrator restarts.
 
 Scopes follow path order and pack across adjacent folders, containing at most
-100 tracked entries and 512 KiB of text. Small binary files, symlinks and submodule
+100 tracked entries and 1 MiB of text. Small binary files, symlinks and submodule
 entries share scopes while still requiring their own explicit dispositions.
-Files larger than 512 KiB stay intact in singleton scopes. Known unavailable
+Files larger than 1 MiB stay intact in singleton scopes. Known unavailable
 entries are isolated so they do not obstruct otherwise reviewable batches.
 A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
@@ -189,15 +189,21 @@ a scanner image rebuild. Deployment-specific workflow bindings and monitoring
 remain operator-owned. Configure their explicit destination and quota guards
 through the revision-gated workflow Admin API after deployment.
 
-An explicit continuation of an older, folder-fragmented journal regroups only
-unstarted root file and boundary scopes under these bounds. Completed reviews,
-previously attempted scopes and split children keep their assignments; file
+An explicit continuation of an earlier batching-policy journal (version 1 or 2)
+regroups only unstarted root file and boundary scopes under the 1 MiB bound.
+Completed reviews, previously attempted scopes and split children keep their
+assignments, including scopes with retained retry errors after a prior run reset
+its attempt counters; file
 credit, findings, native receipts and outstanding boundary work are preserved.
-The new journal records `batching_version: 2`, also included in its aggregate
+The new journal records `batching_version: 3`, also included in its aggregate
 coverage ledger and manifest. Further resumes retain that plan. Source journals
 and published archives are immutable, and an active scan keeps its existing
-assignments until an explicit continuation after confirmed cleanup. Regrouping
-does not change the snapshot, selected model/access route (except an explicitly
+assignments until an explicit continuation after confirmed cleanup. Raising a
+source constant alone does not resize a saved plan; active version-1 and
+version-2 runs also retain their 512 KiB bound when planning later boundary scopes.
+For a continuation within an
+existing operator budget, pass a timeout clipped to that budget's remaining time;
+regrouping does not authorize a new budget. It does not change the snapshot, selected model/access route (except an explicitly
 requested subscription handoff), per-run concurrency
 limit or review-completion requirements.
 Results accepted during cancellation remain completed, and partial scopes retain

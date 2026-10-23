@@ -172,7 +172,7 @@ def running(tmp_path):
         "root/project",
         {
             "revision": "d" * 40,
-            "entries": [entry(path, size=300_000) for path in ("a/a.py", "b/b.py", "c/c.py")],
+            "entries": [entry(path, size=600_000) for path in ("a/a.py", "b/b.py", "c/c.py")],
         },
         {"model": "example"},
     )
@@ -240,12 +240,21 @@ def test_full_controller_preserves_native_files_and_runs_at_most_two_reviews(run
 
 
 @pytest.mark.parametrize("handoff", [False, True])
-def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(running, handoff):
+@pytest.mark.parametrize("batching_version", [None, 2])
+def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(
+    running, handoff, batching_version
+):
     controller, handle, worker, finish = running
     source = controller.store.get(handle.metadata["scan_id"], "root/project")
-    # A legacy journal has one small scope per folder, with no batch-policy marker.
-    source.pop("batching_version")
-    source["inventory"] = [{**item, "size": 20} for item in source["inventory"]]
+    # Earlier plans retain separate small scopes until an explicit continuation.
+    if batching_version is None:
+        source.pop("batching_version")
+    else:
+        source["batching_version"] = batching_version
+    source["inventory"] = [
+        {**item, "size": 300_000 if batching_version == 2 else 20}
+        for item in source["inventory"]
+    ]
     source["inventory_digest"] = c.inventory_digest(source["inventory"])
     if handoff:
         source["route"] = subscription_route()
@@ -288,7 +297,7 @@ def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(runn
     scopes = [item for item in journal["tasks"].values() if item["kind"] == "files"]
     assert [item["paths"] for item in scopes] == [["a/a.py", "b/b.py", "c/c.py"]]
     assert journal["proofs"] == source["proofs"]
-    assert journal["batching_version"] == 2
+    assert journal["batching_version"] == 3
     for _ in range(6):
         result = controller.poll(resumed)
         if result.status != "running":
@@ -302,7 +311,7 @@ def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(runn
     with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
         manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
         coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
-        assert manifest["batching_version"] == coverage["batching_version"] == 2
+        assert manifest["batching_version"] == coverage["batching_version"] == 3
         assert source["proofs"][0]["archive_sha256"] in {
             item["archive_sha256"] for item in manifest["sources"]
         }
