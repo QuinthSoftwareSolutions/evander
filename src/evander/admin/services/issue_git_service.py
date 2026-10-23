@@ -466,7 +466,11 @@ class IssueGitAdminService:
         session_id, original = self._resolve_session_target(target)
 
         def merge_metadata(manifest: SessionManifest) -> SessionManifest:
-            if manifest.created_at != original.created_at:
+            # Legacy manifests generate a new default timestamp on each read.
+            if (
+                "created_at" in original.model_fields_set
+                and manifest.created_at != original.created_at
+            ):
                 raise ValueError("Session was replaced during metadata update")
             return manifest.model_copy(
                 update={"metadata": session_helpers.deep_merge_mapping(manifest.metadata, metadata)}

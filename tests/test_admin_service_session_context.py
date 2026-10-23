@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,33 @@ def test_session_metadata_noop_does_not_rewrite_the_session_store(
     assert result["success"] is True
     assert result["metadata"]["routing"] == {"enabled": True, "revision": 1}
     assert result["metadata"]["conversation"] == "thread-1"
+
+
+@pytest.mark.parametrize("patch, enabled", [({}, True), ({"routing": {"enabled": False}}, False)])
+def test_session_metadata_updates_accept_manifest_without_creation_timestamp(
+    metadata_service: AdminRuntimeComponents, patch: dict[str, object], enabled: bool
+) -> None:
+    repository = metadata_service.runtime.session_repository
+    payload = json.loads(repository.path.read_text())
+    del payload["session-1"]["created_at"]
+    repository.path.write_text(json.dumps(payload))
+    content = repository.path.read_bytes()
+    before = repository.path.stat()
+
+    result = metadata_service.issue_git_admin.session_update_metadata(
+        target="session-1", metadata=patch
+    )
+
+    assert result["success"] is True
+    assert result["metadata"]["routing"] == {"enabled": enabled, "revision": 1}
+    assert result["metadata"]["conversation"] == "thread-1"
+    stored = JsonSessionManifestRepository(repository.path).get_session("session-1")
+    assert stored is not None
+    assert stored.metadata["routing"] == {"enabled": enabled, "revision": 1}
+    if not patch:
+        assert repository.path.read_bytes() == content
+        after = repository.path.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
 
 
 def test_session_metadata_patch_preserves_concurrent_updates(

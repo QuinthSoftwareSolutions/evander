@@ -3,7 +3,7 @@
 ## 2026-10-23 - Avoid redundant session metadata writes (0.126.1)
 
 - Merge session metadata against the latest manifest under the repository lock and skip unchanged writes on the canonical JSON session store, preserving existing deep-merge rules and response fields.
-- Preserve concurrent manifest updates and reject stale metadata updates after session deletion or replacement.
+- Preserve concurrent manifest updates and reject stale metadata updates after session deletion or replacement. Continue accepting legacy manifests without a saved creation timestamp.
 
 ## 2026-10-23 - Reconcile session policy from workflow settings (0.126.0)
 
