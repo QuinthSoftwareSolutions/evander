@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from heapq import nsmallest
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -370,23 +372,30 @@ class PrFeedbackStore:
             return []
 
         ignored_feedback_ids = exclude_feedback_ids or set()
-        items: list[FeedbackEnvelope] = []
-        for raw_value in feedback_items.values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = FeedbackEnvelope.model_validate(raw_value)
-            if candidate.feedback_id in ignored_feedback_ids:
-                continue
-            if allowed_providers is not None and candidate.provider not in allowed_providers:
-                continue
-            key = (candidate.provider, candidate.repo, candidate.pr_id)
-            if allowed_streams is not None and key not in allowed_streams:
-                continue
-            effective_cursor = after.get(key) if after else None
-            if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
-                continue
-            items.append(candidate)
-        items.sort(key=lambda item: item.created_at)
+
+        def candidates() -> Iterator[FeedbackEnvelope]:
+            for raw_value in feedback_items.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                candidate = FeedbackEnvelope.model_validate(raw_value)
+                if candidate.feedback_id in ignored_feedback_ids:
+                    continue
+                if allowed_providers is not None and candidate.provider not in allowed_providers:
+                    continue
+                key = (candidate.provider, candidate.repo, candidate.pr_id)
+                if allowed_streams is not None and key not in allowed_streams:
+                    continue
+                effective_cursor = after.get(key) if after else None
+                if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
+                    continue
+                yield candidate
+
+        if limit is not None and limit > 0:
+            # Agent feedback tools can request bounded pages.
+            # Keep only that page's models while still validating every row;
+            # nsmallest preserves source order for equal timestamps.
+            return nsmallest(limit, candidates(), key=lambda item: item.created_at)
+        items = sorted(candidates(), key=lambda item: item.created_at)
         if limit is not None:
             return items[:limit]
         return items

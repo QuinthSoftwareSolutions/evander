@@ -34,7 +34,6 @@ def write_json_atomically(
     This only protects the write itself. Read/modify/write callers still need
     their own coordination lock.
     """
-    serialized = json.dumps(payload, indent=2, sort_keys=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         previous_stat = path.stat()
@@ -71,7 +70,10 @@ def write_json_atomically(
             os.fchmod(handle.fileno(), 0o600)
             if previous_stat is not None and os.geteuid() == 0:
                 os.fchown(handle.fileno(), previous_stat.st_uid, previous_stat.st_gid)
-            handle.write(serialized)
+            # Stream encoder chunks into the buffered file. Joining the complete
+            # indented document first retains both its chunks and the final
+            # string, multiplying peak memory for large operational stores.
+            json.dump(payload, handle, indent=2, sort_keys=True)
             handle.flush()
             os.fchmod(handle.fileno(), target_mode)
             os.fsync(handle.fileno())

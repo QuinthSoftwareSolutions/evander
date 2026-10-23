@@ -61,7 +61,8 @@ class ReadOnlyJsonDirectoryRepository:
         return {key: value.model_copy(deep=True) for key, value in self._items.items()}
 
     def get(self, key: str) -> Directory | None:
-        return self.read_all().get(key)
+        directory = self._items.get(key)
+        return directory.model_copy(deep=True) if directory is not None else None
 
     def write_all(self, items: dict[str, Directory]) -> None:
         raise PermissionError("Directory snapshot is read-only")

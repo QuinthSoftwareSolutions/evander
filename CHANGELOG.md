@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-23 - Reduce control-plane processing and memory overhead (0.119.2)
+
+- Copy only the requested directory from immutable configuration snapshots, and retain only the requested PR feedback page while selecting the oldest matching messages.
+- Stream atomic JSON writes and portable index exports instead of retaining complete serialized files, source rows, and SCIP blobs in memory.
+- Reuse source-line widths during code-index range validation and use a linear cycle check for valid workflow graphs.
+- Defer workflow binding graph analysis until bindings need it, reuse cached worker log projections during append and outcome evaluation, and bound raw log pagination allocations to the requested page.
+
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
 - Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.
