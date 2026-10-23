@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.codex_auth import CodexAuthMode
+from evander.codex_auth import CodexAuthMode, legacy_worker_model_capacity_deferral
 from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
@@ -17,7 +17,8 @@ from evander.triggers.queue import SqliteTriggerEventQueue
 
 
 class Backend:
-    def __init__(self):
+    def __init__(self, *, legacy=False):
+        self.legacy = legacy
         self.repository = SimpleNamespace(read_all=lambda: {})
         self.started = []
         self.destroyed = []
@@ -29,6 +30,15 @@ class Backend:
                 "codex_subscription_deferral": {"profile_id": "team-a", "reason": "model_capacity"},
             },
         )
+        if legacy:
+            self.status.metadata.pop("codex_subscription_deferral")
+            self.status.metadata.update(
+                {
+                    "codex_auth_mode": "chatgpt_subscription",
+                    "codex_subscription_exit_code": 1,
+                    "subscription_profile_id": "team-a",
+                }
+            )
 
     def prepare(self, spec):
         return spec
@@ -44,7 +54,10 @@ class Backend:
         self.destroyed.append(execution_id)
 
     def get_log_snapshot(self, execution_id, *, lines=50):
-        return "session id: native-current-thread\nFix committed; ready to publish.\n"
+        logs = "session id: native-current-thread\nFix committed; ready to publish.\n"
+        if self.legacy and self.status.status == ExecutionStatusKind.FAILED:
+            logs += "codex error: Selected model is at capacity. Please try a different model.\n"
+        return logs
 
 
 def worker_at(tmp_path, published):
@@ -124,9 +137,12 @@ def waiting_record():
     )
 
 
-def test_model_capacity_recovery_resumes_current_thread_once_after_restart(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_model_capacity_recovery_resumes_current_thread_once_after_restart(
+    tmp_path, monkeypatch, legacy
+):
     published = []
-    backend = Backend()
+    backend = Backend(legacy=legacy)
     for module in ("agent_prompt", "lifecycle_hooks"):
         monkeypatch.setattr(
             f"evander.effects.providers.{module}.build_execution_backend",
@@ -256,3 +272,27 @@ def test_queued_capacity_deadline_expires_without_launching_after_restart(tmp_pa
     assert len(failed) == 1
     assert failed[0].outputs["retry_exhausted"] is True
     assert worker.queued_agent_prompt_store.read_all() == {}
+
+
+@pytest.mark.parametrize(
+    "metadata,logs",
+    [
+        ({"codex_subscription_exit_code": 0}, "codex error: Selected model is at capacity."),
+        ({"codex_auth_mode": "metered_api"}, "codex error: Selected model is at capacity."),
+        ({"subscription_profile_id": None}, "codex error: Selected model is at capacity."),
+        ({}, "Tool output: Selected model is at capacity."),
+        ({}, "codex error: Selected model is at capacity.\ncodex error: Invalid configuration."),
+        (
+            {"codex_subscription_deferral": {"reason": "rate_limited"}},
+            "codex error: Selected model is at capacity.",
+        ),
+    ],
+)
+def test_legacy_compatibility_requires_failed_subscription_and_last_native_error(metadata, logs):
+    worker_metadata = {
+        "codex_auth_mode": "chatgpt_subscription",
+        "codex_subscription_exit_code": 1,
+        "subscription_profile_id": "team-a",
+        **metadata,
+    }
+    assert legacy_worker_model_capacity_deferral(worker_metadata, logs) is None

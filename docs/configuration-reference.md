@@ -1558,7 +1558,10 @@ When the budget is exhausted, history records a failed execution with
 `retry_exhausted`, `retry_count`, `max_retries` and `retry_deadline`; completion
 reports `success: false` and uses the connected `error` branch. An expired queued
 retry fails before another worker job starts. The model and billing route remain
-unchanged. Deploy both control-plane and worker code for this behavior.
+unchanged. Deploy the control plane first: it also recognizes an older failed
+subscription worker's last explicit native capacity error, allowing the worker
+upgrade to wait for active jobs. Successful jobs and ordinary tool output do not
+trigger this compatibility path. Updated workers return a structured reason.
 
 Codex container-worker prompts that fail because the completed worker execution
 is marked context exhausted are retried once with deterministic reduced context

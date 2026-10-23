@@ -21,7 +21,7 @@ from evander.admin.services.issue_setup_helpers import (
 )
 from evander.agent_control import AgentControlStore
 from evander.agent_threads import usable_agent_thread_id
-from evander.codex_auth import CodexSubscriptionDeferral
+from evander.codex_auth import CodexSubscriptionDeferral, legacy_worker_model_capacity_deferral
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_session import (
     container_codex_turn_spec,
@@ -1406,6 +1406,18 @@ class HostWakeDispatcher:
                 if isinstance(metadata, Mapping)
                 else None
             )
+            if (
+                raw_deferral is None and isinstance(metadata, Mapping)
+                and metadata.get("codex_auth_mode") == "chatgpt_subscription"
+                and metadata.get("codex_subscription_exit_code") in (1, "1")
+            ):
+                try:
+                    logs = backend.get_log_snapshot(execution_id, lines=40)
+                except Exception:
+                    logs = ""
+                legacy_deferral = legacy_worker_model_capacity_deferral(metadata, logs)
+                if legacy_deferral is not None:
+                    raw_deferral = legacy_deferral.model_dump()
             if isinstance(raw_deferral, Mapping) and prompt:
                 try:
                     deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)

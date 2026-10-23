@@ -16,7 +16,7 @@ from evander.agent_context_retry import (
     context_retry_target_chars,
 )
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
-from evander.codex_auth import CodexSubscriptionDeferral
+from evander.codex_auth import CodexSubscriptionDeferral, legacy_worker_model_capacity_deferral
 from evander.config import GatewayConfig
 from evander.cost_categories import dispatch_with_cost_context, freeze_prompt_cost_category
 from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY, TriggerEvent
@@ -1057,6 +1057,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
             logs = backend.get_log_snapshot(execution_id, lines=400)
         except Exception:
             logs = ""
+        legacy_deferral = legacy_worker_model_capacity_deferral(
+            getattr(status, "metadata", None), logs
+        )
+        if legacy_deferral is not None and cls._defer_subscription_waiting_record(
+            worker=worker, record=record, backend=backend, status=status,
+            session_id=session_id, execution_id=execution_id, deferral=legacy_deferral,
+        ):
+            return 1
         failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(
             getattr(status, "metadata", None)
         )
@@ -1098,17 +1106,19 @@ class AgentPromptEffectProvider(EffectProviderBase):
         status: Any,
         session_id: str,
         execution_id: str,
+        deferral: CodexSubscriptionDeferral | None = None,
     ) -> bool:
         metadata = getattr(status, "metadata", None)
         raw_deferral = (
             metadata.get("codex_subscription_deferral") if isinstance(metadata, Mapping) else None
         )
-        if not isinstance(raw_deferral, Mapping):
-            return False
-        try:
-            deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
-        except ValueError:
-            return False
+        if deferral is None:
+            if not isinstance(raw_deferral, Mapping):
+                return False
+            try:
+                deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
+            except ValueError:
+                return False
         runtime_dir = resolve_runtime_dir(worker)
         prompt = cls._record_text_value(record, "prompt")
         if runtime_dir is None or not prompt:

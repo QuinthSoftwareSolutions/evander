@@ -5,6 +5,7 @@
 - Recognize temporary Codex model-capacity and explicit server-overload errors separately from subscription quota exhaustion. Durably resume the same session and native conversation without changing the selected model, billing route or dispatch identity.
 - Retry up to eight times within one hour with jittered exponential backoff capped at fifteen minutes. Preserve the retry budget across restarts and repeated reconciliation; model overload does not pause other models on the same subscription.
 - Report exhausted retries as failed workflow executions, publish failure completion, and use the configured error branch. Expire overdue queued retries before launching another worker job.
+- Activate retries on older workers through their last explicit native capacity error so worker upgrades can wait for live model brokers to become idle.
 
 ## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
 

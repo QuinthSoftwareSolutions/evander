@@ -838,8 +838,10 @@ No model or billing-route fallback occurs. Retries use jittered exponential
 backoff, up to eight retries within one hour, capped at fifteen minutes between
 attempts. Their budget survives restarts. Exhaustion publishes a failed completion
 and a failed workflow-history record, routing the configured error edge when one
-exists. Deploy and restart both the control plane and worker daemon; an older
-worker cannot classify these errors for durable replay.
+exists. Deploy the control plane first; it can also recognize the last explicit
+native capacity error of a failed subscription turn from an older worker.
+Upgrade and restart the worker when its live model brokers are idle. This lets
+retry handling activate without interrupting existing long-running jobs.
 
 ## Session Durability
 
