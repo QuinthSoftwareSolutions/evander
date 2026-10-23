@@ -140,6 +140,14 @@ class AgentCreateEffectProvider(EffectProviderBase):
         payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
         payload["_codex_auth_mode_provided"] = codex_auth_mode_provided
         payload["_subscription_profile_id_provided"] = subscription_profile_id_provided
+        if (
+            isinstance(effect.subscription_profile_id, str)
+            and "${{" in effect.subscription_profile_id
+        ):
+            # A missing bound profile must not silently select the legacy default.
+            payload["subscription_profile_id"] = normalize_subscription_profile_id(
+                payload.get("subscription_profile_id"), allow_none=False
+            )
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"

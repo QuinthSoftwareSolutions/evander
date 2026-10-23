@@ -21,6 +21,7 @@ from evander.codex_auth import (
     normalize_subscription_quota_limit_id,
     normalize_subscription_quota_window_minutes,
 )
+from evander.codex_capacity import subscription_rate_limit_state
 from evander.models import AuditEvent
 from evander.repositories.session_manifests import SessionManifestRepository
 from evander.subscription_profile_bindings import subscription_profile_binding_lock
@@ -546,31 +547,8 @@ class CodexAuthAdminService:
             and bool(profile.get("signed_in"))
         ):
             return False
-        rate_limits = profile.get("rate_limits")
-        if not isinstance(rate_limits, dict):
-            return True
-        buckets: list[dict[str, Any]] = []
-        default = rate_limits.get("default")
-        if isinstance(default, dict):
-            buckets.append(default)
-        by_limit_id = rate_limits.get("by_limit_id")
-        if isinstance(by_limit_id, dict):
-            buckets.extend(
-                bucket for bucket in by_limit_id.values() if isinstance(bucket, dict)
-            )
-        for bucket in buckets:
-            if bucket.get("rate_limit_reached_type"):
-                return False
-            for window_name in ("primary", "secondary"):
-                window = bucket.get(window_name)
-                if not isinstance(window, dict):
-                    continue
-                try:
-                    if float(window.get("used_percent")) >= 100:
-                        return False
-                except (TypeError, ValueError):
-                    continue
-        return True
+        rate_limited, _retry_at = subscription_rate_limit_state(profile.get("rate_limits"))
+        return not rate_limited
 
     def _wake(self) -> None:
         wake = self._deps.wake_reconciliation

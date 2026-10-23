@@ -294,7 +294,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     )
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
-    # Profile assignment is an immutable editor selector, never a runtime binding.
+    # Bindings select a profile for this session; resolved values remain validated slugs.
     subscription_profile_id: str | None = None
     vm_user: ConfigValue | None = None
     vm_image: ConfigValue | None = None
@@ -341,6 +341,8 @@ class AgentCreateEffectDefinition(EffectDefinition):
     @field_validator("subscription_profile_id", mode="before")
     @classmethod
     def normalize_subscription_profile_id_field(cls, value: object) -> str | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
         return normalize_subscription_profile_id(value)
 
     @field_validator("npm_registry_url", mode="before")

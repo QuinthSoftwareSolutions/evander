@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Preserve resumed scan subscriptions and admit purchased capacity (0.124.1)
+
+- Allow agent-creation workflows to bind the saved subscription profile when resuming a scan. Validate the resolved profile on its selected worker and reject missing bindings instead of falling back to the legacy default; ordinary resumes retain strict scan configuration compatibility.
+- Use one capacity decision for worker admission and queued-prompt recovery: existing purchased usage credits can cover exhausted included windows in the same rate-limit bucket. Explicit provider rate/spend blocks, account pins and profile isolation remain enforced; no reset credit is read or redeemed by this decision.
+
 ## 2026-10-23 - Discover Azure DevOps builds by number (0.124.0)
 
 - Add the read-only `list_ado_builds` MCP tool with build-number, pipeline, repository and branch filters, bounded pages and continuation tokens. Return build IDs, pipeline and repository identities, source details and URLs so callers can distinguish builds that share a number.

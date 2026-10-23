@@ -1413,12 +1413,15 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
-`effect:agent:create.subscription_profile_id` is a non-bindable profile
-slug. It is valid only with `execution_backend: container_worker_vm`,
+`effect:agent:create.subscription_profile_id` accepts a literal profile slug or
+a workflow binding. It is valid only with `execution_backend: container_worker_vm`,
 `agent_provider: codex`, `model_provider_mode: openai_public`, and
 `codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
 enabled option from the node's effective worker; directory configuration does
-not default, grant, or restrict the list. The session persists the selection.
+not default, grant, or restrict the list. A binding must resolve to a nonempty,
+valid slug for an enabled profile on that worker. A missing, empty, disabled or
+unresolved bound profile fails rather than selecting the legacy default. The
+session persists the selection.
 Omitting the field on an existing-agent upsert preserves its current profile.
 An upsert can select another enabled profile, and setting `codex_auth_mode` to
 `metered_api` clears the stored profile. Legacy profile-less subscription
@@ -1427,6 +1430,16 @@ agents in Admin Web require a named selection. Workers do not create an empty
 Default profile. Admin Web can delete an unused profile and its saved worker
 login after active jobs, queued prompts, and unexpired session bindings have
 been removed. Deleted profiles are not recreated on worker restart.
+
+For a tracked scan resume, authorize the source scan in the requesting directory
+and channel, then bind the scanner's profile from its retained
+`query:security:scan.execution_configuration.subscription_profile_id` rather than
+the workflow's current new-scan default. Preserve the other retained execution
+settings and snapshot. Leave `resume_subscription_profile_id` unset for this
+ordinary same-subscription resume; it is only for an explicitly authorized
+subscription handoff. A bound profile does not relax the scan's snapshot,
+configuration, cleanup or idempotency checks. Operator-owned channel workflows
+must update their selection logic and scanner node to use this binding.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime

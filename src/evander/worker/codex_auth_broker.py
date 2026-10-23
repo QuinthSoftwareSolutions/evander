@@ -454,6 +454,11 @@ def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
         "primary": _safe_rate_limit_window(value.get("primary")),
         "secondary": _safe_rate_limit_window(value.get("secondary")),
         "rate_limit_reached_type": value.get("rateLimitReachedType"),
+        "spend_control_reached": (
+            value.get("spendControlReached")
+            if isinstance(value.get("spendControlReached"), bool)
+            else None
+        ),
     }
 
 
