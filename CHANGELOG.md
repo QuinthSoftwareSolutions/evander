@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
+
+- Add the optional, bindable `resume_subscription_profile_id` input for a deliberately requested ChatGPT-subscription handoff on a linked tracked-coverage resume. It must match the new scanner session; ordinary resumes still require the original profile.
+- Preserve exact snapshot, inventory, repository access, policy/SDK, model, reasoning, Cyber program and image compatibility checks, plus repository reservations, cleanup and idempotent recovery. Reject API-billing conversions and route changes during a run.
+- Release Codex Security add-on 0.2.0 with immutable-source reuse and a handoff receipt in the new aggregate manifest and coverage ledger. The pinned SDK and scanner-image runtime are unchanged.
+
 ## 2026-10-22 - Pack tracked security reviews across folders (0.121.2)
 
 - Pack adjacent paths and small non-text entries into bounded review scopes instead of starting a job for each folder or non-text file. Preserve the 100-entry and 512 KiB text limits, intact oversized files and explicit non-text review requirements.

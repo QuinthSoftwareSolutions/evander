@@ -41,6 +41,15 @@ def state(paths=("src/a.py", "src/b.py", "tests/a.py"), *, file_size=20):
     )
 
 
+def subscription_route(profile="subscription-a"):
+    return {
+        "model": "security-model", "reasoning_effort": "high",
+        "model_provider_mode": "openai_public", "auth_mode": "chatgpt_subscription",
+        "subscription_profile_id": profile, "cyber_access_program": "daybreak_blue",
+        "image": "security-runner:pinned", "image_alias": "security-scan",
+    }
+
+
 def receipt(s, item, *, closed=True, **kwargs):
     return {
         "kind": item["kind"],
@@ -389,6 +398,122 @@ def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
         c.make_state(
             "c" * 32, request(), "root/project", inventory, {"model": "another"}, previous=s
         )
+
+
+@pytest.mark.parametrize("destination", ["subscription-a", "subscription-b"])
+def test_subscription_handoff_retains_credit_findings_and_immutable_source(destination):
+    s = state(("a/a.py", "b/a.py"), file_size=300_000)
+    s["route"] = subscription_route()
+    mapping(s)
+    item = c.pending(s)[0]
+    attempt = c.begin(s, item)
+    finding = {"findingId": "native-finding", "title": "Unchecked input", "severity": {"level": "high"}}
+    c.accept(s, item, attempt["scan_id"], receipt(s, item), proof(findings=[finding]))
+    attempt["cleanup_confirmed"] = True
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True, stop_reason="Quota exhausted")
+    before = deepcopy(s)
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=destination),
+        "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+        subscription_route(destination), previous=s,
+    )
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert c.progress(resumed)["files_pending"] == 1
+    assert c.aggregate(resumed)[1]["high"] == 1
+    assert resumed["proofs"] == s["proofs"]
+    assert resumed["inventory_digest"] == s["inventory_digest"]
+    assert resumed["architecture"] == s["architecture"]
+    assert resumed["subscription_handoff"] == {
+        "source_scan_id": s["scan_id"],
+        "source_subscription_profile_id": "subscription-a",
+        "destination_subscription_profile_id": destination,
+    }
+    assert resumed["stop_reason"] is None and resumed["lineage"] == [s["scan_id"]]
+    assert s == before
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("change", [
+    {"model": "different-model"}, {"reasoning_effort": "low"},
+    {"cyber_access_program": None}, {"image": "different:image"}, {"image_alias": "different"},
+    {"model_provider_mode": "azure"}, {"auth_mode": "api_key"},
+    {"future_access_setting": "different"},
+])
+def test_resume_preserves_every_other_route_setting(explicit, change):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    profile = "subscription-b" if explicit else "subscription-a"
+    with pytest.raises(ValueError, match="configuration|subscription routes"):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=profile if explicit else None),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            {**subscription_route(profile), **change}, previous=s,
+        )
+
+
+@pytest.mark.parametrize("source_change, destination, explicit", [
+    ({}, "subscription-b", None),  # The default remains strict.
+    ({}, "subscription-c", "subscription-b"),
+    ({"auth_mode": "api_key"}, "subscription-b", "subscription-b"),
+    ({"model_provider_mode": "azure"}, "subscription-b", "subscription-b"),
+    ({"subscription_profile_id": None}, "subscription-b", "subscription-b"),
+])
+def test_resume_cannot_select_an_unrequested_profile_or_convert_api_billing(source_change, destination, explicit):
+    s = state()
+    s.update(
+        route={**subscription_route(), **source_change},
+        finished_at=c.now().isoformat(), cleanup_confirmed=True,
+    )
+    before = deepcopy(s)
+    with pytest.raises(ValueError):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=explicit),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            subscription_route(destination), previous=s,
+        )
+    assert s == before
+
+
+@pytest.mark.parametrize("condition", [
+    "active", "expired", "cleanup", "complete", "revision", "inventory", "directory", "repository", "sdk", "policy",
+])
+def test_handoff_cannot_bypass_snapshot_access_policy_or_cleanup_validation(condition):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    inventory = {"revision": s["revision"], "entries": s["inventory"]}
+    directory, repo = "root/project", s["managed_repo_id"]
+    if condition == "revision":
+        inventory = {**inventory, "revision": "e" * 40}
+    elif condition == "inventory":
+        inventory = {**inventory, "entries": [entry("changed.py")]}
+    elif condition == "directory":
+        directory = "root/other"
+    elif condition == "repository":
+        repo = "other-repository"
+    elif condition == "sdk":
+        s["sdk_version"] = "incompatible"
+    elif condition == "policy":
+        s["version"] += 1
+    elif condition == "complete":
+        mapping(s)
+        for _ in range(5):
+            for item in c.pending(s):
+                finish(s, item)
+            c.plan_boundaries(s)
+        assert c.complete(s)
+    elif condition == "active":
+        s["finished_at"] = None
+    elif condition == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    else:
+        s["cleanup_confirmed"] = False
+    inputs = request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id="subscription-b")
+    inputs = inputs.model_copy(update={"managed_repo_id": repo})
+    with pytest.raises(ValueError):
+        c.make_state("b" * 32, inputs, directory, inventory, subscription_route("subscription-b"), previous=s)
 
 
 @pytest.mark.parametrize("condition", ["active", "expired", "cleanup"])

@@ -3523,6 +3523,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("coverage_policy", "Coverage policy", "enum", bindable=True, default_value="provider", options=[_field_option("provider", "Provider coverage"), _field_option("all_tracked_files", "Every tracked file (Standard full snapshot)")]),
             _field("managed_repo_id", "Managed repository ID", "string", bindable=True, description="Required for tracked coverage; must match the session checkout."),
             _field("resume_from_scan_id", "Resume from scan ID", "string", bindable=True, description="Reuse accepted coverage at the earlier scan's original snapshot."),
+            _field("resume_subscription_profile_id", "Resume subscription profile ID", "string", bindable=True, description="Explicitly allow this destination ChatGPT subscription on a linked resume. Must match the new scanner session; all other access, model and snapshot settings must match the source."),
             _field("session_id", "Session ID", "string", required=True, bindable=True),
             _field(
                 "repo_path", "Repository path", "string", required=True, bindable=True,

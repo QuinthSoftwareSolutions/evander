@@ -44,6 +44,7 @@ RUNNER = "/opt/evander/codex-security/runner.py"
 
 class CodexSecurityScanProvider:
     coverage_policies = frozenset({"provider", "all_tracked_files"})
+    supports_subscription_handoff = True
 
     @staticmethod
     def describe(**kwargs):
