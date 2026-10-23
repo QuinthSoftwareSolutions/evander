@@ -6,6 +6,7 @@
 - Retry up to eight times within one hour with jittered exponential backoff capped at fifteen minutes. Preserve the retry budget across restarts and repeated reconciliation; model overload does not pause other models on the same subscription.
 - Report exhausted retries as failed workflow executions, publish failure completion, and use the configured error branch. Expire overdue queued retries before launching another worker job.
 - Activate retries on older workers through their last explicit native capacity error so worker upgrades can wait for live model brokers to become idle.
+- Preserve scheduled-wake completion and directory scope when queued retries expire. Restore accepted worker executions and their real outcomes after interruption before reporting deadline failure, and use effective models for subscription FIFO ordering.
 
 ## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
 

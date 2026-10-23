@@ -412,11 +412,14 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             current_index = ordered.index(queue_key)
         except ValueError:
             return False
+        current_model = self._effective_queued_model(worker=worker, record=current)
         for key in ordered[:current_index]:
             earlier = records[key]
             if (
                 getattr(earlier, "queue_reason", None) == MODEL_CAPACITY_QUEUE_REASON
-                and getattr(earlier, "model", None) != getattr(current, "model", None)
+                and (earlier_model := self._effective_queued_model(worker=worker, record=earlier))
+                and current_model
+                and earlier_model != current_model
             ):
                 continue
             earlier_context = self._runnable_subscription_profile_context(
@@ -426,6 +429,23 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             if earlier_context == (profile_id, worker_url):
                 return True
         return False
+
+    def _effective_queued_model(self, *, worker: Any, record: Any) -> str | None:
+        captured = str(getattr(record, "model", None) or "").strip()
+        if captured:
+            return captured
+        context = self._container_record_session_context(worker=worker, record=record)
+        if context is None:
+            return None
+        _session_id, session, config = context
+        from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        harness = AgentPromptEffectProvider._agent_harness_from_session(session, config=config)
+        return str(
+            getattr(record, "model", None)
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(harness, config)
+        ).strip() or None
 
     def _runnable_subscription_profile_context(
         self,
@@ -491,7 +511,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         return retry_at.astimezone(UTC) <= datetime.now(UTC)
 
     def _fail_expired_model_capacity_retry(
-        self, *, worker: Any, queue_store: Any, record: Any
+        self, *, worker: Any, queue_store: Any, record: Any, session: Any
     ) -> bool:
         if record.queue_reason != MODEL_CAPACITY_QUEUE_REASON:
             return False
@@ -511,13 +531,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if existing is not None and existing.status in {"running", "waiting"}:
             return False
         if existing is None:
+            restored_metadata = self._queued_prompt_restored_metadata(record)
             payload = {
                 "target": record.target,
                 "session_id": record.session_id,
                 "vm_name": record.vm_name,
                 "prompt": record.prompt,
                 "model": record.model,
-                **self._queued_prompt_restored_metadata(record),
+                "directory_path": getattr(session, "directory_path", None) or "root",
+                "vm_user": record.vm_user,
+                "queue_key": record.queue_key,
+                **restored_metadata,
             }
             self._restore_workflow_context(input_payload=payload, record=record)
             execution = EffectExecutionRecord(
@@ -535,7 +559,12 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 resolved_config_hash=self._json_sha256(payload),
                 resolved_config=payload,
                 input_payload=payload,
-                outputs={"dispatch_id": dispatch_id, "session_id": record.session_id},
+                outputs={
+                    "dispatch_id": dispatch_id,
+                    "session_id": record.session_id,
+                    "queue_key": record.queue_key,
+                    **restored_metadata,
+                },
                 config_revision=getattr(worker, "_last_graph_revision", None),
             )
             AgentPromptEffectProvider._fail_model_capacity_retry(
@@ -548,6 +577,111 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         self._delete_queue_record_if_current(
             queue_store=queue_store, queue_key=record.queue_key, dispatch_id=dispatch_id
         )
+        return True
+
+    def _recover_accepted_capacity_retry(
+        self, *, worker: Any, queue_store: Any, record: Any, backend: Any, session: Any, config: Any
+    ) -> bool:
+        """Restore the waiting row lost after a worker accepted this replay."""
+        dispatch_id = self._dispatch_id_for_queue_record(record)
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=record.queue_key, dispatch_id=dispatch_id, record=record
+        )
+        execution_key = f"{event_id}::{record.effect_id}"
+        if worker.execution_store.find_execution_by_idempotency_key(execution_key) is not None:
+            return False
+        repository = getattr(backend, "repository", None)
+        list_by_session = getattr(repository, "list_by_session", None)
+        if callable(list_by_session):
+            mappings = list_by_session(session.session_id)
+        else:
+            read_all = getattr(repository, "read_all", None)
+            mappings = list(read_all().values()) if callable(read_all) else []
+        matches = []
+        directory_path = getattr(session, "directory_path", None) or "root"
+        failed_id = record.metadata.get("model_capacity_failed_execution_id")
+        for mapping in mappings:
+            metadata = getattr(mapping, "metadata", {})
+            if (
+                mapping.session_id != session.session_id
+                or getattr(mapping, "directory_path", None) != directory_path
+                or mapping.execution_id == failed_id
+                or metadata.get("dispatch_id") != dispatch_id
+                or metadata.get("queued") is not True
+                or (
+                    record.subscription_profile_id is not None
+                    and metadata.get("subscription_profile_id") != record.subscription_profile_id
+                )
+                or (record.model and metadata.get("model") != record.model)
+            ):
+                continue
+            accepted_key = metadata.get("queued_prompt_execution_key_sha256")
+            if accepted_key is not None:
+                if accepted_key != hashlib.sha256(execution_key.encode()).hexdigest():
+                    continue
+            else:
+                # Older deployments did not stamp the exact attempt. Require a
+                # replay queue key and a mapping created after this deferral,
+                # excluding previous failed/successful attempts of the dispatch.
+                created_at = getattr(mapping, "created_at", None)
+                if not isinstance(created_at, datetime):
+                    continue
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                if (
+                    record.queue_key != agent_prompt_replay_queue_key(record)
+                    or created_at < record.updated_at
+                ):
+                    continue
+            matches.append(mapping)
+        if len(matches) != 1:
+            return False
+        mapping = matches[0]
+        metadata = mapping.metadata
+        restored = record.model_copy(deep=True)
+        for field in (
+            "model",
+            "reasoning_effort",
+            "reasoning_effort_source",
+            "fast_mode",
+            "fast_mode_source",
+        ):
+            if field in metadata:
+                setattr(restored, field, metadata[field])
+        from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        harness = AgentPromptEffectProvider._agent_harness_from_session(session, config=config)
+        claim = self._claim_enqueue_prompt_for_record(
+            worker=worker,
+            record=record,
+            queue_key=record.queue_key,
+            dispatch_id=dispatch_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+        )
+        if not self._record_container_waiting_execution(
+            worker=worker,
+            record=restored,
+            queue_key=record.queue_key,
+            session=session,
+            session_id=session.session_id,
+            dispatch_id=dispatch_id,
+            execution_id=mapping.execution_id,
+            model=metadata.get("model")
+            or self._effective_queued_model(worker=worker, record=record),
+            agent_harness=harness,
+            effective_resume_thread_id=usable_agent_thread_id(metadata.get("resume_thread_id")),
+            prompt_lock_metadata=self._prompt_lock_metadata_from_claim(claim),
+        ):
+            return False
+        if self._mark_queued_operator_steering_delivered(
+            worker=worker,
+            record=record,
+            worker_execution_id=mapping.execution_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+        ):
+            self._delete_queue_record_if_current(
+                queue_store=queue_store, queue_key=record.queue_key, dispatch_id=dispatch_id
+            )
         return True
 
     @classmethod
@@ -901,13 +1035,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
         session_id, session, config = context
 
-        retain_for_subscription_capacity = self._is_subscription_capacity_deferral(record)
-        if self._queued_prompt_session_is_expired(
+        model_capacity = record.queue_reason == MODEL_CAPACITY_QUEUE_REASON
+        capacity_deadline = model_capacity_retry_deadline(record.metadata) if model_capacity else None
+        retain_for_capacity = self._is_subscription_capacity_deferral(record)
+        if not model_capacity and self._queued_prompt_session_is_expired(
             queue_key=queue_key,
             session=session,
-            retain=retain_for_subscription_capacity,
+            retain=retain_for_capacity,
         ):
-            if not retain_for_subscription_capacity:
+            if not retain_for_capacity:
                 self._delete_queue_record_if_current(
                     queue_store=queue_store,
                     queue_key=queue_key,
@@ -931,6 +1067,29 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 admin_service=admin_service,
             )
         except Exception:
+            return False
+
+        if model_capacity and self._recover_accepted_capacity_retry(
+            worker=worker, queue_store=queue_store, record=record, backend=backend,
+            session=session, config=config,
+        ):
+            return True
+        if capacity_deadline is not None and capacity_deadline <= datetime.now(UTC):
+            # A worker may have accepted this replay before a crash prevented
+            # its waiting record from being saved. Preserve that accepted work
+            # until the existing live-backend guard can establish it is idle.
+            if AgentEnqueuePromptEffectProvider.container_session_is_busy_for_backend(
+                backend=backend, session_id=session_id
+            ):
+                return False
+            return self._fail_expired_model_capacity_retry(
+                worker=worker, queue_store=queue_store, record=record, session=session
+            )
+        if model_capacity and self._queued_prompt_session_is_expired(
+            queue_key=queue_key, session=session, retain=True
+        ):
+            # An expired session may still own an accepted job above. Retain
+            # genuinely unstarted work until its retry budget can fail it.
             return False
 
         delivery_metadata = getattr(record, "metadata", {})
@@ -1129,6 +1288,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                     ),
                                     "resume_thread_id": effective_resume_thread_id,
                                     "queued": True,
+                                    "queued_prompt_execution_key_sha256": hashlib.sha256(
+                                        (
+                                            self._queued_prompt_execution_event_id(
+                                                queue_key=queue_key,
+                                                dispatch_id=dispatch_id,
+                                                record=record,
+                                            ) + f"::{record.effect_id}"
+                                        ).encode()
+                                    ).hexdigest(),
                                 },
                             )
                         )
@@ -2404,12 +2572,6 @@ class _QueuedPromptDispatch:
             if record is None:
                 continue
             if not self.hook._validate_queue_ownership(self.worker, record):
-                continue
-            if self.hook._fail_expired_model_capacity_retry(
-                worker=self.worker, queue_store=self.queue_store, record=record
-            ):
-                self.dispatched += 1
-                self.all_snapshot = self.queue_store.read_all()
                 continue
             if not self.hook._retry_not_before_ready(record):
                 continue

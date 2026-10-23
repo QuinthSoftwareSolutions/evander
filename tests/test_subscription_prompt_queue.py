@@ -340,21 +340,22 @@ def test_subscription_queue_is_fifo_per_profile_and_effective_worker() -> None:
     )
 
 
-def test_model_capacity_queue_does_not_block_other_models_on_the_same_subscription():
+@pytest.mark.parametrize("newer_model,blocked", [("model-b", False), (None, True), ("gpt-5.4", True)])
+def test_model_capacity_fifo_uses_effective_models(newer_model, blocked):
     now = datetime.now(UTC)
     records = {
         "older": _record(queue_key="older", profile_id="team-a", created_at=now),
         "newer": _record(queue_key="newer", profile_id="team-a", created_at=now + timedelta(seconds=1)),
     }
-    records["older"].model = "model-a"
+    records["older"].model = "gpt-5.4"
     records["older"].queue_reason = "model_capacity"
-    records["newer"].model = "model-b"
+    records["newer"].model = newer_model
     worker = _fifo_worker(
         sessions={key: _fifo_session(key, profile_id="team-a", subscription=True) for key in records},
         worker_urls={key: "http://worker-a.test" for key in records},
     )
     hook = AgentEnqueuePromptQueueDispatchHook()
-    assert not hook._has_earlier_subscription_profile_record(worker=worker, records=records, queue_key="newer")
+    assert hook._has_earlier_subscription_profile_record(worker=worker, records=records, queue_key="newer") is blocked
     records["older"].queue_reason = "subscription_rate_limited"
     assert hook._has_earlier_subscription_profile_record(worker=worker, records=records, queue_key="newer")
 
