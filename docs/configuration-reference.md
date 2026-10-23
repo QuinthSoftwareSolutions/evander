@@ -117,6 +117,13 @@ and `communication_copy_artifact_to_workspace`, plus `communication_file_receive
 in its session or effective directory policy. Existing file size/type limits apply. See the
 [image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
 
+Azure DevOps build discovery requires `list_ado_builds` in the session's `allowed_tools`.
+The separate `get_ado_build` and `list_ado_build_work_items` grants allow inspection of a
+selected build. These read tools use the session directory's `azure_devops_organization_url`,
+`azure_devops_project` and host-side `azure_devops_pat_env`; they accept no credential or
+project override. No agent receives the new grant automatically. See
+[build read tools](operations.md#host-side-azure-devops-build-read-tools) for filters and paging.
+
 For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachments`,
 `download_pr_feedback_attachment`, and `communication_copy_artifact_to_workspace`. The same
 `communication_file_receive_enabled`, `communication_file_max_bytes`, MIME, extension, and blocked

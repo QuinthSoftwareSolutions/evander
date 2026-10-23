@@ -90,6 +90,65 @@ class AdoBuildClient:
             raise AdoBuildError("Azure DevOps returned an invalid build list")
         return builds, continuation
 
+    def search_builds(
+        self,
+        *,
+        build_number: str | None = None,
+        pipeline_id: int | str | None = None,
+        repository_id: str | None = None,
+        branch: str | None = None,
+        limit: int = 25,
+        continuation_token: str | None = None,
+    ) -> dict[str, Any]:
+        top = positive_id(limit, "limit")
+        if top > 100:
+            raise ValueError("limit must be at most 100")
+        params: dict[str, Any] = {"$top": top, "queryOrder": "queueTimeDescending"}
+        for name, parameter, value in (
+            ("build_number", "buildNumber", build_number),
+            ("repository_id", "repositoryId", repository_id),
+            ("branch", "branchName", branch),
+        ):
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} must be a non-empty string")
+                params[parameter] = value.strip()
+        if pipeline_id is not None:
+            params["definitions"] = positive_id(pipeline_id, "pipeline_id")
+        if continuation_token is not None:
+            if not isinstance(continuation_token, str) or not continuation_token.strip():
+                raise ValueError("continuation_token must be a non-empty string")
+            params["continuationToken"] = continuation_token
+
+        builds, continuation = self.list_builds(**params)
+        if len(builds) > top:
+            raise AdoBuildError("Azure DevOps returned more builds than requested")
+        matches = []
+        for build in builds:
+            definition = build.get("definition") or {}
+            repository = build.get("repository") or {}
+            if not isinstance(definition, dict) or not isinstance(repository, dict):
+                raise AdoBuildError("Azure DevOps returned invalid build identity data")
+            matches.append(
+                {
+                    **self.output(build),
+                    "pipeline_id": (
+                        str(positive_id(definition["id"], "pipeline id"))
+                        if definition.get("id") is not None
+                        else None
+                    ),
+                    "pipeline_name": definition.get("name"),
+                    "repository_id": repository.get("id"),
+                    "repository_name": repository.get("name"),
+                }
+            )
+        return {
+            "project": self.project,
+            "builds": matches,
+            "count": len(matches),
+            "continuation_token": continuation or None,
+        }
+
     def output(self, build: Mapping[str, Any]) -> dict[str, Any]:
         run_id = positive_id(build.get("id"), "build id")
         status = str(build.get("status") or "").lower()

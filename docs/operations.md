@@ -1875,9 +1875,23 @@ A transport-terminated warning without client-visible failure can be expected fo
 
 ## Host-Side Azure DevOps Build Read Tools
 
-- Grant `get_ado_build` and `list_ado_build_work_items` separately in the session's `allowed_tools`.
-- Both tools take a positive numeric `build_id`, use the session directory's configured Azure
-  DevOps organization, project, and host credential, and make read-only requests.
+- Grant `list_ado_builds`, `get_ado_build` and `list_ado_build_work_items` separately in the
+  session's `allowed_tools`. Installing or upgrading does not change existing grants.
+- All three tools use the session directory's configured Azure DevOps organization, project,
+  and host credential, and make read-only requests. They accept no project or credential override.
+- `list_ado_builds` accepts optional, combined filters: `build_number` (exact match, or append
+  `*` for a prefix search), positive `pipeline_id` (build definition ID), `repository_id` and
+  `branch` (full ref, such as `refs/heads/main`). With no filters it lists recent builds.
+  `limit` defaults to `25` and must be an integer from `1` to `100`. Results are ordered by
+  queue time, newest first. A provider response exceeding the requested limit is an error.
+- The list response contains `project`, `builds`, `count` and `continuation_token`. Each build
+  includes `run_id`, `build_number`, `run_url`, status, result, source details and timestamps,
+  plus `pipeline_id`, `pipeline_name`, `repository_id` and `repository_name` when available.
+  Pass a non-null continuation token unchanged with the same filters for the next page.
+  A null token means there is no next page. All matches on the page are returned; build numbers
+  need not be unique across pipelines. Use pipeline/repository and deployment evidence to select
+  the intended build, then pass its `run_id` as `build_id` to the other read tools.
+- `get_ado_build` and `list_ado_build_work_items` take a positive numeric `build_id`.
 - `get_ado_build` returns the build number, status, source branch, source commit
   (`source_version`), timestamps, and build URL.
 - `list_ado_build_work_items` returns associated work-item IDs for the configured project.
