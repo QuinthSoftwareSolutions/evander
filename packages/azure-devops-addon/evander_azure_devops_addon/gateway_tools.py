@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import httpx
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import Field as PydanticField
 from pydantic import StrictInt
 
@@ -174,6 +175,77 @@ def register_ado_tools(
             ),
             directory_path=directory_path,
         )
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def list_ado_builds(
+        build_number: str | None = None,
+        pipeline_id: StrictInt | str | None = None,
+        repository_id: str | None = None,
+        branch: str | None = None,
+        limit: Annotated[StrictInt, PydanticField(ge=1, le=100)] = 25,
+        continuation_token: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Find builds in the session directory's Azure DevOps project, newest queued first.
+
+        Filters are optional and combined. build_number matches exactly; append * for a
+        prefix search. pipeline_id is a build definition ID, repository_id a repository
+        ID, and branch a full ref such as refs/heads/main. Returns all matches on this
+        page with pipeline and repository identities; do not assume build numbers are
+        unique. Pass continuation_token back with the same filters for the next page.
+        Use a returned run_id as build_id with get_ado_build or list_ado_build_work_items.
+        """
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": session_id,
+            "build_number": build_number,
+            "pipeline_id": pipeline_id,
+            "repository_id": repository_id,
+            "branch": branch,
+            "limit": limit,
+            "continuation_token": continuation_token,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ADO_BUILDS)
+            with _build_client(session.directory_path) as client:
+                payload = client.search_builds(
+                    build_number=build_number,
+                    pipeline_id=pipeline_id,
+                    repository_id=repository_id,
+                    branch=branch,
+                    limit=limit,
+                    continuation_token=continuation_token,
+                )
+            audit_success(
+                session_id,
+                ToolName.LIST_ADO_BUILDS,
+                args,
+                {
+                    "count": payload["count"],
+                    "has_more": payload["continuation_token"] is not None,
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ADO_BUILDS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ADO_BUILDS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            if isinstance(exc, (AdoBuildError, ValueError)):
+                raise ToolError(str(exc)) from exc
+            raise
 
     @server.tool()
     def get_ado_build(

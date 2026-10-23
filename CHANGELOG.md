@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Discover Azure DevOps builds by number (0.124.0)
+
+- Add the read-only `list_ado_builds` MCP tool with build-number, pipeline, repository and branch filters, bounded pages and continuation tokens. Return build IDs, pipeline and repository identities, source details and URLs so callers can distinguish builds that share a number.
+- Require an explicit tool grant and use the session directory's existing Azure DevOps configuration and host credential. Existing agent grants are unchanged; the updated Azure DevOps add-on requires Evander 0.124.0.
+
 ## 2026-10-23 - Support MCP SDK 2 and modern protocol requests (0.123.0)
 
 - Migrate the gateway and add-on MCP surfaces to SDK 2.3 while retaining legacy clients. Enforce session proof, current tool grants, workflow leases, exact invocation approvals and auditing on modern requests without a transport session ID.

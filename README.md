@@ -57,6 +57,8 @@ Git, and HTTP surfaces.
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
+- Read-only [Azure DevOps build discovery](docs/operations.md#host-side-azure-devops-build-read-tools)
+  by build number, pipeline, repository and branch, with separately granted build and work-item reads
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - Host-side Teams workers that consume optional Microsoft Graph change notifications independently
   from per-target polling fallback, and feed `trigger:teams:new-message` and
