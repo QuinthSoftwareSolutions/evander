@@ -1,11 +1,12 @@
 # Changelog
 
-## 2026-10-22 - Support MCP SDK 2 and modern protocol requests (0.122.0)
+## 2026-10-23 - Support MCP SDK 2 and modern protocol requests (0.123.0)
 
 - Migrate the gateway and add-on MCP surfaces to SDK 2.3 while retaining legacy clients. Enforce session proof, current tool grants, workflow leases, exact invocation approvals and auditing on modern requests without a transport session ID.
 - Update the Figma and Miro MCP clients for HTTPX 2, explicit pagination and the SDK's response models, preserving authenticated destinations and bounded timeouts. Set bounded SSE wire limits that accommodate base64 screenshots and paired structured/text results while retaining the existing decoded-content limits. Constrain the SDK to the supported major version and refresh the dependency lock.
 - Preserve actionable policy and domain-validation errors without Pydantic input dumps. Unexpected adapter failures retain their operator audit details and use the SDK's sanitized caller-facing errors.
 - Retain support for existing Elasticsearch bulk and Kibana import sizes through an explicit bounded gateway HTTP wire limit, without changing their logical payload limits.
+- Require Evander 0.123.0 for the five migrated optional add-ons so dependency resolution rejects core releases that still use MCP SDK 1.
 
 ## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
 
