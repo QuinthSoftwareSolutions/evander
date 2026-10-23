@@ -828,6 +828,21 @@ not import old session histories. Historical backfills are separate manual
 operator actions. Subscription counters contribute to the report's token chart
 and remain excluded from its API monetary totals.
 
+### Temporary model capacity
+
+The worker reports explicit model-capacity and server-overload errors as
+`codex_subscription_deferral.reason: model_capacity`, independently of account
+quota. The control plane queues the interrupted prompt with `queue_reason:
+model_capacity` and resumes its existing session home and native conversation.
+No model or billing-route fallback occurs. Retries use jittered exponential
+backoff, up to eight retries within one hour, capped at fifteen minutes between
+attempts. Their budget survives restarts. Exhaustion publishes a failed completion
+and a failed workflow-history record, routing the configured error edge when one
+exists. Deploy the control plane first; it can also recognize the last explicit
+native capacity error of a failed subscription turn from an older worker.
+Upgrade and restart the worker when its live model brokers are idle. This lets
+retry handling activate without interrupting existing long-running jobs.
+
 ## Session Durability
 
 Durable state lives under:

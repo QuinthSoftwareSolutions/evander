@@ -17,6 +17,7 @@ from evander.codex_auth import (
     CodexSubscriptionDeferral,
     CodexSubscriptionDeferredError,
     CodexTurnSpec,
+    codex_model_capacity_error,
 )
 from evander.fast_mode import fast_mode_service_tier
 from evander.cyber_access import CYBER_ACCESS_PROGRAM_RPC
@@ -446,8 +447,14 @@ def _turn_capacity_deferral(
     *,
     profile_id: str,
 ) -> CodexSubscriptionDeferral | None:
-    """Recognize App Server subscription exhaustion without relying on one error shape."""
+    """Distinguish temporary model overload from subscription exhaustion."""
 
+    if codex_model_capacity_error(error):
+        return CodexSubscriptionDeferral(
+            profile_id=profile_id,
+            reason="model_capacity",
+            retry_at=_find_reset_timestamp(error),
+        )
     if not _is_subscription_capacity_error(error):
         return None
     retry_at = _find_reset_timestamp(error)
