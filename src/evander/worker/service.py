@@ -51,6 +51,7 @@ from evander.managed_git_grants import managed_git_ssh_alias
 from evander.execution.task_worktree_cleanup import (
     task_worktree_repository_lock,
 )
+from evander.execution.logs import log_page_from_end as _log_page_from_end
 
 from .docker_runtime import DockerContainerRuntime
 from .git_workspace import (
@@ -1511,10 +1512,9 @@ class WorkerDaemon(GitWorkspaceOperations):
                 messages.append(message)
         outcome = _failed_codex_outcome_from_metadata(metadata)
         if outcome is None:
-            outcome = _codex_session_outcome(
-                agent_home,
+            outcome = _codex_outcome_from_projection(
+                projection,
                 thread_id,
-                started_at=started_at,
                 finished_at=finished_at,
                 metadata=metadata,
             )
@@ -4635,6 +4635,23 @@ def _codex_session_outcome(
         started_at=started_at,
         finished_at=finished_at,
     )
+    return _codex_outcome_from_projection(
+        projection,
+        thread_id,
+        finished_at=finished_at,
+        metadata=metadata,
+        log_text=log_text,
+    )
+
+
+def _codex_outcome_from_projection(
+    projection: dict[str, Any],
+    thread_id: str,
+    *,
+    finished_at: datetime | None = None,
+    metadata: dict[str, object] | None = None,
+    log_text: str | None = None,
+) -> dict[str, object] | None:
     task_complete_without_final_message = projection["task_complete_without_final_message"]
     explicit_failure_message = projection["explicit_failure_message"]
     explicit_failure_event_type = projection["explicit_failure_event_type"]
@@ -5078,35 +5095,6 @@ def _session_id_from_codex_jsonl(path: Path) -> str | None:
 
 def _merge_tail_log_snapshot(log_path: Path, tail_text: str) -> None:
     merge_tail_log_snapshot(log_path, tail_text)
-
-
-def _log_page_from_end(
-    text: str,
-    *,
-    limit: int,
-    offset: int,
-    query: str | None = None,
-) -> dict[str, object]:
-    lines = text.splitlines()
-    normalized_query = str(query or "").strip()
-    if normalized_query:
-        needle = normalized_query.casefold()
-        lines = [line for line in lines if needle in line.casefold()]
-    total_lines = len(lines)
-    end_index = max(0, total_lines - max(0, offset))
-    start_index = max(0, end_index - max(1, limit))
-    page_lines = lines[start_index:end_index]
-    return {
-        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
-        "limit": max(1, limit),
-        "offset": max(0, offset),
-        "returned_lines": len(page_lines),
-        "total_lines": total_lines,
-        "start_line": start_index + 1 if page_lines else 0,
-        "end_line": end_index if page_lines else 0,
-        "has_more_before": start_index > 0,
-        "query": normalized_query or None,
-    }
 
 
 def _codex_event_is_in_window(

@@ -112,7 +112,10 @@ class JsonlProjectionCache:
                     append = prefix == previous.prefix and boundary == previous.boundary
                 except OSError:
                     append = False
-            state = copy.deepcopy(previous.state) if append else factory()
+            # The entry was removed while holding this key's projection lock,
+            # and readers only receive copies. Transfer its owned state instead
+            # of copying the full history again for each appended record.
+            state = previous.state if append else factory()
             result = state
             offset = 0
             prefix = boundary = b""
