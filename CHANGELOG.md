@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Avoid redundant session metadata writes (0.126.2)
+
+- Merge session metadata against the latest manifest under the repository lock and skip unchanged writes on the canonical JSON session store, preserving existing deep-merge rules and response fields.
+- Preserve concurrent manifest updates and reject stale metadata updates after session deletion or replacement. Continue accepting legacy manifests without a saved creation timestamp.
+
 ## 2026-10-23 - Reduce control-plane processing and memory overhead (0.126.1)
 
 - Copy only the requested directory from immutable configuration snapshots, and retain only the requested PR feedback page while selecting the oldest matching messages.
