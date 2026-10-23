@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander-codex-security-addon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Codex Security provider for Evander repository security scans"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["evander>=0.120.2"]
+dependencies = ["evander>=0.122.0"]
 
 [project.entry-points."evander.addons"]
 codex_security = "evander_codex_security_addon:register_addon"

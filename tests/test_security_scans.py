@@ -266,6 +266,10 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     )
     assert {field.key for field in node.fields if field.required} == {"session_id", "repo_path"}
     assert {port.key for port in node.output_ports} == {"completed", "error"}
+    field = next(field for field in node.fields if field.key == "resume_subscription_profile_id")
+    assert field.bindable and not field.required
+    schema = SecurityScanEffectDefinition.model_json_schema()["properties"]
+    assert schema["resume_subscription_profile_id"]["default"] is None
 
 
 def test_tracked_coverage_defaults_and_unsupported_modes():
@@ -286,6 +290,61 @@ def test_tracked_coverage_defaults_and_unsupported_modes():
             request(**values)
     with pytest.raises(ValidationError, match="resume requires"):
         request(resume_from_scan_id="a" * 32)
+
+
+@pytest.mark.parametrize("profile", ["", "  ", "UPPERCASE", "../profile", 123, True])
+def test_subscription_handoff_requires_a_valid_explicit_profile(profile):
+    with pytest.raises(ValidationError):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            resume_from_scan_id="a" * 32, resume_subscription_profile_id=profile,
+        )
+
+
+def test_subscription_handoff_requires_a_linked_tracked_resume():
+    with pytest.raises(ValidationError, match="requires resume_from_scan_id"):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            resume_subscription_profile_id="subscription-b",
+        )
+    with pytest.raises(ValidationError, match="resume requires"):
+        request(resume_from_scan_id="a" * 32, resume_subscription_profile_id="subscription-b")
+
+
+def test_subscription_handoff_is_forwarded_only_to_capable_providers_and_is_idempotent(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        resume_from_scan_id="a" * 32, resume_subscription_profile_id="subscription-b",
+    )
+    with pytest.raises(ValueError, match="does not support subscription handoff"):
+        start(service, **inputs)
+    assert scanner.starts == [] and service.store.active() == []
+    scanner.supports_subscription_handoff = True
+    provider = SecurityScanEffectProvider()
+    provider.initialize(
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            **request(**{**inputs, "resume_subscription_profile_id": None}).model_dump(),
+        ),
+        EffectRuntimeContext(
+            security_scan_service=service, metadata={"directory_path": "root/project"}
+        ),
+    )
+    execution = {"idempotency_key": "event-1:scan-1", "execution_id": "execution-1"}
+    result = provider.execute(
+        resolved_config={"resume_subscription_profile_id": " subscription-b "},
+        execution_context=execution,
+    )
+    record = service.store.get(result["scan_id"], "root/project")
+    assert record.request.resume_subscription_profile_id == "subscription-b"
+    assert start(service, **inputs).scan_id == result["scan_id"]
+    assert scanner.starts == [result["scan_id"]]
+    for different in (None, "subscription-c"):
+        with pytest.raises(ValueError, match="reused with different inputs"):
+            start(service, **{**inputs, "resume_subscription_profile_id": different})
+    assert scanner.starts == [result["scan_id"]]
 
 
 def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):

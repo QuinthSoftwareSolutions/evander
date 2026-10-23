@@ -14,6 +14,13 @@ bounds and the container-worker backend. It defaults to 21,600 seconds, allows a
 most six hours per run, and reports structured `coverage_progress` and
 `cleanup_confirmed`. `resume_from_scan_id` starts a linked continuation at the
 source snapshot with a fresh budget and verified retained coverage.
+An explicit ChatGPT-subscription handoff additionally names
+`resume_subscription_profile_id`. It must match the new scanner session's
+configured subscription, and both source and destination must use public
+ChatGPT-subscription authentication. All other snapshot, policy, SDK, model,
+reasoning, Cyber access and image settings must match. Omit this field to require
+the original subscription. It neither changes session configuration nor permits
+API billing or automatic profile fallback.
 `query:security:scan` returns directory-scoped progress, lineage and resume
 metadata; unknown or inaccessible IDs return `found: false`. Raw diagnostics are
 never query outputs. See [tracked coverage](../packages/codex-security-addon/docs/tracked-coverage.md).

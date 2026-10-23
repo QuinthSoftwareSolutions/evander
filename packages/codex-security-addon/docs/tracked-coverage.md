@@ -142,6 +142,53 @@ require a new tracked scan. A continuation receives a fresh budget and linked
 scan ID; the source report and artifacts remain immutable. It always reviews the
 original commit even after the branch advances or is force-pushed.
 
+### Explicit subscription handoff
+
+By default, a continuation must use the source run's exact access route, including
+its subscription profile. To authorize one different ChatGPT subscription,
+configure **only the new isolated scanner session** with the destination profile
+and pass its ID explicitly alongside `resume_from_scan_id`:
+
+```json
+{
+  "type": "effect:security:scan-repo",
+  "id": "resume-scan",
+  "display_name": "Resume security scan",
+  "session_id": "new-scanner-session",
+  "repo_path": "/home/agent/repo",
+  "coverage_policy": "all_tracked_files",
+  "managed_repo_id": "approved-managed-repository",
+  "resume_from_scan_id": "0123456789abcdef0123456789abcdef",
+  "resume_subscription_profile_id": "subscription-b"
+}
+```
+
+The input authorizes that named destination; it does not configure the session
+or choose an available account. The operator must verify the destination profile,
+account access and positive applicable quota before invocation. A named profile
+may equal the original profile, but both routes must still use public ChatGPT
+subscription authentication. API-authenticated or non-public source/destination
+routes are rejected. The original commit, inventory digest, directory/repository
+access, policy/SDK, model, reasoning effort, Cyber program, image and every other
+route field remain subject to the existing equality checks.
+
+The controller verifies retained proof hashes and source cleanup before creating
+the new journal and snapshot pin. It carries forward accepted work and findings,
+records source and destination profile IDs in the **new** journal and aggregate
+manifest/ledger, and leaves earlier journals, native archives and reports intact.
+The same request identity rejoins the same run after a lost response or restart;
+changing its source or destination is an idempotency error. The repository claim
+and two-review limit still apply. Once started, the destination route is frozen;
+changing it stops the run and performs normal worker cleanup. There is no automatic
+subscription switch, API fallback, quota reset or reset-credit operation.
+
+This host-side option requires Evander 0.122.0 and add-on 0.2.0. Upgrade the core
+and optional add-on together, then reload the workflow services. It changes no
+pinned SDK or scanner-image runtime files, so this change alone does not require
+a scanner image rebuild. Deployment-specific workflow bindings and monitoring
+remain operator-owned. Configure their explicit destination and quota guards
+through the revision-gated workflow Admin API after deployment.
+
 An explicit continuation of an older, folder-fragmented journal regroups only
 unstarted root file and boundary scopes under these bounds. Completed reviews,
 previously attempted scopes and split children keep their assignments; file
@@ -150,7 +197,8 @@ The new journal records `batching_version: 2`, also included in its aggregate
 coverage ledger and manifest. Further resumes retain that plan. Source journals
 and published archives are immutable, and an active scan keeps its existing
 assignments until an explicit continuation after confirmed cleanup. Regrouping
-does not change the snapshot, selected model/access route, per-run concurrency
+does not change the snapshot, selected model/access route (except an explicitly
+requested subscription handoff), per-run concurrency
 limit or review-completion requirements.
 Results accepted during cancellation remain completed, and partial scopes retain
 their split children. On continuation, older scheduling flags cannot reopen an

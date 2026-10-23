@@ -12,6 +12,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from evander.codex_auth import normalize_subscription_profile_id
+
 SCAN_EFFECT_TYPE = "effect:security:scan-repo"
 TERMINAL_SCAN_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
 
@@ -28,6 +30,7 @@ class SecurityScanRequest(BaseModel):
     coverage_policy: Literal["provider", "all_tracked_files"] = "provider"
     managed_repo_id: str | None = None
     resume_from_scan_id: str | None = None
+    resume_subscription_profile_id: str | None = None
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
 
     @model_validator(mode="before")
@@ -68,6 +71,15 @@ class SecurityScanRequest(BaseModel):
             raise ValueError("commit must be a hexadecimal Git commit hash (7-64 characters)")
         return value.lower()
 
+    @field_validator("resume_subscription_profile_id", mode="before")
+    @classmethod
+    def resume_subscription(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("resume_subscription_profile_id must be a subscription profile slug")
+        return normalize_subscription_profile_id(value, allow_none=False)
+
     @model_validator(mode="after")
     def compatible_mode(self) -> SecurityScanRequest:
         if self.mode == "deep" and (self.from_commit or self.to_commit):
@@ -84,6 +96,8 @@ class SecurityScanRequest(BaseModel):
                 raise ValueError("resume requires all_tracked_files coverage")
             if not re.fullmatch(r"[a-f0-9]{32}", self.resume_from_scan_id):
                 raise ValueError("Invalid source scan identity")
+        if self.resume_subscription_profile_id is not None and self.resume_from_scan_id is None:
+            raise ValueError("resume_subscription_profile_id requires resume_from_scan_id")
         return self
 
 

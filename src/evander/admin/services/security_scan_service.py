@@ -68,6 +68,10 @@ class SecurityScanService:
         policies = getattr(self.providers[request.provider], "coverage_policies", {"provider"})
         if request.coverage_policy not in policies:
             raise ValueError("The selected provider does not support this coverage policy")
+        if request.resume_subscription_profile_id is not None and not getattr(
+            self.providers[request.provider], "supports_subscription_handoff", False
+        ):
+            raise ValueError("The selected provider does not support subscription handoff")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(

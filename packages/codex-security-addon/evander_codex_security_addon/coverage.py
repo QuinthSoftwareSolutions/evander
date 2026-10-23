@@ -11,6 +11,8 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 
+from evander.codex_auth import normalize_subscription_profile_id
+
 VERSION = 1
 SDK_VERSION = "0.1.31"
 BATCHING_VERSION = 2
@@ -122,6 +124,38 @@ def progress(state):
     }
 
 
+def validate_resume_route(request, route, previous):
+    """Only a named, subscription-to-subscription handoff may differ from the source."""
+    destination = request.resume_subscription_profile_id
+    source = previous["route"]
+    if destination is None:
+        if route != source:
+            raise ValueError("Source scan configuration or snapshot is incompatible")
+        return None
+    if request.resume_from_scan_id != previous["scan_id"]:
+        raise ValueError("Subscription handoff requires the selected source scan")
+    if any(
+        selected.get("auth_mode") != "chatgpt_subscription"
+        or selected.get("model_provider_mode") != "openai_public"
+        for selected in (source, route)
+    ):
+        raise ValueError("Subscription handoff requires two public ChatGPT subscription routes")
+    source_profile = normalize_subscription_profile_id(
+        source.get("subscription_profile_id"), allow_none=False
+    )
+    if route.get("subscription_profile_id") != destination:
+        raise ValueError("Requested resume subscription must match the scanner session")
+    if {k: v for k, v in source.items() if k != "subscription_profile_id"} != {
+        k: v for k, v in route.items() if k != "subscription_profile_id"
+    }:
+        raise ValueError("Subscription handoff cannot change other scanner configuration")
+    return {
+        "source_scan_id": previous["scan_id"],
+        "source_subscription_profile_id": source_profile,
+        "destination_subscription_profile_id": destination,
+    }
+
+
 def make_state(
     scan_id, request, directory, inventory, route, *, previous=None, previous_until=None, at=None
 ):
@@ -177,10 +211,12 @@ def make_state(
             "managed_repo_id",
             "revision",
             "inventory_digest",
-            "route",
         ):
             if state[key] != previous[key]:
                 raise ValueError("Source scan configuration or snapshot is incompatible")
+        handoff = validate_resume_route(request, route, previous)
+        if handoff:
+            state["subscription_handoff"] = handoff
         state.update(
             {
                 key: deepcopy(previous[key])
@@ -225,6 +261,8 @@ def make_state(
                 entry.update(disposition="pending", reason=None)
         state["phase"] = "reviewing" if state["architecture"] else "mapping"
     else:
+        if request.resume_subscription_profile_id is not None:
+            raise ValueError("Subscription handoff requires a retained source scan")
         if not entries:
             state.update(
                 architecture={"paths": [], "reason": "The pinned Git tree has no tracked files"},
