@@ -68,6 +68,7 @@ def test_reconciliation_preserves_identity_unmanaged_access_and_other_sessions(s
     {"model": "different"}, {"allowed_tools": None}, {"allowed_tools": "create_ado_backlog_item"},
     {"metadata": []}, {"allowed_tools": [False]},
     {"allowed_tools": ["ToolName.TEAMS_POST_STATUS"]},
+    {"approval_required_tools": "ToolName.TEAMS_POST_STATUS"},
 ])
 def test_invalid_managed_policy_is_atomic(setup, policy):
     service, repository, _, _ = setup
@@ -81,9 +82,11 @@ def test_tool_enum_inputs_are_saved_as_wire_names_and_authorize_after_reload(set
     service, repository, _, _ = setup
     service.reconcile_session_policy("assistant-one", {
         "allowed_tools": [ToolName.TEAMS_POST_STATUS, ToolName.CREATE_ADO_BACKLOG_ITEM],
+        "approval_required_tools": [ToolName.TEAMS_POST_STATUS],
     }, directory_path="root/team")
-    raw = json.loads(repository.path.read_text())["assistant-one"]["allowed_tools"]
-    assert raw == ["teams_post_status", "create_ado_backlog_item"]
+    raw = json.loads(repository.path.read_text())["assistant-one"]
+    assert raw["allowed_tools"] == ["teams_post_status", "create_ado_backlog_item"]
+    assert raw["approval_required_tools"] == ["teams_post_status"]
     reloaded = JsonSessionManifestRepository(repository.path)
     policy = PolicyEngine(service._deps.config, reloaded, None)
     DirectoryService(DirectoryStore(service._deps.config.directories_store_path)).create(
@@ -91,6 +94,9 @@ def test_tool_enum_inputs_are_saved_as_wire_names_and_authorize_after_reload(set
     )
     policy.require_tool("assistant-one", ToolName.TEAMS_POST_STATUS)
     policy.require_tool("assistant-one", ToolName.CREATE_ADO_BACKLOG_ITEM)
+    assert policy.approval_required_for_tool(
+        reloaded.get_session("assistant-one"), ToolName.TEAMS_POST_STATUS
+    ) is True
 
 
 def test_reconciliation_rejects_cross_directory_and_missing_sessions(setup):

@@ -359,7 +359,10 @@ class SessionAdminService:
             "allowed_tools", "approval_required_tools", "approval_tool_settings",
             "tool_argument_policies",
         ):
-            for tool in policy.get(field) or ():
+            tools = policy.get(field) or ()
+            if isinstance(tools, str):
+                tools = (tools,)
+            for tool in tools:
                 if isinstance(tool, str) and tool.strip().startswith("ToolName."):
                     raise ValueError("Use canonical tool names, not ToolName member representations")
         repository = self._session_repository()
@@ -384,6 +387,11 @@ class SessionAdminService:
                 not isinstance(tool, str) or not tool.strip() for tool in tools
             ):
                 raise ValueError("allowed_tools must contain non-empty tool names")
+            required = payload.get("approval_required_tools")
+            if isinstance(required, str):
+                required = [required]
+            if isinstance(required, (list, tuple)):
+                payload["approval_required_tools"] = [tool_name_value(tool) for tool in required]
             if "metadata" in payload:
                 if not isinstance(payload["metadata"], Mapping):
                     raise ValueError("metadata must be a JSON object")
