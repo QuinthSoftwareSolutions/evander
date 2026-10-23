@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from typing import Literal
@@ -179,7 +180,7 @@ class CodexSubscriptionDeferral(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile_id: str
-    reason: Literal["signed_out", "disabled", "unavailable", "rate_limited"]
+    reason: Literal["signed_out", "disabled", "unavailable", "rate_limited", "model_capacity"]
     retry_at: datetime | None = None
 
     @field_validator("profile_id", mode="before")
@@ -189,7 +190,70 @@ class CodexSubscriptionDeferral(BaseModel):
 
     @property
     def queue_reason(self) -> str:
+        if self.reason == "model_capacity":
+            return "model_capacity"
         return f"subscription_{self.reason}"
+
+
+def codex_model_capacity_error(value: object) -> bool:
+    """Recognize explicit provider overload without treating other failures as transient."""
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if normalized_key in {"code", "codexerrorinfo", "errorcode", "errortype", "reason", "type"}:
+                code = re.sub(r"[^a-z0-9]", "", str(candidate).casefold())
+                if code in {"modelatcapacity", "modelcapacityexceeded", "serveroverloaded"}:
+                    return True
+            if (
+                normalized_key in {"message", "additionaldetails"}
+                and codex_model_capacity_error(candidate)
+            ):
+                return True
+            if isinstance(candidate, dict | list) and codex_model_capacity_error(candidate):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(codex_model_capacity_error(candidate) for candidate in value)
+    message = str(value or "").strip().casefold()
+    return any(
+        marker in message
+        for marker in (
+            "selected model is at capacity",
+            "the model is overloaded",
+            "the server is overloaded",
+        )
+    )
+
+
+def legacy_worker_model_capacity_deferral(
+    metadata: Mapping[str, object] | None, logs: str
+) -> CodexSubscriptionDeferral | None:
+    """Permit an idle worker upgrade after a control-plane-first rollout.
+
+    Only a failed brokered subscription turn's last native error is evidence;
+    ordinary tool output, successful jobs and existing structured outcomes win.
+    """
+    if (
+        not isinstance(metadata, Mapping)
+        or metadata.get("codex_auth_mode") != "chatgpt_subscription"
+        or metadata.get("codex_subscription_exit_code") not in (1, "1")
+        or metadata.get("codex_subscription_deferral") is not None
+    ):
+        return None
+    errors = [
+        line.removeprefix("codex error: ")
+        for line in logs.splitlines()
+        if line.startswith("codex error: ")
+    ]
+    if not errors or not codex_model_capacity_error(errors[-1]):
+        return None
+    try:
+        profile_id = normalize_subscription_profile_id(metadata.get("subscription_profile_id"))
+    except ValueError:
+        return None
+    if profile_id is None:
+        return None
+    return CodexSubscriptionDeferral(profile_id=profile_id, reason="model_capacity")
 
 
 class CodexSubscriptionDeferredError(RuntimeError):

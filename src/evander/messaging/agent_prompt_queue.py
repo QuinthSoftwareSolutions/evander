@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,46 @@ from evander.fast_mode import FastMode, FastModeSource
 from evander.models import utc_now
 from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 from evander.storage import JsonStore
+
+MODEL_CAPACITY_QUEUE_REASON = "model_capacity"
+MODEL_CAPACITY_MAX_RETRIES = 8
+MODEL_CAPACITY_RETRY_METADATA_KEYS = (
+    "model_capacity_retry_count",
+    "model_capacity_retry_started_at",
+    "model_capacity_failed_execution_id",
+)
+
+
+def model_capacity_retry_deadline(metadata: Mapping[str, str]) -> datetime | None:
+    raw = metadata.get("model_capacity_retry_started_at")
+    if not raw:
+        return None
+    try:
+        started = datetime.fromisoformat(raw)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return started.astimezone(UTC) + timedelta(hours=1)
+    except (TypeError, ValueError, OverflowError):
+        # Corrupt persisted retry state must not create an unlimited retry budget.
+        return datetime.min.replace(tzinfo=UTC)
+
+
+class ModelCapacityRetryExhausted(RuntimeError):
+    def __init__(self, *, retry_count: int, deadline: datetime) -> None:
+        self.retry_count = retry_count
+        self.deadline = deadline
+        super().__init__(
+            "Model-capacity retries exhausted "
+            f"(retry_count={retry_count}, max_retries={MODEL_CAPACITY_MAX_RETRIES}, "
+            f"retry_deadline={deadline.isoformat()})"
+        )
+
+
+def model_capacity_retry_count(metadata: Mapping[str, str]) -> int:
+    try:
+        return max(0, int(metadata.get("model_capacity_retry_count", "0")))
+    except (TypeError, ValueError):
+        return MODEL_CAPACITY_MAX_RETRIES
 
 
 class AgentPromptRetryLimitExceeded(RuntimeError):
@@ -367,9 +408,43 @@ class AgentPromptQueueStore:
             fallback_seconds = min(15 * 60, 15 * (2 ** min(previous_deferrals, 6)))
             deferred = record.model_copy(deep=True)
             deferred.queue_reason = queue_reason
-            deferred.retry_not_before = reported_retry_at or (
-                now + timedelta(seconds=fallback_seconds)
-            )
+            if queue_reason == MODEL_CAPACITY_QUEUE_REASON:
+                previous_metadata = current.metadata if current is not None else {}
+                failed_execution_id = record.metadata.get("model_capacity_failed_execution_id")
+                if (
+                    failed_execution_id
+                    and current is not None
+                    and previous_metadata.get("model_capacity_failed_execution_id")
+                    == failed_execution_id
+                ):
+                    return current
+                retry_count = max(
+                    model_capacity_retry_count(record.metadata),
+                    model_capacity_retry_count(previous_metadata),
+                )
+                deadlines = [
+                    deadline
+                    for metadata in (record.metadata, previous_metadata)
+                    if (deadline := model_capacity_retry_deadline(metadata)) is not None
+                ]
+                deadline = min([now + timedelta(hours=1), *deadlines])
+                if retry_count >= MODEL_CAPACITY_MAX_RETRIES or now >= deadline:
+                    raise ModelCapacityRetryExhausted(retry_count=retry_count, deadline=deadline)
+                deferred.metadata.update(
+                    {
+                        "model_capacity_retry_count": str(retry_count + 1),
+                        "model_capacity_retry_started_at": (deadline - timedelta(hours=1)).isoformat(),
+                    }
+                )
+                delay = min(900, 15 * (2 ** min(retry_count, 6)))
+                retry_at = reported_retry_at or now + timedelta(
+                    seconds=min(900, random.uniform(0.8 * delay, 1.2 * delay))
+                )
+                deferred.retry_not_before = min(retry_at, deadline)
+            else:
+                deferred.retry_not_before = reported_retry_at or (
+                    now + timedelta(seconds=fallback_seconds)
+                )
             deferred.capacity_deferral_count = previous_deferrals + 1
             deferred.updated_at = now
             records[deferred.queue_key] = deferred
@@ -394,6 +469,8 @@ class AgentPromptQueueStore:
             changed = 0
             for record in records.values():
                 if record.subscription_profile_id != normalized:
+                    continue
+                if record.queue_reason == MODEL_CAPACITY_QUEUE_REASON:
                     continue
                 if record_filter is not None and not record_filter(record):
                     continue
