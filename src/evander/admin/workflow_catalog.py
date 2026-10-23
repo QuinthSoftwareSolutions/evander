@@ -862,6 +862,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:reconcile-policy": "Apply settings-owned session policy without recreating the session.",
     "effect:session:set-reasoning-effort": (
         "Set a session's native reasoning default for future turns, or clear it with null."
     ),
@@ -4286,6 +4287,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Running turns are unchanged."
                 ),
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:reconcile-policy",
+        label="Reconcile session policy",
+        fields=[
+            _field("session_id", "Session ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+            _field("policy", "Managed policy fields", "json", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

@@ -21,6 +21,33 @@ directory policies, and existing automation remain available.
 Preview does not create agents, resolve credentials, send messages, or install a pack.
 Activation enables the new workflow without changing existing agent permissions.
 
+## Share a workflow across session policies
+
+Store each user's grants in a settings (`gate:map`) node and pass its policy object
+to a shared `effect:session:reconcile-policy` node after `effect:agent:create`.
+Creation may retain `existing_agent_behavior: noop`: reconciliation updates both
+new and existing sessions before downstream work starts.
+
+The reconciliation node accepts a `session_id`, an optional `directory_path`, and
+a bindable `policy` object. Supported policy fields are `allowed_tools`,
+`allowed_script_names`, `tool_argument_policies`, `approval_required_tools`,
+`approval_tool_settings`, `connector_grants`, `host_directory_grants`, and
+`metadata`. Explicit grant lists replace their previous values, including an empty
+list for revocation. Omitted fields are preserved; metadata is merged recursively.
+Approval requirements for removed tools are pruned. Connector and host-directory
+grants use the same validation as Admin Web.
+
+Only sessions inside the workflow's directory scope may be reconciled. The update
+is atomic against the current session and refuses a session replaced during the
+operation. It preserves the session identity, expiry, model, conversation, files,
+and all unmanaged policy fields. A matching policy returns `changed: false`
+without writing the session store. The result also contains `session_id`,
+`directory_path`, and `changed_fields`.
+
+Before migrating an existing workflow, inventory each session's actual grants and
+carry them into its settings. Compare the effective permissions before and after;
+do not assume that old creation-node defaults reflect later operator changes.
+
 ## Run an agent task on a schedule
 
 Choose an existing agent, enter task instructions, and select hourly, daily, or weekdays.

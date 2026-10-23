@@ -110,6 +110,12 @@ class IssueUpdater(Protocol):
     def update_issue_metadata(self, **kwargs: Any) -> Any: ...
 
 
+class SessionPolicyReconciler(Protocol):
+    def reconcile_session_policy(
+        self, target: str, policy: Mapping[str, Any], *, directory_path: str
+    ) -> dict[str, Any]: ...
+
+
 class SessionMetadataUpdater(Protocol):
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any: ...
 
@@ -175,6 +181,7 @@ class ProviderRuntimePorts:
     session_lookup: SessionLookup | None = None
     issue_updater: IssueUpdater | None = None
     session_metadata_updater: SessionMetadataUpdater | None = None
+    session_policy_reconciler: SessionPolicyReconciler | None = None
     session_model_settings_updater: SessionModelSettingsUpdater | None = None
     session_image_generation_policy_updater: SessionImageGenerationPolicyUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None

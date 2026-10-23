@@ -610,6 +610,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:communication:send-message",
         "effect:notification:send",
         "effect:session:update-metadata",
+        "effect:session:reconcile-policy",
         "effect:session:set-reasoning-effort",
         "effect:website-session:ensure-profile",
         "effect:session:set-image-generation-enabled",

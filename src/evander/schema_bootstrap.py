@@ -1445,6 +1445,13 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "profile_id": {"type": "string"},
         "created": {"type": "boolean"},
     },
+    "effect:session:reconcile-policy": {
+        "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "changed": {"type": "boolean"},
+        "changed_fields": {"type": "array", "items": {"type": "string"}},
+    },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},

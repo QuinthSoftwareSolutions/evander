@@ -99,6 +99,7 @@ from evander.effects.providers.session_approve_mcp_tools import (
 from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
+from evander.effects.providers.session_reconcile_policy import SessionReconcilePolicyEffectProvider
 from evander.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
 )
@@ -332,6 +333,7 @@ def register_providers() -> dict[str, dict[str, type]]:
                 SessionSetImageGenerationEnabledEffectProvider
             ),
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
+            "effect:session:reconcile-policy": SessionReconcilePolicyEffectProvider,
             "effect:git:ensure-managed-repo": GitEnsureManagedRepoEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:git:push-branch": GitPushBranchEffectProvider,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Reconcile session policy from workflow settings (0.123.0)
+
+- Add `effect:session:reconcile-policy` to apply settings-owned tool grants, argument restrictions, approvals, connector grants, and metadata to an existing session without replacing its identity, model, conversation, or workspace.
+- Reconcile atomically against the latest manifest, enforce workflow directory scope, preserve unmentioned fields, and avoid writes when the policy already matches.
+
 ## 2026-10-23 - Retry temporary model-capacity failures (0.122.1)
 
 - Recognize temporary Codex model-capacity and explicit server-overload errors separately from subscription quota exhaustion. Durably resume the same session and native conversation without changing the selected model, billing route or dispatch identity.
