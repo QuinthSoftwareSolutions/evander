@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-23 - Reduce control-plane processing and memory overhead (0.126.1)
+
+- Copy only the requested directory from immutable configuration snapshots, and retain only the requested PR feedback page while selecting the oldest matching messages.
+- Stream atomic JSON writes and portable index exports instead of retaining complete serialized files, source rows, and SCIP blobs in memory.
+- Reuse source-line widths during code-index range validation and use a linear cycle check for valid workflow graphs.
+- Defer workflow binding graph analysis until bindings need it, reuse cached worker log projections during append and outcome evaluation, and bound raw log pagination allocations to the requested page.
+
 ## 2026-10-23 - Reconcile session policy from workflow settings (0.126.0)
 
 - Add `effect:session:reconcile-policy` to apply settings-owned tool grants, argument restrictions, approvals, connector grants, and metadata to an existing session without replacing its identity, model, conversation, or workspace.

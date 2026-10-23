@@ -49,20 +49,11 @@ def validate_workflow_graph(
     edges_list = list(edges)
     trigger_ids = {str(node_id) for node_id in trigger_node_ids}
     inbound_edges = build_inbound_edge_index(edges_list)
-    downstream_non_cyclic: dict[str, list[str]] = {}
     outbound_edges_by_source: dict[str, list[Any]] = {}
 
-    errors: list[str] = []
     for edge in edges_list:
         outbound_edges_by_source.setdefault(edge.source_id, []).append(edge)
-        if bool(getattr(edge, "allow_cycle", False)):
-            continue
-        if would_form_cycle(edge.source_id, edge.target_id, downstream_non_cyclic):
-            errors.append(
-                f"Non-cyclic edges cannot form a cycle: {edge.source_id} -> {edge.target_id}"
-            )
-            continue
-        downstream_non_cyclic.setdefault(edge.source_id, []).append(edge.target_id)
+    errors = _non_cyclic_edge_errors(edges_list)
 
     missing_endpoints: set[str] = set()
     self_edges: set[str] = set()
@@ -154,12 +145,63 @@ def validate_workflow_graph(
     return errors
 
 
+def _non_cyclic_edge_errors(edges: list[Any]) -> list[str]:
+    # Valid workflow DAGs are the common case. One topological pass avoids a
+    # downstream walk for every edge, which is quadratic for reverse-listed paths.
+    downstream: dict[str, list[str]] = {}
+    inbound_counts: dict[str, int] = {}
+    for edge in edges:
+        if bool(getattr(edge, "allow_cycle", False)):
+            continue
+        downstream.setdefault(edge.source_id, []).append(edge.target_id)
+        inbound_counts.setdefault(edge.source_id, 0)
+        inbound_counts[edge.target_id] = inbound_counts.get(edge.target_id, 0) + 1
+    ready = deque(node_id for node_id, count in inbound_counts.items() if not count)
+    visited = 0
+    while ready:
+        node_id = ready.popleft()
+        visited += 1
+        for target_id in downstream.get(node_id, ()):
+            inbound_counts[target_id] -= 1
+            if not inbound_counts[target_id]:
+                ready.append(target_id)
+    if visited == len(inbound_counts):
+        return []
+
+    # Invalid drafts retain the existing edge-by-edge rejection and message
+    # order, including which edge closes each cycle and which edges remain usable.
+    downstream.clear()
+    errors: list[str] = []
+    for edge in edges:
+        if bool(getattr(edge, "allow_cycle", False)):
+            continue
+        if would_form_cycle(edge.source_id, edge.target_id, downstream):
+            errors.append(
+                f"Non-cyclic edges cannot form a cycle: {edge.source_id} -> {edge.target_id}"
+            )
+        else:
+            downstream.setdefault(edge.source_id, []).append(edge.target_id)
+    return errors
+
+
 def validate_workflow_binding_diagnostics(
     config: Mapping[str, Any],
 ) -> list[WorkflowValidationDiagnostic]:
     """Return advisory diagnostics for `${{node.output}}` config bindings."""
 
     nodes = list(_iter_workflow_nodes(config))
+    binding_nodes = []
+    for node_id, node in nodes:
+        binding_values = [
+            (field_path, value)
+            for field_path, value in _walk_node_config_values(node)
+            if isinstance(value, str) and "${{" in value
+        ]
+        if binding_values:
+            binding_nodes.append((node_id, node, binding_values))
+    if not binding_nodes:
+        return []
+
     nodes_by_id = {node_id: node for node_id, node in nodes}
     all_node_ids = set(nodes_by_id)
     edges = config.get("edges", [])
@@ -169,7 +211,7 @@ def validate_workflow_binding_diagnostics(
     dominators_by_node = _compute_dominators(edge_list, set(nodes_by_id))
 
     diagnostics: list[WorkflowValidationDiagnostic] = []
-    for node_id, node in nodes:
+    for node_id, node, binding_values in binding_nodes:
         node_type = str(node.get("type") or "").strip()
         ancestor_ids = _collect_ancestor_node_ids(upstream_by_target, node_id)
         declared_outputs = {
@@ -177,7 +219,8 @@ def validate_workflow_binding_diagnostics(
             for ancestor_id in ancestor_ids
             if ancestor_id in nodes_by_id
         }
-        for field_path, value in _walk_node_config_values(node):
+        guaranteed_node_ids = dominators_by_node.get(node_id, {node_id}) - {node_id}
+        for field_path, value in binding_values:
             diagnostics.extend(
                 _validate_binding_value(
                     value=value,
@@ -185,7 +228,7 @@ def validate_workflow_binding_diagnostics(
                     node_id=node_id,
                     node_type=node_type,
                     declared_outputs=declared_outputs,
-                    guaranteed_node_ids=dominators_by_node.get(node_id, {node_id}) - {node_id},
+                    guaranteed_node_ids=guaranteed_node_ids,
                     all_node_ids=all_node_ids,
                 )
             )
