@@ -15,9 +15,18 @@ records are not migrated.
   "managed_repo_id": "${{selection.managed_repo_id}}",
   "coverage_policy": "all_tracked_files",
   "mode": "standard",
+  "max_batch_text_bytes": 1048576,
   "timeout_seconds": 21600
 }
 ```
+
+`max_batch_text_bytes` accepts an integer from `1048576` (1 MiB) through
+`2097152` (2 MiB), including either endpoint. It applies only to tracked
+coverage. Omit it (or use null) to select 1 MiB for a new scan or inherit the
+saved limit on continuation. The value can be a workflow binding, for example
+`"max_batch_text_bytes": "${{event.payload.review_bytes}}"`, whose resolved
+value must be an integer. Use `2097152` to request 2 MiB for this scan only.
+The host freezes the effective budget before scheduling any child review.
 
 Omitting the timeout selects 21,600 seconds for tracked coverage and 3,600 for
 provider coverage. Tracked runs permit shorter budgets for bounded qualification,
@@ -29,7 +38,7 @@ never extend the original deadline.
 
 `coverage_progress` contains `phase`, `files_total`, `files_reviewed`,
 `files_not_applicable`, `files_blocked`, `files_pending`, `active_reviews`,
-`completed_reviews`, `attempts`, `deadline_at`, `last_progress_at` and
+`completed_reviews`, `attempts`, `max_batch_text_bytes`, `deadline_at`, `last_progress_at` and
 `cleanup_condition`. Waiting workflow executions refresh these outputs.
 `cleanup_confirmed: false` means the repository reservation must remain held,
 including when the scan itself is terminal. Failed/partial scans use the `error`
@@ -57,9 +66,10 @@ deadline and model/access route. SQLite transactions and per-scan process locks
 serialize updates and repository claims across orchestrator restarts.
 
 Scopes follow path order and pack across adjacent folders, containing at most
-100 tracked entries and 1 MiB of text. Small binary files, symlinks and submodule
-entries share scopes while still requiring their own explicit dispositions.
-Files larger than 1 MiB stay intact in singleton scopes. Known unavailable
+100 tracked entries and the scan's selected text budget (1 MiB by default).
+Small binary files, symlinks and submodule entries share scopes while still
+requiring their own explicit dispositions. Files larger than the selected
+budget stay intact in singleton scopes. Known unavailable
 entries are isolated so they do not obstruct otherwise reviewable batches.
 A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
@@ -189,18 +199,34 @@ a scanner image rebuild. Deployment-specific workflow bindings and monitoring
 remain operator-owned. Configure their explicit destination and quota guards
 through the revision-gated workflow Admin API after deployment.
 
-An explicit continuation of an earlier batching-policy journal (version 1 or 2)
-regroups only unstarted root file and boundary scopes under the 1 MiB bound.
+A linked continuation inherits its source's saved byte limit unless an
+explicit `max_batch_text_bytes` requests a new value. Version-1 and version-2
+journals upgrade from 512 KiB to the 1 MiB default when the input is omitted;
+version-3 journals use 1 MiB. A changed budget regroups only untouched pending
+root file and boundary scopes in the new journal, including when lowering
+a 2 MiB budget to 1 MiB.
 Completed reviews, previously attempted scopes and split children keep their
 assignments, including scopes with retained retry errors after a prior run reset
 its attempt counters; file
 credit, findings, native receipts and outstanding boundary work are preserved.
-The new journal records `batching_version: 3`, also included in its aggregate
-coverage ledger and manifest. Further resumes retain that plan. Source journals
+The new journal records `batching_version: 4` and the effective
+`max_batch_text_bytes`, also included in progress, the aggregate coverage
+ledger and manifest. Further resumes retain that plan and limit by default.
+Changing the limit under the same request identity is rejected; select it only
+when starting a new scan or explicit linked continuation after cleanup.
+Source journals
 and published archives are immutable, and an active scan keeps its existing
 assignments until an explicit continuation after confirmed cleanup. Raising a
 source constant alone does not resize a saved plan; active version-1 and
-version-2 runs also retain their 512 KiB bound when planning later boundary scopes.
+version-2 runs also retain their 512 KiB bound when planning later boundary scopes;
+active version-3 runs retain 1 MiB.
+The configurable input requires Evander 0.125.0 with add-on 0.3.0. Deploy both
+host packages and reload the workflow services; no worker daemon deployment
+or scanner-image rebuild is required for this setting alone. After deployment,
+save the per-scan value through revision-gated Workflow Admin APIs. A larger
+budget can reduce child-start overhead but increases per-review context and
+retry cost; the 100-entry cap, two-child concurrency and evidence requirements
+are unchanged.
 For a continuation within an
 existing operator budget, pass a timeout clipped to that budget's remaining time;
 regrouping does not authorize a new budget. It does not change the snapshot, selected model/access route (except an explicitly

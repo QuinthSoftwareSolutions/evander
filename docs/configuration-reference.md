@@ -14,6 +14,14 @@ bounds and the container-worker backend. It defaults to 21,600 seconds, allows a
 most six hours per run, and reports structured `coverage_progress` and
 `cleanup_confirmed`. `resume_from_scan_id` starts a linked continuation at the
 source snapshot with a fresh budget and verified retained coverage.
+`max_batch_text_bytes` is an optional, bindable integer for tracked coverage,
+from `1048576` (1 MiB) through `2097152` (2 MiB). Omit it for 1 MiB on a new
+scan or to inherit the saved limit on continuation. An explicit new value
+regroups only untouched pending root file/boundary scopes in the new journal;
+accepted results, attempted scopes and split refinements remain intact.
+The effective limit appears in `coverage_progress.max_batch_text_bytes`.
+This input requires core 0.125.0 and Codex Security add-on 0.3.0; an older
+provider cannot silently ignore an explicit limit.
 An explicit ChatGPT-subscription handoff additionally names
 `resume_subscription_profile_id`. It must match the new scanner session's
 configured subscription, and both source and destination must use public

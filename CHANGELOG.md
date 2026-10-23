@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Configure tracked-review text budgets per scan (0.125.0)
+
+- Add the bindable workflow input `max_batch_text_bytes` for tracked security scans: integer budgets from 1 MiB to 2 MiB, with 1 MiB for new scans and the saved budget inherited on resume when omitted. Reject unsupported providers and coverage modes before launching work.
+- Release Codex Security add-on 0.3.0 with a frozen version-4 budget in progress, coverage ledgers and manifests. Explicit continuation changes regroup only untouched pending root scopes; accepted coverage, findings, native proofs, attempted/split scopes, original snapshots, cleanup and idempotency checks remain intact. Active historical plans retain their original limits; the pinned SDK and scanner image are unchanged.
+
 ## 2026-10-23 - Larger tracked-coverage batches on continuation (0.124.2)
 
 - Raise the optional Codex Security add-on's tracked-review text budget to 1 MiB while preserving the 100-entry cap, intact oversized files and two-child concurrency limit.

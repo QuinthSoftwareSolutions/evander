@@ -18,10 +18,12 @@ ChatGPT-subscription handoff on a retained tracked-coverage resume. See
 [resume and retention](docs/tracked-coverage.md#resume-and-retention) for the input,
 compatibility checks and host-only deployment requirements.
 
-Add-on 0.2.1 raises tracked-review scopes to 1 MiB and upgrades only untouched
-root scopes from older batching plans on explicit continuation. Active plans
-keep their saved assignments; see [tracked coverage](docs/tracked-coverage.md).
-The pinned SDK and scanner image remain compatible.
+Add-on 0.3.0 requires Evander 0.125.0 and makes the tracked-review text limit
+configurable per scan with `max_batch_text_bytes`: 1 MiB by default, up to
+2 MiB. Continuations inherit the saved limit when omitted; an explicit change
+regroups only untouched pending root scopes. Active plans keep their saved
+assignments; see [tracked coverage](docs/tracked-coverage.md). The pinned SDK
+and scanner image remain compatible.
 
 Build the pinned runtime on a trusted Linux host with Python 3.12 and Node 22.13+,
 using the same CPU architecture as the target VMs or workers:
