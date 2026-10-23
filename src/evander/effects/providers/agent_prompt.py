@@ -1057,9 +1057,21 @@ class AgentPromptEffectProvider(EffectProviderBase):
             logs = backend.get_log_snapshot(execution_id, lines=400)
         except Exception:
             logs = ""
-        legacy_deferral = legacy_worker_model_capacity_deferral(
-            getattr(status, "metadata", None), logs
-        )
+        status_metadata = getattr(status, "metadata", None)
+        legacy_deferral = None
+        if (
+            isinstance(status_metadata, Mapping)
+            and status_metadata.get("codex_auth_mode") == "chatgpt_subscription"
+            and status_metadata.get("codex_subscription_exit_code") in (1, "1")
+            and status_metadata.get("codex_subscription_deferral") is None
+        ):
+            # Session views can include later turns. Only this job's raw native
+            # error is evidence for replaying its failed invocation.
+            try:
+                raw_logs = backend.get_log_snapshot(execution_id, lines=40, mode="raw")
+            except Exception:
+                raw_logs = ""
+            legacy_deferral = legacy_worker_model_capacity_deferral(status_metadata, raw_logs)
         if legacy_deferral is not None and cls._defer_subscription_waiting_record(
             worker=worker, record=record, backend=backend, status=status,
             session_id=session_id, execution_id=execution_id, deferral=legacy_deferral,

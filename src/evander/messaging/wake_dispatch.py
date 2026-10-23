@@ -1412,7 +1412,7 @@ class HostWakeDispatcher:
                 and metadata.get("codex_subscription_exit_code") in (1, "1")
             ):
                 try:
-                    logs = backend.get_log_snapshot(execution_id, lines=40)
+                    logs = backend.get_log_snapshot(execution_id, lines=40, mode="raw")
                 except Exception:
                     logs = ""
                 legacy_deferral = legacy_worker_model_capacity_deferral(metadata, logs)

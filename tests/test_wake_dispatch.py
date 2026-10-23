@@ -1024,7 +1024,9 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
             metadata=worker_metadata,
         ),
         destroy=lambda execution_id: destroy_calls.append(execution_id),
-        get_log_snapshot=lambda execution_id, lines: "codex error: Selected model is at capacity.",
+        get_log_snapshot=lambda execution_id, lines, mode: (
+            "codex error: Selected model is at capacity." if mode == "raw" else ""
+        ),
     )
 
     dispatcher._monitor_container_execution_completion(

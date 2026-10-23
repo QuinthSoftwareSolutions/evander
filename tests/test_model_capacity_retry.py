@@ -53,7 +53,9 @@ class Backend:
     def destroy(self, execution_id):
         self.destroyed.append(execution_id)
 
-    def get_log_snapshot(self, execution_id, *, lines=50):
+    def get_log_snapshot(self, execution_id, *, lines=50, mode=None):
+        if self.legacy and mode != "raw":
+            return "Later session activity without the old job's native failure."
         logs = "session id: native-current-thread\nFix committed; ready to publish.\n"
         if self.legacy and self.status.status == ExecutionStatusKind.FAILED:
             logs += "codex error: Selected model is at capacity. Please try a different model.\n"
