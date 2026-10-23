@@ -20,23 +20,6 @@ from evander.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from evander.triggers.registry import TriggerProviderFactory, TriggerProviderRegistry
 
 
-class _ExplicitProviderMapping(Mapping[str, object]):
-    def __init__(self, values: Mapping[str, object]) -> None:
-        self._values = dict(values)
-
-    def __getitem__(self, key: str) -> object:
-        return self._values[key]
-
-    def __iter__(self):
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __bool__(self) -> bool:
-        return True
-
-
 def _env_or_default(env: Mapping[str, str] | None) -> dict[str, str]:
     return dict(os.environ if env is None else env)
 
@@ -59,7 +42,7 @@ def build_effect_provider_factory(
     resolved_admin_runtime = admin_runtime or build_admin_runtime(runtime_dir)
     return EffectProviderFactory(
         provider_config_resolver,
-        registry=EffectProviderRegistry(initial=_ExplicitProviderMapping(effect_providers)),
+        registry=EffectProviderRegistry(initial=effect_providers, defaults_when_empty=False),
         admin_service=AdminRuntimeProviderAdapter(resolved_admin_runtime),
         code_consultation_service_factory=BoundCodeConsultationServiceFactory(
             lambda: resolved_admin_runtime.managed_git_admin,
@@ -79,7 +62,7 @@ def build_query_provider_factory(
 ) -> QueryProviderFactory:
     return QueryProviderFactory(
         provider_config_resolver,
-        registry=QueryProviderRegistry(initial=_ExplicitProviderMapping(query_providers)),
+        registry=QueryProviderRegistry(initial=query_providers, defaults_when_empty=False),
         admin_service=_admin_runtime_adapter(runtime_dir, admin_runtime),
         env=_env_or_default(env),
     )
@@ -95,7 +78,7 @@ def build_gate_provider_factory(
 ) -> GateProviderFactory:
     return GateProviderFactory(
         provider_config_resolver,
-        registry=GateProviderRegistry(initial=_ExplicitProviderMapping(gate_providers)),
+        registry=GateProviderRegistry(initial=gate_providers),
         admin_service=_admin_runtime_adapter(runtime_dir, admin_runtime),
         env=_env_or_default(env),
     )
@@ -111,7 +94,7 @@ def build_trigger_provider_factory(
 ) -> TriggerProviderFactory:
     return TriggerProviderFactory(
         provider_config_resolver,
-        registry=TriggerProviderRegistry(initial=_ExplicitProviderMapping(trigger_providers)),
+        registry=TriggerProviderRegistry(initial=trigger_providers, defaults_when_empty=False),
         admin_service=_admin_runtime_adapter(runtime_dir, admin_runtime),
         env=_env_or_default(env),
     )

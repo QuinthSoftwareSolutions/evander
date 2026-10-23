@@ -15663,6 +15663,84 @@ def test_effective_tool_policy_payload_reuses_resolved_policy(
     assert resolve_calls == ["agent-session"]
 
 
+@pytest.mark.parametrize("backend", ["libvirt_vm", "container_worker_vm"])
+def test_update_admin_agent_preserves_existing_tools_when_adding_addon(
+    tmp_path: Path, backend: str
+) -> None:
+    service = build_admin_runtime(
+        write_config(tmp_path, container_worker_base_url="http://worker.test:11888")
+    )
+    service.runtime.policy.set_extra_mcp_tool_names(["addon_lookup", "addon_run"])
+    original = SessionManifest(
+        session_id="agent-tool-update",
+        vm_id="vm-tool-update",
+        vm_provider=backend,
+        vm_provider_id="vm-tool-update",
+        allowed_tools=[
+            ToolName.TEAMS_POST_STATUS,
+            ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE,
+            "addon_lookup",
+        ],
+        approval_required_tools=[ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE],
+        expires_at=datetime.now(UTC) + timedelta(hours=2),
+        metadata={"execution_backend": backend, "labels": {"purpose": "tool-test"}},
+    )
+    service.runtime.session_repository.upsert_session(original)
+    before = service.runtime.session_repository.get_session(original.session_id)
+    assert before is not None
+
+    result = service.vm_agent_admin.update_admin_agent(
+        original.session_id,
+        backend=backend,
+        payload={"allowed_tools": [*before.allowed_tools, "addon_run"]},
+    )
+
+    after = service.runtime.session_repository.get_session(original.session_id)
+    assert result["success"] is True
+    assert after is not None
+    assert after.model_dump(mode="json")["allowed_tools"] == [
+        "teams_post_status",
+        "communication_stage_workspace_file",
+        "addon_lookup",
+        "addon_run",
+    ]
+    for name in (
+        "teams_post_status",
+        "communication_stage_workspace_file",
+        "addon_lookup",
+        "addon_run",
+    ):
+        service.runtime.policy.require_tool(original.session_id, name)
+    assert after.approval_required_tools == before.approval_required_tools
+    assert after.metadata == before.metadata
+    assert after.expires_at == before.expires_at
+
+
+@pytest.mark.parametrize("name", ["ToolName.TEAMS_POST_STATUS", "ToolName.UNKNOWN_TOOL"])
+def test_update_admin_agent_rejects_serialized_enum_without_changing_session(
+    tmp_path: Path, name: str
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    original = SessionManifest(
+        session_id="agent-invalid-tool-update",
+        vm_id="vm-invalid-tool-update",
+        allowed_tools=[ToolName.TEAMS_POST_STATUS],
+        expires_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+    service.runtime.session_repository.upsert_session(original)
+    before = service.runtime.session_repository.get_session(original.session_id)
+    assert before is not None
+
+    with pytest.raises(ValueError, match="canonical tool name"):
+        service.vm_agent_admin.update_admin_agent(
+            original.session_id, payload={"allowed_tools": [name]}
+        )
+
+    after = service.runtime.session_repository.get_session(original.session_id)
+    assert after is not None
+    assert after.model_dump(mode="json") == before.model_dump(mode="json")
+
+
 def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

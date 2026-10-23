@@ -80,6 +80,7 @@ test("Miro opens an operation's details inline without leaving its activity row"
       config: { id: "connection-example", name: "Example connection", directory_path: "root", daily_call_budget: 100, boards: [] },
       connected: true, calls_today: 1, revision: 3,
     }] },
+    "/api/addons/miro-addon/connections/connection-example/session-grants": { sessions: [], grants: [] },
     "/api/addons/miro-addon/connections/connection-example/activity": { subscriptions: [], operations: [
       { operation_id: "operation-first", operation: "create_board", status: "applied", actor: "agent-example" },
       { operation_id: "operation-second", operation: "update_board", status: "applied", actor: "agent-example" },

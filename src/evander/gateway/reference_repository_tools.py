@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, NoReturn
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.effects.providers.agent_prepare_reference_repositories import (
     AgentPrepareReferenceRepositoriesEffectProvider,
@@ -27,7 +27,7 @@ def _raise_tool_error(exc: Exception) -> NoReturn:
 
 
 def register_reference_repository_tools(
-    server: FastMCP,
+    server: MCPServer,
     context: RuntimeContext,
     deps: GatewayToolDependencies,
     *,

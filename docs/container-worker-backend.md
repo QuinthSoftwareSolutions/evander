@@ -448,7 +448,7 @@ fallback packages are worker-level caches mounted read-only into containers:
 
 - `/opt/evander/toolchains/dotnet`
 - `/opt/evander/toolchains/dotnet-tools`
-- `/opt/evander/toolchains/node-v24.14.0`
+- `/opt/evander/toolchains/node-v24.22.1`
 - `/opt/evander/playwright-runtime`
 - `/opt/evander/ms-playwright`
 - `/opt/evander/nuget-cache-ro`
@@ -475,7 +475,7 @@ and runs an offline `dotnet restore` smoke test inside the runner. Use
 global-packages tarball instead of restoring only that support package from the Ansible control
 machine. The older `HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
 `evander_worker_dotnet_restore_support_archive_path` names remain accepted for compatibility.
-Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
+Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.22.1`; set
 `evander_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
@@ -627,6 +627,19 @@ resolve to the same account; a mismatch is logged out and rejected. Use a new pr
 different account. Broker status uses App Server `account/read`, `account/rateLimits/read`, and
 `account/usage/read` and returns only safe identity, plan, limit/reset, and summarized usage fields.
 Tokens are never returned, and reset credits are reported but never consumed automatically.
+
+Worker admission and queued-prompt recovery use the same read-only capacity
+decision. Exhausted included windows can continue using existing purchased usage
+credits reported in that rate-limit bucket: `unlimited: true`, or
+`has_credits: true` with a positive finite balance when one is exposed. An absent
+optional balance can use the provider's positive availability flag; malformed or
+contradictory balances cannot establish purchased capacity. Credits in another
+bucket do not clear an exhausted window. Explicit provider rate-limit or spend
+blocks still defer work even when credits are present. Without usable purchased
+capacity, the latest future reset among exhausted windows controls retry timing.
+This does not purchase credits, redeem reset credits, change profiles or select
+metered API billing. The profile's enabled, sign-in and account-pin checks still
+apply. An operator's scan budget and capacity policy can impose stricter stops.
 
 Workflows can read this telemetry with `query:codex:subscription-quota`. The
 node defaults to the seven-day Codex window and returns a remaining percentage,
@@ -827,6 +840,21 @@ usage. Existing jobs without a capture marker are not scanned, and startup does
 not import old session histories. Historical backfills are separate manual
 operator actions. Subscription counters contribute to the report's token chart
 and remain excluded from its API monetary totals.
+
+### Temporary model capacity
+
+The worker reports explicit model-capacity and server-overload errors as
+`codex_subscription_deferral.reason: model_capacity`, independently of account
+quota. The control plane queues the interrupted prompt with `queue_reason:
+model_capacity` and resumes its existing session home and native conversation.
+No model or billing-route fallback occurs. Retries use jittered exponential
+backoff, up to eight retries within one hour, capped at fifteen minutes between
+attempts. Their budget survives restarts. Exhaustion publishes a failed completion
+and a failed workflow-history record, routing the configured error edge when one
+exists. Deploy the control plane first; it can also recognize the last explicit
+native capacity error of a failed subscription turn from an older worker.
+Upgrade and restart the worker when its live model brokers are idle. This lets
+retry handling activate without interrupting existing long-running jobs.
 
 ## Session Durability
 

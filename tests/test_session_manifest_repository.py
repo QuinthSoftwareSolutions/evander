@@ -236,6 +236,26 @@ def test_read_all_safe_preserves_dynamic_addon_tool_names(tmp_path) -> None:
     assert set(session.tool_argument_policies) == {"approval_submit", "retired_addon_tool"}
 
 
+def test_loading_legacy_enum_names_preserves_addon_grants_and_approvals(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    payload = {
+        **_session_payload(session_id="legacy-tool-session"),
+        # Older agent updates stringified built-in enums before persisting them.
+        "allowed_tools": ["ToolName.TEAMS_POST_STATUS", "addon_lookup"],
+        "approval_required_tools": ["addon_lookup"],
+        "approval_tool_settings": {"addon_lookup": {"max_uses": 2}},
+    }
+    path.write_text(json.dumps({"legacy-tool-session": payload}), encoding="utf-8")
+
+    repository = JsonSessionManifestRepository(path)
+    session = repository.get_session("legacy-tool-session")
+
+    assert session is not None
+    assert "addon_lookup" in {_tool_value(tool) for tool in session.allowed_tools}
+    assert [_tool_value(tool) for tool in session.approval_required_tools] == ["addon_lookup"]
+    assert session.approval_tool_settings["addon_lookup"].max_uses == 2
+
+
 def test_session_repository_treats_non_dict_top_level_as_empty(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     path.write_text("[]", encoding="utf-8")

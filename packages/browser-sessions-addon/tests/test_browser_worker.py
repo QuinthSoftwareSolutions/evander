@@ -165,7 +165,8 @@ def test_attached_app_network_retains_only_declared_browser_services(worker, mon
 
 def test_close_during_startup_waits_for_cleanup_and_cannot_resurrect_lease(worker, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    import threading, time
+    import threading
+    import time
 
     supervisor, docker, payload = worker
     monkeypatch.setattr("socket.gethostbyname", lambda host: "192.0.2.10")

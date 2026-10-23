@@ -60,7 +60,12 @@ LOCAL_CONTAINER_WORKER_READONLY_MOUNTS = (
         "/opt/evander/toolchains/dotnet-tools",
     ),
     (
-        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "node-v24.14.0",
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "node-v24.22.1",
+        "/opt/evander/toolchains/node-v24.22.1",
+    ),
+    # Saved sessions can still reference the previous versioned destination.
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "node-v24.22.1",
         "/opt/evander/toolchains/node-v24.14.0",
     ),
     (

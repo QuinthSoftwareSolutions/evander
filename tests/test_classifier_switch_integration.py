@@ -81,14 +81,18 @@ def worker(admin, config, *, pending=False):
     return instance
 
 
-def publish(instance):
+def publish(instance, *, extra_payload=None):
     instance.event_queue.publish(
         TriggerEvent(
             event_id="input",
             trigger_id="tick",
             trigger_type="trigger:cron",
             occurred_at=datetime.now(UTC),
-            payload={"message": "Broken export", "directory_path": "root/other"},
+            payload={
+                "message": "Broken export",
+                "directory_path": "root/other",
+                **(extra_payload or {}),
+            },
         )
     )
 
@@ -132,9 +136,56 @@ def test_end_to_end_routing_payload_and_attribution(setup, cutoff, port):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    "category,expected", [("  Routing  ", "Routing"), ("${{tick.category}}", "Reference")]
+)
+def test_switch_category_reaches_usage_without_reaching_provider_input(setup, category, expected):
+    admin, _, calls = setup
+    config = workflow(admin, cost_category=category)
+    instance = worker(admin, config)
+    publish(instance, extra_payload={"category": "Reference"})
+    for _ in range(4):
+        instance.run_once()
+    result = records(config)["smart"]
+    assert result["status"] == "succeeded"
+    assert result["completion_event_branch_port"] == "support"
+    usage = model_usage_store(admin.config.runtime_dir).list_events()[0]
+    assert usage.cost_category == expected
+    assert usage.directory_path == "root/team" and usage.node_id == "smart"
+    assert usage.billing_kind == "api" and usage.cost_attribution_recorded
+    assert usage.input_tokens == 10 and usage.output_tokens == 2
+    assert usage.session_id is None
+    assert "cost_category" not in calls[0] and calls[0]["state"] == "Broken export"
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [({}, "Parent"), ({"cost_category": None}, "Parent"), ({"cost_category": ""}, None)],
+)
+def test_switch_category_inheritance_and_explicit_uncategorized(setup, override, expected):
+    from evander.classification.switch import PreparedSwitch, execute_switch, prepare_switch
+
+    admin, _, calls = setup
+    service = admin.classification_admin.service
+    settings = admin.runtime.provider_config.resolve_for_directory("root/team").classification
+    prepared = prepare_switch(service, settings, {**CONFIG, "state": "Broken export", **override})
+    snapshot = prepared.model_dump(mode="json")
+    if not override:
+        # Durable snapshots recorded before this field existed remain valid.
+        snapshot["config"].pop("cost_category")
+    attribution = {"cost_category": "Parent", "directory_path": "root/team", "node_id": "smart"}
+    result = execute_switch(
+        service, settings, PreparedSwitch.model_validate(snapshot), attribution=attribution
+    )
+    assert result["selected_port"] == "support"
+    assert model_usage_store(admin.config.runtime_dir).list_events()[0].cost_category == expected
+    assert attribution["cost_category"] == "Parent"
+    assert len(calls) == 1
+
+
 def test_pending_call_does_not_block_other_gates_and_restart_pins_definition(setup):
     admin, configs, calls = setup
-    config = workflow(admin)
+    config = workflow(admin, cost_category="Routing")
     first = worker(admin, config, pending=True)
     first._executor.submit = Mock(wraps=first._executor.submit)
     publish(first)
@@ -156,6 +207,7 @@ def test_pending_call_does_not_block_other_gates_and_restart_pins_definition(set
         },
     )
     config.gates[0].config["instructions"] = "New instructions"
+    config.gates[0].config["cost_category"] = "Changed category"
     config.gates[0].config["min_probability"] = 1.0
     config.workflow_graphs[0].directory_path = "root/other"
     configs.write("root/other", domain="providers", payload={"classification": {"enabled": False}})
@@ -167,6 +219,7 @@ def test_pending_call_does_not_block_other_gates_and_restart_pins_definition(set
     assert result["completion_event_branch_port"] == "support"
     assert calls[0]["model"] == "jev-1.13.0"
     assert calls[0]["questions"]["route"]["instructions"] == "Choose a team"
+    assert model_usage_store(admin.config.runtime_dir).list_events()[0].cost_category == "Routing"
     assert len(calls) == 1
 
 

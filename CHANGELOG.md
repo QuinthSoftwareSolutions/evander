@@ -1,11 +1,105 @@
 # Changelog
 
-## 2026-10-23 - Reduce control-plane processing and memory overhead (0.119.2)
+## 2026-10-23 - Reduce control-plane processing and memory overhead (0.126.1)
 
 - Copy only the requested directory from immutable configuration snapshots, and retain only the requested PR feedback page while selecting the oldest matching messages.
 - Stream atomic JSON writes and portable index exports instead of retaining complete serialized files, source rows, and SCIP blobs in memory.
 - Reuse source-line widths during code-index range validation and use a linear cycle check for valid workflow graphs.
 - Defer workflow binding graph analysis until bindings need it, reuse cached worker log projections during append and outcome evaluation, and bound raw log pagination allocations to the requested page.
+
+## 2026-10-23 - Reconcile session policy from workflow settings (0.126.0)
+
+- Add `effect:session:reconcile-policy` to apply settings-owned tool grants, argument restrictions, approvals, connector grants, and metadata to an existing session without replacing its identity, model, conversation, or workspace.
+- Reconcile atomically against the latest manifest, enforce workflow directory scope, preserve unmentioned fields, and avoid writes when the policy already matches.
+
+## 2026-10-23 - Configure tracked-review text budgets per scan (0.125.0)
+
+- Add the bindable workflow input `max_batch_text_bytes` for tracked security scans: integer budgets from 1 MiB to 2 MiB, with 1 MiB for new scans and the saved budget inherited on resume when omitted. Reject unsupported providers and coverage modes before launching work.
+- Release Codex Security add-on 0.3.0 with a frozen version-4 budget in progress, coverage ledgers and manifests. Explicit continuation changes regroup only untouched pending root scopes; accepted coverage, findings, native proofs, attempted/split scopes, original snapshots, cleanup and idempotency checks remain intact. Active historical plans retain their original limits; the pinned SDK and scanner image are unchanged.
+
+## 2026-10-23 - Larger tracked-coverage batches on continuation (0.124.2)
+
+- Raise the optional Codex Security add-on's tracked-review text budget to 1 MiB while preserving the 100-entry cap, intact oversized files and two-child concurrency limit.
+- On explicit continuation, upgrade unstarted root scopes from earlier batching policies without changing accepted coverage, native proofs, attempted scopes, split refinements or source journals. Record batching version 3 and retain strict snapshot, route, cleanup and idempotency checks. This host-only policy change does not require a scanner-image rebuild.
+
+## 2026-10-23 - Preserve resumed scan subscriptions and admit purchased capacity (0.124.1)
+
+- Allow agent-creation workflows to bind the saved subscription profile when resuming a scan. Validate the resolved profile on its selected worker and reject missing bindings instead of falling back to the legacy default; ordinary resumes retain strict scan configuration compatibility.
+- Use one capacity decision for worker admission and queued-prompt recovery: existing purchased usage credits can cover exhausted included windows in the same rate-limit bucket. Explicit provider rate/spend blocks, account pins and profile isolation remain enforced; no reset credit is read or redeemed by this decision.
+
+## 2026-10-23 - Discover Azure DevOps builds by number (0.124.0)
+
+- Add the read-only `list_ado_builds` MCP tool with build-number, pipeline, repository and branch filters, bounded pages and continuation tokens. Return build IDs, pipeline and repository identities, source details and URLs so callers can distinguish builds that share a number.
+- Require an explicit tool grant and use the session directory's existing Azure DevOps configuration and host credential. Existing agent grants are unchanged; the updated Azure DevOps add-on requires Evander 0.124.0.
+
+## 2026-10-23 - Support MCP SDK 2 and modern protocol requests (0.123.0)
+
+- Migrate the gateway and add-on MCP surfaces to SDK 2.3 while retaining legacy clients. Enforce session proof, current tool grants, workflow leases, exact invocation approvals and auditing on modern requests without a transport session ID.
+- Update the Figma and Miro MCP clients for HTTPX 2, explicit pagination and the SDK's response models, preserving authenticated destinations and bounded timeouts. Set bounded SSE wire limits that accommodate base64 screenshots and paired structured/text results while retaining the existing decoded-content limits. Constrain the SDK to the supported major version and refresh the dependency lock.
+- Preserve actionable policy and domain-validation errors without Pydantic input dumps. Unexpected adapter failures retain their operator audit details and use the SDK's sanitized caller-facing errors.
+- Retain support for existing Elasticsearch bulk and Kibana import sizes through an explicit bounded gateway HTTP wire limit, without changing their logical payload limits.
+- Require Evander 0.123.0 for the five migrated optional add-ons so dependency resolution rejects core releases that still use MCP SDK 1.
+
+## 2026-10-23 - Retry temporary model-capacity failures (0.122.1)
+
+- Recognize temporary Codex model-capacity and explicit server-overload errors separately from subscription quota exhaustion. Durably resume the same session and native conversation without changing the selected model, billing route or dispatch identity.
+- Retry up to eight times within one hour with jittered exponential backoff capped at fifteen minutes. Preserve the retry budget across restarts and repeated reconciliation; model overload does not pause other models on the same subscription.
+- Report exhausted retries as failed workflow executions, publish failure completion, and use the configured error branch. Expire overdue queued retries before launching another worker job.
+- Activate retries on older workers through their last explicit native capacity error so worker upgrades can wait for live model brokers to become idle.
+- Preserve scheduled-wake completion and directory scope when queued retries expire. Restore accepted worker executions and their real outcomes after interruption before reporting deadline failure, and use effective models for subscription FIFO ordering.
+
+## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
+
+- Add the optional, bindable `resume_subscription_profile_id` input for a deliberately requested ChatGPT-subscription handoff on a linked tracked-coverage resume. It must match the new scanner session; ordinary resumes still require the original profile.
+- Preserve exact snapshot, inventory, repository access, policy/SDK, model, reasoning, Cyber program and image compatibility checks, plus repository reservations, cleanup and idempotent recovery. Reject API-billing conversions and route changes during a run.
+- Release Codex Security add-on 0.2.0 with immutable-source reuse and a handoff receipt in the new aggregate manifest and coverage ledger. The pinned SDK and scanner-image runtime are unchanged.
+
+## 2026-10-22 - Pack tracked security reviews across folders (0.121.2)
+
+- Pack adjacent paths and small non-text entries into bounded review scopes instead of starting a job for each folder or non-text file. Preserve the 100-entry and 512 KiB text limits, intact oversized files and explicit non-text review requirements.
+- On explicit continuation, regroup only untouched legacy scopes while retaining accepted coverage, findings, attempted scopes, split refinements and outstanding boundary assignments. Keep active runs and source reports unchanged, and record the batching policy in aggregate reports.
+- Preserve completed and split scopes when cancellation accepts a saved result; reuse already accepted map and file coverage when continuing older journals with stale scheduling flags.
+
+## 2026-10-22 - Keep gateway installs on the compatible MCP SDK (0.121.1)
+
+- Bound the MCP Python SDK to the supported 1.x release line while retaining the 1.30.0 security floor. Fresh and upgraded installations no longer select MCP 2.x, which removes the FastMCP API used by the gateway.
+
+## 2026-10-22 - Preserve workflow scope, tool grants and inference attribution (0.121.0)
+
+- Let shared PR-publication workflows select the owning project directory while preserving repository, commit and publication-identity checks and rejecting scope escapes.
+- Preserve canonical built-in tool names when creating or updating agents, reject serialized enum names in new requests, and keep existing stored add-on grants and approval settings readable.
+- Add bindable Smart-switch inference cost categories, retaining inherited or explicit Uncategorized attribution across queued execution and restarts without changing provider input or token accounting.
+
+## 2026-10-22 - Decompose control-plane orchestration (0.120.4)
+
+- Separate worker reference checkout, task worktree preparation, and dependency composition into per-invocation stages while retaining Git validation, recovery, locking, and persistence order.
+- Give workflow binding resolution, active-run snapshots, and graph activity reporting explicit invocation state and focused stages, preserving reference traces, report projections, and SQLite read budgets.
+- Separate Team blocker updates, task cancellation, and dispatch activity finalization into ordered applications inside their existing command and repository transactions.
+- Extract relay HTTP routing and provider request preparation, and share Azure/OpenAI-compatible forwarding while preserving request policy, streaming, steering delivery and retry, and usage accounting.
+
+## 2026-10-22 - Simplify control-plane ownership boundaries (0.120.3)
+
+- Separate agent creation and VM log services, PR publication and feedback binding, workflow target preparation, and Bokio execution while retaining existing entry points, permissions, saved formats, and Save behavior without migrations.
+- Run workflow workers directly, distinguish empty provider catalogs from omitted defaults, and centralize managed tool audit emission while preserving summaries, cancellation handling, durable ordering, and legacy Team action compatibility.
+- Consolidate workflow inspector draft state and split pricing and Teams authentication out of the configuration screen, preserving incomplete drafts, revision checks, and navigation behavior.
+
+## 2026-10-22 - Update vulnerable dependencies and toolchains (0.120.2)
+
+- Raise Python runtime, development and build dependency security floors across the core and independent add-ons, and refresh the Python and affected npm lockfiles.
+- Update Node to 24.22.1, the code-index .NET SDK to 10.0.113, Nexus to 3.97.1 and Qdrant to 1.19.2 across deployment defaults, bootstrap paths and toolchain metadata.
+- Preserve existing container session Node paths and guest profile upgrades and make Nexus mandatory telemetry acknowledgement an explicit operator setting.
+- Synchronize the hosted tab-viewing regression with the live tab picker before waiting for selection responses.
+
+## 2026-10-22 - Allow clean task ownership handoffs (0.120.1)
+
+- Inspect historical task checkouts through their original sessions before preparing work for a new owner. Allow a fresh checkout only when every previous owner's checkout is clean and unchanged from its committed preparation receipt.
+- Preserve foreign commits, dirty or missing work, incompatible provenance and active task writers for explicit recovery. Reuse the existing preparation and continuity flow without adding prompt instructions or changing review and release gates.
+- Give existing checkout-preparation blockers one corrected retry after deployment without changing checkout identities, accepted recoveries or composition-conflict bindings. Suppress a persistent failure again after that attempt.
+
+## 2026-10-22 - Configure persistent reasoning controls in workflows (0.120.0)
+
+- Add a directory-scoped workflow effect for setting or clearing an existing session's native reasoning default, using the existing provider/model validation and preserving running turns and other session settings.
+- Expose the saved default in session-context queries and publish the node in the workflow editor, so operator-owned chat commands can override automatic routing until explicitly reset without hard-coded command syntax.
 
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 

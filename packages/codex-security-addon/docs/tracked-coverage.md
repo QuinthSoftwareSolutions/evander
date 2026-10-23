@@ -15,9 +15,18 @@ records are not migrated.
   "managed_repo_id": "${{selection.managed_repo_id}}",
   "coverage_policy": "all_tracked_files",
   "mode": "standard",
+  "max_batch_text_bytes": 1048576,
   "timeout_seconds": 21600
 }
 ```
+
+`max_batch_text_bytes` accepts an integer from `1048576` (1 MiB) through
+`2097152` (2 MiB), including either endpoint. It applies only to tracked
+coverage. Omit it (or use null) to select 1 MiB for a new scan or inherit the
+saved limit on continuation. The value can be a workflow binding, for example
+`"max_batch_text_bytes": "${{event.payload.review_bytes}}"`, whose resolved
+value must be an integer. Use `2097152` to request 2 MiB for this scan only.
+The host freezes the effective budget before scheduling any child review.
 
 Omitting the timeout selects 21,600 seconds for tracked coverage and 3,600 for
 provider coverage. Tracked runs permit shorter budgets for bounded qualification,
@@ -29,7 +38,7 @@ never extend the original deadline.
 
 `coverage_progress` contains `phase`, `files_total`, `files_reviewed`,
 `files_not_applicable`, `files_blocked`, `files_pending`, `active_reviews`,
-`completed_reviews`, `attempts`, `deadline_at`, `last_progress_at` and
+`completed_reviews`, `attempts`, `max_batch_text_bytes`, `deadline_at`, `last_progress_at` and
 `cleanup_condition`. Waiting workflow executions refresh these outputs.
 `cleanup_confirmed: false` means the repository reservation must remain held,
 including when the scan itself is terminal. Failed/partial scans use the `error`
@@ -56,8 +65,13 @@ pending scopes, generations, jobs, immutable proof hashes, outstanding work,
 deadline and model/access route. SQLite transactions and per-scan process locks
 serialize updates and repository claims across orchestrator restarts.
 
-Scopes follow directory/path order and contain at most 100 files or 512 KiB;
-an oversized file stays intact in a singleton scope. A shared architecture review
+Scopes follow path order and pack across adjacent folders, containing at most
+100 tracked entries and the scan's selected text budget (1 MiB by default).
+Small binary files, symlinks and submodule entries share scopes while still
+requiring their own explicit dispositions. Files larger than the selected
+budget stay intact in singleton scopes. Known unavailable
+entries are isolated so they do not obstruct otherwise reviewable batches.
+A shared architecture review
 precedes component work. Final boundary scopes use that map and outstanding
 validation items. Every review uses an isolated SDK state directory and clone of
 the same source commit, through the pinned public scoped Standard-scan API. Supporting
@@ -138,6 +152,91 @@ require a new tracked scan. A continuation receives a fresh budget and linked
 scan ID; the source report and artifacts remain immutable. It always reviews the
 original commit even after the branch advances or is force-pushed.
 
+### Explicit subscription handoff
+
+By default, a continuation must use the source run's exact access route, including
+its subscription profile. To authorize one different ChatGPT subscription,
+configure **only the new isolated scanner session** with the destination profile
+and pass its ID explicitly alongside `resume_from_scan_id`:
+
+```json
+{
+  "type": "effect:security:scan-repo",
+  "id": "resume-scan",
+  "display_name": "Resume security scan",
+  "session_id": "new-scanner-session",
+  "repo_path": "/home/agent/repo",
+  "coverage_policy": "all_tracked_files",
+  "managed_repo_id": "approved-managed-repository",
+  "resume_from_scan_id": "0123456789abcdef0123456789abcdef",
+  "resume_subscription_profile_id": "subscription-b"
+}
+```
+
+The input authorizes that named destination; it does not configure the session
+or choose an available account. The operator must verify the destination profile,
+account access and positive applicable quota before invocation. A named profile
+may equal the original profile, but both routes must still use public ChatGPT
+subscription authentication. API-authenticated or non-public source/destination
+routes are rejected. The original commit, inventory digest, directory/repository
+access, policy/SDK, model, reasoning effort, Cyber program, image and every other
+route field remain subject to the existing equality checks.
+
+The controller verifies retained proof hashes and source cleanup before creating
+the new journal and snapshot pin. It carries forward accepted work and findings,
+records source and destination profile IDs in the **new** journal and aggregate
+manifest/ledger, and leaves earlier journals, native archives and reports intact.
+The same request identity rejoins the same run after a lost response or restart;
+changing its source or destination is an idempotency error. The repository claim
+and two-review limit still apply. Once started, the destination route is frozen;
+changing it stops the run and performs normal worker cleanup. There is no automatic
+subscription switch, API fallback, quota reset or reset-credit operation.
+
+This host-side option requires Evander 0.122.0 and add-on 0.2.0. Upgrade the core
+and optional add-on together, then reload the workflow services. It changes no
+pinned SDK or scanner-image runtime files, so this change alone does not require
+a scanner image rebuild. Deployment-specific workflow bindings and monitoring
+remain operator-owned. Configure their explicit destination and quota guards
+through the revision-gated workflow Admin API after deployment.
+
+A linked continuation inherits its source's saved byte limit unless an
+explicit `max_batch_text_bytes` requests a new value. Version-1 and version-2
+journals upgrade from 512 KiB to the 1 MiB default when the input is omitted;
+version-3 journals use 1 MiB. A changed budget regroups only untouched pending
+root file and boundary scopes in the new journal, including when lowering
+a 2 MiB budget to 1 MiB.
+Completed reviews, previously attempted scopes and split children keep their
+assignments, including scopes with retained retry errors after a prior run reset
+its attempt counters; file
+credit, findings, native receipts and outstanding boundary work are preserved.
+The new journal records `batching_version: 4` and the effective
+`max_batch_text_bytes`, also included in progress, the aggregate coverage
+ledger and manifest. Further resumes retain that plan and limit by default.
+Changing the limit under the same request identity is rejected; select it only
+when starting a new scan or explicit linked continuation after cleanup.
+Source journals
+and published archives are immutable, and an active scan keeps its existing
+assignments until an explicit continuation after confirmed cleanup. Raising a
+source constant alone does not resize a saved plan; active version-1 and
+version-2 runs also retain their 512 KiB bound when planning later boundary scopes;
+active version-3 runs retain 1 MiB.
+The configurable input requires Evander 0.125.0 with add-on 0.3.0. Deploy both
+host packages and reload the workflow services; no worker daemon deployment
+or scanner-image rebuild is required for this setting alone. After deployment,
+save the per-scan value through revision-gated Workflow Admin APIs. A larger
+budget can reduce child-start overhead but increases per-review context and
+retry cost; the 100-entry cap, two-child concurrency and evidence requirements
+are unchanged.
+For a continuation within an
+existing operator budget, pass a timeout clipped to that budget's remaining time;
+regrouping does not authorize a new budget. It does not change the snapshot, selected model/access route (except an explicitly
+requested subscription handoff), per-run concurrency
+limit or review-completion requirements.
+Results accepted during cancellation remain completed, and partial scopes retain
+their split children. On continuation, older scheduling flags cannot reopen an
+already accepted architecture map or credited file scope. This reuses existing
+host-owned evidence without granting additional file credit.
+
 Older journals may have promoted advisory questions into required work. On
 continuation, the controller verifies their preserved native reports and removes
 only exact question-derived blockers with authenticated provenance; genuine
@@ -178,6 +277,9 @@ the saved scan ID; do not clear a lock based on elapsed time alone.
 Deploy the control plane, worker code, pinned runtime/profile and rebuilt scanner
 image before enabling the policy in live workflows. The image fingerprint covers
 both `coverage_runner.py` and `coverage_sdk.mjs`; unchanged inputs reuse it.
+Batch packing and continuation regrouping execute on the control plane and are
+not worker-image inputs; changes confined to those policies do not require a
+scanner-image rebuild.
 Use a disposable managed synthetic repository and the selected real subscription
 for a bounded qualification after deployment: interrupt after accepted progress,
 verify private diagnostics and native hashes, resume at the original SHA, and

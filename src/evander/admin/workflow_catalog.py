@@ -862,6 +862,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:reconcile-policy": "Apply settings-owned session policy without recreating the session.",
+    "effect:session:set-reasoning-effort": (
+        "Set a session's native reasoning default for future turns, or clear it with null."
+    ),
     "effect:website-session:ensure-profile": (
         "Create or reuse an exact-origin website login from a host-approved template. "
         "Returns a profile ID without exposing credentials or performing a login."
@@ -1763,6 +1767,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string"),
             _field("min_probability", "Minimum option probability", "number",
                    description="Optional cutoff; lower probability routes to the default."),
+            _field("cost_category", "Cost category", "string", bindable=True,
+                   description="Inference category for this switch. Omit/null to inherit; an empty string selects Uncategorized."),
             _field("outputs", "Outputs", "json", read_only=True,
                    description="Derived from the upstream node and passed through unchanged."),
         ],
@@ -2592,10 +2598,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "subscription_profile_id",
                 "Subscription profile",
                 "enum",
-                bindable=False,
+                bindable=True,
                 description=(
-                    "Immutable worker-owned ChatGPT subscription profile. Create a new "
-                    "agent session to change this selection."
+                    "Worker-owned ChatGPT subscription profile, selected literally or from "
+                    "a workflow binding. Bind a resumed scan's retained subscription to keep "
+                    "its account. The resolved profile must exist and be enabled on this worker."
                 ),
                 options=[],
                 metadata={
@@ -2603,7 +2610,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "agent_providers": ["codex"],
                     "model_provider_modes": ["openai_public"],
                     "codex_auth_modes": ["chatgpt_subscription"],
-                    "immutable": True,
                 },
             ),
             _field(
@@ -3517,7 +3523,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("coverage_policy", "Coverage policy", "enum", bindable=True, default_value="provider", options=[_field_option("provider", "Provider coverage"), _field_option("all_tracked_files", "Every tracked file (Standard full snapshot)")]),
             _field("managed_repo_id", "Managed repository ID", "string", bindable=True, description="Required for tracked coverage; must match the session checkout."),
+            _field("max_batch_text_bytes", "Tracked review text bytes", "number", bindable=True, description="Tracked coverage only: integer bytes from 1048576 (1 MiB) to 2097152 (2 MiB). Omit for 1 MiB on a new scan or to retain the saved limit on resume. An explicit continuation can regroup only untouched scopes."),
             _field("resume_from_scan_id", "Resume from scan ID", "string", bindable=True, description="Reuse accepted coverage at the earlier scan's original snapshot."),
+            _field("resume_subscription_profile_id", "Resume subscription profile ID", "string", bindable=True, description="Explicitly allow this destination ChatGPT subscription on a linked resume. Must match the new scanner session; all other access, model and snapshot settings must match the source."),
             _field("session_id", "Session ID", "string", required=True, bindable=True),
             _field(
                 "repo_path", "Repository path", "string", required=True, bindable=True,
@@ -4267,6 +4275,33 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:session:set-reasoning-effort",
+        label="Session reasoning effort",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "reasoning_effort", "Reasoning effort", "json", required=True, bindable=True,
+                description=(
+                    'Native effort such as "low"; JSON null clears the default. '
+                    "Running turns are unchanged."
+                ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:reconcile-policy",
+        label="Reconcile session policy",
+        fields=[
+            _field("session_id", "Session ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+            _field("policy", "Managed policy fields", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:session:update-metadata",
         label="Session update metadata",
         fields=[
@@ -4448,6 +4483,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field(
                 "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
             ),
+            _field("directory_path", "Directory path", "string", bindable=True),
             _field("source_ref", "Source ref", "string", required=True, bindable=True),
             _field(
                 "expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True

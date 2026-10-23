@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig
 from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
@@ -193,7 +193,7 @@ def _upsert_session(context, *, session_id: str, allowed_tools: list[str]) -> No
 
 
 def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server._tool_manager.call_tool(name, arguments))
+    result = asyncio.run(server._tool_manager.call_tool(name, arguments, context=None))
     if isinstance(result, tuple) and len(result) == 2:
         structured = result[1]
         if isinstance(structured, dict) and set(structured) == {"result"}:

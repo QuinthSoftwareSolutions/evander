@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.config import GatewayConfig
 from evander.gateway import create_server
@@ -608,7 +608,7 @@ def test_teams_history_is_compact_by_default_and_full_metadata_is_opt_in(tmp_pat
     assert full == {"messages": [original], "next_cursor": f"{target}/msg-1"}
     assert message.model_dump(mode="json") == original
     schema = next(
-        t.inputSchema for t in asyncio.run(server.list_tools()) if t.name == "teams_get_messages"
+        t.input_schema for t in asyncio.run(server.list_tools()) if t.name == "teams_get_messages"
     )
     assert schema["properties"]["include_metadata"]["type"] == "boolean"
     assert schema["properties"]["include_metadata"]["default"] is False
@@ -1716,7 +1716,7 @@ def test_teams_post_status_audits_adapter_http_error(tmp_path: Path) -> None:
     context.teams_service = fake_teams
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="teams timeout"):
+    with pytest.raises(ToolError, match="Error executing tool teams_post_status"):
         asyncio.run(
             server.call_tool(
                 "teams_post_status",
@@ -1769,7 +1769,7 @@ def test_teams_get_messages_fails_clearly_when_delegated_credentials_are_missing
     )
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="No Teams delegated credentials are available"):
+    with pytest.raises(ToolError, match="Teams authentication is unavailable"):
         asyncio.run(
             server.call_tool(
                 "teams_get_messages",

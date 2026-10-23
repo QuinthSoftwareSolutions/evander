@@ -99,6 +99,13 @@ class _RecordingProvider(QueryProviderBase):
     pass
 
 
+def test_empty_registry_preserves_legacy_defaults_unless_catalog_is_explicit() -> None:
+    assert QueryProviderRegistry(initial={}).registered_types() == tuple(
+        DEFAULT_QUERY_PROVIDER_REGISTRY
+    )
+    assert QueryProviderRegistry(initial={}, defaults_when_empty=False).registered_types() == ()
+
+
 def test_default_registry_includes_known_query_types() -> None:
     assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {
         "query:ado:builds",

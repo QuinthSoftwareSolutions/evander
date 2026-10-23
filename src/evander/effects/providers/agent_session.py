@@ -1983,7 +1983,7 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
         "fi",
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"',
         'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"',
-        'export EVANDER_NODE_ROOT="/opt/evander/toolchains/node-v24.14.0"',
+        'export EVANDER_NODE_ROOT="/opt/evander/toolchains/node-v24.22.1"',
         'export PATH="$EVANDER_NODE_ROOT/bin:$PATH"',
     ]
     if dotnet:

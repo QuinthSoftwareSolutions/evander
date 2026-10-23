@@ -383,6 +383,11 @@ actual secret only to the control-plane/effect-worker process. GitHub publicatio
 `gh` credential integration; Azure DevOps publication sends the configured PAT in an HTTP
 authorization header.
 
+Shared publication workflows should bind `effect:pr:create.directory_path` to the owning
+project directory. The target must be the workflow directory or a descendant; omitting it uses
+the workflow directory. The publication context still requires an exact match for its directory,
+repository and approved commit. This does not move a project or change its existing bindings.
+
 Team releases may pass `publication_context_id` to `effect:pr:create` to use the captured
 ADO work-item assignee's Microsoft OAuth connection or personal PAT. Registered users manage these connections through
 **My ADO connection** in Admin Web. The context is bound to the repository, directory, and

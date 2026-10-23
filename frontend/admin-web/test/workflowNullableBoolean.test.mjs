@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { before } from "node:test";
 import { createServer } from "vite";
+import { initialInspectorDraft } from "../src/features/workflow-editor/inspectorDraftState.ts";
 
 let createFieldRenderers;
 let createNodeFieldActions;
@@ -30,11 +31,14 @@ function render(value, mode = "literal", field = speedField) {
   const updates = [];
   const actions = createNodeFieldActions({
     selectedNode: { type: "effect:agent:prompt" },
-    inspectorKnownValues: { fast_mode: value },
-    inspectorJsonDrafts: {},
+    inspector: {
+      state: { ...initialInspectorDraft(), inspectorKnownValues: { fast_mode: value } },
+      setters: {
+        setInspectorFieldModes: () => {},
+        setInspectorKnownValues: (next) => updates.push(["fast_mode", next.fast_mode]),
+      },
+    },
     selectedNodeBindingOptions: [],
-    setInspectorFieldModes: () => {},
-    setInspectorKnownValues: (next) => updates.push(["fast_mode", next.fast_mode]),
     stageInspectorDraft: () => {},
     tutorialCurrentRequiredAction: () => null,
   });

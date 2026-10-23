@@ -4,8 +4,8 @@ import base64
 import json
 from typing import Any, Literal
 
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import ValidationError
 

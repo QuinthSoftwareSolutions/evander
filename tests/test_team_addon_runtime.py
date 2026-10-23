@@ -10116,8 +10116,15 @@ def test_wake_failure_requeues_delivered_operator_attention(tmp_path: Path) -> N
 
 
 def test_dependency_git_composition_conflict_persists_typed_recovery(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
+    from evander_team_addon.services.domain import preparation_failures
+
+    current_failure_generation = preparation_failures.task_preparation_failure_generation
+    monkeypatch.setattr(
+        preparation_failures, "task_preparation_failure_generation",
+        lambda state, task_id, **_: preparation_failures.task_preparation_generation(state, task_id),
+    )
     repo = _seed_team(tmp_path)
     _state, leases = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
@@ -10174,6 +10181,15 @@ def test_dependency_git_composition_conflict_persists_typed_recovery(
     assert recovery.failed_deliverable_id == "deliverable-two"
     restored = TeamStateRepository(tmp_path).read()
     assert restored.dependency_composition_recoveries[recovery.id] == recovery
+    monkeypatch.setattr(
+        preparation_failures, "task_preparation_failure_generation", current_failure_generation,
+    )
+    unchanged, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend", defer_activation=True, respect_wake_interval=False,
+    )
+    assert leases == []
+    assert unchanged.blockers[blocker.id].state == TeamBlockerState.OPEN
+    assert unchanged.dependency_composition_recoveries[recovery.id] == recovery
 
 
 def test_successive_dispatches_reuse_task_worktree_with_fresh_context_id(

@@ -1445,6 +1445,13 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "profile_id": {"type": "string"},
         "created": {"type": "boolean"},
     },
+    "effect:session:reconcile-policy": {
+        "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "changed": {"type": "boolean"},
+        "changed_fields": {"type": "array", "items": {"type": "string"}},
+    },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},
@@ -1462,6 +1469,14 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "vm_name": {"type": ["string", "null"]},
         "directory_path": {"type": "string"},
         "image_generation_enabled": {"type": "boolean"},
+    },
+    "effect:session:set-reasoning-effort": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "reasoning_effort": {"type": ["string", "null"]},
     },
     "effect:session:renew-if-expired": {
         "success": {"type": "boolean"},
@@ -1536,6 +1551,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
     "effect:pr:create": {
         "success": {"type": "boolean"},
         "managed_repo_id": {"type": "string"},
+        "directory_path": {"type": "string"},
         "source_ref": {"type": "string"},
         "expected_commit_sha": {"type": "string"},
         "destination_branch": {"type": "string"},
@@ -1653,6 +1669,7 @@ _QUERY_OUTPUT_SCHEMAS = {
         "groups": {"type": "object"},
     },
     "query:session-context": {
+        "reasoning_effort": {"type": ["string", "null"]},
         "activity": {"type": "object"},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},

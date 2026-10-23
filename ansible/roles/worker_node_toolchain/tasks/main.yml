@@ -169,13 +169,16 @@
       - --network
       - none
       - -v
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.22.1:ro"
+      - -v
       - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0:ro"
       - "{{ evander_runner_image_name }}"
       - bash
       - -lc
       - >-
-        export PATH="/opt/evander/toolchains/node-v24.14.0/bin:$PATH";
-        node --version && npm --version && npx --version
+        export PATH="/opt/evander/toolchains/node-v24.22.1/bin:$PATH";
+        node --version && npm --version && npx --version &&
+        test "$(/opt/evander/toolchains/node-v24.14.0/bin/node --version)" = "$(node --version)"
   changed_when: false
   when: evander_worker_node_toolchain_enabled | bool
 

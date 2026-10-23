@@ -87,6 +87,9 @@ from evander.effects.providers.state_update import StateUpdateEffectProvider
 from evander.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
+from evander.effects.providers.session_set_reasoning_effort import (
+    SessionSetReasoningEffortEffectProvider,
+)
 from evander.effects.providers.session_set_image_generation_enabled import (
     SessionSetImageGenerationEnabledEffectProvider,
 )
@@ -96,6 +99,7 @@ from evander.effects.providers.session_approve_mcp_tools import (
 from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
+from evander.effects.providers.session_reconcile_policy import SessionReconcilePolicyEffectProvider
 from evander.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
 )
@@ -323,11 +327,13 @@ def register_providers() -> dict[str, dict[str, type]]:
                 SessionRevokeMcpToolApprovalLeaseEffectProvider
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:session:set-reasoning-effort": SessionSetReasoningEffortEffectProvider,
             "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectProvider,
             "effect:session:set-image-generation-enabled": (
                 SessionSetImageGenerationEnabledEffectProvider
             ),
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
+            "effect:session:reconcile-policy": SessionReconcilePolicyEffectProvider,
             "effect:git:ensure-managed-repo": GitEnsureManagedRepoEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:git:push-branch": GitPushBranchEffectProvider,

@@ -30,6 +30,7 @@ from evander.effects.providers.agent_session import (
 from evander.published_artifacts import PublishedArtifactStore
 from evander.security_scans import (
     SecurityScanHandle,
+    SecurityScanRequest,
     SecurityScanResult,
     SecurityScanRetryableError,
 )
@@ -39,6 +40,7 @@ from .coverage import (
     RESERVE_SECONDS,
     accept,
     aggregate,
+    batch_text_limit,
     begin,
     complete,
     make_state,
@@ -110,7 +112,7 @@ class CoverageController:
             except ValueError:
                 state = None
             if state is not None:
-                if state["request"] != request.model_dump(mode="json"):
+                if SecurityScanRequest.model_validate(state["request"]) != request:
                     raise ValueError("Coverage identity reused with different inputs")
                 return self.handle(state)
             route = self.route(request)
@@ -457,8 +459,6 @@ class CoverageController:
         }
 
     def launch(self, state, item):
-        from evander.security_scans import SecurityScanRequest
-
         attempt = item["attempts"][-1]
         request = SecurityScanRequest.model_validate(state["request"])
         # A lost response retries this exact durable generation, never a fresh job.
@@ -614,8 +614,6 @@ class CoverageController:
                     )
                     state["stop_reason"] = state["stop_reason"] or state["migration_error"]
                 self.store.save(state)
-            from evander.security_scans import SecurityScanRequest
-
             request = SecurityScanRequest.model_validate(state["request"])
             if not state["stop_reason"]:
                 try:
@@ -747,7 +745,7 @@ class CoverageController:
                     attempt["cleanup_confirmed"] = True
                 except (ValueError, RuntimeError, OSError):
                     attempt["cleanup_pending"] = True
-                if state["stop_reason"]:
+                if state["stop_reason"] and item["status"] not in {"completed", "split"}:
                     item["status"] = "blocked"
             self.cleanup(state)
             plan_boundaries(state)
@@ -801,8 +799,6 @@ class CoverageController:
                     except ValueError:
                         # A launch may have reached the worker before its local
                         # mapping was saved. Resolve only the stable owned job ID.
-                        from evander.security_scans import SecurityScanRequest
-
                         found = self.provider._cancel_raw(
                             scan_id=attempt["scan_id"],
                             request=SecurityScanRequest.model_validate(state["request"]),
@@ -928,6 +924,8 @@ class CoverageController:
             "coverage.json": {
                 "documentType": "evander.security-coverage",
                 "version": 1,
+                "batching_version": state.get("batching_version", 1),
+                "max_batch_text_bytes": batch_text_limit(state),
                 "revision": state["revision"],
                 "inventory_digest": state["inventory_digest"],
                 "inventory": state["inventory"],
@@ -956,6 +954,8 @@ class CoverageController:
                 "revision": state["revision"],
                 "lineage": state["lineage"],
                 "coverage_policy": "all_tracked_files",
+                "batching_version": state.get("batching_version", 1),
+                "max_batch_text_bytes": batch_text_limit(state),
                 "completed_at": state["finished_at"],
                 "stop_reason": state["stop_reason"],
                 "uncredited_sources": state["uncredited"],
@@ -974,6 +974,9 @@ class CoverageController:
                 ],
             },
         }
+        if state.get("subscription_handoff"):
+            for name in ("coverage.json", "scan-manifest.json"):
+                data[name]["subscription_handoff"] = state["subscription_handoff"]
         p = progress(state)
         report = [
             "# Repository security review",

@@ -16,7 +16,7 @@ from evander.agent_context_retry import (
     context_retry_target_chars,
 )
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
-from evander.codex_auth import CodexSubscriptionDeferral
+from evander.codex_auth import CodexSubscriptionDeferral, legacy_worker_model_capacity_deferral
 from evander.config import GatewayConfig
 from evander.cost_categories import dispatch_with_cost_context, freeze_prompt_cost_category
 from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY, TriggerEvent
@@ -43,7 +43,10 @@ from evander.messaging.agent_prompt_enqueue import (
     workflow_for_execution_ids_from_sources,
 )
 from evander.messaging.agent_prompt_queue import (
+    MODEL_CAPACITY_MAX_RETRIES,
+    MODEL_CAPACITY_RETRY_METADATA_KEYS,
     AgentPromptQueueStore,
+    ModelCapacityRetryExhausted,
     queued_agent_prompt_dispatch_id,
 )
 from evander.model_usage.runtime import (
@@ -126,6 +129,7 @@ _SUBSCRIPTION_DEFERRAL_METADATA_KEYS = (
     "wake_dispatch_id",
     "request_id",
     "source",
+    *MODEL_CAPACITY_RETRY_METADATA_KEYS,
 )
 _SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY = "subscription_replay_attempt"
 
@@ -1053,6 +1057,26 @@ class AgentPromptEffectProvider(EffectProviderBase):
             logs = backend.get_log_snapshot(execution_id, lines=400)
         except Exception:
             logs = ""
+        status_metadata = getattr(status, "metadata", None)
+        legacy_deferral = None
+        if (
+            isinstance(status_metadata, Mapping)
+            and status_metadata.get("codex_auth_mode") == "chatgpt_subscription"
+            and status_metadata.get("codex_subscription_exit_code") in (1, "1")
+            and status_metadata.get("codex_subscription_deferral") is None
+        ):
+            # Session views can include later turns. Only this job's raw native
+            # error is evidence for replaying its failed invocation.
+            try:
+                raw_logs = backend.get_log_snapshot(execution_id, lines=40, mode="raw")
+            except Exception:
+                raw_logs = ""
+            legacy_deferral = legacy_worker_model_capacity_deferral(status_metadata, raw_logs)
+        if legacy_deferral is not None and cls._defer_subscription_waiting_record(
+            worker=worker, record=record, backend=backend, status=status,
+            session_id=session_id, execution_id=execution_id, deferral=legacy_deferral,
+        ):
+            return 1
         failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(
             getattr(status, "metadata", None)
         )
@@ -1094,17 +1118,19 @@ class AgentPromptEffectProvider(EffectProviderBase):
         status: Any,
         session_id: str,
         execution_id: str,
+        deferral: CodexSubscriptionDeferral | None = None,
     ) -> bool:
         metadata = getattr(status, "metadata", None)
         raw_deferral = (
             metadata.get("codex_subscription_deferral") if isinstance(metadata, Mapping) else None
         )
-        if not isinstance(raw_deferral, Mapping):
-            return False
-        try:
-            deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
-        except ValueError:
-            return False
+        if deferral is None:
+            if not isinstance(raw_deferral, Mapping):
+                return False
+            try:
+                deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
+            except ValueError:
+                return False
         runtime_dir = resolve_runtime_dir(worker)
         prompt = cls._record_text_value(record, "prompt")
         if runtime_dir is None or not prompt:
@@ -1128,34 +1154,63 @@ class AgentPromptEffectProvider(EffectProviderBase):
             context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
         )
         deferral_metadata = cls._subscription_deferral_metadata(record)
-        queued = enqueue_agent_prompt(
-            runtime_dir=runtime_dir,
-            target=target,
-            vm_name=vm_name,
-            session_id=session_id,
-            prompt=prompt,
-            model=cls._record_text_value(record, "model"),
-            **recorded_reasoning_effort(record),
-            **recorded_fast_mode(record),
-            model_provider_mode=cls._record_text_value(record, "model_provider_mode"),
-            queue_reason=deferral.queue_reason,
-            subscription_profile_id=deferral.profile_id,
-            retry_not_before=deferral.retry_at,
-            capacity_deferral=True,
-            vm_user=cls._record_text_value(record, "vm_user") or "agent",
-            dispatch_id=dispatch_id or None,
-            resume_thread_id=cls._record_text_value(record, "resume_thread_id"),
-            resume_mode=cls._record_text_value(record, "resume_mode"),
-            resume_thread_metadata_key=cls._record_text_value(record, "resume_thread_metadata_key"),
-            resume_thread_metadata_collection=cls._record_text_value(
-                record, "resume_thread_metadata_collection"
-            ),
-            effect_id=str(record.effect_id),
-            queue_key=queue_key,
-            metadata=deferral_metadata,
-            workflow_context=workflow_context,
-            workflow_for_execution_ids=workflow_for_execution_ids,
-        )
+        resume_thread_id = cls._record_text_value(record, "resume_thread_id")
+        resume_mode = cls._record_text_value(record, "resume_mode")
+        if deferral.reason == "model_capacity":
+            deferral_metadata["model_capacity_failed_execution_id"] = execution_id
+            # Resume the conversation opened by this invocation, including a
+            # request that originally started with a fresh context.
+            current_thread_id = usable_agent_thread_id(
+                metadata.get("codex_subscription_thread_id"), execution_id, dispatch_id
+            )
+            if (
+                current_thread_id is None
+                and record.outputs.get("native_thread_execution_id") == execution_id
+            ):
+                current_thread_id = usable_agent_thread_id(record.outputs.get("native_thread_id"))
+            resume_thread_id = current_thread_id or resume_thread_id
+            if resume_thread_id:
+                resume_mode = "same_context"
+        try:
+            queued = enqueue_agent_prompt(
+                runtime_dir=runtime_dir,
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=cls._record_text_value(record, "model"),
+                **recorded_reasoning_effort(record),
+                **recorded_fast_mode(record),
+                model_provider_mode=cls._record_text_value(record, "model_provider_mode"),
+                queue_reason=deferral.queue_reason,
+                subscription_profile_id=deferral.profile_id,
+                retry_not_before=deferral.retry_at,
+                capacity_deferral=True,
+                vm_user=cls._record_text_value(record, "vm_user") or "agent",
+                dispatch_id=dispatch_id or None,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=cls._record_text_value(record, "resume_thread_metadata_key"),
+                resume_thread_metadata_collection=cls._record_text_value(
+                    record, "resume_thread_metadata_collection"
+                ),
+                effect_id=str(record.effect_id),
+                queue_key=queue_key,
+                metadata=deferral_metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+            )
+        except ModelCapacityRetryExhausted as exc:
+            cls._fail_model_capacity_retry(worker=worker, record=record, error=exc)
+            AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json").delete_if_dispatch_id(
+                queue_key, dispatch_id
+            )
+            if status.status != ExecutionStatusKind.DESTROYED:
+                try:
+                    backend.destroy(execution_id)
+                except Exception:
+                    pass
+            return True
         note_id = str(deferral_metadata.get("operator_steering_note_id") or "").strip()
         if note_id:
             try:
@@ -1200,6 +1255,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "queue_reason": queued.queue_reason,
             "subscription_profile_id": queued.subscription_profile_id,
             "retry_not_before": queued.retry_not_before,
+            **{
+                key: value
+                for key, value in queued.metadata.items()
+                if key in MODEL_CAPACITY_RETRY_METADATA_KEYS
+            },
         }
         record.error = None
         record.finished_at = finished_at
@@ -1213,6 +1273,35 @@ class AgentPromptEffectProvider(EffectProviderBase):
         cls._release_enqueue_prompt_lock(worker=worker, record=record, outputs=record.outputs)
         cls._release_local_inference_capacity(worker=worker, record=record, outputs=record.outputs)
         return True
+
+    @classmethod
+    def _fail_model_capacity_retry(
+        cls, *, worker: Any, record: Any, error: ModelCapacityRetryExhausted
+    ) -> None:
+        record.outputs.update(
+            {
+                "success": False,
+                "queued": False,
+                "agent_state": "failed",
+                "queue_reason": "model_capacity",
+                "retry_exhausted": True,
+                "retry_count": error.retry_count,
+                "max_retries": MODEL_CAPACITY_MAX_RETRIES,
+                "retry_deadline": error.deadline.isoformat(),
+                "message": str(error),
+            }
+        )
+        completion = cls._build_container_completion_queue_record(
+            record=record,
+            session_id=str(record.outputs.get("session_id") or ""),
+            execution_id=str(record.outputs.get("execution_id") or ""),
+            worker_status="failed",
+            success=False,
+            message=str(error),
+            logs="",
+        )
+        cls._finalize_waiting_record(worker=worker, record=record, queue_record=completion)
+        logger.error("model_capacity_retry_exhausted effect_id=%s %s", record.effect_id, error)
 
     @classmethod
     def _subscription_deferral_metadata(cls, record: Any) -> dict[str, str]:
@@ -1885,9 +1974,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
             outputs=merged_outputs,
             branch_port=branch_port,
         )
-        record.status = "error_routed" if error_routed else "succeeded"
+        capacity_exhausted = (
+            merged_outputs.get("queue_reason") == "model_capacity"
+            and merged_outputs.get("retry_exhausted") is True
+        )
+        if error_routed:
+            record.status = "error_routed"
+        elif capacity_exhausted:
+            record.status = "failed"
+        else:
+            record.status = "succeeded"
         if error_routed:
             record.error = merged_outputs["error_message"]
+        elif capacity_exhausted:
+            record.error = str(merged_outputs["message"])
         record.completion_event_branch_port = branch_port
         record.outputs = merged_outputs
         record.published_event_id = published_event_id

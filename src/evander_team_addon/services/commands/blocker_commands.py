@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -59,6 +60,459 @@ _BLOCKER_UPDATE_ACTIONS = {
     "resolve",
     "escalate",
 }
+
+
+@dataclass
+class _BlockerUpdateApplication:
+    """Apply one blocker action inside the command executor's transaction."""
+
+    state: TeamState
+    resolved: _ResolvedTeamCommandContext
+    blocker_id: str
+    action: str
+    note: str
+    delegate_agent_id: str | None
+    follow_up_seconds: int
+    resolution_refs: list[str]
+
+    def apply(self) -> TeamCommandApplyResult:
+        self.actor = _require_command_agent(self.resolved, "team_update_blocker")
+        self.blocker = self.state.blockers.get(self.blocker_id)
+        if self.blocker is None:
+            raise TeamCommandValidationError(
+                code="blocker_not_found",
+                message=f"blocker {self.blocker_id} does not exist",
+            )
+        if self.blocker.state == TeamBlockerState.RESOLVED and self.action == "resolve":
+            return self._already_resolved_result()
+        self._validate_open_action_authority()
+        self._prepare_action()
+        if self.action == "progress":
+            self._record_progress()
+        elif self.action == "delegate":
+            self._delegate()
+        elif self.action == "delegate_result":
+            self._record_delegate_result()
+        elif self.action == "resolve":
+            self._resolve()
+        else:
+            self._escalate()
+        return self._command_result()
+
+    def _already_resolved_result(self) -> TeamCommandApplyResult:
+        eligible_agent_ids = blocker_resolution_line_agent_ids(
+            self.state,
+            blocker=self.blocker,
+        )
+        if self.actor.id not in eligible_agent_ids:
+            raise TeamCommandValidationError(
+                code="blocker_resolution_line_required",
+                message=(
+                    f"agent {self.actor.id} is not in blocker {self.blocker.id}'s resolution line"
+                ),
+            )
+        existing_refs = set(self.blocker.terminal_reference_ids)
+        missing_refs = sorted(set(self.resolution_refs) - existing_refs)
+        if missing_refs:
+            raise TeamCommandValidationError(
+                code="blocker_resolution_conflict",
+                message=(
+                    f"blocker {self.blocker.id} is already resolved without "
+                    f"references {', '.join(missing_refs)}"
+                ),
+                correction_context={
+                    "blocker_id": self.blocker.id,
+                    "terminal_reference_ids": sorted(existing_refs),
+                    "attempted_resolution_refs": self.resolution_refs,
+                },
+            )
+        return TeamCommandApplyResult(
+            response_payload={
+                "blocker_id": self.blocker.id,
+                "action": self.action,
+                "owner_agent_id": self.blocker.owner_agent_id,
+                "delegate_agent_id": self.blocker.delegate_agent_id,
+                "state": self.blocker.state.value,
+                "route": self.blocker.route.value,
+                "handled_blocker_inbox_item_ids": [],
+                "blocker_event_ids": [],
+                "async_effect_pending": False,
+                "progress_made": False,
+            },
+            progress_classification="none",
+            applied=False,
+            state_changed=False,
+        )
+
+    def _validate_open_action_authority(self) -> None:
+        if self.blocker.state != TeamBlockerState.OPEN:
+            raise TeamCommandValidationError(
+                code="blocker_not_open",
+                message=f"blocker {self.blocker.id} is {self.blocker.state.value}",
+            )
+        self.is_owner = self.blocker.owner_agent_id == self.actor.id
+        self.is_delegate = (
+            self.blocker.route == TeamBlockerRoute.DELEGATED
+            and self.blocker.delegate_agent_id == self.actor.id
+        )
+        if self.action in {"delegate", "escalate"} and not self.is_owner:
+            raise TeamCommandValidationError(
+                code="blocker_owner_required",
+                message=f"only blocker owner {self.blocker.owner_agent_id} may {self.action}",
+            )
+        if self.action == "resolve" and not agent_can_resolve_blocker(
+            self.state,
+            blocker=self.blocker,
+            agent_id=self.actor.id,
+        ):
+            eligible_agent_ids = blocker_resolution_line_agent_ids(
+                self.state,
+                blocker=self.blocker,
+            )
+            raise TeamCommandValidationError(
+                code="blocker_resolution_line_required",
+                message=(
+                    f"agent {self.actor.id} is not an active member of blocker "
+                    f"{self.blocker.id}'s escalation line; line agents: "
+                    f"{', '.join(eligible_agent_ids) or 'none'}"
+                ),
+            )
+        if self.action == "delegate_result" and not self.is_delegate:
+            raise TeamCommandValidationError(
+                code="blocker_delegate_required",
+                message=(
+                    f"only active delegate {self.blocker.delegate_agent_id} may report "
+                    "a delegated result"
+                ),
+            )
+        if self.action == "progress" and not (self.is_owner or self.is_delegate):
+            raise TeamCommandValidationError(
+                code="blocker_participant_required",
+                message="only the blocker owner or active delegate may record progress",
+            )
+
+    def _prepare_action(self) -> None:
+        self.now = _ensure_utc(utc_now())
+        # A recurring "still blocked" note changes bookkeeping, but it does
+        # not make the blocked work advance.  Only a progress update carrying
+        # new evidence can reset the dispatch no-progress counter; route and
+        # resolution actions are material by construction.
+        self.progress_made = self.action != "progress" or bool(self.resolution_refs)
+        self.result: dict[str, Any] = {
+            "blocker_id": self.blocker.id,
+            "created_inbox_item_ids": [],
+            "events": [],
+            "errors": [],
+            "progress_made": self.progress_made,
+        }
+        self.handled_ids = handle_blocker_inbox_for_agent(
+            self.state,
+            blocker_id=self.blocker.id,
+            agent_id=self.actor.id,
+            now=self.now,
+        )
+        self.event_ids: list[str] = []
+
+    def _record_progress(self) -> None:
+        self.blocker.last_progress_at = self.now
+        self.blocker.follow_up_at = self.now + timedelta(seconds=self.follow_up_seconds)
+        self.blocker.updated_at = self.now
+        event = append_blocker_event(
+            self.state,
+            blocker=self.blocker,
+            event_type=TeamBlockerEventType.PROGRESS,
+            actor_agent_id=self.actor.id,
+            dispatch_id=self.resolved.dispatch_id,
+            note=self.note,
+            reference_ids=self.resolution_refs,
+            metadata={"follow_up_seconds": self.follow_up_seconds},
+            now=self.now,
+        )
+        self.event_ids.append(event.id)
+        if self.is_delegate and self.blocker.owner_agent_id is not None:
+            create_blocker_inbox(
+                self.state,
+                blocker=self.blocker,
+                recipient_agent_id=self.blocker.owner_agent_id,
+                sender_agent_id=self.actor.id,
+                kind="blocker_delegate_progress",
+                result=self.result,
+                now=self.now,
+            )
+
+    def _delegate(self) -> None:
+        if self.delegate_agent_id is None:
+            raise TeamCommandValidationError(
+                code="blocker_delegate_missing",
+                message="delegate action requires delegate_agent_id",
+            )
+        delegate = self.state.agents.get(self.delegate_agent_id)
+        if delegate is None or delegate.reports_to_agent_id != self.actor.id:
+            raise TeamCommandValidationError(
+                code="blocker_delegate_not_direct_subordinate",
+                message=(
+                    f"agent {self.delegate_agent_id} is not a direct subordinate "
+                    f"of {self.actor.id}"
+                ),
+            )
+        if (
+            delegate.team_id != self.blocker.team_id
+            or delegate.status != AgentStatus.ACTIVE
+            or _active_stand_downs_for_agent(self.state, delegate.id)
+        ):
+            raise TeamCommandValidationError(
+                code="blocker_delegate_unavailable",
+                message=f"agent {delegate.id} is not available for blocker delegation",
+            )
+        if self.blocker.delegate_agent_id is not None:
+            handle_blocker_inbox_for_agent(
+                self.state,
+                blocker_id=self.blocker.id,
+                agent_id=self.blocker.delegate_agent_id,
+                now=self.now,
+            )
+        self.blocker.delegate_agent_id = delegate.id
+        self.blocker.route = TeamBlockerRoute.DELEGATED
+        self.blocker.follow_up_at = self.now + timedelta(seconds=self.follow_up_seconds)
+        self.blocker.active_dispatch_id = None
+        self.blocker.updated_at = self.now
+        event = append_blocker_event(
+            self.state,
+            blocker=self.blocker,
+            event_type=TeamBlockerEventType.DELEGATED,
+            actor_agent_id=self.actor.id,
+            from_agent_id=self.actor.id,
+            to_agent_id=delegate.id,
+            dispatch_id=self.resolved.dispatch_id,
+            note=self.note,
+            reference_ids=self.resolution_refs,
+            metadata={"follow_up_seconds": self.follow_up_seconds},
+            now=self.now,
+        )
+        self.event_ids.append(event.id)
+        create_blocker_inbox(
+            self.state,
+            blocker=self.blocker,
+            recipient_agent_id=delegate.id,
+            sender_agent_id=self.actor.id,
+            kind="blocker_delegated",
+            result=self.result,
+            now=self.now,
+        )
+
+    def _record_delegate_result(self) -> None:
+        owner_id = self.blocker.owner_agent_id
+        self.blocker.delegate_agent_id = None
+        self.blocker.route = TeamBlockerRoute.OWNED
+        self.blocker.follow_up_at = None
+        self.blocker.active_dispatch_id = None
+        self.blocker.last_progress_at = self.now
+        self.blocker.updated_at = self.now
+        event = append_blocker_event(
+            self.state,
+            blocker=self.blocker,
+            event_type=TeamBlockerEventType.DELEGATE_RESULT,
+            actor_agent_id=self.actor.id,
+            from_agent_id=self.actor.id,
+            to_agent_id=owner_id,
+            dispatch_id=self.resolved.dispatch_id,
+            note=self.note,
+            reference_ids=self.resolution_refs,
+            now=self.now,
+        )
+        self.event_ids.append(event.id)
+        if owner_id is not None:
+            create_blocker_inbox(
+                self.state,
+                blocker=self.blocker,
+                recipient_agent_id=owner_id,
+                sender_agent_id=self.actor.id,
+                kind="blocker_delegate_result",
+                result=self.result,
+                now=self.now,
+            )
+
+    def _resolve(self) -> None:
+        if (
+            self.blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+            and self.blocker.reason_code.startswith("deliverable_acceptance_deferred:")
+        ):
+            self._retry_deferred_acceptance()
+        elif self.blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+            self._resume_human_review()
+        else:
+            self._resolve_source()
+
+    def _retry_deferred_acceptance(self) -> None:
+        from ..domain.review import retry_deferred_deliverable_acceptance
+        from ..domain.task_assessment import TaskAssessmentBoundaryError
+
+        before_event_ids = set(self.state.blocker_events)
+        try:
+            retry_deferred_deliverable_acceptance(
+                self.state,
+                blocker_id=self.blocker.id,
+                actor_agent_id=self.actor.id,
+                result=self.result,
+                now=self.now,
+            )
+        except TaskAssessmentBoundaryError as exc:
+            raise TeamCommandValidationError(
+                code=exc.code,
+                message=exc.message,
+                correction_context=exc.correction_context,
+            ) from None
+        self.event_ids.extend(
+            event_id
+            for event_id in self.state.blocker_events
+            if event_id not in before_event_ids
+        )
+
+    def _resume_human_review(self) -> None:
+        from ..domain.human_reviews import resume_human_review
+
+        before_event_ids = set(self.state.blocker_events)
+        try:
+            resume_human_review(
+                self.state,
+                human_review_request_id=self.blocker.source_id,
+                result=self.result,
+                now=self.now,
+            )
+        except ValueError as exc:
+            raise TeamCommandValidationError(
+                code="human_review_recovery_required",
+                message=str(exc),
+                correction_context={
+                    "blocker_id": self.blocker.id,
+                    "human_review_request_id": self.blocker.source_id,
+                    "reason_code": self.blocker.reason_code,
+                },
+            ) from None
+        self.event_ids.extend(
+            event_id
+            for event_id in self.state.blocker_events
+            if event_id not in before_event_ids
+        )
+
+    def _resolve_source(self) -> None:
+        restored_task_owner_id = _prepare_blocker_source_for_resolution(
+            self.state,
+            blocker=self.blocker,
+            now=self.now,
+        )
+        event = resolve_blocker(
+            self.state,
+            blocker=self.blocker,
+            actor_agent_id=self.actor.id,
+            dispatch_id=self.resolved.dispatch_id,
+            note=self.note,
+            reference_ids=self.resolution_refs,
+            now=self.now,
+        )
+        self.event_ids.append(event.id)
+        deliverable_acceptance_route_handled = False
+        if self.blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+            from ..domain.review import (
+                retry_deliverable_acceptance_if_reviewed,
+            )
+
+            before_event_ids = set(self.state.blocker_events)
+            acceptance_completed = retry_deliverable_acceptance_if_reviewed(
+                self.state,
+                deliverable_id=self.blocker.source_id,
+                actor_agent_id=self.actor.id,
+                result=self.result,
+                now=self.now,
+            )
+            deliverable_acceptance_route_handled = bool(
+                acceptance_completed
+                or self.result.get("deliverable_acceptance_deferred")
+            )
+            self.event_ids.extend(
+                event_id
+                for event_id in self.state.blocker_events
+                if event_id not in before_event_ids
+            )
+        if (
+            restored_task_owner_id is not None
+            and not deliverable_acceptance_route_handled
+        ):
+            _mark_agent_work_due(
+                self.state,
+                agent_id=restored_task_owner_id,
+                now=self.now,
+            )
+            _append_agent_wake_requested_event(
+                self.state,
+                agent_id=restored_task_owner_id,
+                result=self.result,
+                reason="task_ready",
+                now=self.now,
+                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+            )
+        create_rejected_candidate_correction_preparation_recovery_inbox(
+            self.state,
+            blocker=self.blocker,
+            result=self.result,
+            now=self.now,
+        )
+        if self.blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
+            runtime = self.state.agent_runtimes.get(self.blocker.source_id)
+            if runtime is not None:
+                runtime.no_progress_count = 0
+                runtime.updated_at = self.now
+            _mark_agent_work_due(
+                self.state,
+                agent_id=self.blocker.source_id,
+                now=self.now,
+            )
+            _append_agent_wake_requested_event(
+                self.state,
+                agent_id=self.blocker.source_id,
+                result=self.result,
+                reason="blocker_resolved",
+                now=self.now,
+                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                idempotency_suffix=self.blocker.id,
+            )
+
+    def _escalate(self) -> None:
+        before_event_ids = set(self.state.blocker_events)
+        transfer_blocker_up(
+            self.state,
+            blocker=self.blocker,
+            actor_agent_id=self.actor.id,
+            dispatch_id=self.resolved.dispatch_id,
+            reason=self.note,
+            result=self.result,
+            now=self.now,
+        )
+        self.event_ids.extend(
+            event_id
+            for event_id in self.state.blocker_events
+            if event_id not in before_event_ids
+        )
+
+    def _command_result(self) -> TeamCommandApplyResult:
+        self.result.update(
+            {
+                "action": self.action,
+                "owner_agent_id": self.blocker.owner_agent_id,
+                "delegate_agent_id": self.blocker.delegate_agent_id,
+                "state": self.blocker.state.value,
+                "route": self.blocker.route.value,
+                "handled_blocker_inbox_item_ids": self.handled_ids,
+                "blocker_event_ids": self.event_ids,
+                "async_effect_pending": bool(self.result["events"]),
+            }
+        )
+        return TeamCommandApplyResult(
+            response_payload=self.result,
+            created_domain_ids=[*self.event_ids, *self.result["created_inbox_item_ids"]],
+            created_event_ids=self.event_ids,
+            progress_classification=("blocker_progress" if self.progress_made else "none"),
+        )
 
 
 class TeamBlockerCommandService(TeamCommandExecutor):
@@ -419,410 +873,16 @@ class TeamBlockerCommandService(TeamCommandExecutor):
             state: TeamState,
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
-            actor = _require_command_agent(resolved, "team_update_blocker")
-            blocker = state.blockers.get(normalized_blocker_id)
-            if blocker is None:
-                raise TeamCommandValidationError(
-                    code="blocker_not_found",
-                    message=f"blocker {normalized_blocker_id} does not exist",
-                )
-            if blocker.state == TeamBlockerState.RESOLVED and normalized_action == "resolve":
-                eligible_agent_ids = blocker_resolution_line_agent_ids(
-                    state,
-                    blocker=blocker,
-                )
-                if actor.id not in eligible_agent_ids:
-                    raise TeamCommandValidationError(
-                        code="blocker_resolution_line_required",
-                        message=(
-                            f"agent {actor.id} is not in blocker {blocker.id}'s resolution line"
-                        ),
-                    )
-                existing_refs = set(blocker.terminal_reference_ids)
-                missing_refs = sorted(set(normalized_refs) - existing_refs)
-                if missing_refs:
-                    raise TeamCommandValidationError(
-                        code="blocker_resolution_conflict",
-                        message=(
-                            f"blocker {blocker.id} is already resolved without "
-                            f"references {', '.join(missing_refs)}"
-                        ),
-                        correction_context={
-                            "blocker_id": blocker.id,
-                            "terminal_reference_ids": sorted(existing_refs),
-                            "attempted_resolution_refs": normalized_refs,
-                        },
-                    )
-                return TeamCommandApplyResult(
-                    response_payload={
-                        "blocker_id": blocker.id,
-                        "action": normalized_action,
-                        "owner_agent_id": blocker.owner_agent_id,
-                        "delegate_agent_id": blocker.delegate_agent_id,
-                        "state": blocker.state.value,
-                        "route": blocker.route.value,
-                        "handled_blocker_inbox_item_ids": [],
-                        "blocker_event_ids": [],
-                        "async_effect_pending": False,
-                        "progress_made": False,
-                    },
-                    progress_classification="none",
-                    applied=False,
-                    state_changed=False,
-                )
-            if blocker.state != TeamBlockerState.OPEN:
-                raise TeamCommandValidationError(
-                    code="blocker_not_open",
-                    message=f"blocker {blocker.id} is {blocker.state.value}",
-                )
-            is_owner = blocker.owner_agent_id == actor.id
-            is_delegate = (
-                blocker.route == TeamBlockerRoute.DELEGATED
-                and blocker.delegate_agent_id == actor.id
-            )
-            if normalized_action in {"delegate", "escalate"} and not is_owner:
-                raise TeamCommandValidationError(
-                    code="blocker_owner_required",
-                    message=f"only blocker owner {blocker.owner_agent_id} may {normalized_action}",
-                )
-            if normalized_action == "resolve" and not agent_can_resolve_blocker(
-                state,
-                blocker=blocker,
-                agent_id=actor.id,
-            ):
-                eligible_agent_ids = blocker_resolution_line_agent_ids(
-                    state,
-                    blocker=blocker,
-                )
-                raise TeamCommandValidationError(
-                    code="blocker_resolution_line_required",
-                    message=(
-                        f"agent {actor.id} is not an active member of blocker "
-                        f"{blocker.id}'s escalation line; line agents: "
-                        f"{', '.join(eligible_agent_ids) or 'none'}"
-                    ),
-                )
-            if normalized_action == "delegate_result" and not is_delegate:
-                raise TeamCommandValidationError(
-                    code="blocker_delegate_required",
-                    message=(
-                        f"only active delegate {blocker.delegate_agent_id} may report "
-                        "a delegated result"
-                    ),
-                )
-            if normalized_action == "progress" and not (is_owner or is_delegate):
-                raise TeamCommandValidationError(
-                    code="blocker_participant_required",
-                    message="only the blocker owner or active delegate may record progress",
-                )
-
-            now = _ensure_utc(utc_now())
-            # A recurring "still blocked" note changes bookkeeping, but it does
-            # not make the blocked work advance.  Only a progress update carrying
-            # new evidence can reset the dispatch no-progress counter; route and
-            # resolution actions are material by construction.
-            progress_made = normalized_action != "progress" or bool(normalized_refs)
-            result: dict[str, Any] = {
-                "blocker_id": blocker.id,
-                "created_inbox_item_ids": [],
-                "events": [],
-                "errors": [],
-                "progress_made": progress_made,
-            }
-            handled_ids = handle_blocker_inbox_for_agent(
-                state,
-                blocker_id=blocker.id,
-                agent_id=actor.id,
-                now=now,
-            )
-            event_ids: list[str] = []
-            if normalized_action == "progress":
-                blocker.last_progress_at = now
-                blocker.follow_up_at = now + timedelta(seconds=normalized_follow_up)
-                blocker.updated_at = now
-                event = append_blocker_event(
-                    state,
-                    blocker=blocker,
-                    event_type=TeamBlockerEventType.PROGRESS,
-                    actor_agent_id=actor.id,
-                    dispatch_id=resolved.dispatch_id,
-                    note=normalized_note,
-                    reference_ids=normalized_refs,
-                    metadata={"follow_up_seconds": normalized_follow_up},
-                    now=now,
-                )
-                event_ids.append(event.id)
-                if is_delegate and blocker.owner_agent_id is not None:
-                    create_blocker_inbox(
-                        state,
-                        blocker=blocker,
-                        recipient_agent_id=blocker.owner_agent_id,
-                        sender_agent_id=actor.id,
-                        kind="blocker_delegate_progress",
-                        result=result,
-                        now=now,
-                    )
-            elif normalized_action == "delegate":
-                if normalized_delegate_id is None:
-                    raise TeamCommandValidationError(
-                        code="blocker_delegate_missing",
-                        message="delegate action requires delegate_agent_id",
-                    )
-                delegate = state.agents.get(normalized_delegate_id)
-                if delegate is None or delegate.reports_to_agent_id != actor.id:
-                    raise TeamCommandValidationError(
-                        code="blocker_delegate_not_direct_subordinate",
-                        message=(
-                            f"agent {normalized_delegate_id} is not a direct subordinate "
-                            f"of {actor.id}"
-                        ),
-                    )
-                if (
-                    delegate.team_id != blocker.team_id
-                    or delegate.status != AgentStatus.ACTIVE
-                    or _active_stand_downs_for_agent(state, delegate.id)
-                ):
-                    raise TeamCommandValidationError(
-                        code="blocker_delegate_unavailable",
-                        message=f"agent {delegate.id} is not available for blocker delegation",
-                    )
-                if blocker.delegate_agent_id is not None:
-                    handle_blocker_inbox_for_agent(
-                        state,
-                        blocker_id=blocker.id,
-                        agent_id=blocker.delegate_agent_id,
-                        now=now,
-                    )
-                blocker.delegate_agent_id = delegate.id
-                blocker.route = TeamBlockerRoute.DELEGATED
-                blocker.follow_up_at = now + timedelta(seconds=normalized_follow_up)
-                blocker.active_dispatch_id = None
-                blocker.updated_at = now
-                event = append_blocker_event(
-                    state,
-                    blocker=blocker,
-                    event_type=TeamBlockerEventType.DELEGATED,
-                    actor_agent_id=actor.id,
-                    from_agent_id=actor.id,
-                    to_agent_id=delegate.id,
-                    dispatch_id=resolved.dispatch_id,
-                    note=normalized_note,
-                    reference_ids=normalized_refs,
-                    metadata={"follow_up_seconds": normalized_follow_up},
-                    now=now,
-                )
-                event_ids.append(event.id)
-                create_blocker_inbox(
-                    state,
-                    blocker=blocker,
-                    recipient_agent_id=delegate.id,
-                    sender_agent_id=actor.id,
-                    kind="blocker_delegated",
-                    result=result,
-                    now=now,
-                )
-            elif normalized_action == "delegate_result":
-                owner_id = blocker.owner_agent_id
-                blocker.delegate_agent_id = None
-                blocker.route = TeamBlockerRoute.OWNED
-                blocker.follow_up_at = None
-                blocker.active_dispatch_id = None
-                blocker.last_progress_at = now
-                blocker.updated_at = now
-                event = append_blocker_event(
-                    state,
-                    blocker=blocker,
-                    event_type=TeamBlockerEventType.DELEGATE_RESULT,
-                    actor_agent_id=actor.id,
-                    from_agent_id=actor.id,
-                    to_agent_id=owner_id,
-                    dispatch_id=resolved.dispatch_id,
-                    note=normalized_note,
-                    reference_ids=normalized_refs,
-                    now=now,
-                )
-                event_ids.append(event.id)
-                if owner_id is not None:
-                    create_blocker_inbox(
-                        state,
-                        blocker=blocker,
-                        recipient_agent_id=owner_id,
-                        sender_agent_id=actor.id,
-                        kind="blocker_delegate_result",
-                        result=result,
-                        now=now,
-                    )
-            elif normalized_action == "resolve":
-                is_acceptance_remediation = (
-                    blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
-                    and blocker.reason_code.startswith("deliverable_acceptance_deferred:")
-                )
-                if is_acceptance_remediation:
-                    from ..domain.review import retry_deferred_deliverable_acceptance
-                    from ..domain.task_assessment import TaskAssessmentBoundaryError
-
-                    before_event_ids = set(state.blocker_events)
-                    try:
-                        retry_deferred_deliverable_acceptance(
-                            state,
-                            blocker_id=blocker.id,
-                            actor_agent_id=actor.id,
-                            result=result,
-                            now=now,
-                        )
-                    except TaskAssessmentBoundaryError as exc:
-                        raise TeamCommandValidationError(
-                            code=exc.code,
-                            message=exc.message,
-                            correction_context=exc.correction_context,
-                        ) from None
-                    event_ids.extend(
-                        event_id
-                        for event_id in state.blocker_events
-                        if event_id not in before_event_ids
-                    )
-                elif blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
-                    from ..domain.human_reviews import resume_human_review
-
-                    before_event_ids = set(state.blocker_events)
-                    try:
-                        resume_human_review(
-                            state,
-                            human_review_request_id=blocker.source_id,
-                            result=result,
-                            now=now,
-                        )
-                    except ValueError as exc:
-                        raise TeamCommandValidationError(
-                            code="human_review_recovery_required",
-                            message=str(exc),
-                            correction_context={
-                                "blocker_id": blocker.id,
-                                "human_review_request_id": blocker.source_id,
-                                "reason_code": blocker.reason_code,
-                            },
-                        ) from None
-                    event_ids.extend(
-                        event_id
-                        for event_id in state.blocker_events
-                        if event_id not in before_event_ids
-                    )
-                else:
-                    restored_task_owner_id = _prepare_blocker_source_for_resolution(
-                        state,
-                        blocker=blocker,
-                        now=now,
-                    )
-                    event = resolve_blocker(
-                        state,
-                        blocker=blocker,
-                        actor_agent_id=actor.id,
-                        dispatch_id=resolved.dispatch_id,
-                        note=normalized_note,
-                        reference_ids=normalized_refs,
-                        now=now,
-                    )
-                    event_ids.append(event.id)
-                    deliverable_acceptance_route_handled = False
-                    if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
-                        from ..domain.review import (
-                            retry_deliverable_acceptance_if_reviewed,
-                        )
-
-                        before_event_ids = set(state.blocker_events)
-                        acceptance_completed = retry_deliverable_acceptance_if_reviewed(
-                            state,
-                            deliverable_id=blocker.source_id,
-                            actor_agent_id=actor.id,
-                            result=result,
-                            now=now,
-                        )
-                        deliverable_acceptance_route_handled = bool(
-                            acceptance_completed
-                            or result.get("deliverable_acceptance_deferred")
-                        )
-                        event_ids.extend(
-                            event_id
-                            for event_id in state.blocker_events
-                            if event_id not in before_event_ids
-                        )
-                    if (
-                        restored_task_owner_id is not None
-                        and not deliverable_acceptance_route_handled
-                    ):
-                        _mark_agent_work_due(
-                            state,
-                            agent_id=restored_task_owner_id,
-                            now=now,
-                        )
-                        _append_agent_wake_requested_event(
-                            state,
-                            agent_id=restored_task_owner_id,
-                            result=result,
-                            reason="task_ready",
-                            now=now,
-                            delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
-                        )
-                    create_rejected_candidate_correction_preparation_recovery_inbox(
-                        state,
-                        blocker=blocker,
-                        result=result,
-                        now=now,
-                    )
-                    if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
-                        runtime = state.agent_runtimes.get(blocker.source_id)
-                        if runtime is not None:
-                            runtime.no_progress_count = 0
-                            runtime.updated_at = now
-                        _mark_agent_work_due(
-                            state,
-                            agent_id=blocker.source_id,
-                            now=now,
-                        )
-                        _append_agent_wake_requested_event(
-                            state,
-                            agent_id=blocker.source_id,
-                            result=result,
-                            reason="blocker_resolved",
-                            now=now,
-                            delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
-                            idempotency_suffix=blocker.id,
-                        )
-            else:  # escalate
-                before_event_ids = set(state.blocker_events)
-                transfer_blocker_up(
-                    state,
-                    blocker=blocker,
-                    actor_agent_id=actor.id,
-                    dispatch_id=resolved.dispatch_id,
-                    reason=normalized_note,
-                    result=result,
-                    now=now,
-                )
-                event_ids.extend(
-                    event_id
-                    for event_id in state.blocker_events
-                    if event_id not in before_event_ids
-                )
-
-            result.update(
-                {
-                    "action": normalized_action,
-                    "owner_agent_id": blocker.owner_agent_id,
-                    "delegate_agent_id": blocker.delegate_agent_id,
-                    "state": blocker.state.value,
-                    "route": blocker.route.value,
-                    "handled_blocker_inbox_item_ids": handled_ids,
-                    "blocker_event_ids": event_ids,
-                    "async_effect_pending": bool(result["events"]),
-                }
-            )
-            return TeamCommandApplyResult(
-                response_payload=result,
-                created_domain_ids=[*event_ids, *result["created_inbox_item_ids"]],
-                created_event_ids=event_ids,
-                progress_classification=("blocker_progress" if progress_made else "none"),
-            )
+            return _BlockerUpdateApplication(
+                state=state,
+                resolved=resolved,
+                blocker_id=normalized_blocker_id,
+                action=normalized_action,
+                note=normalized_note,
+                delegate_agent_id=normalized_delegate_id,
+                follow_up_seconds=normalized_follow_up,
+                resolution_refs=normalized_refs,
+            ).apply()
 
         return self._execute_team_command(
             context=context,

@@ -35,8 +35,8 @@ def catalog(prefix, operations):
 
 
 def register_lifecycle(server, context, service_factory, prefix, *, control=False):
-    from mcp.server.fastmcp import Context
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver import Context
+    from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import ToolAnnotations
 
     def invoke(ctx, operation, provider, reference, method, *args):
@@ -148,8 +148,8 @@ def register_lifecycle(server, context, service_factory, prefix, *, control=Fals
 def register_calls(
     server, context, service_factory, prefix, operations, argument_model=None, read_operations=()
 ):
-    from mcp.server.fastmcp import Context
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver import Context
+    from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import ToolAnnotations
 
     # Technology-owned validation rejects unknown fields; fixed operation names keep policy grants distinct.

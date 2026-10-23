@@ -17,6 +17,7 @@ from evander.codex_auth import (
     CodexSubscriptionDeferredError,
     normalize_subscription_profile_id,
 )
+from evander.codex_capacity import subscription_rate_limit_state
 from evander.storage import JsonStore
 
 from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError, CodexExternalAuthTokens
@@ -410,7 +411,9 @@ class CodexAuthBrokerRegistry:
                 CodexSubscriptionDeferral(profile_id=record.profile_id, reason="unavailable"),
                 str(status.get("error") or "subscription profile is unavailable"),
             )
-        rate_limited, retry_at = _rate_limit_state(status.get("rate_limits"))
+        rate_limited, retry_at = subscription_rate_limit_state(
+            status.get("rate_limits"), now=_now_utc()
+        )
         if rate_limited:
             raise CodexSubscriptionDeferredError(
                 CodexSubscriptionDeferral(
@@ -521,48 +524,3 @@ class CodexAuthBrokerRegistry:
             "usage": None,
             "error": error,
         }
-
-
-def _rate_limit_state(value: object) -> tuple[bool, datetime | None]:
-    if not isinstance(value, dict):
-        return False, None
-    buckets: list[dict[str, Any]] = []
-    default = value.get("default")
-    if isinstance(default, dict):
-        buckets.append(default)
-    by_id = value.get("by_limit_id")
-    if isinstance(by_id, dict):
-        buckets.extend(bucket for bucket in by_id.values() if isinstance(bucket, dict))
-    reset_times: list[datetime] = []
-    reached = False
-    for bucket in buckets:
-        bucket_reached = bool(bucket.get("rate_limit_reached_type"))
-        reached = reached or bucket_reached
-        for window_name in ("primary", "secondary"):
-            window = bucket.get(window_name)
-            if not isinstance(window, dict):
-                continue
-            try:
-                window_reached = float(window.get("used_percent")) >= 100
-            except (TypeError, ValueError):
-                window_reached = False
-            if not window_reached:
-                continue
-            reached = True
-            reset_text = str(window.get("resets_at") or "").strip()
-            if not reset_text:
-                continue
-            try:
-                parsed = datetime.fromisoformat(reset_text.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            reset_times.append(parsed.astimezone(UTC))
-    if not reached:
-        return False, None
-    future = [value for value in reset_times if value > _now_utc()]
-    # Capacity is unavailable while any exhausted window remains closed.  If
-    # more than one window is exhausted, waking at the earliest reset only
-    # produces another guaranteed deferral.
-    return True, max(future) if future else None

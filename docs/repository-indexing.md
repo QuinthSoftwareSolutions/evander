@@ -17,7 +17,7 @@ Build the normal runner image first, then run:
 scripts/build_code_index_image.sh
 ```
 
-The build script requires the host's .NET SDK 10.0.111, Node 24.20.0 and Evander's
+The build script requires the host's .NET SDK 10.0.113, Node 24.22.1 and Evander's
 Python 3.12 environment. It downloads/builds tools on the host, stages their runtime
 dependencies, builds Docker with `--network=none`, and saves
 `dist/evander-code-index.tar`, an image ID sidecar, and a toolchain manifest.

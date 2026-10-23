@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 from evander.config import GatewayConfig
