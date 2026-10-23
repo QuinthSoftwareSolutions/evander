@@ -15,9 +15,9 @@ from evander.codex_auth import normalize_subscription_profile_id
 
 VERSION = 1
 SDK_VERSION = "0.1.31"
-BATCHING_VERSION = 2
+BATCHING_VERSION = 3
 MAX_BATCH_FILES = 100
-MAX_BATCH_TEXT_BYTES = 512 * 1024
+MAX_BATCH_TEXT_BYTES = 1024 * 1024
 RETENTION = timedelta(days=7)
 RESERVE_SECONDS = 300
 SEVERITIES = ("critical", "high", "medium", "low", "informational")
@@ -63,14 +63,14 @@ def inventory_digest(entries):
     return digest(sorted(entries, key=lambda x: x["path"]))
 
 
-def batches(entries):
+def batches(entries, *, max_text_bytes=MAX_BATCH_TEXT_BYTES):
     """Pack adjacent paths across folders without omitting non-text entries."""
     batch, text_bytes = [], 0
     for entry in sorted(entries, key=lambda x: x["path"]):
         # Keep large or unavailable content from consuming an otherwise
         # reviewable scope. Other non-text entries still require individual
         # dispositions, but do not each need a separate SDK invocation.
-        if entry["size"] > MAX_BATCH_TEXT_BYTES or entry["kind"] == "unavailable":
+        if entry["size"] > max_text_bytes or entry["kind"] == "unavailable":
             if batch:
                 yield batch
                 batch, text_bytes = [], 0
@@ -78,7 +78,7 @@ def batches(entries):
             continue
         added_bytes = entry["size"] if entry["kind"] == "text" else 0
         if batch and (
-            len(batch) >= MAX_BATCH_FILES or text_bytes + added_bytes > MAX_BATCH_TEXT_BYTES
+            len(batch) >= MAX_BATCH_FILES or text_bytes + added_bytes > max_text_bytes
         ):
             yield batch
             batch, text_bytes = [], 0
@@ -202,7 +202,7 @@ def make_state(
         if not resumable(previous, at=at, until=previous_until):
             raise ValueError("Source scan is active, complete, expired, or awaiting cleanup")
         batching_version = previous.get("batching_version", 1)
-        if type(batching_version) is not int or batching_version not in {1, BATCHING_VERSION}:
+        if type(batching_version) is not int or batching_version not in {1, 2, BATCHING_VERSION}:
             raise ValueError("Source scan batching policy is incompatible")
         for key in (
             "version",
@@ -249,7 +249,7 @@ def make_state(
                 )
             ):
                 item["status"] = "completed"
-        if batching_version == 1:
+        if batching_version < BATCHING_VERSION:
             _regroup_unstarted_scopes(state)
         for item in state["tasks"].values():
             if item["status"] in {"running", "blocked"}:
@@ -279,9 +279,10 @@ def make_state(
 
 
 def _regroup_unstarted_scopes(state):
-    """Upgrade only untouched legacy work in the new continuation's journal.
+    """Upgrade only untouched earlier-policy work in the new continuation's journal.
 
     Attempted scopes and split children preserve their learned boundaries.
+    Retained retry errors fence prior attempts whose per-run counters were reset.
     Accepted file credit, immutable proofs and the source journal are unchanged.
     """
     inventory = {entry["path"]: entry for entry in state["inventory"]}
@@ -292,6 +293,7 @@ def _regroup_unstarted_scopes(state):
             if item["kind"] == kind
             and item["status"] == "pending"
             and not item["attempts"]
+            and not item.get("error")
             and item.get("parent") is None
         }
         if not eligible:
@@ -559,7 +561,12 @@ def plan_boundaries(state):
         anchors = set(state["files"])
     if anchors:
         scopes = []
-        for paths in batches([x for x in state["inventory"] if x["path"] in anchors]):
+        max_text_bytes = (
+            512 * 1024 if state.get("batching_version", 1) in {1, 2} else MAX_BATCH_TEXT_BYTES
+        )
+        for paths in batches(
+            [x for x in state["inventory"] if x["path"] in anchors], max_text_bytes=max_text_bytes
+        ):
             item = task("boundary", paths)
             state["tasks"][item["id"]] = item
             scopes.append(item)
