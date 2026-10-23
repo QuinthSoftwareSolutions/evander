@@ -5,10 +5,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from evander.codex_auth import CodexAuthMode
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
+    ModelCapacityRetryExhausted,
     QueuedAgentPromptRecord,
     agent_prompt_replay_queue_key,
     queued_agent_prompt_dispatch_id,
@@ -65,6 +68,52 @@ def test_capacity_deferrals_do_not_consume_retry_ledger_and_use_reported_reset(
     assert second.retry_not_before is not None
     assert second.retry_not_before <= datetime.now(UTC) + timedelta(minutes=15)
     assert json.loads((tmp_path / "agent-prompt-retry-ledger.json").read_text()) == {}
+
+
+def test_model_capacity_budget_and_backoff_survive_dispatched_queue_removal(tmp_path, monkeypatch):
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("evander.messaging.agent_prompt_queue.utc_now", lambda: now)
+    monkeypatch.setattr("evander.messaging.agent_prompt_queue.random.uniform", lambda a, b: a)
+    record = _record(queue_key="model-job", profile_id="team-a", created_at=now)
+    record.dispatch_id = "dispatch-model-job"
+    first_failure = now
+    for attempt, base_seconds in enumerate([15, 30, 60, 120, 240, 480, 900, 900], start=1):
+        store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+        record.metadata["model_capacity_failed_execution_id"] = f"worker-{attempt}"
+        deferred = store.defer_capacity(record, queue_reason="model_capacity", retry_at=None)
+        assert deferred.retry_not_before == now + timedelta(seconds=base_seconds * 0.8)
+        assert deferred.metadata["model_capacity_retry_count"] == str(attempt)
+        assert datetime.fromisoformat(deferred.metadata["model_capacity_retry_started_at"]) == first_failure
+        # Reconciliation after a crash must not charge the same failed worker twice.
+        duplicate = store.defer_capacity(record, queue_reason="model_capacity", retry_at=None)
+        assert duplicate == deferred
+        store.delete_if_dispatch_id(record.queue_key, record.dispatch_id)
+        record = deferred.model_copy(deep=True)
+        now = deferred.retry_not_before
+
+    record.metadata["model_capacity_failed_execution_id"] = "worker-9"
+    with pytest.raises(ModelCapacityRetryExhausted) as exc:
+        AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").defer_capacity(
+            record, queue_reason="model_capacity", retry_at=None
+        )
+    assert exc.value.retry_count == 8
+    assert exc.value.deadline == first_failure + timedelta(hours=1)
+    assert json.loads((tmp_path / "agent-prompt-retry-ledger.json").read_text()) == {}
+
+
+def test_model_capacity_deadline_caps_reported_retry_and_survives_profile_recovery(tmp_path, monkeypatch):
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("evander.messaging.agent_prompt_queue.utc_now", lambda: now)
+    store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    record = _record(queue_key="model-job", profile_id="team-a", created_at=now)
+    deferred = store.defer_capacity(
+        record, queue_reason="model_capacity", retry_at=now + timedelta(days=1)
+    )
+    assert deferred.retry_not_before == now + timedelta(hours=1)
+    assert store.make_subscription_profile_ready("team-a") == 0
+    now += timedelta(hours=1)
+    with pytest.raises(ModelCapacityRetryExhausted):
+        store.defer_capacity(deferred, queue_reason="model_capacity", retry_at=None)
 
 
 def test_capacity_deferral_ignores_stale_reported_reset_and_recovery_can_wake_profile(
@@ -289,6 +338,25 @@ def test_subscription_queue_is_fifo_per_profile_and_effective_worker() -> None:
         records=records,
         queue_key="newer-b",
     )
+
+
+def test_model_capacity_queue_does_not_block_other_models_on_the_same_subscription():
+    now = datetime.now(UTC)
+    records = {
+        "older": _record(queue_key="older", profile_id="team-a", created_at=now),
+        "newer": _record(queue_key="newer", profile_id="team-a", created_at=now + timedelta(seconds=1)),
+    }
+    records["older"].model = "model-a"
+    records["older"].queue_reason = "model_capacity"
+    records["newer"].model = "model-b"
+    worker = _fifo_worker(
+        sessions={key: _fifo_session(key, profile_id="team-a", subscription=True) for key in records},
+        worker_urls={key: "http://worker-a.test" for key in records},
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    assert not hook._has_earlier_subscription_profile_record(worker=worker, records=records, queue_key="newer")
+    records["older"].queue_reason = "subscription_rate_limited"
+    assert hook._has_earlier_subscription_profile_record(worker=worker, records=records, queue_key="newer")
 
 
 def test_subscription_queue_derives_profile_for_prompts_queued_before_worker_preflight() -> None:

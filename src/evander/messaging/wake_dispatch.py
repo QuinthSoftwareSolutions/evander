@@ -20,6 +20,7 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_effective_issue_setup_config,
 )
 from evander.agent_control import AgentControlStore
+from evander.agent_threads import usable_agent_thread_id
 from evander.codex_auth import CodexSubscriptionDeferral
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_session import (
@@ -1411,11 +1412,6 @@ class HostWakeDispatcher:
                 except ValueError:
                     deferral = None
                 if deferral is not None:
-                    if normalized_status != ExecutionStatusKind.DESTROYED.value:
-                        try:
-                            backend.destroy(execution_id)
-                        except Exception:
-                            pass
                     queue_key = self._wake_prompt_queue_key(
                         request_id=request_id,
                         dispatch_id=dispatch_id,
@@ -1431,6 +1427,15 @@ class HostWakeDispatcher:
                     }
                     if request_id:
                         queue_metadata["request_id"] = request_id
+                    resume_thread_id = None
+                    retry_resume_mode = resume_mode
+                    if deferral.reason == "model_capacity":
+                        queue_metadata["model_capacity_failed_execution_id"] = execution_id
+                        resume_thread_id = usable_agent_thread_id(
+                            metadata.get("codex_subscription_thread_id"), execution_id, dispatch_id
+                        )
+                        if resume_thread_id:
+                            retry_resume_mode = "same_context"
                     queued_record = enqueue_agent_prompt(
                         runtime_dir=effective_runtime_dir,
                         target=session_id,
@@ -1451,9 +1456,9 @@ class HostWakeDispatcher:
                         capacity_deferral=True,
                         vm_user=vm_user,
                         dispatch_id=dispatch_id,
-                        resume_thread_id=None,
+                        resume_thread_id=resume_thread_id,
                         effect_id=queue_key,
-                        resume_mode=resume_mode,
+                        resume_mode=retry_resume_mode,
                         queue_key=queue_key,
                         metadata=queue_metadata,
                     )
@@ -1484,6 +1489,11 @@ class HostWakeDispatcher:
                     record_dispatch = getattr(wake_store, "record_dispatch", None)
                     if callable(record_dispatch):
                         record_dispatch(queued_dispatch)
+                    if normalized_status != ExecutionStatusKind.DESTROYED.value:
+                        try:
+                            backend.destroy(execution_id)
+                        except Exception:
+                            pass
                     if local_inference_slot_id:
                         local_inference_capacity_store(effective_runtime_dir).release(
                             local_inference_slot_id

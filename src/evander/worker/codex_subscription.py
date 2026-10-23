@@ -446,8 +446,14 @@ def _turn_capacity_deferral(
     *,
     profile_id: str,
 ) -> CodexSubscriptionDeferral | None:
-    """Recognize App Server subscription exhaustion without relying on one error shape."""
+    """Distinguish temporary model overload from subscription exhaustion."""
 
+    if _is_model_capacity_error(error):
+        return CodexSubscriptionDeferral(
+            profile_id=profile_id,
+            reason="model_capacity",
+            retry_at=_find_reset_timestamp(error),
+        )
     if not _is_subscription_capacity_error(error):
         return None
     retry_at = _find_reset_timestamp(error)
@@ -490,6 +496,32 @@ _SUBSCRIPTION_CAPACITY_MESSAGE_MARKERS = (
     "subscription rate limit",
     "subscription quota",
 )
+_MODEL_CAPACITY_CODES = {"modelatcapacity", "modelcapacityexceeded", "serveroverloaded"}
+_MODEL_CAPACITY_MESSAGE_MARKERS = (
+    "selected model is at capacity",
+    "the model is overloaded",
+    "the server is overloaded",
+)
+
+
+def _is_model_capacity_error(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            (
+                _normalized_error_code(key) in _SUBSCRIPTION_CAPACITY_CODE_KEYS
+                and _normalized_error_code(candidate) in _MODEL_CAPACITY_CODES
+            )
+            or (
+                _normalized_error_code(key) in {"message", "additionaldetails"}
+                and _is_model_capacity_error(candidate)
+            )
+            or (isinstance(candidate, dict | list) and _is_model_capacity_error(candidate))
+            for key, candidate in value.items()
+        )
+    if isinstance(value, list):
+        return any(_is_model_capacity_error(candidate) for candidate in value)
+    message = str(value or "").strip().casefold()
+    return any(marker in message for marker in _MODEL_CAPACITY_MESSAGE_MARKERS)
 
 
 def _is_subscription_capacity_error(value: object) -> bool:

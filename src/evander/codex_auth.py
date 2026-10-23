@@ -179,7 +179,7 @@ class CodexSubscriptionDeferral(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile_id: str
-    reason: Literal["signed_out", "disabled", "unavailable", "rate_limited"]
+    reason: Literal["signed_out", "disabled", "unavailable", "rate_limited", "model_capacity"]
     retry_at: datetime | None = None
 
     @field_validator("profile_id", mode="before")
@@ -189,6 +189,8 @@ class CodexSubscriptionDeferral(BaseModel):
 
     @property
     def queue_reason(self) -> str:
+        if self.reason == "model_capacity":
+            return "model_capacity"
         return f"subscription_{self.reason}"
 
 

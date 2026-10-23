@@ -1547,6 +1547,19 @@ tracks durable retry attempts by queue key and prompt digest, capped by
 `agent_prompt_queue_max_retries` (default `3`). Once the cap is exceeded,
 enqueue fails with `failed_phase: retry_limit` and includes `retry_count` and
 `max_retries` in the error outputs.
+Temporary Codex subscription model-capacity and explicit server-overload failures
+use the separate `model_capacity` queue reason. The runtime retries the same
+session and native conversation up to eight times within one hour, with jittered
+exponential delays starting around 15 seconds and capped at 15 minutes. The retry
+count, first failure time and dispatch identity survive queue replay and process
+restarts. This does not consume the ordinary prompt retry ledger or mark the
+subscription as quota exhausted. Other models on the same subscription can run.
+When the budget is exhausted, history records a failed execution with
+`retry_exhausted`, `retry_count`, `max_retries` and `retry_deadline`; completion
+reports `success: false` and uses the connected `error` branch. An expired queued
+retry fails before another worker job starts. The model and billing route remain
+unchanged. Deploy both control-plane and worker code for this behavior.
+
 Codex container-worker prompts that fail because the completed worker execution
 is marked context exhausted are retried once with deterministic reduced context
 by default. Tune this with `agent_context_retry_enabled`,

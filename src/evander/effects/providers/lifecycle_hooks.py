@@ -44,7 +44,12 @@ from evander.local_inference_capacity import (
 )
 from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.messaging.agent_prompt_queue import (
+    MODEL_CAPACITY_QUEUE_REASON,
+    MODEL_CAPACITY_RETRY_METADATA_KEYS,
+    ModelCapacityRetryExhausted,
     agent_prompt_replay_queue_key,
+    model_capacity_retry_count,
+    model_capacity_retry_deadline,
     queued_agent_prompt_dispatch_id,
 )
 from evander.messaging.scheduled_wake_queue import (
@@ -89,6 +94,7 @@ _RECONCILED_QUEUE_EXECUTION_STATUSES = {
     "skipped",
 }
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
+    *MODEL_CAPACITY_RETRY_METADATA_KEYS,
     "conversation_key",
     "cost_category_snapshot",
     "workflow_run_id",
@@ -407,9 +413,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         except ValueError:
             return False
         for key in ordered[:current_index]:
+            earlier = records[key]
+            if (
+                getattr(earlier, "queue_reason", None) == MODEL_CAPACITY_QUEUE_REASON
+                and getattr(earlier, "model", None) != getattr(current, "model", None)
+            ):
+                continue
             earlier_context = self._runnable_subscription_profile_context(
                 worker=worker,
-                record=records[key],
+                record=earlier,
             )
             if earlier_context == (profile_id, worker_url):
                 return True
@@ -477,6 +489,66 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=UTC)
         return retry_at.astimezone(UTC) <= datetime.now(UTC)
+
+    def _fail_expired_model_capacity_retry(
+        self, *, worker: Any, queue_store: Any, record: Any
+    ) -> bool:
+        if record.queue_reason != MODEL_CAPACITY_QUEUE_REASON:
+            return False
+        deadline = model_capacity_retry_deadline(record.metadata)
+        now = datetime.now(UTC)
+        if deadline is None or now < deadline:
+            return False
+        from evander.daemons.effect_orchestrator import EffectExecutionRecord
+        from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        dispatch_id = queued_agent_prompt_dispatch_id(record)
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=record.queue_key, dispatch_id=dispatch_id, record=record
+        )
+        idempotency_key = f"{event_id}::{record.effect_id}"
+        existing = worker.execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if existing is not None and existing.status in {"running", "waiting"}:
+            return False
+        if existing is None:
+            payload = {
+                "target": record.target,
+                "session_id": record.session_id,
+                "vm_name": record.vm_name,
+                "prompt": record.prompt,
+                "model": record.model,
+                **self._queued_prompt_restored_metadata(record),
+            }
+            self._restore_workflow_context(input_payload=payload, record=record)
+            execution = EffectExecutionRecord(
+                execution_id=f"exec-{hashlib.sha1(idempotency_key.encode()).hexdigest()[:16]}",
+                idempotency_key=idempotency_key,
+                event_id=event_id,
+                trace_id=f"queued-agent-prompt:{record.queue_key}",
+                source_node_id=record.effect_id,
+                source_trigger_type=_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
+                effect_id=record.effect_id,
+                effect_type=_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
+                status="waiting",
+                started_at=now,
+                finished_at=now,
+                resolved_config_hash=self._json_sha256(payload),
+                resolved_config=payload,
+                input_payload=payload,
+                outputs={"dispatch_id": dispatch_id, "session_id": record.session_id},
+                config_revision=getattr(worker, "_last_graph_revision", None),
+            )
+            AgentPromptEffectProvider._fail_model_capacity_retry(
+                worker=worker,
+                record=execution,
+                error=ModelCapacityRetryExhausted(
+                    retry_count=model_capacity_retry_count(record.metadata), deadline=deadline
+                ),
+            )
+        self._delete_queue_record_if_current(
+            queue_store=queue_store, queue_key=record.queue_key, dispatch_id=dispatch_id
+        )
+        return True
 
     @classmethod
     def _has_earlier_claimed_replay_record(
@@ -2332,6 +2404,12 @@ class _QueuedPromptDispatch:
             if record is None:
                 continue
             if not self.hook._validate_queue_ownership(self.worker, record):
+                continue
+            if self.hook._fail_expired_model_capacity_retry(
+                worker=self.worker, queue_store=self.queue_store, record=record
+            ):
+                self.dispatched += 1
+                self.all_snapshot = self.queue_store.read_all()
                 continue
             if not self.hook._retry_not_before_ready(record):
                 continue

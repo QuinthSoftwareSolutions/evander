@@ -974,19 +974,22 @@ def test_monitor_container_execution_completion_marks_wake_request_completed(
     assert destroy_calls == ["execution-1"]
 
 
+@pytest.mark.parametrize("reason", ["rate_limited", "model_capacity"])
 def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhaustion(
     tmp_path: Path,
+    reason: str,
 ) -> None:
     dispatcher, config, _session_repository, wake_store = _build_dispatcher(tmp_path)
     scheduled_for = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
     reset_at = datetime.now(UTC) + timedelta(minutes=10)
+    original_resume_mode = "new_context" if reason == "model_capacity" else "same_context"
     wake_store.schedule_resume_request(
         session_id="session-1",
         prompt="Resume original work.",
         schedule=WakeScheduleDefinition(resume_at=scheduled_for),
         request_id="wake-container",
         source="test",
-        resume_mode="same_context",
+        resume_mode=original_resume_mode,
         enabled=True,
         metadata={},
     )
@@ -997,7 +1000,7 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
             session_id="session-1",
             status="dispatched",
             resume_prompt=WakeResumePromptPayload(prompt="Resume original work."),
-            resume_mode="same_context",
+            resume_mode=original_resume_mode,
             scheduled_for=scheduled_for,
             source="scheduled_once",
             metadata={"backend": "container_worker_vm", "target_name": "provider-target"},
@@ -1008,9 +1011,10 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
         inspect=lambda execution_id: SimpleNamespace(
             status=ExecutionStatusKind.FAILED,
             metadata={
+                "codex_subscription_thread_id": "native-wake-thread",
                 "codex_subscription_deferral": {
                     "profile_id": "team-a",
-                    "reason": "rate_limited",
+                    "reason": reason,
                     "retry_at": reset_at.isoformat(),
                 }
             },
@@ -1033,7 +1037,7 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
         reasoning_effort_source="session",
         model_provider_mode="openai_public",
         request_id="wake-container",
-        resume_mode="same_context",
+        resume_mode=original_resume_mode,
         target_name="provider-target",
         dispatch_source="scheduled_once",
         scheduled_for=scheduled_for,
@@ -1051,7 +1055,9 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
     assert queued.reasoning_effort_source == "session"
     assert queued.dispatch_id == "wake-dispatch-rate-limit"
     assert queued.subscription_profile_id == "team-a"
-    assert queued.queue_reason == "subscription_rate_limited"
+    assert queued.queue_reason == ("model_capacity" if reason == "model_capacity" else "subscription_rate_limited")
+    assert queued.resume_thread_id == ("native-wake-thread" if reason == "model_capacity" else None)
+    assert queued.resume_mode == "same_context"
     assert queued.retry_count == 0
     assert queued.retry_not_before == reset_at
     latest = wake_store.latest_dispatch_by_request_id()["wake-container"]
