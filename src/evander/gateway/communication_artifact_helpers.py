@@ -8,7 +8,7 @@ import json
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,

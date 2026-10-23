@@ -465,7 +465,7 @@ def test_mcp_schema_caller_binding_and_audit(setup_submission, monkeypatch):
     assert events[-1]["session_id"] == SESSION_ID
     assert events[-1]["tool_name"] == "submit_git_changes"
     assert events[-1]["decision"] == "allowed"
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
 
     with pytest.raises(ToolError):
         call_mcp(
@@ -514,7 +514,7 @@ def test_mcp_argument_policy_uses_resolved_checkout_selectors(setup_submission, 
 @pytest.mark.parametrize("denial", ["grant", "arguments", "approval"])
 def test_mcp_policy_stops_submission_before_execution(setup_submission, monkeypatch, denial):
     import evander.gateway as gateway
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
 
     s = setup_submission
     session = s.session.model_copy(deep=True)

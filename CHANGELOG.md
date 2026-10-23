@@ -1,9 +1,37 @@
 # Changelog
 
-## 2026-10-23 - Reconcile session policy from workflow settings (0.123.0)
+## 2026-10-23 - Reconcile session policy from workflow settings (0.126.0)
 
 - Add `effect:session:reconcile-policy` to apply settings-owned tool grants, argument restrictions, approvals, connector grants, and metadata to an existing session without replacing its identity, model, conversation, or workspace.
 - Reconcile atomically against the latest manifest, enforce workflow directory scope, preserve unmentioned fields, and avoid writes when the policy already matches.
+
+## 2026-10-23 - Configure tracked-review text budgets per scan (0.125.0)
+
+- Add the bindable workflow input `max_batch_text_bytes` for tracked security scans: integer budgets from 1 MiB to 2 MiB, with 1 MiB for new scans and the saved budget inherited on resume when omitted. Reject unsupported providers and coverage modes before launching work.
+- Release Codex Security add-on 0.3.0 with a frozen version-4 budget in progress, coverage ledgers and manifests. Explicit continuation changes regroup only untouched pending root scopes; accepted coverage, findings, native proofs, attempted/split scopes, original snapshots, cleanup and idempotency checks remain intact. Active historical plans retain their original limits; the pinned SDK and scanner image are unchanged.
+
+## 2026-10-23 - Larger tracked-coverage batches on continuation (0.124.2)
+
+- Raise the optional Codex Security add-on's tracked-review text budget to 1 MiB while preserving the 100-entry cap, intact oversized files and two-child concurrency limit.
+- On explicit continuation, upgrade unstarted root scopes from earlier batching policies without changing accepted coverage, native proofs, attempted scopes, split refinements or source journals. Record batching version 3 and retain strict snapshot, route, cleanup and idempotency checks. This host-only policy change does not require a scanner-image rebuild.
+
+## 2026-10-23 - Preserve resumed scan subscriptions and admit purchased capacity (0.124.1)
+
+- Allow agent-creation workflows to bind the saved subscription profile when resuming a scan. Validate the resolved profile on its selected worker and reject missing bindings instead of falling back to the legacy default; ordinary resumes retain strict scan configuration compatibility.
+- Use one capacity decision for worker admission and queued-prompt recovery: existing purchased usage credits can cover exhausted included windows in the same rate-limit bucket. Explicit provider rate/spend blocks, account pins and profile isolation remain enforced; no reset credit is read or redeemed by this decision.
+
+## 2026-10-23 - Discover Azure DevOps builds by number (0.124.0)
+
+- Add the read-only `list_ado_builds` MCP tool with build-number, pipeline, repository and branch filters, bounded pages and continuation tokens. Return build IDs, pipeline and repository identities, source details and URLs so callers can distinguish builds that share a number.
+- Require an explicit tool grant and use the session directory's existing Azure DevOps configuration and host credential. Existing agent grants are unchanged; the updated Azure DevOps add-on requires Evander 0.124.0.
+
+## 2026-10-23 - Support MCP SDK 2 and modern protocol requests (0.123.0)
+
+- Migrate the gateway and add-on MCP surfaces to SDK 2.3 while retaining legacy clients. Enforce session proof, current tool grants, workflow leases, exact invocation approvals and auditing on modern requests without a transport session ID.
+- Update the Figma and Miro MCP clients for HTTPX 2, explicit pagination and the SDK's response models, preserving authenticated destinations and bounded timeouts. Set bounded SSE wire limits that accommodate base64 screenshots and paired structured/text results while retaining the existing decoded-content limits. Constrain the SDK to the supported major version and refresh the dependency lock.
+- Preserve actionable policy and domain-validation errors without Pydantic input dumps. Unexpected adapter failures retain their operator audit details and use the SDK's sanitized caller-facing errors.
+- Retain support for existing Elasticsearch bulk and Kibana import sizes through an explicit bounded gateway HTTP wire limit, without changing their logical payload limits.
+- Require Evander 0.123.0 for the five migrated optional add-ons so dependency resolution rejects core releases that still use MCP SDK 1.
 
 ## 2026-10-23 - Retry temporary model-capacity failures (0.122.1)
 
@@ -11,6 +39,7 @@
 - Retry up to eight times within one hour with jittered exponential backoff capped at fifteen minutes. Preserve the retry budget across restarts and repeated reconciliation; model overload does not pause other models on the same subscription.
 - Report exhausted retries as failed workflow executions, publish failure completion, and use the configured error branch. Expire overdue queued retries before launching another worker job.
 - Activate retries on older workers through their last explicit native capacity error so worker upgrades can wait for live model brokers to become idle.
+- Preserve scheduled-wake completion and directory scope when queued retries expire. Restore accepted worker executions and their real outcomes after interruption before reporting deadline failure, and use effective models for subscription FIFO ordering.
 
 ## 2026-10-23 - Explicit subscription handoff for tracked scan resumes (0.122.0)
 

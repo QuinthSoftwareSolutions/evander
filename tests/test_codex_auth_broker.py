@@ -64,6 +64,7 @@ class FakeManagedClient:
                     "limitId": "codex",
                     "limitName": "Codex",
                     "planType": "plus",
+                    "spendControlReached": False,
                     "credits": {
                         "hasCredits": True,
                         "unlimited": False,
@@ -79,6 +80,7 @@ class FakeManagedClient:
                 },
                 "rateLimitsByLimitId": {
                     "codex": {
+                        "spendControlReached": True,
                         "credits": {
                             "hasCredits": False,
                             "unlimited": False,
@@ -431,6 +433,8 @@ def test_status_reports_safe_account_limits_and_optional_usage_without_token_mat
     assert status["email"] == "owner@example.test"
     assert status["plan_type"] == "plus"
     assert status["rate_limits"]["default"]["primary"]["used_percent"] == 73.5
+    assert status["rate_limits"]["default"]["spend_control_reached"] is False
+    assert status["rate_limits"]["by_limit_id"]["codex"]["spend_control_reached"] is True
     assert status["rate_limits"]["default"]["credits"] == {
         "has_credits": True,
         "unlimited": False,

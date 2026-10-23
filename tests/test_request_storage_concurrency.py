@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import anyio
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -178,7 +178,7 @@ def test_mcp_dispatch_waits_for_policy_and_audit_without_blocking(runtime, monke
 
             operation = call_probe(server, {}, request)
             if stage == "error_audit":
-                with pytest.raises(ToolError, match="synthetic failure"):
+                with pytest.raises(ToolError, match="Error executing tool probe"):
                     await while_blocked(operation, entered, release, concurrent_work)
             else:
                 await while_blocked(operation, entered, release, concurrent_work)
@@ -277,7 +277,7 @@ def test_cancelled_sync_tool_keeps_its_final_audit(
                 token = _MCP_REQUEST_CONTEXT.set(request)
                 try:
                     if fails:
-                        with pytest.raises(ToolError, match="failure after mutation"):
+                        with pytest.raises(ToolError, match="Error executing tool probe"):
                             await call_probe(server, {}, request)
                     else:
                         await call_probe(server, {}, request)
@@ -364,7 +364,8 @@ def test_tool_audit_keeps_normalized_summary_for_direct_and_managed_calls(
             if failure_mode is not None:
                 direct_error = OSError if failure_mode == "audit_store" else ValueError
                 error = "audit unavailable" if failure_mode == "audit_store" else "provider unavailable"
-                with pytest.raises(direct_error if direct else ToolError, match=error):
+                with pytest.raises(direct_error if direct else ToolError,
+                                   match=error if direct else "Error executing tool probe"):
                     await invoke()
             else:
                 await invoke()

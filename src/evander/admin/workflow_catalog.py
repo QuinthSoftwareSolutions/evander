@@ -2598,10 +2598,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "subscription_profile_id",
                 "Subscription profile",
                 "enum",
-                bindable=False,
+                bindable=True,
                 description=(
-                    "Immutable worker-owned ChatGPT subscription profile. Create a new "
-                    "agent session to change this selection."
+                    "Worker-owned ChatGPT subscription profile, selected literally or from "
+                    "a workflow binding. Bind a resumed scan's retained subscription to keep "
+                    "its account. The resolved profile must exist and be enabled on this worker."
                 ),
                 options=[],
                 metadata={
@@ -2609,7 +2610,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "agent_providers": ["codex"],
                     "model_provider_modes": ["openai_public"],
                     "codex_auth_modes": ["chatgpt_subscription"],
-                    "immutable": True,
                 },
             ),
             _field(
@@ -3523,6 +3523,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("coverage_policy", "Coverage policy", "enum", bindable=True, default_value="provider", options=[_field_option("provider", "Provider coverage"), _field_option("all_tracked_files", "Every tracked file (Standard full snapshot)")]),
             _field("managed_repo_id", "Managed repository ID", "string", bindable=True, description="Required for tracked coverage; must match the session checkout."),
+            _field("max_batch_text_bytes", "Tracked review text bytes", "number", bindable=True, description="Tracked coverage only: integer bytes from 1048576 (1 MiB) to 2097152 (2 MiB). Omit for 1 MiB on a new scan or to retain the saved limit on resume. An explicit continuation can regroup only untouched scopes."),
             _field("resume_from_scan_id", "Resume from scan ID", "string", bindable=True, description="Reuse accepted coverage at the earlier scan's original snapshot."),
             _field("resume_subscription_profile_id", "Resume subscription profile ID", "string", bindable=True, description="Explicitly allow this destination ChatGPT subscription on a linked resume. Must match the new scanner session; all other access, model and snapshot settings must match the source."),
             _field("session_id", "Session ID", "string", required=True, bindable=True),

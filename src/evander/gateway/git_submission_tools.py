@@ -1,7 +1,7 @@
 """The session-bound MCP interface for committed Git work."""
 
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import ToolName

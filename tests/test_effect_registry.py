@@ -6848,7 +6848,8 @@ def test_agent_create_does_not_save_a_binding_deleted_during_worker_preparation(
     assert repository.get_session("binding-race") == original
 
 
-def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:
+@pytest.mark.parametrize("profile_id", ["../other", "UPPERCASE", "two profiles"])
+def test_agent_create_subscription_profile_literal_remains_a_validated_slug(profile_id) -> None:
     with pytest.raises(ValidationError, match="lowercase slug"):
         AgentCreateEffectDefinition(
             id="agent-create",
@@ -6857,8 +6858,71 @@ def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:
             execution_backend="container_worker_vm",
             session_id="session-1",
             codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
-            subscription_profile_id="${{trigger.profile_id}}",
+            subscription_profile_id=profile_id,
         )
+
+
+@pytest.mark.parametrize("profile_id", ["retained", "disabled", "../other", None, ""])
+def test_agent_create_resolves_retained_scan_subscription_without_default_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, profile_id: str | None,
+) -> None:
+    from evander.effects.binding import resolve_effect_config_bindings
+
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    resolver = _ContainerResolverStub(config)
+    backend = _FakeContainerBackend()
+    selected = []
+
+    def status(profile_id):
+        selected.append(profile_id)
+        return {"profile_id": profile_id, "enabled": profile_id == "retained"}
+
+    backend.client = SimpleNamespace(codex_auth_profile_status=status)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_create.container_backend", lambda context, config: backend
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=SimpleNamespace(
+            runtime=SimpleNamespace(session_repository=sessions, provider_config=resolver)
+        ),
+    )
+    effect = AgentCreateEffectDefinition(
+        id="scanner", display_name="Resume scanner", type="effect:agent:create",
+        execution_backend="container_worker_vm", session_id="resumed-scanner",
+        codex_auth_mode="chatgpt_subscription",
+        subscription_profile_id="${{scan.execution_configuration.subscription_profile_id}}",
+    )
+    resolved = resolve_effect_config_bindings(
+        {"subscription_profile_id": effect.subscription_profile_id},
+        upstream_payload={"scan": {"execution_configuration": {"subscription_profile_id": profile_id}}},
+        declared_upstream_output_names={"scan": {"execution_configuration"}},
+    ).resolved_config
+    if profile_id != "retained":
+        with pytest.raises(ValueError, match="disabled|lowercase slug|subscription_profile_id is required"):
+            factory.build(effect).execute(resolved_config=resolved)
+        assert sessions.get_session("resumed-scanner") is None
+        assert backend.prepared_sessions == []
+        assert "default" not in selected
+        return
+
+    output = factory.build(effect).execute(resolved_config=resolved)
+    assert output["subscription_profile_id"] == "retained"
+    manifest = sessions.get_session("resumed-scanner")
+    turn = container_codex_turn_spec(
+        prompt="Continue", model="gpt-5.4", resume_thread_id=None,
+        session=manifest, config=config, agent_provider="codex",
+    )
+    assert manifest.subscription_profile_id == "retained"
+    assert turn.auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert turn.subscription_profile_id == "retained"
+    assert set(selected) == {"retained"}
 
 
 def test_agent_create_container_can_select_configured_image_alias(

@@ -343,6 +343,9 @@ def test_hosted_voice_requires_login_control_and_same_origin(admin, hosted, spee
         users.upsert_group(group_id="readers", display_name="Readers")
         users.set_group_permissions("readers", ["browser_sessions.view"])
         users.assign_user_group(login="reader", group_id="readers", directory_path="root/demo")
+        # HTTPX 2 retains host-scoped and domainless cookies separately. Switch
+        # identities explicitly instead of sending both operator and reader tokens.
+        client.cookies.clear()
         client.cookies.set(auth.config.cookie_name, auth.login("reader", "reader-test-password"))
         assert client.get(path + "info").status_code == 200
         assert client.post(path + "transcribe", content=speech_provider["audio"], headers=headers).status_code == 403

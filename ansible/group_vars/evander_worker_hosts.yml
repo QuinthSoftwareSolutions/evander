@@ -36,6 +36,7 @@ evander_worker_revision_guard_paths:
   - ansible/roles/container_worker_verification
   - pyproject.toml
   - src/evander/worker
+  - src/evander/codex_capacity.py
   - src/evander_mssql_seed_addon
   - src/evander/worker_daemon.py
 

@@ -72,6 +72,10 @@ class SecurityScanService:
             self.providers[request.provider], "supports_subscription_handoff", False
         ):
             raise ValueError("The selected provider does not support subscription handoff")
+        if request.max_batch_text_bytes is not None and not getattr(
+            self.providers[request.provider], "supports_batch_text_limit", False
+        ):
+            raise ValueError("The selected provider does not support a batch text limit")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(
@@ -150,6 +154,7 @@ class SecurityScanService:
                 "deadline_at",
                 "last_progress_at",
                 "cleanup_condition",
+                "max_batch_text_bytes",
             }
         }
         if "execution_configuration" in result:

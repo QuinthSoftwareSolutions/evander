@@ -159,6 +159,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_enforce_revision_match: true" in text
     assert "evander_worker_revision_guard_paths" in text
     assert "src/evander/worker" in text
+    assert "src/evander/codex_capacity.py" in text
     assert "ansible/roles/python_env" in text
     assert "ansible/roles/worker_package_cache_preflight" in text
     assert "ansible/roles/worker_dotnet_toolchain" in text

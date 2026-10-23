@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
@@ -67,7 +67,7 @@ def add_session(context, **overrides):
 
 def discover(server, session_id="leo"):
     result = asyncio.run(server.call_tool("email_list_mailboxes", {"session_id": session_id}))
-    return result[1]
+    return result.structured_content
 
 
 def test_existing_draft_session_discovers_only_granted_public_metadata(context):

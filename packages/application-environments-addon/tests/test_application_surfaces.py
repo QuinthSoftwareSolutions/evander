@@ -130,12 +130,12 @@ def test_readiness_checks_worker_identity_without_allocating(tmp_path, monkeypat
 
 
 def test_mcp_catalog_registers_typed_creation_without_other_optional_addons(tmp_path):
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     from evander.addons import AddonContext
     from evander_application_environments_addon import register_addon
 
     addon = register_addon()
-    server = FastMCP("application-test")
+    server = MCPServer("application-test")
     names = addon.mcp_tools(
         server,
         AddonContext(
@@ -151,7 +151,7 @@ def test_mcp_catalog_registers_typed_creation_without_other_optional_addons(tmp_
         == {tool.name for tool in addon.mcp_tool_catalog}
     )
     create = next(tool for tool in tools if tool.name == "application_environment_create")
-    request_schema = create.inputSchema["$defs"]["CreateRequest"]
+    request_schema = create.input_schema["$defs"]["CreateRequest"]
     assert {"workspace_ref", "profile_id", "request_id", "launch_manifest_path"} <= set(
         request_schema["required"]
     )

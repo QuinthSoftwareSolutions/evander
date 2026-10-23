@@ -14,6 +14,14 @@ bounds and the container-worker backend. It defaults to 21,600 seconds, allows a
 most six hours per run, and reports structured `coverage_progress` and
 `cleanup_confirmed`. `resume_from_scan_id` starts a linked continuation at the
 source snapshot with a fresh budget and verified retained coverage.
+`max_batch_text_bytes` is an optional, bindable integer for tracked coverage,
+from `1048576` (1 MiB) through `2097152` (2 MiB). Omit it for 1 MiB on a new
+scan or to inherit the saved limit on continuation. An explicit new value
+regroups only untouched pending root file/boundary scopes in the new journal;
+accepted results, attempted scopes and split refinements remain intact.
+The effective limit appears in `coverage_progress.max_batch_text_bytes`.
+This input requires core 0.125.0 and Codex Security add-on 0.3.0; an older
+provider cannot silently ignore an explicit limit.
 An explicit ChatGPT-subscription handoff additionally names
 `resume_subscription_profile_id`. It must match the new scanner session's
 configured subscription, and both source and destination must use public
@@ -116,6 +124,13 @@ For Azure DevOps work-item images, the session needs `list_inline_media`, `downl
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the
 [image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
+
+Azure DevOps build discovery requires `list_ado_builds` in the session's `allowed_tools`.
+The separate `get_ado_build` and `list_ado_build_work_items` grants allow inspection of a
+selected build. These read tools use the session directory's `azure_devops_organization_url`,
+`azure_devops_project` and host-side `azure_devops_pat_env`; they accept no credential or
+project override. No agent receives the new grant automatically. See
+[build read tools](operations.md#host-side-azure-devops-build-read-tools) for filters and paging.
 
 For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachments`,
 `download_pr_feedback_attachment`, and `communication_copy_artifact_to_workspace`. The same
@@ -1406,12 +1421,15 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
-`effect:agent:create.subscription_profile_id` is a non-bindable profile
-slug. It is valid only with `execution_backend: container_worker_vm`,
+`effect:agent:create.subscription_profile_id` accepts a literal profile slug or
+a workflow binding. It is valid only with `execution_backend: container_worker_vm`,
 `agent_provider: codex`, `model_provider_mode: openai_public`, and
 `codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
 enabled option from the node's effective worker; directory configuration does
-not default, grant, or restrict the list. The session persists the selection.
+not default, grant, or restrict the list. A binding must resolve to a nonempty,
+valid slug for an enabled profile on that worker. A missing, empty, disabled or
+unresolved bound profile fails rather than selecting the legacy default. The
+session persists the selection.
 Omitting the field on an existing-agent upsert preserves its current profile.
 An upsert can select another enabled profile, and setting `codex_auth_mode` to
 `metered_api` clears the stored profile. Legacy profile-less subscription
@@ -1420,6 +1438,16 @@ agents in Admin Web require a named selection. Workers do not create an empty
 Default profile. Admin Web can delete an unused profile and its saved worker
 login after active jobs, queued prompts, and unexpired session bindings have
 been removed. Deleted profiles are not recreated on worker restart.
+
+For a tracked scan resume, authorize the source scan in the requesting directory
+and channel, then bind the scanner's profile from its retained
+`query:security:scan.execution_configuration.subscription_profile_id` rather than
+the workflow's current new-scan default. Preserve the other retained execution
+settings and snapshot. Leave `resume_subscription_profile_id` unset for this
+ordinary same-subscription resume; it is only for an explicitly authorized
+subscription handoff. A bound profile does not relax the scan's snapshot,
+configuration, cleanup or idempotency checks. Operator-owned channel workflows
+must update their selection logic and scanner node to use this binding.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime

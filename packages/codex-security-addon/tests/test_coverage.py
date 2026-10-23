@@ -94,7 +94,7 @@ def mapping(s):
 
 
 def test_scopes_split_without_crediting_partial_or_late_results_and_keep_findings():
-    s = state(file_size=200_000)
+    s = state(file_size=400_000)
     mapping(s)
     assert c.progress(s)["files_reviewed"] == 0
     first, second = c.pending(s)
@@ -207,7 +207,7 @@ def test_advisory_questions_never_override_unfinished_static_work(unfinished):
 
 
 def test_advisory_questions_and_accepted_coverage_survive_resume_without_becoming_work():
-    s = state(("a/a.py", "b/b.py"), file_size=300_000)
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
     mapping(s)
     question = {
         "question": "Which external application calls this?",
@@ -264,7 +264,7 @@ def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
 
 
 def test_parallel_boundaries_close_independently_and_keep_global_work_until_resolved(tmp_path):
-    s = state(("a/a.py", "b/b.py"), file_size=300_000)
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
     mapping(s)
     for item in list(c.pending(s)):
         finish(s, item)
@@ -351,7 +351,7 @@ def test_partial_boundary_splits_keep_each_outstanding_item_assigned_once():
 
 
 def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
-    s = state(("a/a.py", "b/a.py", "c/a.py"), file_size=300_000)
+    s = state(("a/a.py", "b/a.py", "c/a.py"), file_size=600_000)
     mapping(s)
     store = c.CoverageStore(tmp_path)
     store.create(s)
@@ -367,7 +367,7 @@ def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
 
 
 def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
-    s = state(("a/a.py", "b/a.py"), file_size=300_000)
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
     mapping(s)
     finish(s, c.pending(s)[0])
     s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
@@ -402,7 +402,7 @@ def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
 
 @pytest.mark.parametrize("destination", ["subscription-a", "subscription-b"])
 def test_subscription_handoff_retains_credit_findings_and_immutable_source(destination):
-    s = state(("a/a.py", "b/a.py"), file_size=300_000)
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
     s["route"] = subscription_route()
     mapping(s)
     item = c.pending(s)[0]
@@ -651,14 +651,14 @@ def test_real_git_inventory_preserves_tracked_ignored_generated_and_nontext_path
 
 def test_inventory_batch_caps_and_no_silent_omissions():
     entries = [entry(f"src/{i:03}.py", size=8000) for i in range(110)] + [
-        entry("large.py", size=900000)
+        entry("large.py", size=2_000_000)
     ]
     chunks = list(c.batches(entries))
     assert sorted(p for chunk in chunks for p in chunk) == sorted(x["path"] for x in entries)
     assert all(len(chunk) <= 100 for chunk in chunks)
     assert ["large.py"] in chunks
     assert all(
-        sum(next(x["size"] for x in entries if x["path"] == p) for p in chunk) <= 524288
+        sum(next(x["size"] for x in entries if x["path"] == p) for p in chunk) <= 1_048_576
         for chunk in chunks
         if chunk != ["large.py"]
     )

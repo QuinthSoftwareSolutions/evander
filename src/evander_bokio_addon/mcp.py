@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonContext, AddonMcpTool
 from evander.communication_artifacts import CommunicationArtifactStore

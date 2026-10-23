@@ -7,7 +7,7 @@ import json
 from types import SimpleNamespace
 
 import evander.gateway as gateway_module
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 import pytest
 
 from evander.config import GatewayConfig

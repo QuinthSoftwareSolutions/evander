@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
@@ -1894,15 +1894,22 @@ def test_get_agent_status_and_logs_reuse_mapped_transport_session(
     assert "session_id is required" not in context.config.audit_log_path.read_text(encoding="utf-8")
 
 
-def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
+def test_gateway_cli_uses_configured_host_and_port(tmp_path: Path, monkeypatch) -> None:
+    from evander.gateway import cli
+
     context = make_context(tmp_path)
     context.config.host = "0.0.0.0"
     context.config.port = 8000
 
-    server = create_server(context)
+    calls = []
+    monkeypatch.setattr(cli, "_bootstrap_runtime_config", lambda **_: context.config)
+    monkeypatch.setattr(cli, "build_runtime", lambda _: context)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr("sys.argv", ["evander-gateway"])
 
-    assert server.settings.host == "0.0.0.0"
-    assert server.settings.port == 8000
+    cli.main()
+
+    assert calls == [{"host": "0.0.0.0", "port": 8000, "log_level": "info"}]
 
 
 def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> None:
@@ -2012,7 +2019,7 @@ def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
     set_discord_service(context, fake_discord)
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="discord timeout"):
+    with pytest.raises(ToolError, match="Error executing tool discord_get_commands"):
         asyncio.run(
             server.call_tool(
                 "discord_get_commands",
@@ -2046,7 +2053,7 @@ def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> 
     set_discord_service(context, fake_discord)
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="discord adapter exploded"):
+    with pytest.raises(ToolError, match="Error executing tool discord_post_status"):
         asyncio.run(
             server.call_tool(
                 "discord_post_status",
@@ -2803,7 +2810,7 @@ def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None
     )
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="Unknown message for mailbox secondary"):
+    with pytest.raises(ToolError, match="Error executing tool email_get_message"):
         asyncio.run(
             server.call_tool(
                 "email_get_message",
@@ -3017,7 +3024,7 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
     )
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="provider auth failed"):
+    with pytest.raises(ToolError, match="Error executing tool email_list_unread"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
@@ -3053,7 +3060,7 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
     set_email_service(context, _RaisingEmailService(httpx.TimeoutException("provider timed out")))
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="provider timed out"):
+    with pytest.raises(ToolError, match="Error executing tool email_list_unread"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",

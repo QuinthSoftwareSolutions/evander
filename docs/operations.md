@@ -43,6 +43,42 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
 | Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
 
+## MCP SDK compatibility
+
+The gateway and installed add-ons use MCP Python SDK `>=2.3.0,<3`. The checked-in
+`uv.lock` records the tested dependencies; local development can install them with
+`uv sync --frozen --extra dev`. SDK 2 retains the legacy `initialize` protocol, so
+existing clients can continue using their session-scoped gateway URLs.
+A bare `GET /mcp` can return HTTP 400 (missing protocol session ID), or 406 on
+older transports; either proves endpoint reachability, not an authenticated tool
+call. The CLI health check already accepts these responses.
+
+Clients using MCP `2026-07-28` send independent requests without an MCP transport
+session ID. They must carry the Evander session identity and its proof token on
+each request, normally through the existing scoped URL or
+`x-evander-session-id` and `x-evander-mcp-session-token` headers. Tool discovery and
+invocation still evaluate current grants, workflow approval leases and exact
+invocation approvals. An Evander session is distinct from an SDK transport session;
+the absence of the latter does not grant access to another Evander session.
+
+The gateway accepts MCP HTTP bodies up to 320 MiB. This wire limit accommodates
+the existing configurable 50 MiB Kibana NDJSON import limit even when JSON string
+escaping expands the request. Tool-specific logical limits still apply;
+requests above the wire limit receive HTTP 413 before tool dispatch.
+
+Policy and domain-validation failures remain actionable tool errors. Unexpected
+provider failures return a generic SDK error; inspect the corresponding operator
+audit record for the provider failure and its classification. Domain-validation replies include field diagnostics without Pydantic input dumps.
+
+The Figma and Miro MCP transports use HTTPX 2, which verifies TLS using the host OS
+trust store. Install any required private CA in that trust store, or configure
+`SSL_CERT_FILE`/`SSL_CERT_DIR`; their ordinary REST transports continue using HTTPX.
+Both MCP clients allow SSE events up to 16 MiB to accommodate base64 images,
+paired structured/text results and JSON escaping. Their existing content limits
+remain 8 MiB per Figma screenshot and 1 MiB per Miro result.
+Verify the Ansible package-install path in an isolated environment as well as the
+locked test environment before deploying a new SDK release.
+
 For contextual release reintegration, verifier recovery, retained logs and staged worker
 toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
 
@@ -1839,9 +1875,23 @@ A transport-terminated warning without client-visible failure can be expected fo
 
 ## Host-Side Azure DevOps Build Read Tools
 
-- Grant `get_ado_build` and `list_ado_build_work_items` separately in the session's `allowed_tools`.
-- Both tools take a positive numeric `build_id`, use the session directory's configured Azure
-  DevOps organization, project, and host credential, and make read-only requests.
+- Grant `list_ado_builds`, `get_ado_build` and `list_ado_build_work_items` separately in the
+  session's `allowed_tools`. Installing or upgrading does not change existing grants.
+- All three tools use the session directory's configured Azure DevOps organization, project,
+  and host credential, and make read-only requests. They accept no project or credential override.
+- `list_ado_builds` accepts optional, combined filters: `build_number` (exact match, or append
+  `*` for a prefix search), positive `pipeline_id` (build definition ID), `repository_id` and
+  `branch` (full ref, such as `refs/heads/main`). With no filters it lists recent builds.
+  `limit` defaults to `25` and must be an integer from `1` to `100`. Results are ordered by
+  queue time, newest first. A provider response exceeding the requested limit is an error.
+- The list response contains `project`, `builds`, `count` and `continuation_token`. Each build
+  includes `run_id`, `build_number`, `run_url`, status, result, source details and timestamps,
+  plus `pipeline_id`, `pipeline_name`, `repository_id` and `repository_name` when available.
+  Pass a non-null continuation token unchanged with the same filters for the next page.
+  A null token means there is no next page. All matches on the page are returned; build numbers
+  need not be unique across pipelines. Use pipeline/repository and deployment evidence to select
+  the intended build, then pass its `run_id` as `build_id` to the other read tools.
+- `get_ado_build` and `list_ado_build_work_items` take a positive numeric `build_id`.
 - `get_ado_build` returns the build number, status, source branch, source commit
   (`source_version`), timestamps, and build URL.
 - `list_ado_build_work_items` returns associated work-item IDs for the configured project.

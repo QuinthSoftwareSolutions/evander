@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from gateway_tool_support import call_tool
 from http_client_support import patch_httpx_client

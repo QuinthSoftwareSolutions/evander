@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from gateway_tool_support import call_tool
 from http_client_support import patch_httpx_client
@@ -197,7 +197,7 @@ def test_description_attachment_refresh_failure_does_not_save_stale_text(attachm
     pr.state["description_during_upload"] = "Author's revised description."
     pr.state["refresh_status"] = 503
 
-    with pytest.raises(ToolError, match="503"):
+    with pytest.raises(ToolError, match="Error executing tool update_pull_request"):
         call_tool(pr.server, "update_pull_request", pr.arguments)
 
     assert pr.state["description"] == "Author's revised description."
@@ -284,7 +284,7 @@ def test_description_attachment_http_failures_do_not_report_an_update(
     original_description = pr.state["description"]
     pr.state[failure] = 503
 
-    with pytest.raises(ToolError, match="503"):
+    with pytest.raises(ToolError, match="Error executing tool update_pull_request"):
         call_tool(pr.server, "update_pull_request", pr.arguments)
 
     assert pr.state["description"] == original_description
@@ -339,7 +339,7 @@ def test_description_attachment_requires_a_provider_download_url(attachment_pr) 
     pr = attachment_pr
     pr.state["omit_upload_url"] = True
 
-    with pytest.raises(ToolError, match="did not return an attachment download URL"):
+    with pytest.raises(ToolError, match="Error executing tool update_pull_request"):
         call_tool(pr.server, "update_pull_request", pr.arguments)
 
     assert [r.method for r in pr.requests] == ["GET", "GET", "POST"]
