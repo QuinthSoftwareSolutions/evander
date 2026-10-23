@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 - Per-scan tracked-review text budgets (0.3.0)
+
+- Require Evander 0.125.0 and support the workflow input `max_batch_text_bytes`, from 1 MiB to 2 MiB. New scans default to 1 MiB; omitted continuation inputs inherit the saved budget. Freeze the effective limit in version-4 journals, progress, aggregate coverage ledgers and manifests.
+- An explicit budget change on continuation regroups only untouched pending root scopes, preserving accepted credit, findings, native archives, attempted scopes, split refinements and outstanding boundary assignments. Keep historical journals immutable, legacy active budgets unchanged, strict snapshot/route compatibility, cleanup and request idempotency. No scanner-image or pinned-SDK change is required.
+
 ## 2026-10-23 - Larger tracked-coverage batches (0.2.1)
 
 - Raise the text budget per tracked review from 512 KiB to 1 MiB, retaining the 100-entry limit, intact oversized files, explicit coverage requirements and two-child concurrency bound.

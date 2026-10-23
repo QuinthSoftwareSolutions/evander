@@ -31,6 +31,9 @@ class SecurityScanRequest(BaseModel):
     managed_repo_id: str | None = None
     resume_from_scan_id: str | None = None
     resume_subscription_profile_id: str | None = None
+    max_batch_text_bytes: int | None = Field(
+        default=None, strict=True, ge=1048576, le=2097152
+    )
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
 
     @model_validator(mode="before")
@@ -91,6 +94,8 @@ class SecurityScanRequest(BaseModel):
                 raise ValueError("tracked coverage requires managed_repo_id")
             if self.timeout_seconds > 21600:
                 raise ValueError("tracked coverage has a maximum six-hour run budget")
+        if self.max_batch_text_bytes is not None and self.coverage_policy != "all_tracked_files":
+            raise ValueError("max_batch_text_bytes requires all_tracked_files coverage")
         if self.resume_from_scan_id is not None:
             if self.coverage_policy != "all_tracked_files":
                 raise ValueError("resume requires all_tracked_files coverage")

@@ -270,6 +270,12 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     assert field.bindable and not field.required
     schema = SecurityScanEffectDefinition.model_json_schema()["properties"]
     assert schema["resume_subscription_profile_id"]["default"] is None
+    field = next(field for field in node.fields if field.key == "max_batch_text_bytes")
+    assert field.kind == "number" and field.bindable and not field.required
+    assert field.default_value is None  # Omitted resumes inherit their saved limit.
+    assert schema["max_batch_text_bytes"]["default"] is None
+    budget = SecurityScanRequest.model_json_schema()["properties"]["max_batch_text_bytes"]
+    assert budget["anyOf"][0] == {"type": "integer", "minimum": 1048576, "maximum": 2097152}
 
 
 def test_tracked_coverage_defaults_and_unsupported_modes():
@@ -347,6 +353,69 @@ def test_subscription_handoff_is_forwarded_only_to_capable_providers_and_is_idem
     assert scanner.starts == [result["scan_id"]]
 
 
+@pytest.mark.parametrize("limit", [1048576, 1572864, 2097152])
+def test_batch_text_limit_is_a_bounded_tracked_workflow_input(limit):
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_batch_text_bytes=limit,
+    )
+    assert request(**inputs).max_batch_text_bytes == limit
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo",
+        **request(**inputs).model_dump(),
+    )
+    assert definition.max_batch_text_bytes == limit
+    with pytest.raises(ValidationError, match="requires all_tracked_files"):
+        request(max_batch_text_bytes=limit)
+
+
+@pytest.mark.parametrize("limit", [0, 1048575, 2097153, True, 2097152.0, "2097152"])
+def test_batch_text_limit_rejects_out_of_range_or_noninteger_values(limit):
+    with pytest.raises(ValidationError):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            max_batch_text_bytes=limit,
+        )
+
+
+def test_bound_batch_text_limit_requires_capability_and_preserves_execution_identity(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_batch_text_bytes=2097152,
+    )
+    with pytest.raises(ValueError, match="does not support a batch text limit"):
+        start(service, **inputs)
+    assert scanner.starts == [] and service.store.active() == []
+    scanner.supports_batch_text_limit = True
+    provider = SecurityScanEffectProvider()
+    provider.initialize(
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            **request(**inputs).model_dump(exclude={"max_batch_text_bytes"}),
+            max_batch_text_bytes="${{event.payload.batch_bytes}}",
+        ),
+        EffectRuntimeContext(
+            security_scan_service=service, metadata={"directory_path": "root/project"}
+        ),
+    )
+    execution = {"idempotency_key": "event-1:scan-1", "execution_id": "execution-1"}
+    with pytest.raises(ValidationError):
+        provider.execute(resolved_config={"max_batch_text_bytes": 2097153}, execution_context=execution)
+    assert scanner.starts == []
+    result = provider.execute(
+        resolved_config={"max_batch_text_bytes": 2097152}, execution_context=execution,
+    )
+    record = service.store.get(result["scan_id"], "root/project")
+    assert record.request.max_batch_text_bytes == 2097152
+    assert start(service, **inputs).scan_id == result["scan_id"]
+    for different in (None, 1048576):
+        with pytest.raises(ValueError, match="reused with different inputs"):
+            start(service, **{**inputs, "max_batch_text_bytes": different})
+    assert scanner.starts == [result["scan_id"]]
+
+
 def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     from evander.queries.providers.base import QueryRuntimeContext
     from evander.queries.providers.security_scan import SecurityScanQueryProvider
@@ -380,12 +449,12 @@ def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     assert not ({"error", "artifacts", "findings", "repo_path"} & result.keys())
     assert scanner.starts == before
     scanner.describe = lambda **_: {
-        "coverage_progress": {"files_total": 4, "raw_diagnostics": "private"},
+        "coverage_progress": {"files_total": 4, "max_batch_text_bytes": 2097152, "raw_diagnostics": "private"},
         "execution_configuration": {"model": "synthetic", "api_key": "private"},
         "raw_diagnostics": "private",
     }
     result = provider.execute()
-    assert result["coverage_progress"] == {"files_total": 4}
+    assert result["coverage_progress"] == {"files_total": 4, "max_batch_text_bytes": 2097152}
     assert result["execution_configuration"] == {"model": "synthetic"}
     assert "raw_diagnostics" not in result
     scanner.describe = lambda **_: {"execution_configuration": None}
