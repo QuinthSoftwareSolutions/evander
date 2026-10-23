@@ -5,7 +5,7 @@ from __future__ import annotations
 from inspect import Parameter, signature
 from typing import Any, Callable
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import LocalIssueRecord, McpToolName, ToolName

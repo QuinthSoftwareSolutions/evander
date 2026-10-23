@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from config_helpers import canonical_worker_config, effect_execution_payload, write_runtime_config
@@ -238,7 +238,7 @@ def test_admin_revision_lock_and_draft_sample_evaluation(environment):
 
 def call_tool(server, name, arguments):
     result = asyncio.run(server.call_tool(name, arguments))
-    return result[1] if isinstance(result, tuple) else result
+    return result.structured_content
 
 
 def test_agent_grants_directory_scope_and_usage_correlation(environment):

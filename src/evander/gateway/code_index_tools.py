@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.code_index.access import authorize_session
 from evander.gateway.session_context import _resolve_session_id_from_context

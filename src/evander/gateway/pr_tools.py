@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 import httpx
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field as PydanticField
 
 from evander.models import (

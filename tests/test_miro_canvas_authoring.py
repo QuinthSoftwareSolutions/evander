@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonContext
 from evander.events.models import WorkflowNodeEnvelope
@@ -125,7 +125,7 @@ def setup(tmp_path, monkeypatch):
                 data = {"svg": state["svg"]}
             else:
                 data = {"skill": "Requested provider instructions", **arguments}
-            return SimpleNamespace(isError=False, structuredContent=data)
+            return SimpleNamespace(is_error=False, structured_content=data)
 
     @asynccontextmanager
     async def opened(client):
@@ -155,7 +155,7 @@ def invoke(entry, setup, monkeypatch):
             assert sid == session.session_id and name in session.allowed_tools
             return session
 
-        server = FastMCP("authoring")
+        server = MCPServer("authoring")
         register_addon().mcp_tools(
             server,
             AddonContext(
@@ -173,9 +173,7 @@ def invoke(entry, setup, monkeypatch):
 
         def call(operation, arguments):
             return asyncio.run(
-                server._tool_manager.call_tool(
-                    "miro_" + operation, {"session_id": "author", **arguments}
-                )
+                server._tool_manager.call_tool('miro_' + operation, {'session_id': 'author', **arguments}, context=None)
             )
 
     else:

@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.config import GatewayConfig
 from evander.messaging.agent_prompt_store import AgentPromptRecord
@@ -129,7 +129,7 @@ def _assistant_allowed_chat_thread(session: Any, thread_id: str) -> bool:
 
 
 def register_chat_tools(
-    server: FastMCP,
+    server: MCPServer,
     context: RuntimeContext,
     deps: GatewayToolDependencies,
     *,

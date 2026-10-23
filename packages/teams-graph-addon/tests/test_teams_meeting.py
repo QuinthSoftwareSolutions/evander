@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
 from evander.events.models import TriggerEvent

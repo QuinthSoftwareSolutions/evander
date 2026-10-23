@@ -12,7 +12,7 @@ from typing import Any
 import asyncio
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from evander.addons import AddonLoaderConfig
@@ -1290,7 +1290,7 @@ def register_addon():
         assert tool is not None
         request_token = _MCP_REQUEST_CONTEXT.set(SimpleNamespace())
         tool_task = asyncio.create_task(
-            tool.run({"session_id": "session-1"})
+                tool.run({"session_id": "session-1"}, context=None)
         )
         try:
             await asyncio.wait_for(offload_started.wait(), timeout=1)

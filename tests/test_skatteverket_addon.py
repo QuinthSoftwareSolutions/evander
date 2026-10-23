@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -72,7 +72,7 @@ def _runtime(tmp_path: Path, *, allowed_tools: list[str]):
 
 
 def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server._tool_manager.call_tool(name, arguments))
+    result = asyncio.run(server._tool_manager.call_tool(name, arguments, context=None))
     if isinstance(result, tuple) and len(result) == 2:
         structured = result[1]
         if isinstance(structured, dict) and set(structured) == {"result"}:

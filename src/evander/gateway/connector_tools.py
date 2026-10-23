@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.connectors.drivers import ConnectorInvocationError
 from evander.connectors.service import ConnectorPolicyError, ConnectorService
@@ -14,7 +14,7 @@ from evander.runtime import RuntimeContext
 
 
 def register_connector_tools(
-    server: FastMCP,
+    server: MCPServer,
     context: RuntimeContext,
     service: ConnectorService,
 ) -> None:

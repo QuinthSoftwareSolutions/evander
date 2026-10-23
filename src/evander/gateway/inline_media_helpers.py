@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.gateway.communication_artifact_helpers import CommunicationArtifactHelpers
 from evander.gateway.communication_attachment_helpers import CommunicationAttachmentHelpers

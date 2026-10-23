@@ -7,13 +7,14 @@ from types import SimpleNamespace
 from typing import Annotated, Any
 
 import httpx
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field as PydanticField
 from pydantic import StrictInt
 
 from evander_azure_devops_addon.reports import DEFAULT_DONE_STATES, DEFAULT_EFFORT_FIELDS, DEFAULT_IN_PROGRESS_STATES, build_ado_daily_status_report_data
-from evander_azure_devops_addon.builds import AdoBuildClient
-from evander.ado_builds import positive_id
+from evander_azure_devops_addon.builds import AdoBuildClient, AdoBuildError
+from evander.ado_builds import positive_id as _positive_id
 from evander.issues.service import IssueService
 from evander.models import (
     ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
@@ -56,6 +57,14 @@ AdoMentionRefsArgument = Annotated[
         )
     ),
 ]
+
+
+def positive_id(value: Any, field: str) -> int:
+    """Keep deliberate identifier validation actionable under SDK 2."""
+    try:
+        return _positive_id(value, field)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _ado_inline_media_access(policy: PolicyEngine, session_id: str) -> dict[str, Any]:
@@ -202,6 +211,8 @@ def register_ado_tools(
                 decision="error",
                 error_class="unexpected_error",
             )
+            if isinstance(exc, AdoBuildError):
+                raise ToolError(str(exc)) from exc
             raise
 
     @server.tool()
@@ -246,6 +257,8 @@ def register_ado_tools(
                 decision="error",
                 error_class="unexpected_error",
             )
+            if isinstance(exc, AdoBuildError):
+                raise ToolError(str(exc)) from exc
             raise
 
     def _fetch_ado_current_iteration_report_pages(

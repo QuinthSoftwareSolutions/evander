@@ -9,7 +9,7 @@ import threading
 from types import SimpleNamespace
 
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 import pytest

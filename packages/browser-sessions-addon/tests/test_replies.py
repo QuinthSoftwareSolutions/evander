@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander_browser_sessions_addon import mcp
 from evander_browser_sessions_addon.models import BrowserError, MessageRequest
@@ -134,7 +134,7 @@ def reply_tool(domain, monkeypatch):
     service, _, _ = domain
     monkeypatch.setattr(mcp, "Service", lambda *args: service)
     monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-a")
-    server = FastMCP("browser-replies")
+    server = MCPServer("browser-replies")
     mcp.register_mcp_tools(server, SimpleNamespace(runtime_dir=service.runtime_dir, service=None))
     return server
 
@@ -151,7 +151,7 @@ def test_mcp_reply_accepts_followups_and_optional_bounded_retry_identity(
     }
 
     def call(payload):
-        return asyncio.run(reply_tool._tool_manager.call_tool("browser_session_reply", payload))
+        return asyncio.run(reply_tool._tool_manager.call_tool('browser_session_reply', payload, context=None))
 
     progress = call(arguments)
     assert call(arguments)["id"] == progress["id"]
@@ -169,8 +169,8 @@ def test_mcp_reply_accepts_followups_and_optional_bounded_retry_identity(
         for item in asyncio.run(reply_tool.list_tools())
         if item.name == "browser_session_reply"
     )
-    assert "request_id" in tool.inputSchema["properties"]
-    assert "request_id" not in tool.inputSchema["required"]
+    assert "request_id" in tool.input_schema["properties"]
+    assert "request_id" not in tool.input_schema["required"]
     for invalid in ["", "x" * 129, "spaces are invalid"]:
         with pytest.raises(ToolError):
             call({**arguments, "request_id": invalid})

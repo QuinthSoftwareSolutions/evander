@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import zipfile
 
 import httpx
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 import pytest
 from starlette.applications import Starlette
 
@@ -607,7 +607,7 @@ def test_gateway_requires_tool_grant_and_current_team_commit(service, monkeypatc
             raise PermissionError("Tool denied")
         return session
 
-    server = FastMCP("index-test")
+    server = MCPServer("index-test")
     audits = []
     register_code_index_tools(
         server,
