@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-24 - Keep coverage journal readers from blocking review progress (0.127.2)
+
+- Release Codex Security add-on 0.4.1 with write-ahead logging for new and existing coverage journals, allowing review updates to commit while status or retention readers hold a snapshot.
+- Read only retention metadata when checking continuation lifetimes and protected ancestors. Load full journals only for actual expiry candidates, preserving accepted evidence, cleanup-based retention and snapshot pins without materializing historical finding payloads.
+
 ## 2026-10-24 - Repair Docker apt access during worker deployment (0.127.1)
 
 - Permit HTTPS tunnels only to the Docker and Microsoft package hosts in the default apt-cache allowlist.

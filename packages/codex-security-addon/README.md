@@ -33,6 +33,12 @@ limit is frozen per scan and visible in progress and aggregate reports; change
 it only on a new scan or an explicit continuation after cleanup. This is a
 host-side scheduling setting; the pinned SDK and scanner image are unchanged.
 
+Add-on 0.4.1 uses SQLite write-ahead logging for new and existing coverage
+journals so readers do not block review updates. Retention checks read compact
+metadata while preserving cleanup-based lifetimes and ancestor snapshot pins.
+This is a host-side fix; no scanner-image rebuild is needed. Use SQLite's
+backup API for a consistent journal backup, including committed WAL changes.
+
 Build the pinned runtime on a trusted Linux host with Python 3.12 and Node 22.13+,
 using the same CPU architecture as the target VMs or workers:
 

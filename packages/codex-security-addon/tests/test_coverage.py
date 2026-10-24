@@ -1,9 +1,12 @@
 from copy import deepcopy
+from contextlib import closing
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from pathlib import Path
+import sqlite3
 import subprocess
+import tracemalloc
 
 import pytest
 
@@ -759,3 +762,44 @@ def test_uncertain_descendant_protects_ancestors_and_retention_starts_after_clea
         source["scan_id"],
         child["scan_id"],
     }
+
+
+def test_review_progress_can_commit_while_a_legacy_journal_reader_is_open(tmp_path):
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    store.create(s)
+    with sqlite3.connect(store.path) as legacy:
+        legacy.execute("PRAGMA journal_mode=DELETE")
+    store = c.CoverageStore(tmp_path)
+    advanced = deepcopy(s)
+    c.begin(advanced, next(iter(advanced["tasks"].values())))
+    with closing(sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)) as reader, ThreadPoolExecutor(max_workers=1) as pool:
+        reader.execute("PRAGMA query_only=ON")
+        reader.execute("BEGIN")
+        original = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+        writer = pool.submit(store.save, advanced)
+        try:
+            writer.result(timeout=2)
+            snapshot = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+            assert snapshot == original
+            assert sum(len(t["attempts"]) for t in store.get(s["scan_id"], s["directory_path"])["tasks"].values()) == 1
+        finally:
+            reader.rollback()
+
+
+def test_retention_checks_do_not_materialize_retained_finding_payloads(tmp_path):
+    clock = c.now()
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    store.create(s)
+    store.save(s)
+    tracemalloc.start()
+    try:
+        assert store.retained_until(s) == clock + c.RETENTION
+        assert store.expired(at=clock) == []
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 2 * 1024 * 1024
