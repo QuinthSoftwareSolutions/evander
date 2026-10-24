@@ -22,6 +22,15 @@ accepted results, attempted scopes and split refinements remain intact.
 The effective limit appears in `coverage_progress.max_batch_text_bytes`.
 This input requires core 0.125.0 and Codex Security add-on 0.3.0; an older
 provider cannot silently ignore an explicit limit.
+`max_parallel_reviews` is an optional, bindable integer from `1` through `4`
+for tracked coverage. New scans use two reviews when omitted or null; linked
+continuations inherit the source's saved limit. Architecture mapping stays
+serial. Jobs awaiting launch reconciliation, report retention or cleanup count
+against the limit, including after restart. An active request cannot change its
+saved limit; select a different value on an explicit continuation after cleanup.
+The effective value appears in `coverage_progress.max_parallel_reviews` and
+aggregate reports. This input requires core 0.127.0 and Codex Security add-on
+0.4.0; unsupported providers reject explicit settings before launching work.
 An explicit ChatGPT-subscription handoff additionally names
 `resume_subscription_profile_id`. It must match the new scanner session's
 configured subscription, and both source and destination must use public

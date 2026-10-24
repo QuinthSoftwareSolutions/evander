@@ -19,6 +19,8 @@ BATCHING_VERSION = 4
 MAX_BATCH_FILES = 100
 DEFAULT_BATCH_TEXT_BYTES = 1024 * 1024
 MAX_BATCH_TEXT_BYTES = 2 * 1024 * 1024
+DEFAULT_PARALLEL_REVIEWS = 2
+MAX_PARALLEL_REVIEWS = 4
 RETENTION = timedelta(days=7)
 RESERVE_SECONDS = 300
 SEVERITIES = ("critical", "high", "medium", "low", "informational")
@@ -76,6 +78,14 @@ def batch_text_limit(state):
     limit = state.get("max_batch_text_bytes")
     if type(limit) is not int or not DEFAULT_BATCH_TEXT_BYTES <= limit <= MAX_BATCH_TEXT_BYTES:
         raise ValueError("Source scan batch text limit is incompatible")
+    return limit
+
+
+def review_parallelism(state):
+    """Keep historical scans at two and honor each new journal's frozen limit."""
+    limit = state.get("max_parallel_reviews", DEFAULT_PARALLEL_REVIEWS)
+    if type(limit) is not int or not 1 <= limit <= MAX_PARALLEL_REVIEWS:
+        raise ValueError("Source scan review parallelism is incompatible")
     return limit
 
 
@@ -138,6 +148,7 @@ def progress(state):
         "deadline_at": state["deadline_at"],
         "last_progress_at": state["last_progress_at"],
         "max_batch_text_bytes": batch_text_limit(state),
+        "max_parallel_reviews": review_parallelism(state),
     }
 
 
@@ -187,6 +198,7 @@ def make_state(
         "sdk_version": SDK_VERSION,
         "batching_version": BATCHING_VERSION,
         "max_batch_text_bytes": request.max_batch_text_bytes or DEFAULT_BATCH_TEXT_BYTES,
+        "max_parallel_reviews": request.max_parallel_reviews or DEFAULT_PARALLEL_REVIEWS,
         "scan_id": scan_id,
         "directory_path": directory,
         "managed_repo_id": request.managed_repo_id,
@@ -220,6 +232,9 @@ def make_state(
         if not resumable(previous, at=at, until=previous_until):
             raise ValueError("Source scan is active, complete, expired, or awaiting cleanup")
         previous_limit = batch_text_limit(previous)
+        previous_parallelism = review_parallelism(previous)
+        if request.max_parallel_reviews is None:
+            state["max_parallel_reviews"] = previous_parallelism
         if request.max_batch_text_bytes is None:
             state["max_batch_text_bytes"] = max(DEFAULT_BATCH_TEXT_BYTES, previous_limit)
         for key in (
@@ -398,7 +413,7 @@ def pending(state, *, at=None):
     occupied = sum(
         not a.get("cleanup_confirmed") for x in state["tasks"].values() for a in x["attempts"]
     )
-    slots = (1 if phase == "architecture" else 2) - occupied
+    slots = (1 if phase == "architecture" else review_parallelism(state)) - occupied
     return candidates[: max(0, slots)]
 
 

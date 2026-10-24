@@ -34,6 +34,7 @@ class SecurityScanRequest(BaseModel):
     max_batch_text_bytes: int | None = Field(
         default=None, strict=True, ge=1048576, le=2097152
     )
+    max_parallel_reviews: int | None = Field(default=None, strict=True, ge=1, le=4)
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
 
     @model_validator(mode="before")
@@ -96,6 +97,8 @@ class SecurityScanRequest(BaseModel):
                 raise ValueError("tracked coverage has a maximum six-hour run budget")
         if self.max_batch_text_bytes is not None and self.coverage_policy != "all_tracked_files":
             raise ValueError("max_batch_text_bytes requires all_tracked_files coverage")
+        if self.max_parallel_reviews is not None and self.coverage_policy != "all_tracked_files":
+            raise ValueError("max_parallel_reviews requires all_tracked_files coverage")
         if self.resume_from_scan_id is not None:
             if self.coverage_policy != "all_tracked_files":
                 raise ValueError("resume requires all_tracked_files coverage")

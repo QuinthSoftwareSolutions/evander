@@ -878,6 +878,7 @@ def test_boundary_worker_inputs_only_include_their_own_outstanding_work(running,
         )
         assert list(staged["coverage_task"]["deferred"]) == [expected]
         assert staged["coverage_task"]["paths"] == scope["paths"]
+        assert staged["max_parallel_reviews"] == 2
 
 
 def test_cancel_keeps_repository_claim_until_cleanup_is_confirmed(running):
@@ -965,6 +966,69 @@ def test_uncertain_cleanup_occupies_a_slot_and_survives_controller_restart(runni
     recovered.poll(handle)
     assert len(worker.active) == 2
     assert worker.destroyed
+
+
+def test_four_review_slots_survive_uncertain_cleanup_and_publish_the_frozen_limit(running):
+    controller, handle, worker, finish = running
+    state = make_state(
+        handle.metadata["scan_id"], request(max_parallel_reviews=4), "root/project",
+        {
+            "revision": "d" * 40,
+            "entries": [entry(f"src/{i}.py", size=600_000) for i in range(6)],
+        },
+        {"model": "example"},
+    )
+    controller.store.save(state)
+    deadline = state["deadline_at"]
+    controller.poll(handle)
+    assert len(worker.active) == 1  # Mapping remains serial.
+    finish()
+    worker.fail_destroy = True
+    controller.poll(handle)
+    assert len(worker.active) == 4  # Unconfirmed mapping worker plus three file reviews.
+    occupied = set(worker.active)
+    saved = controller.store.get(state["scan_id"], "root/project")
+    assert progress(saved)["max_parallel_reviews"] == 4
+    assert sum(t["status"] == "running" for t in saved["tasks"].values()) == 3
+    recovered = CoverageController(controller.provider, controller.runtime)
+    recovered.route, recovered.backend, recovered.launch = (
+        controller.route, controller.backend, controller.launch
+    )
+    recovered.poll(handle)
+    assert set(worker.active) == occupied
+    worker.fail_destroy = False
+    recovered.poll(handle)
+    assert len(worker.active) == 4
+    for _ in range(6):
+        finish()
+        result = recovered.poll(handle)
+        assert len(worker.active) <= 4
+        if result.status != "running":
+            break
+    assert result.success and result.cleanup_confirmed and not worker.active
+    assert result.coverage_progress["files_reviewed"] == 6
+    assert result.coverage_progress["max_parallel_reviews"] == 4
+    assert result.coverage_progress["deadline_at"] == deadline
+    with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
+        manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+    assert manifest["max_parallel_reviews"] == coverage["max_parallel_reviews"] == 4
+
+
+def test_legacy_request_rejoins_without_widening_or_changing_identity(running):
+    controller, handle, worker, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    state.pop("max_parallel_reviews")
+    state["request"].pop("max_parallel_reviews")
+    controller.store.save(state)
+    assert controller.start(state["scan_id"], request()) == handle
+    assert not worker.active
+    with pytest.raises(ValueError, match="different inputs"):
+        controller.start(state["scan_id"], request(max_parallel_reviews=4))
+    assert not worker.active
+    saved = controller.store.get(state["scan_id"], "root/project")
+    assert "max_parallel_reviews" not in saved
+    assert progress(saved)["max_parallel_reviews"] == 2
 
 
 def test_lost_launch_response_rejoins_the_saved_generation(running):

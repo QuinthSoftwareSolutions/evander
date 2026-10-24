@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-24 - Per-scan tracked-review parallelism (0.4.0)
+
+- Require Evander 0.127.0 and support the bindable `max_parallel_reviews` input from one to four, defaulting to two for new scans and inheriting the saved limit on linked continuation when omitted.
+- Freeze the effective limit in the journal, staged worker inputs, progress, coverage ledger and manifest. Historical journals without a setting retain two slots; active request identities cannot be reused with a different setting.
+- Apply the limit to file and boundary reviews while keeping architecture mapping serial. Uncertain launch, retention and cleanup states continue consuming slots across restarts. Preserve retained evidence, batching, original snapshots, access routes and fixed deadlines; the SDK and scanner image are unchanged.
+
 ## 2026-10-23 - Per-scan tracked-review text budgets (0.3.0)
 
 - Require Evander 0.125.0 and support the workflow input `max_batch_text_bytes`, from 1 MiB to 2 MiB. New scans default to 1 MiB; omitted continuation inputs inherit the saved budget. Freeze the effective limit in version-4 journals, progress, aggregate coverage ledgers and manifests.

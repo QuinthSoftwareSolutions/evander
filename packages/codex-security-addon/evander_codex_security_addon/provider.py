@@ -46,6 +46,7 @@ class CodexSecurityScanProvider:
     coverage_policies = frozenset({"provider", "all_tracked_files"})
     supports_subscription_handoff = True
     supports_batch_text_limit = True
+    supports_review_parallelism = True
 
     @staticmethod
     def describe(**kwargs):

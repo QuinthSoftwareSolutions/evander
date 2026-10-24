@@ -25,6 +25,14 @@ regroups only untouched pending root scopes. Active plans keep their saved
 assignments; see [tracked coverage](docs/tracked-coverage.md). The pinned SDK
 and scanner image remain compatible.
 
+Add-on 0.4.0 requires Evander 0.127.0 and adds `max_parallel_reviews` for tracked
+scans: one through four concurrent file or boundary reviews, with two by default.
+Omitted continuation inputs inherit the saved value. Architecture mapping stays
+serial, and jobs awaiting cleanup or report retention still occupy slots. The
+limit is frozen per scan and visible in progress and aggregate reports; change
+it only on a new scan or an explicit continuation after cleanup. This is a
+host-side scheduling setting; the pinned SDK and scanner image are unchanged.
+
 Build the pinned runtime on a trusted Linux host with Python 3.12 and Node 22.13+,
 using the same CPU architecture as the target VMs or workers:
 

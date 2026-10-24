@@ -16,6 +16,7 @@ records are not migrated.
   "coverage_policy": "all_tracked_files",
   "mode": "standard",
   "max_batch_text_bytes": 1048576,
+  "max_parallel_reviews": 2,
   "timeout_seconds": 21600
 }
 ```
@@ -28,6 +29,21 @@ saved limit on continuation. The value can be a workflow binding, for example
 value must be an integer. Use `2097152` to request 2 MiB for this scan only.
 The host freezes the effective budget before scheduling any child review.
 
+`max_parallel_reviews` accepts an integer from `1` through `4` for tracked
+coverage. Omit it (or use null) for two reviews on a new scan or to inherit the
+saved limit on continuation. It supports workflow bindings such as
+`"max_parallel_reviews": "${{event.payload.review_parallelism}}"`; the resolved
+value must be an integer. File and boundary reviews share this limit.
+Architecture mapping remains serial. Uncertain launches and jobs awaiting
+report retention or cleanup occupy slots until reconciled, even after a host
+restart. Historical journals without this field keep their two-review limit.
+The host freezes the value before launching reviews; editing workflow defaults
+does not resize an active run or change existing child generations. To change
+it, use an explicit linked continuation after confirmed cleanup. This changes
+neither assigned scopes nor accepted results, access routes or the run deadline.
+The setting requires Evander 0.127.0 and add-on 0.4.0; older providers reject
+explicit settings. It does not require a different SDK or scanner image.
+
 Omitting the timeout selects 21,600 seconds for tracked coverage and 3,600 for
 provider coverage. Tracked runs permit shorter budgets for bounded qualification,
 but never more than six hours. Omit both commit inputs. Create scanner and
@@ -38,7 +54,8 @@ never extend the original deadline.
 
 `coverage_progress` contains `phase`, `files_total`, `files_reviewed`,
 `files_not_applicable`, `files_blocked`, `files_pending`, `active_reviews`,
-`completed_reviews`, `attempts`, `max_batch_text_bytes`, `deadline_at`, `last_progress_at` and
+`completed_reviews`, `attempts`, `max_batch_text_bytes`, `max_parallel_reviews`,
+`deadline_at`, `last_progress_at` and
 `cleanup_condition`. Waiting workflow executions refresh these outputs.
 `cleanup_confirmed: false` means the repository reservation must remain held,
 including when the scan itself is terminal. Failed/partial scans use the `error`
@@ -225,13 +242,14 @@ host packages and reload the workflow services; no worker daemon deployment
 or scanner-image rebuild is required for this setting alone. After deployment,
 save the per-scan value through revision-gated Workflow Admin APIs. A larger
 budget can reduce child-start overhead but increases per-review context and
-retry cost; the 100-entry cap, two-child concurrency and evidence requirements
-are unchanged.
+retry cost; the 100-entry cap and evidence requirements are unchanged. Review
+parallelism is controlled separately by the frozen `max_parallel_reviews`
+setting, defaulting to two.
 For a continuation within an
 existing operator budget, pass a timeout clipped to that budget's remaining time;
 regrouping does not authorize a new budget. It does not change the snapshot, selected model/access route (except an explicitly
-requested subscription handoff), per-run concurrency
-limit or review-completion requirements.
+requested subscription handoff) or review-completion requirements. A byte-budget
+change alone does not alter the inherited review-parallelism limit.
 Results accepted during cancellation remain completed, and partial scopes retain
 their split children. On continuation, older scheduling flags cannot reopen an
 already accepted architecture map or credited file scope. This reuses existing
