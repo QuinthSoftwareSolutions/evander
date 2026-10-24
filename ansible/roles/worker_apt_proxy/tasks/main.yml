@@ -34,3 +34,25 @@
         owner: root
         group: root
         mode: "0644"
+
+    - name: Find existing worker apt source files
+      ansible.builtin.find:
+        paths:
+          - /etc/apt
+          - /etc/apt/sources.list.d
+        patterns:
+          - "*.list"
+          - "*.sources"
+        file_type: file
+        recurse: false
+        follow: false
+      register: evander_worker_apt_source_files
+
+    - name: Use HTTPS for Docker apt sources before the first refresh
+      ansible.builtin.replace:
+        path: "{{ item.path }}"
+        regexp: '(?m)^([ \t]*(?:URIs:[ \t]+|deb(?:-src)?[ \t]+(?:\[[^\]\n]*\][ \t]+)?))http://download\.docker\.com(?=/linux/)'
+        replace: '\1https://download.docker.com'
+      loop: "{{ evander_worker_apt_source_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"

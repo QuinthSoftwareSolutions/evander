@@ -145,7 +145,7 @@ evander_npm_audit_facade_port: 11881
 evander_apt_cache_bind_host: "0.0.0.0"
 evander_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
 evander_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
-evander_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com):443$"
+evander_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com|download\\.docker\\.com):443$"
 
 # Optional host-local Asterisk provisioning for the DIDWW SIP bridge. This is
 # disabled by default so existing deployments with hand-managed Asterisk configs

@@ -550,7 +550,15 @@ ansible-playbook \
 Deploy or re-run the control-plane `site.yml` first when `evander_services.apt_cache` is
 enabled. The worker playbook renders `/etc/apt/apt.conf.d/01evander-proxy` before
 `host_prereqs`, so the first worker `apt update` uses the private apt-cacher-ng relay instead of
-direct Ubuntu mirror egress. Verify the private path from a worker with
+direct Ubuntu mirror egress. That role also upgrades existing Docker repository URLs from
+HTTP to HTTPS in `.list` and deb822 `.sources` files before the first refresh. Docker's
+HTTP endpoint redirects to HTTPS; the apt cache's default tunnel allowlist therefore permits
+only `packages.microsoft.com:443` and `download.docker.com:443`. Keep those exact hosts in
+any overridden `evander_apt_cache_passthrough_pattern`, and deploy the control-plane
+configuration before retrying a worker with legacy Docker sources. HTTPS still goes through
+the private proxy; this does not grant direct worker internet access.
+
+Verify the private path from a worker with
 `curl http://<control-plane-private-ip>:3142/acng-report.html`.
 
 When `evander_worker_repo_checkout_via_control_plane_git` is enabled, the worker playbook
