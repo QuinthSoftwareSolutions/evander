@@ -81,7 +81,6 @@ from evander.admin.services.vm_agent.common_models import AgentCreateOperation
 
 from evander.config import (
     DiscordIngestWorkerGlobalConfig,
-    DiscordWakeWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
 )
 
@@ -9249,53 +9248,6 @@ def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path)
     assert set(payload) == {"runtime_dir", "poll_interval_seconds", "directories"}
 
 
-def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_path: Path) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-
-    read_result = service.workflow_config_admin.read_worker_global_config("discord-wake")
-    assert read_result.exists is False
-    assert read_result.path == str(tmp_path / "config" / "discord-wake" / "config.json")
-    assert (
-        read_result.config["poll_interval_seconds"]
-        == DiscordWakeWorkerGlobalConfig().poll_interval_seconds
-    )
-    assert read_result.config["directories"] == []
-    assert read_result.config["backoff_seconds"] == DiscordWakeWorkerGlobalConfig().backoff_seconds
-
-    write_result = service.workflow_config_admin.write_worker_global_config(
-        "discord-wake",
-        {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "directories": ["root/team-a", "root/team-b"],
-            "poll_interval_seconds": 12.5,
-            "jitter_seconds": 1.5,
-            "backoff_seconds": 45.0,
-            "cooldown_seconds": 90.0,
-            "lock_path": None,
-            "session_cooldown_path": None,
-            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
-            "resume_script_path": "scripts/resume_issue_agent.sh",
-            "wake_state_path": None,
-            "vm_user": "worker",
-            "resume_timeout_seconds": 600.0,
-        },
-    )
-    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
-    assert write_result.config["vm_user"] == "worker"
-
-    config_path = tmp_path / "config" / "discord-wake" / "config.json"
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
-    assert payload["directories"] == ["root/team-a", "root/team-b"]
-    assert payload["poll_interval_seconds"] == 12.5
-    assert payload["backoff_seconds"] == 45.0
-    assert payload["vm_user"] == "worker"
-
-    reread = service.workflow_config_admin.read_worker_global_config("discord-wake")
-    assert reread.config["directories"] == ["root/team-a", "root/team-b"]
-    assert reread.config["backoff_seconds"] == 45.0
-    assert reread.config["vm_user"] == "worker"
-
-
 def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
 
@@ -13835,8 +13787,6 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
             "git_user": "gitbot",
             "git_ssh_alias": "issue-git",
             "post_exec_verification_prompt": "verify everything",
-            "enable_guest_heartbeat": True,
-            "guest_heartbeat_prompt": "continue working",
         },
     )
     assert write_result.ok is True
@@ -13862,8 +13812,6 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
     assert captured_env["EVANDER_GIT_USER"] == "gitbot"
     assert captured_env["EVANDER_GIT_SSH_ALIAS"] == "issue-git"
     assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify everything"
-    assert captured_env["ENABLE_GUEST_HEARTBEAT"] == "1"
-    assert captured_env["GUEST_HEARTBEAT_PROMPT"] == "continue working"
     assert captured_env["EVANDER_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
 
 
@@ -15952,17 +15900,6 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
-        "evander-discord-wake.service": {
-            "ActiveState": "active",
-            "SubState": "running",
-            "Result": "success",
-            "UnitFileState": "enabled",
-            "Description": "Discord wake worker",
-            "MainPID": "555",
-            "LoadState": "loaded",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "0",
-        },
         "evander-scheduled-wake.service": {
             "ActiveState": "failed",
             "SubState": "failed",
@@ -16030,7 +15967,6 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
         "ado",
         "proxy-issue-sync",
         "discord-ingest",
-        "discord-wake",
         "scheduled-wake",
         "teams-ingest",
         "teams-meeting-ingest",
@@ -16047,24 +15983,21 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[2].running is True
     assert summaries[2].failed is False
     assert summaries[2].main_pid == 456
-    assert summaries[3].running is True
-    assert summaries[3].failed is False
-    assert summaries[3].main_pid == 555
+    assert summaries[3].running is False
+    assert summaries[3].failed is True
+    assert summaries[3].detail == "load=loaded, exec=1:2"
     assert summaries[4].running is False
-    assert summaries[4].failed is True
-    assert summaries[4].detail == "load=loaded, exec=1:2"
+    assert summaries[4].failed is False
+    assert summaries[4].unit_file_state == "disabled"
     assert summaries[5].running is False
     assert summaries[5].failed is False
     assert summaries[5].unit_file_state == "disabled"
-    assert summaries[6].running is False
+    assert summaries[6].running is True
     assert summaries[6].failed is False
-    assert summaries[6].unit_file_state == "disabled"
+    assert summaries[6].main_pid == 777
     assert summaries[7].running is True
     assert summaries[7].failed is False
-    assert summaries[7].main_pid == 777
-    assert summaries[8].running is True
-    assert summaries[8].failed is False
-    assert summaries[8].main_pid == 789
+    assert summaries[7].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(
@@ -16140,13 +16073,13 @@ def test_stop_background_worker_controls_systemd_unit(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(worker_control_service, "_run_systemd_control", _fake_control)
 
-    result = service.operations_admin.stop_background_worker("discord-wake")
+    result = service.operations_admin.stop_background_worker("scheduled-wake")
 
-    assert calls == [("stop", "evander-discord-wake.service")]
+    assert calls == [("stop", "evander-scheduled-wake.service")]
     assert result.success is True
-    assert result.worker_id == "discord-wake"
+    assert result.worker_id == "scheduled-wake"
     assert result.action == "stop"
-    assert "Stopped Discord Wake Worker" == result.message
+    assert "Stopped Scheduled Wake Worker" == result.message
 
 
 def test_background_worker_actions_reject_unknown_worker(tmp_path: Path) -> None:

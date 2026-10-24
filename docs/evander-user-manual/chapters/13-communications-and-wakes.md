@@ -88,10 +88,9 @@ workflow chooses the session and the wake behavior.
 > targets and sender rules. Provider-specific compatibility triggers still exist, but the normalized
 > trigger is the preferred design for portable workflow packs.
 >
-> **Wake.** Wake dispatch is a later decision. `evander-discord-wake` considers unread Discord
-> messages for eligible active sessions. `evander-scheduled-wake` handles persisted schedules. Azure
-> DevOps PR feedback is handled by `evander-ado-worker`, not either communication wake worker. There
-> is no current `evander-host-heartbeat` service.
+> **Wake.** Message triggers publish events from the ingested inbox. Downstream workflow effects
+> select the agent and prompt; scheduled resumes use `evander-scheduled-wake`. Azure DevOps PR
+> feedback is ingested by `evander-ado-worker`.
 >
 > This separation prevents a provider polling hiccup from becoming a session lifecycle decision and
 > prevents one stored message from being delivered repeatedly without a durable cursor or dispatch
@@ -328,7 +327,7 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 
 1. **Name the stage.** Decide whether the failure is provider receipt, ingest, local query, trigger, effect/send, or wake.
 2. **Resolve the target and mailbox independently.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions. For email, also inspect the mailbox grant, access level, folders, and sending-mailbox binding.
-3. **Check the owner service.** Use `journalctl` for `evander-discord-ingest`, `evander-discord-wake`, `evander-teams-ingest`, `evander-teams-meeting-ingest`, or `evander-scheduled-wake` as appropriate.
+3. **Check the owner service.** Use `journalctl` for `evander-discord-ingest`, `evander-teams-ingest`, `evander-teams-meeting-ingest`, or `evander-scheduled-wake` as appropriate.
 4. **Correlate durable IDs.** Follow provider message ID/cursor → stored record → trigger event ID → workflow run → wake dispatch/session. Do not correlate only by message text.
 5. **Inspect policy and approval.** Confirm the session's canonical target IDs, mailbox grants, exact tool grant, send flag, recorded draft, and any pending or expired approval. Distinguish `null` legacy fields from explicit empty canonical fields.
 6. **Retry at the failed boundary.** Poll again, replay the eligible workflow event, retry the effect under its idempotency contract, or allow the wake worker's bounded retry. Avoid resending when provider acceptance is uncertain.
@@ -340,7 +339,6 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 - `src/evander/policy_config.py`
 - `src/evander/messaging/discord_ingest.py`
 - `src/evander/messaging/teams_ingest.py`
-- `src/evander/messaging/discord_wake.py`
 - `src/evander/messaging/scheduled_wake.py`
 - `src/evander/messaging/wake_dispatch.py`
 - `src/evander/messaging/wake_store.py`

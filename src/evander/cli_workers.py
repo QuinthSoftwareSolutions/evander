@@ -19,7 +19,6 @@ from evander.daemons.proxy_issue_sync import (
 )
 from evander.daemons.proxy_issue_sync import run_once_from_runtime as run_proxy_issue_sync_once
 from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
-from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 
 from . import cli_app, cli_common, cli_runtime
@@ -159,36 +158,6 @@ def teams_meeting_ingest(
             f"Teams meeting ingest worker cycle complete meetings={result.meetings_polled} "
             f"events={result.events_ingested} errors={result.errors_recorded} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
-        )
-        return
-
-    worker.run_forever()
-
-
-@cli_app.app.command(
-    "discord-wake",
-    rich_help_panel="Background Workers",
-    short_help="Run the Discord wake worker.",
-)
-def discord_wake(
-    config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
-    run_once: Annotated[
-        bool,
-        typer.Option("--once", help="Run a single Discord wake cycle and exit."),
-    ] = False,
-    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
-) -> None:
-    _configure_worker_logging(log_level)
-
-    cfg = cli_runtime._load_runtime_config_from_option(config)
-    worker = build_discord_wake_worker(
-        cfg, project_dir=cli_runtime._project_dir_for_config_option(config)
-    )
-    if run_once:
-        result = worker.run_once_with_lock()
-        typer.echo(
-            f"Discord wake cycle complete channels={result.channels_polled} "
-            f"pending={result.pending_channels} sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

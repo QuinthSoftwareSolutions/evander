@@ -81,7 +81,6 @@ The security model is:
     workflow-owned
   - ADO proxy issue freshness worker: `evander-proxy-issue-sync`
   - Discord ingest: `evander-discord-ingest`
-  - Discord wake: `evander-discord-wake`
   - Scheduled wake: `evander-scheduled-wake`
   - Teams ingest: `evander-cli teams-ingest` via `scripts/run_teams_ingest.sh`
   - Teams meeting ingest: `evander-teams-meeting-ingest`
@@ -164,7 +163,6 @@ The current install script renders and enables:
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
 - `evander-discord-ingest.service`
-- `evander-discord-wake.service`
 - `evander-scheduled-wake.service`
 - `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
@@ -186,7 +184,6 @@ Before install/start, populate the required local config and secret files for th
 - `config/ado-worker/config.json`
 - optional `config/proxy-issue-sync/config.json`
 - optional `config/discord-ingest/config.json`
-- optional `config/discord-wake/config.json`
 - optional `config/scheduled-wake/config.json`
 - optional `config/managed-git-refresh.env`
 - `config/trigger-orchestrator/config.json`
@@ -333,11 +330,10 @@ egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing
 - `src/evander/openai_relay.py` and `src/evander/nuget_relay.py` are stale paths; use
   `src/evander/relays/openai.py` and `src/evander/relays/nuget.py`.
 - `evander-host-heartbeat.service` and `config/host-heartbeat.env` are stale references.
-- Guest heartbeat still exists as optional guest-local timer assets, but provider bootstraps
-  default `ENABLE_GUEST_HEARTBEAT=0`.
+- Guest-local heartbeat timers are retired; provider bootstraps remove existing timer assets.
 - Azure DevOps PR feedback and completion pickup are handled by `evander-ado-worker`.
-- Discord inbox wakeups and scheduled resumes are handled by `evander-discord-wake` and
-  `evander-scheduled-wake`.
+- Discord message triggers and workflow prompt effects own Discord dispatch; scheduled resumes
+  are handled by `evander-scheduled-wake`.
 - Putting VM disks under a normal user's home directory fails with `libvirt-qemu` permission
   errors.
 - Guest shell often needs `source ~/.profile` after bootstrap for current-session `PATH` and relay

@@ -766,7 +766,7 @@ Specialized configuration areas:
 - **Models, Assistant & Knowledge**: edit model routing, Assistant behavior, model pricing,
   semantic-store, and embedding settings.
 - **Agent Runtime & Launch**: control execution backend, container worker, prompt delivery,
-  launch defaults, and guest heartbeat behavior.
+  and launch defaults.
 - **Code, Issues & Pull Requests**: configure Azure DevOps, GitHub, ADO worker filters, Git
   transport, PR feedback approval, and PR templates.
 - **Access, Approvals & Audit**: keep approval-required tools, core approval timing, MCP tool
@@ -777,7 +777,7 @@ Specialized configuration areas:
   session mailbox-account access.
 - **Network, Relays & Package Access**: configure VM provider defaults, libvirt templates, VM
   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
-- **Automation & Assignment**: set issue intake capacity and assignment roles.
+- **Workflow Events**: manage event schemas, manual forms, and workflow validation contracts.
 - **Advanced & Raw**: inspect advanced provider state and support diagnostics.
 - **Directory override JSON**: copy the unified explicit overrides for review, diffing, or support.
 - **Effective config** and **Parent defaults**: compare the live inherited result to the parent

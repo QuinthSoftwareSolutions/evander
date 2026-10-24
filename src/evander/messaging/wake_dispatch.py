@@ -62,7 +62,6 @@ from evander.reasoning_effort import resolve_reasoning_effort
 from evander.runtime import RuntimeContext
 from evander.session_auth import session_mcp_auth_token
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
-from evander.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
 
@@ -231,16 +230,6 @@ class HostWakeDispatcher:
         self.config = config
         self.runtime = runtime
         self.agent_control_store = agent_control_store
-        if getattr(config, "enable_directory_scoped_config", False):
-            try:
-                self.directory_context_resolver = WorkerDirectoryContextResolver(config)
-            except Exception:
-                logger.debug(
-                    "Directory shadow resolver unavailable for wake dispatcher", exc_info=True
-                )
-                self.directory_context_resolver = None
-        else:
-            self.directory_context_resolver = None
 
     def resolve_scoped_config(
         self,
@@ -249,37 +238,8 @@ class HostWakeDispatcher:
         directory_path: str | None,
         source: str,
     ) -> GatewayConfig:
-        scoped_config = self.config
-        if self.directory_context_resolver is not None:
-            try:
-                resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
-                    session_id,
-                    domain="wake",
-                    fallback_directory_path=directory_path,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to resolve directory-scoped wake config source=%s session_id=%s directory_path=%s",
-                    source,
-                    session_id,
-                    directory_path or "root",
-                    exc_info=True,
-                )
-            else:
-                if resolution.validation_errors:
-                    logger.warning(
-                        "Invalid directory-scoped wake config source=%s session_id=%s directory_path=%s errors=%s",
-                        source,
-                        session_id,
-                        resolution.selected_directory.path,
-                        resolution.validation_errors,
-                    )
-                else:
-                    payload = self.config.model_dump(mode="json")
-                    payload.update(resolution.effective_config)
-                    scoped_config = GatewayConfig.model_validate(payload)
         return self._resolve_prompt_provider_config(
-            scoped_config,
+            self.config,
             session_id=session_id,
             directory_path=directory_path,
         )

@@ -58,7 +58,6 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
-from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 from evander.messaging.teams_auth_errors import TeamsAuthError
 from evander.migrations import (
@@ -340,7 +339,6 @@ from .cli_wake import (
 from .cli_workers import (
     _build_teams_ingest_worker,
     _build_teams_meeting_ingest_worker,
-    discord_wake,
     force_complete_await_agent,
     poll_ado_backlog,
     proxy_issue_sync,

@@ -409,8 +409,6 @@ class FakeAdmin:
             git_host="127.0.0.1",
             git_user="git",
             post_exec_verification_prompt=None,
-            enable_guest_heartbeat=False,
-            guest_heartbeat_prompt="",
             issue_setup_azure_devops_pr_pat_env="AZURE_DEVOPS_PR_PAT",
         )
 

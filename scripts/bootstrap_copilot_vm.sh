@@ -15,8 +15,6 @@ Arguments:
 Environment:
   SSH_KEY_PATH            Private key matching the guest authorized key.
   HOST_COPILOT_BIN        Host GitHub Copilot CLI binary. Default: `command -v copilot`
-  ENABLE_GUEST_HEARTBEAT  Install and enable the guest heartbeat timer (0/1, default: 0).
-  GUEST_HEARTBEAT_PROMPT  Prompt passed to `copilot --continue -p ...` from the guest timer.
 EOF
 }
 
@@ -38,8 +36,6 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 # shellcheck source=lib/guest_ripgrep.sh
 source "${SCRIPT_DIR}/lib/guest_ripgrep.sh"
-# shellcheck source=lib/agent_provider_assets.sh
-source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -48,14 +44,9 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
 fi
 
 HOST_COPILOT_BIN="${HOST_COPILOT_BIN:-$(command -v copilot || true)}"
-ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
-GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
-LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
-PROVIDER_RUNNER_LIB_NAME="$(agent_provider_runner_lib_name copilot)"
-PROVIDER_RUNNER_LIB_PATH="$(agent_provider_runner_lib_path "${ROOT_DIR}/scripts/lib" copilot)"
 
 if [[ -z "${HOST_COPILOT_BIN}" ]]; then
   echo "Missing host GitHub Copilot CLI binary." >&2
@@ -71,11 +62,6 @@ fi
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
   echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
-  exit 1
-fi
-
-if [[ ! -f "${PROVIDER_RUNNER_LIB_PATH}" ]]; then
-  echo "Missing Copilot runner adapter: ${PROVIDER_RUNNER_LIB_PATH}" >&2
   exit 1
 fi
 
@@ -229,47 +215,14 @@ echo "COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or 'copilot login' still ove
 echo "Host-side wake workers are now responsible for feedback wakeups by default."
 EOF
 
-GUEST_HEARTBEAT_PROMPT_B64="$(printf '%s' "${GUEST_HEARTBEAT_PROMPT}" | base64 -w0)"
-
-if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
-  echo "ENABLE_GUEST_HEARTBEAT=1 set; installing guest heartbeat service."
-  if [[ -f "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
-    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
-    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
-    && -f "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
-    && -f "${PROVIDER_RUNNER_LIB_PATH}" ]]; then
-    scp "${SSH_OPTS[@]}" \
-      "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
-      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
-      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
-      "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
-      "${PROVIDER_RUNNER_LIB_PATH}" \
-      "${VM_USER}@${VM_IP}:~/.config/evander/"
-
-    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' PROVIDER_RUNNER_LIB_NAME='${PROVIDER_RUNNER_LIB_NAME}' bash -s" <<'EOF'
-      set -euo pipefail
-      mkdir -p ~/.config/systemd/user ~/.config/evander/agent-runner-lib
-      mv ~/.config/evander/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
-      mv ~/.config/evander/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
-      mv ~/.config/evander/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
-      mv ~/.config/evander/agent_runner.sh ~/.config/evander/agent-runner-lib/agent_runner.sh
-      mv ~/.config/evander/"${PROVIDER_RUNNER_LIB_NAME}" ~/.config/evander/agent-runner-lib/"${PROVIDER_RUNNER_LIB_NAME}"
-      chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
-      cat > ~/.config/evander/guest-heartbeat.env <<HEARTBEAT_ENV
-EVANDER_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
-HEARTBEAT_ENV
-      systemctl --user daemon-reload
-      systemctl --user enable --now agent-heartbeat.timer
-EOF
-  else
-    echo "Warning: guest heartbeat assets are not present on host; skipping guest timer setup." >&2
-  fi
-else
-  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
-    set -euo pipefail
-    systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
-    systemctl --user daemon-reload || true
-  '
-fi
+# Reconcile VMs that still have the retired guest timer installed.
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+  set -euo pipefail
+  systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
+  rm -f ~/.config/systemd/user/agent-heartbeat.service \
+    ~/.config/systemd/user/agent-heartbeat.timer \
+    ~/.config/systemd/user/heartbeat_cycle.sh ~/.config/evander/guest-heartbeat.env
+  systemctl --user daemon-reload || true
+'
 
 echo "GitHub Copilot CLI bootstrap complete for ${VM_NAME} (${VM_IP})"

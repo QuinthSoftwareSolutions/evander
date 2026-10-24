@@ -772,8 +772,8 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   Teams channel and chat messages and, if you enable outbound status posts or explicit reactions,
   create channel/chat messages, replies, and reactions for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
-  host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
-  `evander-discord-wake` and `evander-scheduled-wake`.
+  host. Discord messages are handled by message triggers and downstream workflow effects;
+  scheduled resumes are dispatched by `evander-scheduled-wake`.
 - `trigger:teams:new-message` emits one event per new allowlisted Teams message discovered
   during a poll. Its payload includes the triggering Teams `channel_target`, cursor, message id,
   target type, and a normalized `message` object for the corresponding message, not just the
@@ -1139,7 +1139,7 @@ Use this when you want the guest to wake only for new review feedback and post t
    supplies the caller session.
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. For Azure DevOps PR feedback and completion cleanup, keep `evander-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
-4. `evander-discord-wake.service` and `evander-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `evander-ado-worker`.
+4. Route Discord messages through message triggers and configured workflow prompt effects. Keep `evander-scheduled-wake.service` running for scheduled resumes. Azure DevOps PR feedback ingestion runs in `evander-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    When Azure DevOps feedback links an attached file, call
@@ -1193,24 +1193,10 @@ Example `get_pull_request` result shape (Azure DevOps):
 ### Expected timing behavior
 
 - Azure DevOps feedback and completion pickup is driven by `evander-ado-worker` cadence and updates the shared host feedback store, `runtime/pr-map.json` status fields, and trigger queue.
-- `evander-discord-wake` and `evander-scheduled-wake` do not poll Azure DevOps PR feedback streams.
+- `evander-scheduled-wake` does not poll Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
-- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
-  `agent-heartbeat.timer` disabled for new guests.
-- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable an optional guest-local resume timer.
-  The timer uses the same provider adapter path as the host resume flow and accepts
-  `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
-- Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
-- Agent enable/disable control is now mirrored in host state at `runtime/host-agent-control-state.json`,
-  so the wake workers can continue ignoring disabled agents even while their VMs are shut down.
-- Guests consume pending feedback via MCP tools by default.
-- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
-  `agent-heartbeat.timer` disabled for new guests.
-- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable an optional guest-local resume timer.
-  The timer uses the same provider adapter path as the host resume flow and accepts
-  `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
-- Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
-  `systemctl --user disable --now agent-heartbeat.timer || true`.
+- Agent enable/disable control is mirrored in `runtime/host-agent-control-state.json`, so scheduled wakes continue ignoring disabled agents while their VMs are shut down.
+- Guest bootstrap reconciles and removes retired guest heartbeat timers. Message workflows and scheduled wakes own resume dispatch.
 
 ### Scheduled wake examples (one-time + cron)
 
@@ -1264,7 +1250,6 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 ### Audit/log locations and healthy signals
 
-- Discord wake service logs: `journalctl -u evander-discord-wake.service`.
 - Scheduled wake service logs: `journalctl -u evander-scheduled-wake.service`.
 - Managed Git refresh logs: `journalctl -u evander-managed-git-refresh.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,

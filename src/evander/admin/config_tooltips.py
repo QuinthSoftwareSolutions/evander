@@ -484,12 +484,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "post_exec_verification_prompt": (
         "Optional one-time follow-up prompt injected after the primary post-exec run."
     ),
-    "enable_guest_heartbeat": (
-        "When enabled, issue VM setup writes guest heartbeat integration settings for Codex sessions."
-    ),
-    "guest_heartbeat_prompt": (
-        "Prompt used by guest heartbeat wake-ups when enable_guest_heartbeat is true."
-    ),
     "host_busy_check_script_path": (
         "Host script used by wake workers to detect whether a session VM is currently busy "
         "before attempting to resume it."
@@ -501,9 +495,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Random delay added to each wake polling sleep interval to avoid perfectly synchronized polling."
     ),
     "wake_poll_interval_seconds": ("Base polling interval in seconds for host-side wake workers."),
-    "pr_feedback_resume_prompt": (
-        "Prompt text passed to the resume script when waking an agent session for unread PR comments."
-    ),
     "agent_prompt_queue_max_retries": (
         "Maximum durable queue attempts allowed for the same agent prompt before prompt enqueue fails."
     ),
@@ -515,9 +506,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "agent_context_retry_target_chars": (
         "Target character budget for deterministic reduced-context retry prompts."
-    ),
-    "discord_resume_prompt": (
-        "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),
     "wake_resume_timeout_seconds": ("Timeout in seconds for the host resume script invocation."),
     "wake_session_cooldown_path": (
@@ -567,16 +555,4 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "npm_audit_facade_port": ("Port the npm audit facade listens on."),
     "openai_relay_host": ("Host address the OpenAI relay listens on."),
     "openai_relay_port": ("Port the OpenAI relay listens on."),
-    "approved_issue_cap": (
-        "Maximum number of approved but incomplete issues this directory may keep active at once."
-    ),
-    "originator_roles": (
-        "Role names that can originate work for this directory's automation flow."
-    ),
-    "prioritizer_roles": (
-        "Role names that can prioritize or approve work for this directory's automation flow."
-    ),
-    "worker_roles": (
-        "Role names that can execute worker assignments for this directory's automation flow."
-    ),
 }

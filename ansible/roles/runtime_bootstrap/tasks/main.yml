@@ -10,7 +10,6 @@
     - "{{ evander_deploy_path }}/config"
     - "{{ evander_deploy_path }}/config/ado-worker"
     - "{{ evander_deploy_path }}/config/discord-ingest"
-    - "{{ evander_deploy_path }}/config/discord-wake"
     - "{{ evander_deploy_path }}/config/host-heartbeat"
     - "{{ evander_deploy_path }}/config/scheduled-wake"
     - "{{ evander_deploy_path }}/config/teams-ingest"

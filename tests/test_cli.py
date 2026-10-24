@@ -958,8 +958,6 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(
                 "EVANDER_GIT_SSH_ALIAS=issue-git",
                 "AGENT_DEFAULT_MODEL=gpt-5.3-codex",
                 "AGENT_POST_EXEC_VERIFICATION_PROMPT=verify everything",
-                "ENABLE_GUEST_HEARTBEAT=1",
-                "GUEST_HEARTBEAT_PROMPT=continue working",
                 "EVANDER_AZURE_DEVOPS_PR_PAT_ENV=TEAM_ISSUE_SETUP_ADO_PAT",
             ]
         ),
@@ -985,11 +983,9 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(
     )
     assert payload == {
         "default_model": "gpt-5.3-codex",
-        "enable_guest_heartbeat": True,
         "git_host": "10.1.2.3",
         "git_ssh_alias": "issue-git",
         "git_user": "gitbot",
-        "guest_heartbeat_prompt": "continue working",
         "issue_setup_azure_devops_pr_pat_env": "TEAM_ISSUE_SETUP_ADO_PAT",
         "post_exec_verification_prompt": "verify everything",
     }
@@ -1047,8 +1043,6 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("ENABLE_GUEST_HEARTBEAT", "true")
-    monkeypatch.setenv("GUEST_HEARTBEAT_PROMPT", "continue from env")
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "super-secret-pat")
     runner = CliRunner()
 
@@ -1075,8 +1069,6 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
     assert payload["git_ssh_alias"] == "env-file-alias"
     assert payload["default_model"] == "gpt-5.2-codex"
     assert payload["post_exec_verification_prompt"] == "verify from file"
-    assert payload["enable_guest_heartbeat"] is True
-    assert payload["guest_heartbeat_prompt"] == "continue from env"
     assert payload["issue_setup_azure_devops_pr_pat_env"] == "AZURE_DEVOPS_PR_PAT"
 
 
@@ -4629,7 +4621,12 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "evander.cli_health._get_systemd_unit_state",
-        lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
+        lambda unit: UnitStatus(
+            unit=unit,
+            state="inactive" if unit == "evander-discord-wake.service" else "active",
+            available=True,
+            detail=None,
+        ),
     )
     monkeypatch.setattr(
         "evander.cli_health._check_health_endpoint",
@@ -4780,37 +4777,6 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
     assert "triggers=2" in result.output
     assert "discovered=5" in result.output
     assert "published=4" in result.output
-
-
-def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
-    config_path = write_config(tmp_path)
-    runner = CliRunner()
-    calls: list[str] = []
-
-    class _FakeWorker:
-        def run_once_with_lock(self):
-            calls.append("run_once_with_lock")
-            return SimpleNamespace(channels_polled=3, pending_channels=1, next_sleep_seconds=31.5)
-
-        def run_once(self):
-            raise AssertionError("run_once should not be called directly in --once mode")
-
-        def run_forever(self) -> None:
-            raise AssertionError("run_forever should not be called in --once mode")
-
-    monkeypatch.setattr(
-        "evander.cli_workers.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
-    )
-
-    result = runner.invoke(
-        app,
-        ["discord-wake", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
-    )
-
-    assert result.exit_code == 0
-    assert calls == ["run_once_with_lock"]
-    assert "channels=3" in result.output
-    assert "pending=1" in result.output
 
 
 def test_scheduled_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:

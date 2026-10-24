@@ -205,12 +205,10 @@ The current directory-config store recognizes these canonical domains:
 | `providers` | `providers.json` | Azure DevOps, Discord, Teams, execution backend, worker, model/relay and Git provider settings |
 | `contacts` | `contacts.json` | Named communication destinations without exposing raw addresses to sessions |
 | `email` | `email.json` | Mailbox/provider settings |
-| `wake` | `wake.json` | Wake and resume provider behavior |
 | `ado_worker` | `ado-worker.json` | Directory-owned ADO worker behavior |
 | `vm` | `vm.json` | Libvirt templates and VM defaults |
 | `issue_setup` | `issue-setup.json` | Issue-session bootstrap choices |
 | `pr_template` | `pr-template.json` | Pull-request template content/settings |
-| `automation` | `automation.json` | Directory automation configuration |
 | `connectors` | `connectors.json` | Named operations, drivers, and host-owned authentication profiles |
 | `host_directories` | `host-directories.json` | Approved host filesystem resources and operation limits |
 

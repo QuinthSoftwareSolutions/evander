@@ -379,7 +379,6 @@ def test_ansible_runtime_bootstrap_repairs_managed_service_lock_ownership() -> N
     assert "evander_runtime_service_lock_files:" in defaults
     for lock_name in [
         "discord-ingest.lock",
-        "discord-wake.lock",
         "scheduled-wake.lock",
         "teams-ingest.lock",
         "teams-meeting-ingest.lock",
@@ -844,7 +843,6 @@ def test_worker_global_live_configs_are_operator_local() -> None:
     local_config_paths = [
         "config/ado-worker/config.json",
         "config/discord-ingest/config.json",
-        "config/discord-wake/config.json",
         "config/npm-audit-facade.env",
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
@@ -854,7 +852,6 @@ def test_worker_global_live_configs_are_operator_local() -> None:
     example_paths = [
         "config/ado-worker/config.json.example",
         "config/discord-ingest/config.json.example",
-        "config/discord-wake/config.json.example",
         "config/scheduled-wake/config.json.example",
         "config/teams-ingest/config.json.example",
         "config/teams-meeting-ingest/config.json.example",
@@ -892,7 +889,6 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
     worker_config_paths = [
         "config/ado-worker/config.json",
         "config/discord-ingest/config.json",
-        "config/discord-wake/config.json",
         "config/scheduled-wake/config.json",
         "config/teams-ingest/config.json",
         "config/teams-meeting-ingest/config.json",

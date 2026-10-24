@@ -10887,7 +10887,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "Code, Issues & Pull Requests",
         "Access, Approvals & Audit",
         "Network, Relays & Package Access",
-        "Automation & Assignment",
+        "Workflow Events",
         "Advanced & Raw",
     ]
     assert "communications" not in payload["tab_snapshots"]
@@ -11080,13 +11080,6 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "default_model",
         "post_exec_verification_prompt",
     }
-    guest_heartbeat = next(
-        section for section in runtime["sections"] if section["title"] == "Guest heartbeat"
-    )
-    assert {field["field_name"] for field in guest_heartbeat["fields"]} == {
-        "enable_guest_heartbeat",
-        "guest_heartbeat_prompt",
-    }
 
     for tab in payload["tabs"]:
         for section in tab["sections"]:
@@ -11264,8 +11257,6 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "nuget_relay_timeout_seconds",
     }
 
-    automation = next(tab for tab in payload["tabs"] if tab["key"] == "automation_assignment")
-    assert {section["title"] for section in automation["sections"]} == {"Capacity", "Roles"}
     advanced = next(tab for tab in payload["tabs"] if tab["key"] == "advanced_raw")
     provider_state = next(
         section for section in advanced["sections"] if section["title"] == "Provider state"
@@ -11605,7 +11596,6 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
             "config": {
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1"],
-                "discord_resume_prompt": "Resume this session.",
             },
             "expected_revision": _configuration_expected_revision(
                 client, "root/ops", "people_communications"
@@ -11629,12 +11619,11 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     overrides = state_response.json()["directory_overrides"]
     assert overrides["directory_path"] == "root/ops"
     assert overrides["exists"] is True
-    assert overrides["domain_count"] == 3
-    assert overrides["field_count"] == 4
+    assert overrides["domain_count"] == 2
+    assert overrides["field_count"] == 3
     assert overrides["payload"] == {
         "directory_path": "root/ops",
         "overrides": {
-            "wake": {"discord_resume_prompt": "Resume this session."},
             "policy": {"discord_operator_channel_allowlist": ["chan-1"]},
             "providers": {
                 "discord_backend": "stub",
@@ -11665,7 +11654,6 @@ def test_admin_web_people_communications_tab_save_splits_underlying_domains(
             "config": {
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1", "chan-2"],
-                "discord_resume_prompt": "Resume this session.",
             },
             "expected_revision": _configuration_expected_revision(
                 client, "ops", "people_communications"
@@ -11679,7 +11667,6 @@ def test_admin_web_people_communications_tab_save_splits_underlying_domains(
     snapshot = payload["tab_snapshot"]
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
-    assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
 
 
 def test_admin_web_people_communications_saves_communication_artifact_link_fields(
@@ -12020,7 +12007,6 @@ def test_admin_web_models_assistant_knowledge_tab_save_preserves_directory_domai
             "config": {
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1"],
-                "discord_resume_prompt": "Resume this session.",
             },
             "expected_revision": _configuration_expected_revision(
                 client, "ops", "people_communications"
@@ -12045,16 +12031,12 @@ def test_admin_web_models_assistant_knowledge_tab_save_preserves_directory_domai
 
     providers_result = service.operations_admin.read_directory_domain_config("ops", "providers")
     policy_result = service.operations_admin.read_directory_domain_config("ops", "policy")
-    wake_result = service.operations_admin.read_directory_domain_config("ops", "wake")
     assert providers_result.ok is True
     assert policy_result.ok is True
-    assert wake_result.ok is True
     assert providers_result.data is not None
     assert policy_result.data is not None
-    assert wake_result.data is not None
     assert providers_result.data.config["discord_backend"] == "stub"
     assert policy_result.data.config["discord_operator_channel_allowlist"] == ["chan-1"]
-    assert wake_result.data.config["discord_resume_prompt"] == "Resume this session."
     assert service.operations_admin.read_assistant_settings()["default_model"] == "gpt-test"
 
 

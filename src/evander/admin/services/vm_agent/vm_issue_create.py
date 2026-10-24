@@ -195,8 +195,6 @@ class VmAgentIssueCreateMixin:
                     "EVANDER_GIT_HOST": issue_setup.git_host,
                     "EVANDER_GIT_USER": issue_setup.git_user,
                     "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-                    "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
-                    "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
                     "EVANDER_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
                 }
             )
@@ -265,8 +263,6 @@ class VmAgentIssueCreateMixin:
                     "EVANDER_GIT_SSH_ALIAS",
                     "EVANDER_AZURE_DEVOPS_PR_PAT_ENV",
                     "AGENT_POST_EXEC_VERIFICATION_PROMPT",
-                    "ENABLE_GUEST_HEARTBEAT",
-                    "GUEST_HEARTBEAT_PROMPT",
                     "HOST_REPO_CODEX_SKILLS_DIR",
                 )
                 launch_step = process_helpers.sudo_env_command(

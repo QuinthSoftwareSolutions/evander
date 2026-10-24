@@ -20,7 +20,6 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
         "evander-proxy-issue-sync.service",
     ),
     ("discord-ingest", "Discord Ingest", "evander-discord-ingest.service"),
-    ("discord-wake", "Discord Wake Worker", "evander-discord-wake.service"),
     ("scheduled-wake", "Scheduled Wake Worker", "evander-scheduled-wake.service"),
     ("teams-ingest", "Teams Ingest Worker", "evander-teams-ingest.service"),
     (

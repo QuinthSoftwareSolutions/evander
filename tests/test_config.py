@@ -5,7 +5,6 @@ import pytest
 from evander.config import (
     AdoWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
-    DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
@@ -1051,28 +1050,6 @@ def test_wake_completion_confirmation_retry_policy_defaults_are_conservative() -
     assert config.wake_completion_confirmation_retry_window_seconds == 24 * 60 * 60
     assert config.wake_completion_confirmation_retry_base_backoff_seconds == 60.0
     assert config.wake_completion_confirmation_retry_max_backoff_seconds == 600.0
-
-
-def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = DiscordWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
-    assert str(config.lock_path) == "/tmp/evander-runtime/discord-wake.lock"
-    assert (
-        str(config.session_cooldown_path)
-        == "/tmp/evander-runtime/discord-wake-session-cooldown.json"
-    )
-    assert str(config.wake_state_path) == "/tmp/evander-runtime/discord-wake-state.json"
-    assert config.directories == []
-    assert config.backoff_seconds == 60.0
-
-
-def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> None:
-    config = DiscordWakeWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": "/tmp/evander-runtime",
-            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
-        }
-    )
-    assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
 def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> None:

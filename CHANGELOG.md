@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-24 - Retire obsolete polling wakes and configuration (0.119.2)
+
+- Remove the standalone Discord wake worker, guest heartbeat timers, and unused wake and automation directory configuration. Discord message workflows continue to dispatch their configured prompt effects; scheduled wakes retain their shared dispatcher.
+- Remove retired settings from the operator UI, CLI, health reporting, and deployment registrations while preserving Managed Git configuration and model fallback behavior.
+
 ## 2026-10-22 - View shared browser tabs without taking control (0.119.1)
 
 - Allow hosted viewers to switch shared tabs while the agent or another viewer retains control, including while input is paused. Keep generation and expiry checks and require control for browser input.

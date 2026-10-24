@@ -176,7 +176,6 @@ def status(
             "evander-openai-relay.service",
             "evander-http-target-relay.service",
             "evander-http-target-browser-proxy.service",
-            "evander-discord-wake.service",
             "evander-scheduled-wake.service",
             "evander-managed-git-refresh.service",
         ]

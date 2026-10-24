@@ -49,7 +49,6 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-ado-worker.service` | `evander-ado-worker` | Azure DevOps PR-feedback and completion polling | ADO PR automation is configured; work-item intake is workflow-owned |
 | `evander-proxy-issue-sync.service` | `evander-proxy-issue-sync` | Refreshes proxy issue status | Proxy issue providers are configured |
 | `evander-discord-ingest.service` | `evander-discord-ingest` | Ingests allowlisted Discord commands/messages | Discord is configured |
-| `evander-discord-wake.service` | `evander-discord-wake` | Turns eligible Discord inbox activity into wakes | Discord wake is enabled |
 | `evander-scheduled-wake.service` | `evander-scheduled-wake` | Resumes sessions whose scheduled wake is due | Scheduled work is enabled |
 | `evander-managed-git-refresh.service` | `evander-managed-git-refresh` | Refreshes the exact authorized managed repository before Git reads | Agents clone, fetch, or pull managed repositories |
 | `evander-teams-ingest.service` | `evander-cli teams-ingest` via its runner script | Ingests Microsoft Teams messages | Teams is configured |

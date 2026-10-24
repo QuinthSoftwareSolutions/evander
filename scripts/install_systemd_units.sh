@@ -72,7 +72,6 @@ EVANDER_UNITS=(
   evander-http-target-browser-proxy.service
   evander-codex-egress-proxy.service
   evander-discord-ingest.service
-  evander-discord-wake.service
   evander-scheduled-wake.service
   evander-managed-git-refresh.service
   evander-effect-orchestrator.service
@@ -596,10 +595,6 @@ render_unit \
   "${SYSTEMD_DIR}/evander-discord-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/evander-discord-wake.service.template" \
-  "${SYSTEMD_DIR}/evander-discord-wake.service"
-
-render_unit \
   "${ROOT_DIR}/systemd/evander-scheduled-wake.service.template" \
   "${SYSTEMD_DIR}/evander-scheduled-wake.service"
 
@@ -632,6 +627,16 @@ render_unit \
 render_unit \
   "${ROOT_DIR}/systemd/evander-privacy-maintenance.timer.template" \
   "${SYSTEMD_DIR}/evander-privacy-maintenance.timer"
+
+# Retire the old direct Discord polling worker during upgrades.
+retire_discord_wake_service() {
+  if [[ -f "${SYSTEMD_DIR}/evander-discord-wake.service" ]]; then
+    systemctl disable --now evander-discord-wake.service
+    rm -f "${SYSTEMD_DIR}/evander-discord-wake.service"
+  fi
+  rm -rf "${SYSTEMD_DIR}/evander-discord-wake.service.d"
+}
+retire_discord_wake_service
 
 systemctl daemon-reload
 systemctl enable "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}" "${EVANDER_TIMERS[@]}"
@@ -668,7 +673,6 @@ Next steps:
      sudo systemctl start evander-ado-worker.service
      sudo systemctl start evander-proxy-issue-sync.service
      sudo systemctl start evander-discord-ingest.service
-     sudo systemctl start evander-discord-wake.service
      sudo systemctl start evander-scheduled-wake.service
      sudo systemctl start evander-managed-git-refresh.service
      sudo systemctl start evander-teams-ingest.service

@@ -37,8 +37,6 @@
         unit: evander-proxy-issue-sync.service
       - key: discord_ingest
         unit: evander-discord-ingest.service
-      - key: discord_wake
-        unit: evander-discord-wake.service
       - key: scheduled_wake
         unit: evander-scheduled-wake.service
       - key: managed_git_refresh

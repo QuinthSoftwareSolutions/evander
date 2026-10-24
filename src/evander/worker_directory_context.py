@@ -19,7 +19,7 @@ from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 logger = logging.getLogger(__name__)
 
-SHADOW_DOMAINS = ("policy", "providers", "email", "wake", "vm")
+SHADOW_DOMAINS = ("policy", "providers", "email", "vm")
 
 
 @dataclass(frozen=True)
@@ -159,8 +159,6 @@ def _domain_default_payload(domain: str) -> dict[str, Any]:
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"])}
     if domain == "email":
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])}
-    if domain == "wake":
-        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["wake"])}
     if domain == "vm":
         return EffectiveVmDefaultsConfig().model_dump(
             mode="json", include={"bind_network_cidr", "gateway_url"}

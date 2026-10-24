@@ -25,9 +25,6 @@ Environment:
                   repair guest home ownership. Default: agent-admin
   GUEST_BOOTSTRAP_WAIT_SECONDS
                   How long to wait for guest bootstrap readiness. Default: 180
-  AGENT_MODEL     Model persisted for guest heartbeat resume runs when enabled.
-  ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
-  GUEST_HEARTBEAT_PROMPT Prompt passed to `codex exec resume --last` from the guest timer.
 EOF
 }
 
@@ -95,13 +92,9 @@ VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_6
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 SSH_USER="${VM_SSH_USER:-agent-admin}"
 GUEST_BOOTSTRAP_WAIT_SECONDS="${GUEST_BOOTSTRAP_WAIT_SECONDS:-180}"
-AGENT_MODEL="${AGENT_MODEL:-}"
-ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
-GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
-LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
 if [[ ! -d "${VENDOR_DIR}" ]]; then
   echo "Missing Codex vendor directory: ${VENDOR_DIR}" >&2
   echo "Set HOST_CODEX_ROOT if Codex is installed elsewhere on the host." >&2
@@ -429,49 +422,15 @@ else
   echo "Host Codex model cache not found at ${HOST_CODEX_MODELS_CACHE_PATH}; skipping model cache copy." >&2
 fi
 
-GUEST_HEARTBEAT_PROMPT_B64="$(printf '%s' "${GUEST_HEARTBEAT_PROMPT}" | base64 -w0)"
-
-if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
-  echo "ENABLE_GUEST_HEARTBEAT=1 set; installing guest heartbeat service."
-  if [[ -f "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
-    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
-    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
-    && -f "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
-    && -f "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" ]]; then
-    scp "${SSH_OPTS[@]}" \
-      "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
-      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
-      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
-      "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
-      "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" \
-      "${VM_USER}@${VM_IP}:~/.config/evander/"
-
-    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' AGENT_MODEL='${AGENT_MODEL}' bash -s" <<'EOF'
-      set -euo pipefail
-      mkdir -p ~/.config/systemd/user ~/.config/evander/agent-runner-lib
-      mv ~/.config/evander/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
-      mv ~/.config/evander/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
-      mv ~/.config/evander/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
-      mv ~/.config/evander/agent_runner.sh ~/.config/evander/agent-runner-lib/agent_runner.sh
-      mv ~/.config/evander/agent_runner_codex.sh ~/.config/evander/agent-runner-lib/agent_runner_codex.sh
-      chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
-      cat > ~/.config/evander/guest-heartbeat.env <<HEARTBEAT_ENV
-AGENT_MODEL=$(python3 -c 'import os, shlex; print(shlex.quote(os.environ.get("AGENT_MODEL", "")))')
-EVANDER_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
-HEARTBEAT_ENV
-      systemctl --user daemon-reload
-      systemctl --user enable --now agent-heartbeat.timer
-EOF
-  else
-    echo "Warning: guest heartbeat assets are not present on host; skipping guest timer setup." >&2
-  fi
-else
-  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
-    set -euo pipefail
-    systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
-    systemctl --user daemon-reload || true
-  '
-fi
+# Reconcile VMs that still have the retired guest timer installed.
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+  set -euo pipefail
+  systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
+  rm -f ~/.config/systemd/user/agent-heartbeat.service \
+    ~/.config/systemd/user/agent-heartbeat.timer \
+    ~/.config/systemd/user/heartbeat_cycle.sh ~/.config/evander/guest-heartbeat.env
+  systemctl --user daemon-reload || true
+'
 
 if (( ${#CODEX_SKILLS[@]} > 0 )); then
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
