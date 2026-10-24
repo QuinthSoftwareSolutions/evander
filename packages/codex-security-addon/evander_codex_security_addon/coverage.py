@@ -687,6 +687,8 @@ class CoverageStore:
         self.root.chmod(0o700)
         self.path = self.root / "journal.sqlite3"
         with self.connect() as c:
+            if c.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                raise RuntimeError("Coverage journal requires write-ahead logging")
             c.execute(
                 "CREATE TABLE IF NOT EXISTS campaigns (scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL, repository TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"
             )
@@ -765,13 +767,37 @@ class CoverageStore:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
+    def _retention_metadata(self, repository=None):
+        """Keep historical findings out of Python and out of long-lived read cursors."""
+        query = (
+            "SELECT scan_id,directory,active,"
+            "json_extract(payload,'$.finished_at'),"
+            "json_extract(payload,'$.cleanup_confirmed'),"
+            "json_extract(payload,'$.cleanup_finished_at'),"
+            "json_extract(payload,'$.deadline_at'),"
+            "json_extract(payload,'$.lineage') FROM campaigns"
+        )
+        params = ()
+        if repository is not None:
+            query += " WHERE repository=?"
+            params = (repository,)
+        with self.connect() as c:
+            rows = c.execute(query, params).fetchall()
+        metadata = []
+        for scan_id, directory, active, finished, cleaned, cleanup_at, deadline, parents in rows:
+            lineage = json.loads(parents)
+            if not isinstance(lineage, list) or any(not isinstance(p, str) for p in lineage):
+                raise ValueError("Invalid retained coverage lineage")
+            metadata.append({
+                "scan_id": scan_id, "directory_path": directory, "active": bool(active),
+                "finished_at": finished, "cleanup_confirmed": bool(cleaned),
+                "cleanup_finished_at": cleanup_at, "deadline_at": deadline, "lineage": lineage,
+            })
+        return metadata
+
     def expired(self, *, at=None):
         at = at or now()
-        with self.connect() as c:
-            rows = c.execute("SELECT payload FROM campaigns WHERE active=0").fetchall()
-        states = [json.loads(row[0]) for row in rows]
-        with self.connect() as c:
-            all_states = [json.loads(row[0]) for row in c.execute("SELECT payload FROM campaigns")]
+        all_states = self._retention_metadata()
         referenced = {
             parent
             for s in all_states
@@ -781,22 +807,17 @@ class CoverageStore:
             for parent in s["lineage"]
         }
         return [
-            s
-            for s in states
-            if s["scan_id"] not in referenced
+            self.get(s["scan_id"], s["directory_path"])
+            for s in all_states
+            if not s["active"]
+            and s["scan_id"] not in referenced
             and s["finished_at"]
             and at >= retention_anchor(s) + RETENTION
         ]
 
     def retained_until(self, state):
         """Continuations protect their source journal without mutating its report."""
-        with self.connect() as c:
-            related = [
-                json.loads(row[0])
-                for row in c.execute(
-                    "SELECT payload FROM campaigns WHERE repository=?", (state["managed_repo_id"],)
-                )
-            ]
+        related = self._retention_metadata(state["managed_repo_id"])
         times = [
             (retention_anchor(s) if s["finished_at"] else datetime.fromisoformat(s["deadline_at"]))
             + RETENTION
