@@ -326,6 +326,34 @@ def make_state(
     return state
 
 
+def _referenced_files(references, files, matches):
+    """Resolve supported repository references; unknown references stay required."""
+    if not isinstance(references, list):
+        return None
+    result = set()
+    for reference in references:
+        if not isinstance(reference, str) or not reference or "\x00" in reference:
+            return None
+        path = PurePosixPath(reference)
+        if path.is_absolute() or ".." in path.parts:
+            return None
+        normalized = path.as_posix()
+        if normalized not in matches:
+            if normalized == ".":
+                matches[normalized] = set(files)
+            elif normalized in files:
+                matches[normalized] = {normalized}
+            else:
+                matches[normalized] = {
+                    candidate for candidate in files
+                    if candidate.startswith(normalized + "/")
+                }
+        if not matches[normalized]:
+            return None
+        result.update(matches[normalized])
+    return result
+
+
 def apply_exclusions(state, native_scopes=None):
     """Remove explicitly excluded work without granting review or changing proofs."""
     excluded = set(state.get("exclude_paths", []))
@@ -362,28 +390,28 @@ def apply_exclusions(state, native_scopes=None):
     matches = {}
     for key, value in state["deferred"].items():
         resolution = value.get("resolution") or {}
-        if resolution.get("explicit_exclusion"):
-            if set(resolution.get("paths", [])) <= excluded:
-                continue
-            value["resolution"] = None
-        if value.get("resolution"):
+        previous_exclusion = resolution if resolution.get("explicit_exclusion") else None
+        if resolution and previous_exclusion is None:
             continue
-        paths = set()
-        for pattern in value.get("paths", []):
-            if pattern in state["files"]:
-                paths.add(pattern)
-            else:
-                if pattern not in matches:
-                    matches[pattern] = {path for path in state["files"] if path.startswith(pattern.rstrip("/") + "/")}
-                paths.update(matches[pattern])
-        source_scope = set(native_scopes.get(key.split(":", 1)[0], []))
-        omitted = paths if paths else source_scope
+        references = value.get("paths", [])
+        if references == []:
+            # Scope provenance is a fallback for truly pathless questions only.
+            # Previously verified pathless exclusions survive later calls that
+            # carry only the newest review's native scope map.
+            references = native_scopes.get(key.split(":", 1)[0])
+            if references is None and previous_exclusion:
+                references = previous_exclusion.get("paths")
+        omitted = _referenced_files(references, state["files"], matches)
         if omitted and omitted <= excluded:
+            if previous_exclusion and set(previous_exclusion.get("paths", [])) == omitted:
+                continue
             value["resolution"] = {
                 "disposition": "excluded", "explicit_exclusion": True,
                 "reason": "Originating review scope was explicitly excluded by scan request",
                 "paths": sorted(omitted), "scan_id": state["scan_id"],
             }
+        elif previous_exclusion:
+            value["resolution"] = None
     scopes = [x for x in state["tasks"].values() if x["kind"] == "boundary" and x["status"] == "pending"]
     if scopes:
         assign_deferred(state, scopes, [key for x in scopes for key in x["deferred_keys"]])

@@ -85,6 +85,57 @@ def test_exclusions_do_not_discard_findings_or_other_files_required_followups():
     assert source == original
 
 
+@pytest.mark.parametrize(
+    ("references", "excluded"),
+    [
+        (["."], False),
+        (["./"], False),
+        (["./other.py"], False),
+        (["opaque.bin", "./other.py"], False),
+        (["opaque.bin", "unknown/*.py"], False),
+        (["opaque.bin", "missing.py"], False),
+        (["opaque.bin", "/outside/other.py"], False),
+        (["opaque.bin", "../other.py"], False),
+        (["opaque.bin", ""], False),
+        (None, False),
+        (["opaque.bin"], True),
+        (["./opaque.bin"], True),
+        ([], True),
+    ],
+)
+def test_exclusion_matching_preserves_broad_mixed_and_unrecognized_obligations(references, excluded):
+    source = checkpoint(legacy_file_scopes([["opaque.bin"], ["other.py"]]))
+    source["deferred"] = {"native:question": {"paths": references, "resolution": None}}
+    continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
+    c.apply_exclusions(continued, {"native": ["opaque.bin"]})
+    result = continued["deferred"]["native:question"]["resolution"]
+    assert (result is not None) is excluded
+    if result:
+        assert result["disposition"] == "excluded"
+    assert source["deferred"]["native:question"]["resolution"] is None
+
+
+@pytest.mark.parametrize("references", [["."], ["opaque.bin", "./other.py"], ["opaque.bin", "unknown/*.py"]])
+def test_prior_incorrect_exclusion_is_reopened_when_its_references_are_broader(references):
+    source = checkpoint(legacy_file_scopes([["opaque.bin"], ["other.py"]]))
+    original_resolution = {"disposition": "excluded", "explicit_exclusion": True, "paths": ["opaque.bin"], "scan_id": "older"}
+    source["deferred"] = {"native:question": {"paths": references, "resolution": deepcopy(original_resolution)}}
+    continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
+    c.apply_exclusions(continued, {"native": ["opaque.bin"]})
+    assert continued["deferred"]["native:question"]["resolution"] is None
+    assert source["deferred"]["native:question"]["resolution"] == original_resolution
+
+
+def test_verified_pathless_exclusion_survives_subsequent_unrelated_review_results():
+    source = checkpoint(legacy_file_scopes([["opaque.bin"], ["other.py"]]))
+    source["deferred"] = {"native:question": {"paths": [], "resolution": None}}
+    continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
+    c.apply_exclusions(continued, {"native": ["opaque.bin"]})
+    original = deepcopy(continued["deferred"]["native:question"]["resolution"])
+    c.apply_exclusions(continued, {"unrelated": ["other.py"]})
+    assert continued["deferred"]["native:question"]["resolution"] == original
+
+
 def test_excluded_files_remain_partial_after_all_requested_work_is_done():
     source = checkpoint(legacy_file_scopes([["opaque.bin"], ["app.py"]]))
     continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
