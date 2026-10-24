@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-24 - Explicit continuation exclusions and batch rebuilding (0.5.0)
+
+- Require Evander 0.128.0 and support `exclude_paths`, `rebuild_pending_batches` and `incomplete_review_policy`. Defaults retain existing planning and split behavior; omitted exclusions and retry policies inherit the source settings.
+- Exclude only exact tracked files in a retained mapped checkpoint before boundary planning. Preserve accepted credit and findings, report excluded files explicitly, and keep aggregate coverage partial. Exclusions persist through the lineage. Native questions wholly owned by an excluded path or excluded original review scope are labelled excluded, while mixed obligations remain required.
+- Rebuild unfinished file scopes only in an explicit linked continuation, retaining original source journals, proofs, snapshot identity and the existing byte and file caps. `retry_scope` retries an incomplete batch at most three times without recursively halving it; partial reports never grant file credit.
+- Supply outstanding obligations only to the boundary scopes that own them. Ordinary file reviews no longer inherit unrelated repository-wide work. No scanner-image rebuild or SDK change is needed.
+
 ## 2026-10-24 - Per-scan tracked-review parallelism (0.4.0)
 
 - Require Evander 0.127.0 and support the bindable `max_parallel_reviews` input from one to four, defaulting to two for new scans and inheriting the saved limit on linked continuation when omitted.

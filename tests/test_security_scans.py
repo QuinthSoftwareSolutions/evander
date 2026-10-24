@@ -78,6 +78,28 @@ def test_invalid_requests_are_rejected(values):
         request(**values)
 
 
+@pytest.mark.parametrize("paths", [["../escape"], ["/absolute"], ["folder/"], ["folder//file"], ["*.bin"], [1], "file.py"])
+def test_tail_exclusions_require_exact_relative_file_paths(paths):
+    with pytest.raises(ValidationError):
+        request(coverage_policy="all_tracked_files", managed_repo_id="example", resume_from_scan_id="a" * 32, exclude_paths=paths)
+
+
+def test_tail_controls_are_exposed_in_workflow_schema_and_reject_unsupported_providers(scanning):
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo",
+        session_id="session-1", repo_path="/home/agent/repo", coverage_policy="all_tracked_files",
+        managed_repo_id="example", resume_from_scan_id="a" * 32,
+        exclude_paths=["vendor/opaque.bin"], rebuild_pending_batches=True,
+        incomplete_review_policy="retry_scope",
+    )
+    assert definition.exclude_paths == ["vendor/opaque.bin"]
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"all_tracked_files"}
+    with pytest.raises(ValueError, match="tail controls"):
+        service.start(SecurityScanRequest.model_validate({k: getattr(definition,k) for k in SecurityScanRequest.model_fields}), directory_path="root/project", execution_id="e", idempotency_key="tail", runtime=None)
+    assert scanner.starts == []
+
+
 @pytest.mark.parametrize("path", ["repo", "/etc", "/home/agent/../other", "/home/other/repo"])
 def test_paths_cannot_escape_the_session(path):
     with pytest.raises(ValidationError):

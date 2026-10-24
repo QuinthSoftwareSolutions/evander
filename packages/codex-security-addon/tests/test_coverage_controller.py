@@ -881,6 +881,75 @@ def test_boundary_worker_inputs_only_include_their_own_outstanding_work(running,
         assert staged["max_parallel_reviews"] == 2
 
 
+def test_file_review_inputs_do_not_inherit_repository_wide_followup_obligations(running, monkeypatch):
+    from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["deferred"] = {
+        "opaque:binary": {"paths": ["vendor/opaque.bin"], "resolution": None},
+        "other:boundary": {"paths": ["b/b.py"], "resolution": None},
+    }
+    before = deepcopy(state["deferred"])
+    state["exclude_paths"] = ["c/c.py"]
+    c.apply_exclusions(state)
+    architecture_before = deepcopy(state["architecture"])
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", lambda *_: None)
+    controller.provider._start_raw = lambda **kwargs: SecurityScanHandle(
+        execution_id="scan-" + kwargs["scan_id"], metadata={}
+    )
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    CoverageController.launch(controller, state, item)
+    staged = json.loads((controller.store.root / "requests" / (attempt["scan_id"] + ".json")).read_text())
+    assert staged["coverage_task"]["deferred"] == {}
+    assert staged["coverage_task"]["paths"] == item["paths"]
+    assert staged["coverage_task"]["architecture"]["host_review_exclusions"]["paths"] == ["c/c.py"]
+    assert state["architecture"] == architecture_before
+    assert controller.store.get(state["scan_id"], "root/project")["deferred"] == before
+
+
+def test_completed_requested_work_with_exclusions_does_not_claim_full_coverage(running):
+    from test_coverage_batching import legacy_file_scopes, resume
+
+    controller, _, _, _ = running
+    source = legacy_file_scopes([["opaque.bin"], ["app.py"]])
+    source.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
+    for item in c.pending(continued):
+        finish_scope(continued, item)
+    c.plan_boundaries(continued)
+    for item in c.pending(continued):
+        finish_scope(continued, item)
+    continued.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    result = controller.output(continued)
+    assert result.status == "completed"
+    assert result.coverage == "partial"
+    assert result.success is False
+    assert result.coverage_progress["files_reviewed"] == 1
+    assert result.coverage_progress["files_excluded"] == 1
+    assert result.coverage_progress["files_total"] == 2
+
+
+def test_verified_native_scopes_support_exclusion_provenance_without_weakening_hash_checks(running):
+    controller, _, _, _ = running
+    scan_id = "native-source"
+    receipt = {"coverage": "partial", "deferred": [], "kind": "files", "paths": ["opaque.bin"], "revision": "d" * 40}
+    key = native_archive(controller.artifacts, scan_id, receipt)
+    proof = {
+        "archive_key": key, "archive_sha256": controller.artifacts.get(key).metadata.sha256,
+        "provider_scan_id": scan_id, "report_prefix": f"security-scans/{scan_id}/reports/review/",
+    }
+    state = {"proofs": [proof], "uncredited": []}
+    assert controller.verify_proofs(state) == {scan_id: ["opaque.bin"]}
+    assert controller.verify_proofs({"proofs": [], "uncredited": [proof]}) == {}
+    proof["archive_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="integrity"):
+        controller.verify_proofs(state)
+
+
+
 def test_cancel_keeps_repository_claim_until_cleanup_is_confirmed(running):
     controller, handle, worker, _ = running
     controller.poll(handle)

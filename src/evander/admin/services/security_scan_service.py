@@ -80,6 +80,11 @@ class SecurityScanService:
             self.providers[request.provider], "supports_review_parallelism", False
         ):
             raise ValueError("The selected provider does not support review parallelism")
+        if (
+            request.exclude_paths is not None or request.rebuild_pending_batches
+            or request.incomplete_review_policy is not None
+        ) and not getattr(self.providers[request.provider], "supports_scan_tail_controls", False):
+            raise ValueError("The selected provider does not support scan tail controls")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(

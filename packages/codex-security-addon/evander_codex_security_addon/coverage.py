@@ -129,7 +129,7 @@ def task(kind, paths, *, parent=None):
 
 
 def progress(state):
-    counts = {key: 0 for key in ("reviewed", "not_applicable", "blocked", "pending")}
+    counts = {key: 0 for key in ("reviewed", "not_applicable", "blocked", "pending", "excluded")}
     for entry in state["files"].values():
         counts[entry["disposition"]] += 1
     tasks = list(state["tasks"].values())
@@ -149,6 +149,8 @@ def progress(state):
         "last_progress_at": state["last_progress_at"],
         "max_batch_text_bytes": batch_text_limit(state),
         "max_parallel_reviews": review_parallelism(state),
+        "exclude_paths": state.get("exclude_paths", []),
+        "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
     }
 
 
@@ -199,6 +201,8 @@ def make_state(
         "batching_version": BATCHING_VERSION,
         "max_batch_text_bytes": request.max_batch_text_bytes or DEFAULT_BATCH_TEXT_BYTES,
         "max_parallel_reviews": request.max_parallel_reviews or DEFAULT_PARALLEL_REVIEWS,
+        "exclude_paths": list(request.exclude_paths or []),
+        "incomplete_review_policy": request.incomplete_review_policy or "split",
         "scan_id": scan_id,
         "directory_path": directory,
         "managed_repo_id": request.managed_repo_id,
@@ -266,6 +270,14 @@ def make_state(
         )
         state["lineage"] = [*previous["lineage"], previous["scan_id"]]
         state["open_questions"] = deepcopy(previous.get("open_questions", {}))
+        if request.exclude_paths is None:
+            state["exclude_paths"] = list(previous.get("exclude_paths", []))
+        elif not set(previous.get("exclude_paths", [])) <= set(state["exclude_paths"]):
+            raise ValueError("A continuation cannot reintroduce explicitly excluded paths")
+        if request.incomplete_review_policy is None:
+            state["incomplete_review_policy"] = previous.get("incomplete_review_policy", "split")
+        if set(state["exclude_paths"]) != set(previous.get("exclude_paths", [])) and previous["boundary_planned"]:
+            raise ValueError("Choose new exclusions before boundary review is planned")
         # Older cancellation paths could mark a just-accepted scope blocked.
         # Restore scheduling from host-owned credit without granting new credit;
         # the controller verifies all retained native proofs before journal creation.
@@ -285,14 +297,17 @@ def make_state(
         if previous_limit != state["max_batch_text_bytes"]:
             _regroup_unstarted_scopes(state)
         for item in state["tasks"].values():
-            if item["status"] in {"running", "blocked"}:
+            if item["status"] in {"running", "blocked", "excluded"}:
                 item["status"] = "pending"
             item["attempts"] = []
             item["next_at"] = None
         for entry in state["files"].values():
-            if entry["disposition"] == "blocked":
+            if entry["disposition"] in {"blocked", "excluded"}:
                 entry.update(disposition="pending", reason=None)
         state["phase"] = "reviewing" if state["architecture"] else "mapping"
+        apply_exclusions(state)
+        if request.rebuild_pending_batches:
+            rebuild_file_batches(state, previous["scan_id"])
     else:
         if request.resume_subscription_profile_id is not None:
             raise ValueError("Subscription handoff requires a retained source scan")
@@ -309,6 +324,88 @@ def make_state(
             item = task("files", paths)
             state["tasks"][item["id"]] = item
     return state
+
+
+def apply_exclusions(state, native_scopes=None):
+    """Remove explicitly excluded work without granting review or changing proofs."""
+    excluded = set(state.get("exclude_paths", []))
+    if not excluded:
+        return
+    if not excluded <= state["files"].keys():
+        raise ValueError("An excluded path is absent from the pinned inventory")
+    if excluded and state["architecture"] is None:
+        raise ValueError("Exclusions require a retained architecture map")
+    for path in excluded:
+        if state["files"][path]["disposition"] not in {"reviewed", "not_applicable"}:
+            state["files"][path].update(
+                disposition="excluded", receipt=None,
+                reason="Explicitly excluded by scan request; no review credit granted",
+            )
+    for item in list(state["tasks"].values()):
+        if item["kind"] == "architecture" or item["status"] != "pending":
+            continue
+        paths = [path for path in item["paths"] if path not in excluded]
+        if paths == item["paths"]:
+            continue
+        if item["attempts"]:
+            raise ValueError("An active or attempted scope cannot be excluded in place")
+        if not paths:
+            item["status"] = "excluded"
+        else:
+            item["status"] = "split"
+            child = task(item["kind"], paths, parent=item["id"])
+            existing = state["tasks"].get(child["id"])
+            if existing and existing["status"] not in {"pending", "completed", "split"}:
+                raise ValueError("Excluded scope conflicts with retained review work")
+            state["tasks"].setdefault(child["id"], child)
+    native_scopes = native_scopes or {}
+    matches = {}
+    for key, value in state["deferred"].items():
+        resolution = value.get("resolution") or {}
+        if resolution.get("explicit_exclusion"):
+            if set(resolution.get("paths", [])) <= excluded:
+                continue
+            value["resolution"] = None
+        if value.get("resolution"):
+            continue
+        paths = set()
+        for pattern in value.get("paths", []):
+            if pattern in state["files"]:
+                paths.add(pattern)
+            else:
+                if pattern not in matches:
+                    matches[pattern] = {path for path in state["files"] if path.startswith(pattern.rstrip("/") + "/")}
+                paths.update(matches[pattern])
+        source_scope = set(native_scopes.get(key.split(":", 1)[0], []))
+        omitted = paths if paths else source_scope
+        if omitted and omitted <= excluded:
+            value["resolution"] = {
+                "disposition": "excluded", "explicit_exclusion": True,
+                "reason": "Originating review scope was explicitly excluded by scan request",
+                "paths": sorted(omitted), "scan_id": state["scan_id"],
+            }
+    scopes = [x for x in state["tasks"].values() if x["kind"] == "boundary" and x["status"] == "pending"]
+    if scopes:
+        assign_deferred(state, scopes, [key for x in scopes for key in x["deferred_keys"]])
+
+
+def rebuild_file_batches(state, source_scan_id):
+    """Replan only unfinished file work in a new, explicitly requested continuation."""
+    old = [x for x in state["tasks"].values() if x["kind"] == "files" and x["status"] != "completed"]
+    if any(x["attempts"] or x["status"] == "running" for x in old):
+        raise ValueError("Cannot rebuild active or attempted review work")
+    state["pending_batch_rebuild"] = {
+        "source_scan_id": source_scan_id, "previous_plan_sha256": digest(old),
+        "replaced_scope_count": len(old),
+    }
+    for item in old:
+        del state["tasks"][item["id"]]
+    entries = [x for x in state["inventory"] if state["files"][x["path"]]["disposition"] == "pending"]
+    for paths in batches(entries, max_text_bytes=batch_text_limit(state)):
+        item = task("files", paths)
+        if item["id"] in state["tasks"]:
+            raise ValueError("Rebuilt scope conflicts with accepted review work")
+        state["tasks"][item["id"]] = item
 
 
 def _regroup_unstarted_scopes(state):
@@ -372,15 +469,19 @@ def retention_anchor(state):
     return datetime.fromisoformat(state.get("cleanup_finished_at") or state["finished_at"])
 
 
-def complete(state):
+def required_work_complete(state):
     return (
         not state.get("migration_error")
         and state.get("architecture") is not None
         and state["boundary_planned"]
-        and all(x["disposition"] in {"reviewed", "not_applicable"} for x in state["files"].values())
-        and all(x["status"] in {"completed", "split"} for x in state["tasks"].values())
+        and all(x["disposition"] in {"reviewed", "not_applicable", "excluded"} for x in state["files"].values())
+        and all(x["status"] in {"completed", "split", "excluded"} for x in state["tasks"].values())
         and all(x.get("resolution") for x in state["deferred"].values())
     )
+
+
+def complete(state):
+    return not state.get("exclude_paths") and required_work_complete(state)
 
 
 def pending(state, *, at=None):
@@ -471,6 +572,8 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     # Required work is expressed by partial coverage, deferred work or follow-up
     # surfaces; advisory limitations must not create new review obligations.
     record_open_questions(state, receipt.get("open_questions", []), proof)
+    if state.get("exclude_paths"):
+        apply_exclusions(state, {proof["provider_scan_id"]: item["paths"]})
     closed = (
         receipt.get("coverage") == "complete"
         and not receipt.get("deferred")
@@ -526,7 +629,10 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
                     state["files"][path] = {**value, "receipt": proof["archive_key"]}
             state["last_progress_at"] = at.isoformat()
             return True
-    retry(state, item, "Review coverage remains incomplete", split=True, at=at)
+    retry(
+        state, item, "Review coverage remains incomplete",
+        split=state.get("incomplete_review_policy", "split") == "split", at=at,
+    )
     return True
 
 
@@ -587,16 +693,17 @@ def plan_boundaries(state):
         for x in state["tasks"].values()
     ):
         return
-    anchors = {path for path in state["architecture"].get("paths", []) if path in state["files"]}
+    allowed = set(state["files"]) - set(state.get("exclude_paths", []))
+    anchors = {path for path in state["architecture"].get("paths", []) if path in allowed}
     for value in state["deferred"].values():
         for pattern in value.get("paths", []):
             anchors.update(
                 path
-                for path in state["files"]
+                for path in allowed
                 if path == pattern or path.startswith(pattern.rstrip("/") + "/")
             )
     if not anchors:
-        anchors = set(state["files"])
+        anchors = allowed
     if anchors:
         scopes = []
         max_text_bytes = batch_text_limit(state)

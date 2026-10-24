@@ -52,8 +52,39 @@ reserved for stopping workers and consolidating reports. Each child review gets
 at most one hour, clipped to the remaining review budget. Retries and quota waits
 never extend the original deadline.
 
+For an explicit linked continuation, core 0.128.0 and add-on 0.5.0 also accept:
+
+```json
+{
+  "exclude_paths": ["vendor/legacy-installer.bin"],
+  "rebuild_pending_batches": true,
+  "incomplete_review_policy": "retry_scope"
+}
+```
+
+Exclusions must be exact files in the pinned inventory. Select them after a
+retained architecture map exists and before boundary planning. They are inherited
+and cannot be removed within the same lineage. Excluded files receive no new
+review credit; accepted findings, existing credit and immutable native reports
+remain retained. Questions wholly owned by an excluded file or original excluded
+review scope receive an explicit exclusion disposition. Questions that also
+name non-excluded tracked files remain required.
+
+Rebuilding repacks unfinished file scopes under the saved byte and file caps,
+including earlier split work. The original journal and accepted evidence stay
+unchanged. This is an explicit continuation action, not a live edit or a fresh
+time budget. `retry_scope` retains incomplete scopes for at most three attempts;
+the default remains `split`, and omitted policies inherit the previous setting.
+Partial native results never grant file credit.
+
+Finishing all non-excluded work produces a completed assessment with partial
+overall coverage, never a fully covered repository or a successful full-coverage
+gate. Reports list the requested exclusions and every file disposition. File
+reviews receive no repository-wide outstanding queue; boundary reviews retain
+the required questions assigned to them.
+
 `coverage_progress` contains `phase`, `files_total`, `files_reviewed`,
-`files_not_applicable`, `files_blocked`, `files_pending`, `active_reviews`,
+`files_not_applicable`, `files_blocked`, `files_pending`, `files_excluded`, `active_reviews`,
 `completed_reviews`, `attempts`, `max_batch_text_bytes`, `max_parallel_reviews`,
 `deadline_at`, `last_progress_at` and
 `cleanup_condition`. Waiting workflow executions refresh these outputs.
