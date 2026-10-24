@@ -33,6 +33,14 @@ limit is frozen per scan and visible in progress and aggregate reports; change
 it only on a new scan or an explicit continuation after cleanup. This is a
 host-side scheduling setting; the pinned SDK and scanner image are unchanged.
 
+Add-on 0.5.0 requires Evander 0.128.0 and adds explicit continuation controls:
+`exclude_paths` records exact tracked files as unreviewed exclusions;
+`rebuild_pending_batches` repacks unfinished work, including split scopes;
+`incomplete_review_policy: "retry_scope"` retains a batch for at most three
+attempts instead of halving it. Exclusions remain visible and keep overall
+coverage partial. Native file-credit checks, retained evidence and run deadlines
+are unchanged. See [tracked coverage](docs/tracked-coverage.md).
+
 Add-on 0.4.1 uses SQLite write-ahead logging for new and existing coverage
 journals so readers do not block review updates. Retention checks read compact
 metadata while preserving cleanup-based lifetimes and ancestor snapshot pins.

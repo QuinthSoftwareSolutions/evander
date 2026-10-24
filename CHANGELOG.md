@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-24 - Control unfinished tracked reviews on continuation (0.128.0)
+
+- Add workflow inputs for exact tracked-file exclusions, rebuilding unfinished file batches, and bounded retries that retain their scope. Preserve accepted review credit, findings, immutable native evidence, snapshot identity, route checks, cleanup and fixed run budgets.
+- Release Codex Security add-on 0.5.0. Excluded files stay explicitly unreviewed in progress and reports, and any exclusion keeps overall coverage partial. Original source journals remain unchanged; rebuilt batches retain the existing byte and file limits.
+- Keep repository-wide outstanding obligations with their assigned boundary reviews instead of attaching the entire queue to every ordinary file review. Required questions remain retained; partial native results still cannot grant file coverage.
+
 ## 2026-10-24 - Retire obsolete polling wakes and configuration (0.127.3)
 
 - Remove the standalone Discord wake worker, guest heartbeat timers, and unused wake and automation directory configuration. Discord message workflows continue to dispatch their configured prompt effects; scheduled wakes retain their shared dispatcher.

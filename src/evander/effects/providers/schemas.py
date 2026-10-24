@@ -63,6 +63,9 @@ class SecurityScanEffectDefinition(EffectDefinition):
     resume_subscription_profile_id: ConfigValue | None = None
     max_batch_text_bytes: ConfigValue | None = None
     max_parallel_reviews: ConfigValue | None = None
+    exclude_paths: ConfigValue | None = None
+    rebuild_pending_batches: ConfigValue = False
+    incomplete_review_policy: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None
 
     @model_validator(mode="after")

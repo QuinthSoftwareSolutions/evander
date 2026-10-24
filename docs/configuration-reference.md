@@ -31,6 +31,24 @@ saved limit; select a different value on an explicit continuation after cleanup.
 The effective value appears in `coverage_progress.max_parallel_reviews` and
 aggregate reports. This input requires core 0.127.0 and Codex Security add-on
 0.4.0; unsupported providers reject explicit settings before launching work.
+
+Core 0.128.0 and Codex Security add-on 0.5.0 add three tracked-review controls:
+
+- `exclude_paths`: exact repository-relative tracked file paths on a linked
+  continuation. Choose exclusions after mapping and before boundary planning;
+  wildcards, directories, traversal and missing paths are rejected. Exclusions
+  are inherited and cannot be removed within the same lineage. Excluded files
+  receive no new review credit, remain visible in progress and reports, and
+  keep overall coverage partial. Earlier accepted findings and credit remain.
+- `rebuild_pending_batches`: explicitly repack unfinished file scopes on
+  continuation, including previously split work. It defaults to false and
+  preserves accepted work and the original journal. The byte and file limits
+  still apply; this does not extend the authorized deadline.
+- `incomplete_review_policy`: `split` retains the default subdivision behavior;
+  `retry_scope` retries the assigned scope at most three times without halving
+  it. Omit the field to inherit the saved policy, or use `split` on a new scan.
+  A partial native result still cannot grant file coverage.
+
 An explicit ChatGPT-subscription handoff additionally names
 `resume_subscription_profile_id`. It must match the new scanner session's
 configured subscription, and both source and destination must use public

@@ -40,6 +40,7 @@ from .coverage import (
     RESERVE_SECONDS,
     accept,
     aggregate,
+    apply_exclusions,
     batch_text_limit,
     begin,
     complete,
@@ -49,6 +50,7 @@ from .coverage import (
     plan_boundaries,
     progress,
     record_open_questions,
+    required_work_complete,
     review_parallelism,
     resumable,
     retry,
@@ -143,7 +145,9 @@ class CoverageController:
                 at=created,
             )
             if previous:
-                self.verify_proofs(previous)
+                native_scopes = self.verify_proofs(previous)
+                if state.get("exclude_paths"):
+                    apply_exclusions(state, native_scopes)
                 if "open_questions" not in previous:
                     self.restore_open_questions(state)
             pin_ref = "refs/evander/security-scans/" + scan_id
@@ -267,8 +271,21 @@ class CoverageController:
         return artifact, members
 
     def verify_proofs(self, state):
+        scopes = {}
+        accepted = {proof["archive_key"] for proof in state["proofs"]}
         for proof in [*state["proofs"], *state["uncredited"]]:
-            self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            if proof["archive_key"] not in accepted:
+                continue
+            manifest = members.get(proof.get("report_prefix", "") + "scan-manifest.json")
+            if manifest is not None:
+                scan = json.loads(manifest).get("scan", {})
+                if scan.get("id") != proof["provider_scan_id"]:
+                    raise ValueError("Retained native review identity differs from its proof")
+                paths = scan.get("scope", {}).get("includePaths", [])
+                if isinstance(paths, list) and all(isinstance(path, str) for path in paths):
+                    scopes[proof["provider_scan_id"]] = paths
+        return scopes
 
     def restore_open_questions(self, state):
         """Reclassify legacy question blockers only from preserved accepted reports.
@@ -467,6 +484,15 @@ class CoverageController:
             datetime.fromisoformat(state["deadline_at"]) - now()
         ).total_seconds() - RESERVE_SECONDS
         timeout = max(1, min(3600, remaining))
+        architecture = state["architecture"]
+        if state.get("exclude_paths"):
+            architecture = {
+                **(architecture or {}),
+                "host_review_exclusions": {
+                    "paths": state["exclude_paths"],
+                    "policy": "These paths are outside the assigned review. The host reports them as unreviewed exclusions and retains earlier findings. Do not make their content review a new obligation for this assigned scope.",
+                },
+            }
         payload = attempt.get("payload") or {
             **request.model_dump(mode="json"),
             "scan_id": attempt["scan_id"],
@@ -480,12 +506,12 @@ class CoverageController:
                 "paths": item["paths"],
                 "assigned_entries": [x for x in state["inventory"] if x["path"] in item["paths"]],
                 "inventory_paths": list(state["files"]),
-                "architecture": state["architecture"],
+                "architecture": architecture,
                 "deferred": {
                     k: v
                     for k, v in state["deferred"].items()
                     if not v.get("resolution")
-                    and (item["kind"] != "boundary" or k in item["deferred_keys"])
+                    and item["kind"] == "boundary" and k in item["deferred_keys"]
                 },
                 "accepted_file_reviews": {
                     p: x["receipt"]
@@ -765,7 +791,7 @@ class CoverageController:
             if state["stop_reason"] or (not active and (not queued or mapping_blocked)):
                 if not state["stop_reason"]:
                     state["stop_reason"] = (
-                        None if complete(state) else "Review blocked with unfinished coverage"
+                        None if required_work_complete(state) else "Review blocked with unfinished coverage"
                     )
                 state["finished_at"] = now().isoformat()
                 if state["cleanup_confirmed"]:
@@ -883,10 +909,12 @@ class CoverageController:
         findings, counts, _ = aggregate(state)
         finished = bool(state["finished_at"])
         error = state["stop_reason"]
+        if finished and state.get("exclude_paths") and required_work_complete(state) and not error:
+            error = "Review completed with explicit unreviewed exclusions"
         if state.get("migration_error") and state["migration_error"] != error:
             error = f"{error}; {state['migration_error']}" if error else state["migration_error"]
         return SecurityScanResult(
-            status=("completed" if complete(state) else "failed") if finished else "running",
+            status=("completed" if required_work_complete(state) else "failed") if finished else "running",
             coverage="complete" if complete(state) else "partial",
             to_commit=state["revision"],
             findings=findings,
@@ -929,6 +957,9 @@ class CoverageController:
                 "batching_version": state.get("batching_version", 1),
                 "max_batch_text_bytes": batch_text_limit(state),
                 "max_parallel_reviews": review_parallelism(state),
+                "exclude_paths": state.get("exclude_paths", []),
+                "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
+                "pending_batch_rebuild": state.get("pending_batch_rebuild"),
                 "revision": state["revision"],
                 "inventory_digest": state["inventory_digest"],
                 "inventory": state["inventory"],
@@ -957,6 +988,9 @@ class CoverageController:
                 "revision": state["revision"],
                 "lineage": state["lineage"],
                 "coverage_policy": "all_tracked_files",
+                "exclude_paths": state.get("exclude_paths", []),
+                "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
+                "pending_batch_rebuild": state.get("pending_batch_rebuild"),
                 "batching_version": state.get("batching_version", 1),
                 "max_batch_text_bytes": batch_text_limit(state),
                 "max_parallel_reviews": review_parallelism(state),
@@ -989,7 +1023,11 @@ class CoverageController:
             "Repository: " + state["managed_repo_id"],
             "Revision: " + state["revision"],
             "Coverage: " + ("complete" if complete(state) else "partial"),
-            f"Files: {p['files_reviewed']} reviewed, {p['files_not_applicable']} not applicable, {p['files_blocked']} blocked, {p['files_pending']} pending; {p['files_total']} total.",
+            f"Files: {p['files_reviewed']} reviewed, {p['files_not_applicable']} not applicable, {p['files_blocked']} blocked, {p['files_pending']} pending, {p['files_excluded']} explicitly excluded; {p['files_total']} total.",
+            "",
+            "## Explicit file exclusions",
+            "",
+            *[f"- {path}: excluded by request; any earlier accepted findings and review credit remain retained." for path in state.get("exclude_paths", [])],
             "",
             "## Findings",
             "",
@@ -1006,7 +1044,11 @@ class CoverageController:
             "## Remaining work",
             "",
             state["stop_reason"]
-            or "The requested static review is complete. Live deployment behavior was not tested.",
+            or (
+                "The non-excluded review is complete; explicitly excluded paths remain outside this assessment. Live deployment behavior was not tested."
+                if state.get("exclude_paths")
+                else "The requested static review is complete. Live deployment behavior was not tested."
+            ),
             "",
             "Resume with a real bot mention: resume security scan " + state["scan_id"],
             "",

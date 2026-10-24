@@ -35,6 +35,9 @@ class SecurityScanRequest(BaseModel):
         default=None, strict=True, ge=1048576, le=2097152
     )
     max_parallel_reviews: int | None = Field(default=None, strict=True, ge=1, le=4)
+    exclude_paths: list[str] | None = None
+    rebuild_pending_batches: bool = Field(default=False, strict=True)
+    incomplete_review_policy: Literal["split", "retry_scope"] | None = None
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
 
     @model_validator(mode="before")
@@ -84,6 +87,23 @@ class SecurityScanRequest(BaseModel):
             raise ValueError("resume_subscription_profile_id must be a subscription profile slug")
         return normalize_subscription_profile_id(value, allow_none=False)
 
+    @field_validator("exclude_paths", mode="before")
+    @classmethod
+    def exact_exclusions(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list) or len(value) > 1000:
+            raise ValueError("exclude_paths must be a list of at most 1000 exact paths")
+        for item in value:
+            if (
+                not isinstance(item, str) or not item or "\x00" in item
+                or PurePosixPath(item).is_absolute()
+                or any(part in {"", ".", ".."} for part in item.split("/"))
+                or any(part in item for part in ("*", "?", "[", "]"))
+            ):
+                raise ValueError("exclude_paths requires exact repository-relative file paths")
+        return sorted(set(value))
+
     @model_validator(mode="after")
     def compatible_mode(self) -> SecurityScanRequest:
         if self.mode == "deep" and (self.from_commit or self.to_commit):
@@ -99,6 +119,15 @@ class SecurityScanRequest(BaseModel):
             raise ValueError("max_batch_text_bytes requires all_tracked_files coverage")
         if self.max_parallel_reviews is not None and self.coverage_policy != "all_tracked_files":
             raise ValueError("max_parallel_reviews requires all_tracked_files coverage")
+        if (
+            self.exclude_paths is not None or self.rebuild_pending_batches
+            or self.incomplete_review_policy is not None
+        ) and self.coverage_policy != "all_tracked_files":
+            raise ValueError("scan tail controls require all_tracked_files coverage")
+        if self.rebuild_pending_batches and self.resume_from_scan_id is None:
+            raise ValueError("rebuild_pending_batches requires a retained source scan")
+        if self.exclude_paths and self.resume_from_scan_id is None:
+            raise ValueError("exclude_paths requires a retained source scan")
         if self.resume_from_scan_id is not None:
             if self.coverage_policy != "all_tracked_files":
                 raise ValueError("resume requires all_tracked_files coverage")
