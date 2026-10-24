@@ -1,9 +1,12 @@
 from copy import deepcopy
+from contextlib import closing
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from pathlib import Path
+import sqlite3
 import subprocess
+import tracemalloc
 
 import pytest
 
@@ -31,14 +34,23 @@ def request(**kwargs):
     )
 
 
-def state(paths=("src/a.py", "src/b.py", "tests/a.py")):
+def state(paths=("src/a.py", "src/b.py", "tests/a.py"), *, file_size=20):
     return c.make_state(
         "a" * 32,
         request(),
         "root/project",
-        {"revision": "d" * 40, "entries": [entry(p) for p in paths]},
+        {"revision": "d" * 40, "entries": [entry(p, size=file_size) for p in paths]},
         {"model": "example"},
     )
+
+
+def subscription_route(profile="subscription-a"):
+    return {
+        "model": "security-model", "reasoning_effort": "high",
+        "model_provider_mode": "openai_public", "auth_mode": "chatgpt_subscription",
+        "subscription_profile_id": profile, "cyber_access_program": "daybreak_blue",
+        "image": "security-runner:pinned", "image_alias": "security-scan",
+    }
 
 
 def receipt(s, item, *, closed=True, **kwargs):
@@ -85,7 +97,7 @@ def mapping(s):
 
 
 def test_scopes_split_without_crediting_partial_or_late_results_and_keep_findings():
-    s = state()
+    s = state(file_size=400_000)
     mapping(s)
     assert c.progress(s)["files_reviewed"] == 0
     first, second = c.pending(s)
@@ -198,7 +210,7 @@ def test_advisory_questions_never_override_unfinished_static_work(unfinished):
 
 
 def test_advisory_questions_and_accepted_coverage_survive_resume_without_becoming_work():
-    s = state(("a/a.py", "b/b.py"))
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
     mapping(s)
     question = {
         "question": "Which external application calls this?",
@@ -255,7 +267,7 @@ def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
 
 
 def test_parallel_boundaries_close_independently_and_keep_global_work_until_resolved(tmp_path):
-    s = state(("a/a.py", "b/b.py"))
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
     mapping(s)
     for item in list(c.pending(s)):
         finish(s, item)
@@ -342,7 +354,7 @@ def test_partial_boundary_splits_keep_each_outstanding_item_assigned_once():
 
 
 def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
-    s = state(("a/a.py", "b/a.py", "c/a.py"))
+    s = state(("a/a.py", "b/a.py", "c/a.py"), file_size=600_000)
     mapping(s)
     store = c.CoverageStore(tmp_path)
     store.create(s)
@@ -358,7 +370,7 @@ def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
 
 
 def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
-    s = state(("a/a.py", "b/a.py"))
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
     mapping(s)
     finish(s, c.pending(s)[0])
     s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
@@ -389,6 +401,122 @@ def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
         c.make_state(
             "c" * 32, request(), "root/project", inventory, {"model": "another"}, previous=s
         )
+
+
+@pytest.mark.parametrize("destination", ["subscription-a", "subscription-b"])
+def test_subscription_handoff_retains_credit_findings_and_immutable_source(destination):
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
+    s["route"] = subscription_route()
+    mapping(s)
+    item = c.pending(s)[0]
+    attempt = c.begin(s, item)
+    finding = {"findingId": "native-finding", "title": "Unchecked input", "severity": {"level": "high"}}
+    c.accept(s, item, attempt["scan_id"], receipt(s, item), proof(findings=[finding]))
+    attempt["cleanup_confirmed"] = True
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True, stop_reason="Quota exhausted")
+    before = deepcopy(s)
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=destination),
+        "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+        subscription_route(destination), previous=s,
+    )
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert c.progress(resumed)["files_pending"] == 1
+    assert c.aggregate(resumed)[1]["high"] == 1
+    assert resumed["proofs"] == s["proofs"]
+    assert resumed["inventory_digest"] == s["inventory_digest"]
+    assert resumed["architecture"] == s["architecture"]
+    assert resumed["subscription_handoff"] == {
+        "source_scan_id": s["scan_id"],
+        "source_subscription_profile_id": "subscription-a",
+        "destination_subscription_profile_id": destination,
+    }
+    assert resumed["stop_reason"] is None and resumed["lineage"] == [s["scan_id"]]
+    assert s == before
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("change", [
+    {"model": "different-model"}, {"reasoning_effort": "low"},
+    {"cyber_access_program": None}, {"image": "different:image"}, {"image_alias": "different"},
+    {"model_provider_mode": "azure"}, {"auth_mode": "api_key"},
+    {"future_access_setting": "different"},
+])
+def test_resume_preserves_every_other_route_setting(explicit, change):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    profile = "subscription-b" if explicit else "subscription-a"
+    with pytest.raises(ValueError, match="configuration|subscription routes"):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=profile if explicit else None),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            {**subscription_route(profile), **change}, previous=s,
+        )
+
+
+@pytest.mark.parametrize("source_change, destination, explicit", [
+    ({}, "subscription-b", None),  # The default remains strict.
+    ({}, "subscription-c", "subscription-b"),
+    ({"auth_mode": "api_key"}, "subscription-b", "subscription-b"),
+    ({"model_provider_mode": "azure"}, "subscription-b", "subscription-b"),
+    ({"subscription_profile_id": None}, "subscription-b", "subscription-b"),
+])
+def test_resume_cannot_select_an_unrequested_profile_or_convert_api_billing(source_change, destination, explicit):
+    s = state()
+    s.update(
+        route={**subscription_route(), **source_change},
+        finished_at=c.now().isoformat(), cleanup_confirmed=True,
+    )
+    before = deepcopy(s)
+    with pytest.raises(ValueError):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=explicit),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            subscription_route(destination), previous=s,
+        )
+    assert s == before
+
+
+@pytest.mark.parametrize("condition", [
+    "active", "expired", "cleanup", "complete", "revision", "inventory", "directory", "repository", "sdk", "policy",
+])
+def test_handoff_cannot_bypass_snapshot_access_policy_or_cleanup_validation(condition):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    inventory = {"revision": s["revision"], "entries": s["inventory"]}
+    directory, repo = "root/project", s["managed_repo_id"]
+    if condition == "revision":
+        inventory = {**inventory, "revision": "e" * 40}
+    elif condition == "inventory":
+        inventory = {**inventory, "entries": [entry("changed.py")]}
+    elif condition == "directory":
+        directory = "root/other"
+    elif condition == "repository":
+        repo = "other-repository"
+    elif condition == "sdk":
+        s["sdk_version"] = "incompatible"
+    elif condition == "policy":
+        s["version"] += 1
+    elif condition == "complete":
+        mapping(s)
+        for _ in range(5):
+            for item in c.pending(s):
+                finish(s, item)
+            c.plan_boundaries(s)
+        assert c.complete(s)
+    elif condition == "active":
+        s["finished_at"] = None
+    elif condition == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    else:
+        s["cleanup_confirmed"] = False
+    inputs = request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id="subscription-b")
+    inputs = inputs.model_copy(update={"managed_repo_id": repo})
+    with pytest.raises(ValueError):
+        c.make_state("b" * 32, inputs, directory, inventory, subscription_route("subscription-b"), previous=s)
 
 
 @pytest.mark.parametrize("condition", ["active", "expired", "cleanup"])
@@ -526,14 +654,14 @@ def test_real_git_inventory_preserves_tracked_ignored_generated_and_nontext_path
 
 def test_inventory_batch_caps_and_no_silent_omissions():
     entries = [entry(f"src/{i:03}.py", size=8000) for i in range(110)] + [
-        entry("large.py", size=900000)
+        entry("large.py", size=2_000_000)
     ]
     chunks = list(c.batches(entries))
     assert sorted(p for chunk in chunks for p in chunk) == sorted(x["path"] for x in entries)
     assert all(len(chunk) <= 100 for chunk in chunks)
     assert ["large.py"] in chunks
     assert all(
-        sum(next(x["size"] for x in entries if x["path"] == p) for p in chunk) <= 524288
+        sum(next(x["size"] for x in entries if x["path"] == p) for p in chunk) <= 1_048_576
         for chunk in chunks
         if chunk != ["large.py"]
     )
@@ -634,3 +762,44 @@ def test_uncertain_descendant_protects_ancestors_and_retention_starts_after_clea
         source["scan_id"],
         child["scan_id"],
     }
+
+
+def test_review_progress_can_commit_while_a_legacy_journal_reader_is_open(tmp_path):
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    store.create(s)
+    with sqlite3.connect(store.path) as legacy:
+        legacy.execute("PRAGMA journal_mode=DELETE")
+    store = c.CoverageStore(tmp_path)
+    advanced = deepcopy(s)
+    c.begin(advanced, next(iter(advanced["tasks"].values())))
+    with closing(sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)) as reader, ThreadPoolExecutor(max_workers=1) as pool:
+        reader.execute("PRAGMA query_only=ON")
+        reader.execute("BEGIN")
+        original = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+        writer = pool.submit(store.save, advanced)
+        try:
+            writer.result(timeout=2)
+            snapshot = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+            assert snapshot == original
+            assert sum(len(t["attempts"]) for t in store.get(s["scan_id"], s["directory_path"])["tasks"].values()) == 1
+        finally:
+            reader.rollback()
+
+
+def test_retention_checks_do_not_materialize_retained_finding_payloads(tmp_path):
+    clock = c.now()
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    store.create(s)
+    store.save(s)
+    tracemalloc.start()
+    try:
+        assert store.retained_until(s) == clock + c.RETENTION
+        assert store.expired(at=clock) == []
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 2 * 1024 * 1024

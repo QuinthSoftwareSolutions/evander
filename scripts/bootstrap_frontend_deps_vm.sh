@@ -78,7 +78,7 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 
-HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0}"
+HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.22.1}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -146,12 +146,12 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   mkdir -p ~/toolchains ~/frontend-deps-runtime/install-roots ~/.cache ~/.evander
   chmod 700 ~/.evander
   rm -rf ~/frontend-deps-runtime/install-roots/*
-  rm -rf ~/toolchains/node-v24.14.0
-  mkdir -p ~/toolchains/node-v24.14.0
+  rm -rf ~/toolchains/node-v24.22.1
+  mkdir -p ~/toolchains/node-v24.22.1
 "
 
 tar -C "${HOST_NODE_ROOT}" -cf - . \
-  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/toolchains/node-v24.14.0\" -xf -"
+  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/toolchains/node-v24.22.1\" -xf -"
 
 while IFS= read -r entry; do
   root_abs="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["absolute"])' "${entry}")"
@@ -192,9 +192,11 @@ else:
 managed = {
     'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+    'export PATH="$HOME/toolchains/node-v24.22.1/bin:$PATH"',
+    'export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"',
 }
 filtered = [line for line in lines if line.strip() not in managed]
-filtered.append('export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"')
+filtered.append('export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"')
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
 }
@@ -202,7 +204,7 @@ PY
 append_node_path_setup ~/.profile
 append_node_path_setup ~/.bashrc
 
-export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
+export PATH="$HOME/bin:$HOME/toolchains/node-v24.22.1/bin:$PATH"
 
 node --version
 npm --version

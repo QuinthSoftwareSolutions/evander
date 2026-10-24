@@ -11,7 +11,7 @@ from evander.workflow.catalog import (
 )
 from evander.workflow.plugins import ProviderPluginRegistration
 
-from .api import _execute_prepared_action
+from .execution_service import execute_prepared_action as _execute_prepared_action
 from .client import BokioClient
 from .evidence import normalize_stored_evidence_ids
 from .state import PreparedActionStore, upload_staging_dir

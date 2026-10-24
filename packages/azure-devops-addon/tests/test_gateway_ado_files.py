@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import pytest
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image
 from evander import gateway
 from evander.communication_artifacts import CommunicationArtifactStore

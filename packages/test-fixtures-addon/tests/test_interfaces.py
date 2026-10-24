@@ -103,16 +103,16 @@ def test_actual_authenticated_mcp_discovery_tracks_policy_and_addon_presence(tmp
         assert set(tools) <= visible
         for tool in asyncio.run(server.list_tools()):
             if tool.name in tools:
-                assert "session_id" not in tool.inputSchema.get("properties", {})
-                assert "worker_base_url" not in tool.inputSchema.get("properties", {})
+                assert "session_id" not in tool.input_schema.get("properties", {})
+                assert "worker_base_url" not in tool.input_schema.get("properties", {})
             if tool.name == "test_fixtures_acquire":
-                assert set(tool.inputSchema["properties"]["profile"]["enum"]) == {
+                assert set(tool.input_schema["properties"]["profile"]["enum"]) == {
                     "sqlserver",
                     "rabbitmq",
                     "sqlserver-rabbitmq",
                 }
             if tool.name == "test_fixtures_control":
-                duration = tool.inputSchema["properties"]["duration_seconds"]
+                duration = tool.input_schema["properties"]["duration_seconds"]
                 assert (duration["default"], duration["minimum"], duration["maximum"]) == (
                     60,
                     1,

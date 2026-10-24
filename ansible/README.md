@@ -290,7 +290,7 @@ POSTs to `https://registry.npmjs.org`, and keeps package metadata and tarballs o
 Nexus npm group. Keep any optional local overrides in `config/npm-audit-facade.env`.
 
 The optional semantic store uses `evander-qdrant.service`, a systemd-managed Docker container
-running `evander_qdrant_image` (`qdrant/qdrant:v1.18.0` by default). It persists data under
+running `evander_qdrant_image` (`qdrant/qdrant:v1.19.2` by default). It persists data under
 `evander_qdrant_data_dir` (`/var/lib/evander/qdrant`) and binds to
 `evander_qdrant_bind_host:evander_qdrant_port` (`127.0.0.1:6333` by default). The role
 verifies Qdrant readiness through `/healthz`.
@@ -298,6 +298,28 @@ verifies Qdrant readiness through `/healthz`.
 Worker/global JSON files are also editable from the Admin GUI. The playbook creates missing worker
 config files from Ansible variables, but never replaces existing worker config files. To re-seed one
 from Ansible defaults, remove that specific live config file before a deployment.
+
+### Nexus 3.97 upgrade requirements
+
+The package cache defaults to Nexus Repository 3.97.1-02. Back up its persistent
+storage before an upgrade. This patch also avoids the PostgreSQL startup issue in
+3.97.0. Nexus 3.97.1 disables audit-event persistence by default; review the
+upstream audit capability settings if your installation requires those records.
+
+Nexus 3.97+ requires a separate acknowledgement of required base telemetry for new
+and upgraded instances. The playbook leaves
+`evander_nexus_acknowledge_mandatory_telemetry: false` by default and prints the
+operator action. After reviewing [Sonatype's telemetry requirements](https://help.sonatype.com/en/nexus-repository-telemetry.html),
+acknowledge them manually in Nexus, or explicitly set the option to `true` in your
+operator inventory. Existing EULA acceptance does not acknowledge telemetry.
+The role uses the authenticated acknowledgement API only when explicitly enabled.
+
+Nexus must reach `https://nxrm.telemetry.sonatype.com/production/oss/ingest` and
+`https://nxrm.telemetry.sonatype.com/production/oss/v2/ingest`. Community Edition has
+a ten-day upload grace period and becomes read-only if required uploads cannot
+complete. This is host service egress; guest/container network policy remains
+unchanged. Review [the release notes](https://help.sonatype.com/en/sonatype-nexus-repository-3-97-0-release-notes.html)
+before deployment.
 
 ## First Install
 
@@ -363,7 +385,7 @@ The selected agent pool must have Python and Docker for the runner-image build. 
 in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
 worker access.
 
-The worker stage installs Node.js 24.14.0 before building `dist/evander-runner.tar` from the
+The worker stage installs Node.js 24.22.1 before building `dist/evander-runner.tar` from the
 host-seeded Codex binary and matching `codex-code-mode-host`, and
 `dist/evander-runner-claude.tar` from a host-resolved Claude Code
 command. On hosted agents the pipeline installs the npm package named by
@@ -526,7 +548,15 @@ ansible-playbook \
 Deploy or re-run the control-plane `site.yml` first when `evander_services.apt_cache` is
 enabled. The worker playbook renders `/etc/apt/apt.conf.d/01evander-proxy` before
 `host_prereqs`, so the first worker `apt update` uses the private apt-cacher-ng relay instead of
-direct Ubuntu mirror egress. Verify the private path from a worker with
+direct Ubuntu mirror egress. That role also upgrades existing Docker repository URLs from
+HTTP to HTTPS in `.list` and deb822 `.sources` files before the first refresh. Docker's
+HTTP endpoint redirects to HTTPS; the apt cache's default tunnel allowlist therefore permits
+only `packages.microsoft.com:443` and `download.docker.com:443`. Keep those exact hosts in
+any overridden `evander_apt_cache_passthrough_pattern`, and deploy the control-plane
+configuration before retrying a worker with legacy Docker sources. HTTPS still goes through
+the private proxy; this does not grant direct worker internet access.
+
+Verify the private path from a worker with
 `curl http://<control-plane-private-ip>:3142/acng-report.html`.
 
 When `evander_worker_repo_checkout_via_control_plane_git` is enabled, the worker playbook
@@ -701,7 +731,7 @@ prebuilt `evander_worker_nuget_fallback_archive_path` /
 `evander_worker_dotnet_restore_support_archive_path` /
 `HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` names remain supported. The Node
 cache is seeded the same way
-(`HOST_NODE_ROOT`, `~/.nvm/versions/node/v24.14.0`, or
+(`HOST_NODE_ROOT`, `~/.nvm/versions/node/v24.22.1`, or
 `evander_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
 The Playwright runtime and browser caches are seeded from `HOST_PLAYWRIGHT_NODE_MODULES` or the repo
 frontend `node_modules`, plus `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; archive

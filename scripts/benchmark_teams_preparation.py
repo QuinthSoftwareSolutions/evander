@@ -20,7 +20,7 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
 from evander.events.models import TriggerEvent
@@ -172,7 +172,7 @@ def teams_size():
     context = SimpleNamespace(
         policy=SimpleNamespace(require_teams_message_source=lambda *args: None)
     )
-    server = FastMCP("size-benchmark")
+    server = MCPServer("size-benchmark")
 
     @server.tool()
     def history() -> dict[str, Any]:
@@ -188,11 +188,11 @@ def teams_size():
         assert [m["content"] for m in result] == [m.content for m in messages]
         return {"messages": result, "next_cursor": cursor}
 
-    text_content, structured = asyncio.run(server.call_tool("history", {}))
+    result = asyncio.run(server.call_tool("history", {}))
     return {
         "content_characters": sum(len(m.content) for m in messages),
-        "structured_characters": len(json.dumps(structured, ensure_ascii=False)),
-        "text_characters": sum(len(item.text) for item in text_content),
+        "structured_characters": len(json.dumps(result.structured_content, ensure_ascii=False)),
+        "text_characters": sum(len(item.text) for item in result.content),
     }
 
 

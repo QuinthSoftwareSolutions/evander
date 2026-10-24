@@ -32,17 +32,17 @@ assert addon.workflow_providers().effect_providers
 def test_mcp_schema_exposes_bounded_arguments_and_mutation_annotations(tmp_path):
     from evander_rabbitmq_addon import register_addon
     from evander.addons import AddonContext
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     addon = register_addon()
-    server = FastMCP("schema")
+    server = MCPServer("schema")
     addon.mcp_tools(server, AddonContext(addon.addon_id, tmp_path, tmp_path / addon.addon_id))
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
     assert set(tools) == {tool.name for tool in addon.mcp_tool_catalog}
     operation = tools["rabbitmq_get_messages"]
-    assert operation.annotations.readOnlyHint is False
-    fields = operation.inputSchema["$defs"]["Call"]["properties"]
+    assert operation.annotations.read_only_hint is False
+    fields = operation.input_schema["$defs"]["Call"]["properties"]
     assert "host" not in fields and "credentials" not in fields
-    assert operation.inputSchema["$defs"]["Call"]["additionalProperties"] is False
-    assert tools["rabbitmq_inspect"].annotations.readOnlyHint is True
-    assert "request_id" in tools["rabbitmq_reset"].inputSchema["required"]
+    assert operation.input_schema["$defs"]["Call"]["additionalProperties"] is False
+    assert tools["rabbitmq_inspect"].annotations.read_only_hint is True
+    assert "request_id" in tools["rabbitmq_reset"].input_schema["required"]

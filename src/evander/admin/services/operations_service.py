@@ -264,6 +264,11 @@ class OperationsAdminService:
     def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]):
         return self._session_admin.set_session_allowed_script_names(target, allowed_script_names)
 
+    def reconcile_session_policy(self, target, policy, *, directory_path):
+        return self._session_admin.reconcile_session_policy(
+            target, policy, directory_path=directory_path
+        )
+
     def update_session_policy(self, target: str, payload: dict[str, object]):
         return self._session_admin.update_session_policy(target, payload)
 

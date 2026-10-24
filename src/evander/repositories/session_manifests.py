@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -28,6 +29,10 @@ class SessionManifestRepository(Protocol):
     def resolve_session_target(self, target: str) -> SessionManifest | None: ...
 
     def resolve_vm_name_from_target(self, target: str) -> str: ...
+
+    def mutate_session(
+        self, session_id: str, updater: Callable[[SessionManifest], SessionManifest]
+    ) -> SessionManifest: ...
 
     def upsert_session(self, manifest: SessionManifest) -> None: ...
 
@@ -110,6 +115,30 @@ class JsonSessionManifestRepository:
 
     def resolve_vm_name_from_target(self, target: str) -> str:
         return _resolve_vm_name_from_target(self, target)
+
+    def mutate_session(
+        self, session_id: str, updater: Callable[[SessionManifest], SessionManifest]
+    ) -> SessionManifest:
+        """Update the latest manifest under the store lock, without resurrecting a session."""
+        def mutate(payload: dict[str, Any]) -> SessionManifest | object:
+            matches = [
+                key for key, value in payload.items()
+                if isinstance(value, dict) and value.get("session_id", key) == session_id
+            ]
+            if not matches:
+                raise ValueError(f"Unknown session: {session_id}")
+            key = matches[-1]
+            before = SessionManifest.model_validate(payload[key])
+            after = updater(before.model_copy(deep=True))
+            after = SessionManifest.model_validate(after.model_dump(mode="json"))
+            if after.session_id != before.session_id or after.created_at != before.created_at:
+                raise ValueError("Session mutation cannot replace session identity")
+            if after == before:
+                return _no_write(after)
+            payload[key] = after.model_dump(mode="json")
+            return after
+
+        return self._store.update_object(mutate)
 
     def upsert_session(self, manifest: SessionManifest) -> None:
         def _upsert(payload: dict[str, Any]) -> None:
@@ -221,6 +250,22 @@ class SessionManifestStoreAdapter:
 
     def resolve_vm_name_from_target(self, target: str) -> str:
         return _resolve_vm_name_from_target(self, target)
+
+    def mutate_session(
+        self, session_id: str, updater: Callable[[SessionManifest], SessionManifest]
+    ) -> SessionManifest:
+        def mutate(items: dict[str, SessionManifest]) -> SessionManifest:
+            before = items.get(session_id)
+            if before is None:
+                raise ValueError(f"Unknown session: {session_id}")
+            after = updater(before.model_copy(deep=True))
+            after = SessionManifest.model_validate(after.model_dump(mode="json"))
+            if after.session_id != before.session_id or after.created_at != before.created_at:
+                raise ValueError("Session mutation cannot replace session identity")
+            items[session_id] = after
+            return after
+
+        return self._store.update_all(mutate)
 
     def upsert_session(self, manifest: SessionManifest) -> None:
         self._store.put(manifest.session_id, manifest)

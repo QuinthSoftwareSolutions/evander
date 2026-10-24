@@ -80,6 +80,7 @@ class ToolName(str, Enum):
     LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS = "list_ado_current_iteration_backlog_items"
     GET_ADO_DAILY_STATUS_REPORT_DATA = "get_ado_daily_status_report_data"
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
+    LIST_ADO_BUILDS = "list_ado_builds"
     GET_ADO_BUILD = "get_ado_build"
     LIST_ADO_BUILD_WORK_ITEMS = "list_ado_build_work_items"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"

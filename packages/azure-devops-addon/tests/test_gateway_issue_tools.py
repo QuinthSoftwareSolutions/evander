@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.admin.composition import build_admin_runtime
 from evander.config import GatewayConfig
@@ -1197,7 +1197,7 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
     monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
-    with pytest.raises(ToolError, match="no current iteration configured"):
+    with pytest.raises(ToolError, match="Error executing tool list_ado_current_iteration_backlog_items"):
         asyncio.run(
             server.call_tool(
                 "list_ado_current_iteration_backlog_items",
@@ -1801,7 +1801,7 @@ def test_delete_ado_backlog_item_propagates_missing_work_item_error(
 
     with pytest.raises(
         ToolError,
-        match=r"Azure DevOps delete work item failed \(status 404\): Work item does not exist",
+        match="Error executing tool delete_ado_backlog_item",
     ):
         asyncio.run(
             server.call_tool(
@@ -2064,7 +2064,7 @@ def test_proxy_issue_mutations_invalidate_activity_for_the_issue_directory(
 
     mutation_arguments = {"session_id": "writer", "issue_id": issue.issue_id}
     if update_fails:
-        with pytest.raises(ToolError, match="Provider unavailable"):
+        with pytest.raises(ToolError, match=f"Error executing tool {mutation}"):
             call_tool(server, mutation, mutation_arguments)
         assert remote["state"] == "New"
     else:

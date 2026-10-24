@@ -195,7 +195,7 @@ class VmAgentCreateRequestMixin:
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
-                allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+                allowed_tools=self._agent_tool_names(payload),
                 **({"connector_grants": connector_grants} if "connector_grants" in payload else {}),
                 **(
                     {"host_directory_grants": host_directory_grants}
@@ -415,7 +415,7 @@ class VmAgentCreateRequestMixin:
             directory_path=directory_path,
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
             ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
-            extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+            extra_allowed_tools=self._agent_tool_names(payload),
             connector_grants=_connector_grants_for_admin_agent(
                 self.runtime,
                 session_id=session_id,

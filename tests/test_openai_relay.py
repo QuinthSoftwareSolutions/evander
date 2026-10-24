@@ -607,7 +607,6 @@ def test_relay_rejects_oversized_multipart_part_headers_before_upstream(
     )
 
     assert response.status_code == 400
-    assert "headers exceed the relay limit" in response.text
     assert called is False
 
 

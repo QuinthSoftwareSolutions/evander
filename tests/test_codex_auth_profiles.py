@@ -32,6 +32,7 @@ class FakeProfileBroker:
         self.barrier: threading.Barrier | None = None
         self.status_error: str | None = None
         self.usage_requests: list[bool] = []
+        self.token_requests = 0
         self.reset_requests: list[tuple[CodexRateLimitResetRequest, str]] = []
 
     def status(self, *, include_usage: bool = True) -> dict[str, Any]:
@@ -43,6 +44,7 @@ class FakeProfileBroker:
         return dict(self.status_payload)
 
     def external_tokens(self, **_kwargs: Any) -> CodexExternalAuthTokens:
+        self.token_requests += 1
         return self.tokens
 
     def start_device_login(self) -> dict[str, Any]:
@@ -257,7 +259,12 @@ def test_refresh_tokens_rejects_and_logs_out_a_different_pinned_account(
             available=True,
             signed_in=True,
             account_id="account-a",
-            rate_limits=None,
+            rate_limits={
+                "default": {
+                    "primary": {"used_percent": 100},
+                    "credits": {"has_credits": True, "balance": "100"},
+                }
+            },
         )
         broker.tokens = CodexExternalAuthTokens("access-a", "account-a", "plus")
         assert registry.preflight("team-a").account_id == "account-a"
@@ -275,6 +282,7 @@ def test_refresh_tokens_rejects_and_logs_out_a_different_pinned_account(
         assert mismatch.value.deferral.reason == "unavailable"
         assert broker.logged_out is True
         assert registry.profiles.require("team-a").pinned_account_id == "account-a"
+        assert broker.reset_requests == []
     finally:
         registry.close()
 
@@ -320,6 +328,142 @@ def test_preflight_returns_structured_disabled_signed_out_and_rate_limit_deferra
 
         broker.status_payload["rate_limits"]["default"]["primary"]["used_percent"] = 25
         assert registry.preflight("capacity").account_id == "account-1"
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("bucket_key", ["default", "codex"])
+@pytest.mark.parametrize(
+    ("credits", "admitted"),
+    [
+        (None, False),
+        ({}, False),
+        ({"has_credits": False, "unlimited": False, "balance": "100"}, False),
+        ({"has_credits": "true", "balance": "100"}, False),
+        ({"has_credits": True, "balance": "0"}, False),
+        ({"has_credits": True, "balance": "-1"}, False),
+        ({"has_credits": True, "balance": "NaN"}, False),
+        ({"has_credits": True, "balance": "Infinity"}, False),
+        ({"has_credits": True, "balance": "unavailable"}, False),
+        ({"has_credits": True, "balance": 100}, False),
+        ({"has_credits": True, "unlimited": False, "balance": "0.000001"}, True),
+        ({"has_credits": True, "unlimited": False, "balance": None}, True),
+        ({"has_credits": False, "unlimited": True, "balance": None}, True),
+    ],
+)
+def test_preflight_uses_existing_purchased_capacity_without_resetting_or_switching_profiles(
+    tmp_path: Path, bucket_key: str, credits: object, admitted: bool
+) -> None:
+    registry, _ = _registry(tmp_path)
+    reset_at = datetime.now(UTC) + timedelta(days=6)
+    try:
+        registry.create_profile({"profile_id": "paid", "display_name": "Paid"})
+        broker = registry.broker("paid")
+        bucket = {
+            "primary": {"used_percent": 100, "resets_at": reset_at.isoformat()},
+            "secondary": {"used_percent": 100, "resets_at": reset_at.isoformat()},
+            "credits": credits,
+        }
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-1",
+            rate_limits={
+                "default": bucket if bucket_key == "default" else None,
+                "by_limit_id": {"codex": bucket} if bucket_key == "codex" else {},
+            },
+        )
+        if admitted:
+            assert registry.preflight("paid").account_id == "account-1"
+            assert registry.profiles.require("paid").pinned_account_id == "account-1"
+        else:
+            with pytest.raises(CodexSubscriptionDeferredError) as exhausted:
+                registry.preflight("paid")
+            assert exhausted.value.deferral.reason == "rate_limited"
+            assert exhausted.value.deferral.profile_id == "paid"
+            assert exhausted.value.deferral.retry_at == reset_at
+        assert broker.token_requests == int(admitted)
+        assert broker.usage_requests == [False]
+        assert broker.reset_requests == []
+        assert [record.profile_id for record in registry.profiles.list()] == ["paid"]
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"rate_limit_reached_type": "rate_limit_reached"},
+        {"rate_limit_reached_type": "workspace_owner_credits_depleted"},
+        {"rate_limit_reached_type": "workspace_member_usage_limit_reached"},
+        {"rate_limit_reached_type": "unknown_future_block"},
+        {"spend_control_reached": True},
+    ],
+)
+def test_purchased_capacity_does_not_override_provider_blocks(tmp_path: Path, block: dict) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        registry.create_profile({"profile_id": "paid", "display_name": "Paid"})
+        broker = registry.broker("paid")
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-1",
+            rate_limits={"default": {**block, "credits": {"unlimited": True}}},
+        )
+        with pytest.raises(CodexSubscriptionDeferredError) as blocked:
+            registry.preflight("paid")
+        assert blocked.value.deferral.reason == "rate_limited"
+        assert broker.token_requests == 0
+        assert broker.reset_requests == []
+    finally:
+        registry.close()
+
+
+def test_preflight_defers_when_purchased_balance_is_exhausted(tmp_path: Path) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        registry.create_profile({"profile_id": "paid", "display_name": "Paid"})
+        broker = registry.broker("paid")
+        credits = {"has_credits": True, "balance": "1"}
+        broker.status_payload.update(
+            available=True, signed_in=True, account_id="account-1",
+            rate_limits={"default": {"primary": {"used_percent": 100}, "credits": credits}},
+        )
+        assert registry.preflight("paid").account_id == "account-1"
+        credits.update(has_credits=False, balance="0")
+        with pytest.raises(CodexSubscriptionDeferredError) as exhausted:
+            registry.preflight("paid")
+        assert exhausted.value.deferral.reason == "rate_limited"
+        assert exhausted.value.deferral.profile_id == "paid"
+        assert broker.token_requests == 1
+        assert broker.reset_requests == []
+    finally:
+        registry.close()
+
+
+def test_purchased_capacity_cannot_cover_another_rate_limit_bucket(tmp_path: Path) -> None:
+    registry, _ = _registry(tmp_path)
+    reset_at = datetime.now(UTC) + timedelta(hours=1)
+    try:
+        registry.create_profile({"profile_id": "paid", "display_name": "Paid"})
+        broker = registry.broker("paid")
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-1",
+            rate_limits={
+                "default": {"primary": {"used_percent": 100}, "credits": {"unlimited": True}},
+                "by_limit_id": {
+                    "other": {"primary": {"used_percent": 100, "resets_at": reset_at.isoformat()}}
+                },
+            },
+        )
+        with pytest.raises(CodexSubscriptionDeferredError) as exhausted:
+            registry.preflight("paid")
+        assert exhausted.value.deferral.retry_at == reset_at
+        assert broker.token_requests == 0
+        assert broker.reset_requests == []
     finally:
         registry.close()
 

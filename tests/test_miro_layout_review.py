@@ -5,7 +5,7 @@ from io import BytesIO
 import json
 import xml.etree.ElementTree as ET
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult
 from PIL import Image
 import pytest
@@ -232,16 +232,16 @@ def test_gateway_returns_snapshot_structure_and_optional_png_under_existing_gran
         include_preview=include_preview,
     )
     assert isinstance(result, CallToolResult)
-    assert result.structuredContent["snapshot_id"] == snapshot["snapshot_id"]
-    assert result.structuredContent["layout_review"]["status"] == "needs_review"
-    assert json.loads(result.content[0].text) == result.structuredContent
+    assert result.structured_content["snapshot_id"] == snapshot["snapshot_id"]
+    assert result.structured_content["layout_review"]["status"] == "needs_review"
+    assert json.loads(result.content[0].text) == result.structured_content
     if include_preview:
-        assert result.content[1].mimeType == "image/png"
+        assert result.content[1].mime_type == "image/png"
         with Image.open(BytesIO(base64.b64decode(result.content[1].data))) as image:
             image.verify()
     else:
         assert len(result.content) == 1
-    # Exercise actual FastMCP wire conversion and the gateway audit serialization.
+    # Exercise actual MCPServer wire conversion and the gateway audit serialization.
     tool = server._tool_manager.get_tool("miro_get_snapshot")
     assert tool.fn_metadata.convert_result(result) == result
     events = [

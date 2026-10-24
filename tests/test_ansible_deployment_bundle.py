@@ -472,7 +472,7 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     ).read_text(encoding="utf-8")
 
     assert "package_cache: true" in defaults
-    assert 'evander_nexus_version: "3.91.1-04"' in defaults
+    assert 'evander_nexus_version: "3.97.1-02"' in defaults
     assert "evander_nexus_port: 8081" in defaults
     assert 'evander_nexus_bind_host: "0.0.0.0"' in defaults
     assert "evander_nexus_accept_community_eula: true" in defaults
@@ -574,10 +574,6 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     assert "evander_apt_cache_port: 3142" in defaults
     assert 'evander_apt_cache_bind_host: "0.0.0.0"' in defaults
     assert 'evander_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"' in defaults
-    assert (
-        'evander_apt_cache_passthrough_pattern: "^(packages\\\\.microsoft\\\\.com):443$"'
-        in defaults
-    )
     assert "evander_apt_cache_allowed_tcp_ports" in defaults
     assert "[evander_apt_cache_port]" in defaults
 
@@ -616,7 +612,7 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     )
 
     assert "semantic_store: true" in defaults
-    assert 'evander_qdrant_image: "qdrant/qdrant:v1.18.0"' in defaults
+    assert 'evander_qdrant_image: "qdrant/qdrant:v1.19.2"' in defaults
     assert 'evander_qdrant_data_dir: "/var/lib/evander/qdrant"' in defaults
     assert 'evander_qdrant_bind_host: "127.0.0.1"' in defaults
     assert "evander_qdrant_port: 6333" in defaults

@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from evander.classification.models import ClassificationError, PreparedEvaluation, StrictModel
+from evander.cost_categories import normalize_cost_category
 
 
 def _port(value: str) -> str:
@@ -40,6 +41,19 @@ class ClassifierSwitchConfig(StrictModel):
     provider: str | None = Field(default=None, min_length=1)
     model: str | None = Field(default=None, min_length=1)
     min_probability: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    cost_category: str | None = Field(
+        default=None,
+        description="Inference cost category; omit/null to inherit, or use an empty string for Uncategorized.",
+    )
+
+    @field_validator("cost_category", mode="before")
+    @classmethod
+    def category_is_text(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("cost_category must be a string or null")
+        return value.strip()
 
     _validate_port = field_validator("default_port")(_port)
 
@@ -112,7 +126,10 @@ def prepare_switch(service, settings, payload: Any) -> PreparedSwitch:
 
 def execute_switch(service, settings, prepared: PreparedSwitch, *, attribution=None):
     _check_probability_support(service, prepared)
-    result = service.execute(settings, prepared.evaluation, attribution=attribution)
+    usage_attribution = dict(attribution or {})
+    if prepared.config.cost_category is not None:
+        usage_attribution["cost_category"] = normalize_cost_category(prepared.config.cost_category)
+    result = service.execute(settings, prepared.evaluation, attribution=usage_attribution)
     answer = result["answers"]["route"]
     choice = answer["choice"]
     port = choice

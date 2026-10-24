@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field as PydanticField
 from pydantic import ValidationError
 from evander.email.http_utils import ProviderRequestError

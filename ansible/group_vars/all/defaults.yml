@@ -144,7 +144,7 @@ evander_npm_audit_facade_port: 11881
 evander_apt_cache_bind_host: "0.0.0.0"
 evander_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
 evander_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
-evander_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com):443$"
+evander_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com|download\\.docker\\.com):443$"
 
 # Optional host-local Asterisk provisioning for the DIDWW SIP bridge. This is
 # disabled by default so existing deployments with hand-managed Asterisk configs
@@ -262,7 +262,7 @@ evander_worker_egress_policy_extra_allow_tcp_endpoints: []
 # Control-plane package cache. Nexus Repository Community Edition proxies only
 # public PyPI and npm in v1; publishing/internal hosted repositories are not
 # provisioned by this role.
-evander_nexus_version: "3.91.1-04"
+evander_nexus_version: "3.97.1-02"
 evander_nexus_archive_url: "https://download.sonatype.com/nexus/3/nexus-{{ evander_nexus_version }}-linux-x86_64.tar.gz"
 evander_nexus_archive_checksum: ""
 evander_nexus_user: "nexus"
@@ -277,6 +277,8 @@ evander_nexus_bind_host: "0.0.0.0"
 evander_nexus_admin_user: "admin"
 evander_nexus_admin_password: ""
 evander_nexus_accept_community_eula: true
+# Review Nexus required base telemetry before explicitly enabling acknowledgement.
+evander_nexus_acknowledge_mandatory_telemetry: false
 evander_nexus_blob_store: "default"
 evander_nexus_pypi_proxy_repository: "pypi-proxy"
 evander_nexus_pypi_group_repository: "pypi-all"
@@ -302,7 +304,7 @@ evander_worker_package_cache_probe_url: >-
 
 # Optional host-local semantic store. Qdrant is bound to localhost by default and is
 # intentionally not added to guest/worker firewall allowances in this first slice.
-evander_qdrant_image: "qdrant/qdrant:v1.18.0"
+evander_qdrant_image: "qdrant/qdrant:v1.19.2"
 evander_qdrant_data_dir: "/var/lib/evander/qdrant"
 evander_qdrant_bind_host: "127.0.0.1"
 evander_qdrant_port: 6333

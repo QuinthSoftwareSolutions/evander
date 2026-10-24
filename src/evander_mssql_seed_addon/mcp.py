@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonContext, AddonMcpTool
 from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
@@ -48,7 +48,7 @@ MCP_TOOL_CATALOG = (
 )
 
 
-def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
+def register_mcp_tools(server: MCPServer, context: AddonContext) -> tuple[str, ...]:
     store = MssqlSeedStore(context.runtime_dir)
 
     def _runtime() -> Any:

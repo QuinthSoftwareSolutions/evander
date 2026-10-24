@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from evander.codex_auth import CodexAuthMode, CodexTurnSpec
+from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral, CodexTurnSpec
 from evander.worker.codex_app_server import CodexAppServerError, CodexAppServerProcess
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.codex_egress_proxy import RestrictedCodexEgressProxy, _tunnel
@@ -542,6 +542,52 @@ def test_subscription_runner_classifies_rate_limit_request_error_for_durable_rep
         "profile_id": "team-a",
         "reason": "rate_limited",
     }
+
+
+@pytest.mark.parametrize("error", [
+    {"message": "Selected model is at capacity. Please try a different model."},
+    {"message": "Try again later", "codexErrorInfo": "serverOverloaded"},
+    {"cause": {"additionalDetails": "The model is overloaded. Please retry."}},
+    "Selected model is at capacity. Please try a different model.",
+])
+def test_subscription_runner_reports_model_capacity_after_partial_work(tmp_path, error):
+    class CapacityProcess(FakeTurnProcess):
+        def request(self, method, params=None, **kwargs):
+            if method != "turn/start":
+                return super().request(method, params, **kwargs)
+            self.notification_handler("item/completed", {
+                "threadId": params["threadId"], "turnId": "turn-capacity",
+                "item": {"type": "agentMessage", "id": "partial", "text": "Fix committed."},
+            })
+            if isinstance(error, str):
+                raise CodexAppServerError(error)
+            self.notification_handler("turn/completed", {
+                "threadId": params["threadId"],
+                "turn": {"id": "turn-capacity", "status": "failed", "error": error},
+            })
+            return {"turn": {"id": "turn-capacity", "status": "inProgress"}}
+
+    metadata = []
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION, subscription_profile_id="team-a",
+            prompt="Finish the approved fix", model="test-model",
+        ),
+        cwd="/home/agent", broker=FakeBroker(),
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log", finished_marker=tmp_path / "turn.exit",
+        metadata_callback=metadata.append, process_factory=CapacityProcess,
+    )
+    runner.run()
+
+    assert (tmp_path / "turn.exit").read_text() == "1"
+    assert "Fix committed." in (tmp_path / "turn.log").read_text()
+    assert metadata[-1]["codex_subscription_thread_id"] == "new-thread"
+    deferral = CodexSubscriptionDeferral.model_validate(metadata[-1]["codex_subscription_deferral"])
+    assert deferral.reason == "model_capacity"
+    assert deferral.queue_reason == "model_capacity"
+    assert deferral.profile_id == "team-a"
 
 
 def test_subscription_runner_does_not_classify_unrelated_quota_failure_as_capacity(

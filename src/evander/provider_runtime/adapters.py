@@ -351,6 +351,14 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def reconcile_session_policy(
+        self, target: str, policy: Mapping[str, Any], *, directory_path: str
+    ) -> dict[str, Any]:
+        return self._call_required(
+            self._delegate_method("reconcile_session_policy", self._operations_admin()),
+            "reconcile_session_policy", target, policy, directory_path=directory_path,
+        )
+
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any:
         return self._call_required(
             self._issue_git_method("session_update_metadata"),
@@ -365,6 +373,14 @@ class AdminRuntimeProviderAdapter:
             "session_set_image_generation_enabled",
             target=target,
             enabled=enabled,
+        )
+
+    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]) -> Any:
+        return self._call_required(
+            self._delegate_method("update_session_model_settings", self._operations_admin()),
+            "update_session_model_settings",
+            target,
+            settings,
         )
 
     def promote_agent_branch(self, **kwargs: Any) -> Any:
@@ -527,6 +543,10 @@ def build_provider_runtime_ports(
         session_lookup=_pick(provider_runtime, "session_lookup", admin_adapter),
         issue_updater=_pick(provider_runtime, "issue_updater", admin_adapter),
         session_metadata_updater=_pick(provider_runtime, "session_metadata_updater", admin_adapter),
+        session_policy_reconciler=_pick(provider_runtime, "session_policy_reconciler", admin_adapter),
+        session_model_settings_updater=_pick(
+            provider_runtime, "session_model_settings_updater", admin_adapter
+        ),
         session_image_generation_policy_updater=_pick(
             provider_runtime,
             "session_image_generation_policy_updater",

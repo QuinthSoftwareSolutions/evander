@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from evander.agent_threads import usable_agent_thread_id
+from evander.models import McpToolName, normalize_tool_names, tool_name_value
 
 from evander.admin.services.vm_agent.common import (
     Any,
@@ -278,6 +279,18 @@ class VmAgentContainerSessionHelperMixin:
             return None
         text = str(value).strip()
         return text or None
+
+    @staticmethod
+    def _agent_tool_names(payload: Mapping[str, Any]) -> list[McpToolName] | None:
+        if payload.get("allowed_tools") is None:
+            return None
+        tools = normalize_tool_names(payload["allowed_tools"], field_name="allowed_tools")
+        # Validate new input here so legacy stored manifests remain readable.
+        if any(tool_name_value(tool).startswith("ToolName.") for tool in tools):
+            raise ValueError(
+                "allowed_tools must use the canonical tool name, not a ToolName enum representation"
+            )
+        return tools
 
     @staticmethod
     def _agent_string_list(payload: Mapping[str, Any], key: str) -> list[str] | None:

@@ -29,7 +29,7 @@ Git, and HTTP surfaces.
 - Optional [integration contracts](docs/optional-integrations.md) for add-on settings,
   host credentials, readiness checks, worker factories and editable workflow starters
 
-- A Python MCP gateway with policy-gated Discord and email tool surfaces
+- A Python MCP SDK 2 gateway with policy-gated Discord and email tool surfaces, supporting legacy sessions and modern per-request MCP clients
 - Optional [Teams message editing](packages/teams-graph-addon/README.md#edit-a-message-sent-by-an-agent-session)
   through a session-owned MCP tool and workflow effect, with preserved rich content and guarded revisions
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
@@ -57,6 +57,8 @@ Git, and HTTP surfaces.
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
+- Read-only [Azure DevOps build discovery](docs/operations.md#host-side-azure-devops-build-read-tools)
+  by build number, pipeline, repository and branch, with separately granted build and work-item reads
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - Host-side Teams workers that consume optional Microsoft Graph change notifications independently
   from per-target polling fallback, and feed `trigger:teams:new-message` and

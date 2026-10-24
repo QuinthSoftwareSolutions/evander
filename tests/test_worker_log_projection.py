@@ -74,6 +74,36 @@ def test_projection_provisional_final_line_and_partial_utf8(tmp_path):
     assert read()[-1] == {"message": "å"}
 
 
+def test_appended_projection_isolates_callers_and_recovers_after_consumer_failure(tmp_path):
+    path = tmp_path / "events.jsonl"
+    cache = JsonlProjectionCache()
+    fail = False
+
+    def consume(state, event):
+        state.append(event)
+        if fail:
+            raise RuntimeError("consumer failed after changing its state")
+
+    def read():
+        return cache.read("test", [path], factory=list, consume=consume, weight=lambda state: 64)
+
+    path.write_text('{"value":1}\n')
+    first = read()
+    first[0]["value"] = 99
+    with path.open("a") as output:
+        output.write('{"value":2}\n')
+    second = read()
+    assert second == [{"value": 1}, {"value": 2}]
+    second.clear()
+    with path.open("a") as output:
+        output.write('{"value":3}\n')
+    fail = True
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        read()
+    fail = False
+    assert read() == [{"value": 1}, {"value": 2}, {"value": 3}]
+
+
 def test_projection_rebuilds_changed_earlier_file_and_bounds_entries(tmp_path):
     paths = [tmp_path / "one", tmp_path / "two"]
     paths[0].write_text("1\n")
@@ -183,6 +213,37 @@ def test_worker_tool_and_message_projection_updates_on_append(tmp_path, monkeypa
         )
         == []
     )
+
+
+def test_message_view_reuses_its_projection_for_outcome_and_remains_isolated(tmp_path, monkeypatch):
+    sessions = tmp_path / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    path = sessions / "rollout-test.jsonl"
+    path.write_text(
+        json.dumps(_event("reasoning", text="Checking the build"))
+        + "\n"
+        + json.dumps({"type": "turn.failed", "message": "The build failed"})
+        + "\n"
+    )
+    monkeypatch.setattr(service, "_TRANSCRIPT_PROJECTIONS", JsonlProjectionCache())
+    original = service._codex_session_projection
+    calls = []
+
+    def load(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_codex_session_projection", load)
+    expected = [
+        "reasoning: Checking the build",
+        "codex failed: Codex reported turn.failed: The build failed",
+    ]
+    messages = service.WorkerDaemon._codex_session_messages(tmp_path, "test")
+    assert messages == expected
+    assert len(calls) == 1
+    messages.clear()
+    assert service.WorkerDaemon._codex_session_messages(tmp_path, "test") == expected
+    assert len(calls) == 2
 
 
 def test_tail_overlap_after_bare_cr_keeps_both_logical_newlines(tmp_path):

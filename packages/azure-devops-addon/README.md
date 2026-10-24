@@ -30,6 +30,28 @@ explicit Azure DevOps operations report how to install or enable it.
 The existing ADO Activity add-on declares a dependency on this integration. It
 remains separately configured; its extraction is not part of this change.
 
+## Find a build by number
+
+With Evander 0.124.0 or later, grant `list_ado_builds` explicitly to allow read-only build
+discovery. Upgrading does not grant it to existing agents. The tool uses the session
+directory's configured organization, project and host-side `azure_devops_pat_env` credential.
+
+For example, call `list_ado_builds` with `build_number="release-42"`. Optional `pipeline_id`,
+`repository_id` and `branch` filters narrow the search; `pipeline_id` is a positive build
+definition ID and `branch` is a full ref such as `refs/heads/main`. Build numbers match exactly
+unless a trailing `*` requests a prefix search. Omitting filters lists recent builds.
+
+The response contains `project`, `builds`, `count` and `continuation_token`. Results are newest
+queued first, with a default `limit` of 25 and a maximum of 100 per call. Pass the opaque token
+unchanged with the same filters to retrieve the next page, until the token is null. Each match
+includes its `run_id`, `build_number`, `run_url`, source branch/commit, timestamps and status,
+plus pipeline and repository IDs/names when available. Multiple pipelines may share a build
+number, so the tool returns all matches on each page without choosing a build for the caller.
+
+After resolving the intended match, pass its `run_id` as `build_id` to `get_ado_build` or
+`list_ado_build_work_items`. These tools require their own grants. Build associations alone
+do not establish which build was deployed. See the [build read contract](../../docs/operations.md#host-side-azure-devops-build-read-tools).
+
 ## Cast a PR review vote
 
 Grant `submit_pr_review` and bind the target provider, repository, and PR in the session's

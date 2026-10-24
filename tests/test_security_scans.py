@@ -266,6 +266,22 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     )
     assert {field.key for field in node.fields if field.required} == {"session_id", "repo_path"}
     assert {port.key for port in node.output_ports} == {"completed", "error"}
+    field = next(field for field in node.fields if field.key == "resume_subscription_profile_id")
+    assert field.bindable and not field.required
+    schema = SecurityScanEffectDefinition.model_json_schema()["properties"]
+    assert schema["resume_subscription_profile_id"]["default"] is None
+    field = next(field for field in node.fields if field.key == "max_batch_text_bytes")
+    assert field.kind == "number" and field.bindable and not field.required
+    assert field.default_value is None  # Omitted resumes inherit their saved limit.
+    assert schema["max_batch_text_bytes"]["default"] is None
+    budget = SecurityScanRequest.model_json_schema()["properties"]["max_batch_text_bytes"]
+    assert budget["anyOf"][0] == {"type": "integer", "minimum": 1048576, "maximum": 2097152}
+    field = next(field for field in node.fields if field.key == "max_parallel_reviews")
+    assert field.kind == "number" and field.bindable and not field.required
+    assert field.default_value is None  # New scans use two; omitted resumes inherit.
+    assert schema["max_parallel_reviews"]["default"] is None
+    parallelism = SecurityScanRequest.model_json_schema()["properties"]["max_parallel_reviews"]
+    assert parallelism["anyOf"][0] == {"type": "integer", "minimum": 1, "maximum": 4}
 
 
 def test_tracked_coverage_defaults_and_unsupported_modes():
@@ -286,6 +302,190 @@ def test_tracked_coverage_defaults_and_unsupported_modes():
             request(**values)
     with pytest.raises(ValidationError, match="resume requires"):
         request(resume_from_scan_id="a" * 32)
+
+
+@pytest.mark.parametrize("profile", ["", "  ", "UPPERCASE", "../profile", 123, True])
+def test_subscription_handoff_requires_a_valid_explicit_profile(profile):
+    with pytest.raises(ValidationError):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            resume_from_scan_id="a" * 32, resume_subscription_profile_id=profile,
+        )
+
+
+def test_subscription_handoff_requires_a_linked_tracked_resume():
+    with pytest.raises(ValidationError, match="requires resume_from_scan_id"):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            resume_subscription_profile_id="subscription-b",
+        )
+    with pytest.raises(ValidationError, match="resume requires"):
+        request(resume_from_scan_id="a" * 32, resume_subscription_profile_id="subscription-b")
+
+
+def test_subscription_handoff_is_forwarded_only_to_capable_providers_and_is_idempotent(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        resume_from_scan_id="a" * 32, resume_subscription_profile_id="subscription-b",
+    )
+    with pytest.raises(ValueError, match="does not support subscription handoff"):
+        start(service, **inputs)
+    assert scanner.starts == [] and service.store.active() == []
+    scanner.supports_subscription_handoff = True
+    provider = SecurityScanEffectProvider()
+    provider.initialize(
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            **request(**{**inputs, "resume_subscription_profile_id": None}).model_dump(),
+        ),
+        EffectRuntimeContext(
+            security_scan_service=service, metadata={"directory_path": "root/project"}
+        ),
+    )
+    execution = {"idempotency_key": "event-1:scan-1", "execution_id": "execution-1"}
+    result = provider.execute(
+        resolved_config={"resume_subscription_profile_id": " subscription-b "},
+        execution_context=execution,
+    )
+    record = service.store.get(result["scan_id"], "root/project")
+    assert record.request.resume_subscription_profile_id == "subscription-b"
+    assert start(service, **inputs).scan_id == result["scan_id"]
+    assert scanner.starts == [result["scan_id"]]
+    for different in (None, "subscription-c"):
+        with pytest.raises(ValueError, match="reused with different inputs"):
+            start(service, **{**inputs, "resume_subscription_profile_id": different})
+    assert scanner.starts == [result["scan_id"]]
+
+
+@pytest.mark.parametrize("limit", [1048576, 1572864, 2097152])
+def test_batch_text_limit_is_a_bounded_tracked_workflow_input(limit):
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_batch_text_bytes=limit,
+    )
+    assert request(**inputs).max_batch_text_bytes == limit
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo",
+        **request(**inputs).model_dump(),
+    )
+    assert definition.max_batch_text_bytes == limit
+    with pytest.raises(ValidationError, match="requires all_tracked_files"):
+        request(max_batch_text_bytes=limit)
+
+
+@pytest.mark.parametrize("limit", [0, 1048575, 2097153, True, 2097152.0, "2097152"])
+def test_batch_text_limit_rejects_out_of_range_or_noninteger_values(limit):
+    with pytest.raises(ValidationError):
+        request(
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            max_batch_text_bytes=limit,
+        )
+
+
+def test_bound_batch_text_limit_requires_capability_and_preserves_execution_identity(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_batch_text_bytes=2097152,
+    )
+    with pytest.raises(ValueError, match="does not support a batch text limit"):
+        start(service, **inputs)
+    assert scanner.starts == [] and service.store.active() == []
+    scanner.supports_batch_text_limit = True
+    provider = SecurityScanEffectProvider()
+    provider.initialize(
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            **request(**inputs).model_dump(exclude={"max_batch_text_bytes"}),
+            max_batch_text_bytes="${{event.payload.batch_bytes}}",
+        ),
+        EffectRuntimeContext(
+            security_scan_service=service, metadata={"directory_path": "root/project"}
+        ),
+    )
+    execution = {"idempotency_key": "event-1:scan-1", "execution_id": "execution-1"}
+    with pytest.raises(ValidationError):
+        provider.execute(resolved_config={"max_batch_text_bytes": 2097153}, execution_context=execution)
+    assert scanner.starts == []
+    result = provider.execute(
+        resolved_config={"max_batch_text_bytes": 2097152}, execution_context=execution,
+    )
+    record = service.store.get(result["scan_id"], "root/project")
+    assert record.request.max_batch_text_bytes == 2097152
+    assert start(service, **inputs).scan_id == result["scan_id"]
+    for different in (None, 1048576):
+        with pytest.raises(ValueError, match="reused with different inputs"):
+            start(service, **{**inputs, "max_batch_text_bytes": different})
+    assert scanner.starts == [result["scan_id"]]
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 4])
+def test_review_parallelism_is_a_bounded_tracked_workflow_input(limit):
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_parallel_reviews=limit,
+    )
+    value = request(**inputs)
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo", **value.model_dump()
+    )
+    assert value.max_parallel_reviews == definition.max_parallel_reviews == limit
+    with pytest.raises(ValidationError, match="requires all_tracked_files"):
+        request(max_parallel_reviews=limit)
+
+
+@pytest.mark.parametrize("limit", [-1, 0, 5, True, False, 4.0, "4"])
+def test_review_parallelism_rejects_invalid_static_values(limit):
+    with pytest.raises(ValidationError):
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            session_id="session-1", repo_path="/home/agent/repo",
+            coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+            max_parallel_reviews=limit,
+        )
+
+
+def test_bound_parallelism_requires_capability_and_preserves_execution_identity(scanning):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"provider", "all_tracked_files"}
+    inputs = dict(
+        coverage_policy="all_tracked_files", managed_repo_id="managed-example",
+        max_parallel_reviews=4,
+    )
+    with pytest.raises(ValueError, match="does not support review parallelism"):
+        start(service, **inputs)
+    assert scanner.starts == [] and service.store.active() == []
+    scanner.supports_review_parallelism = True
+    provider = SecurityScanEffectProvider()
+    provider.initialize(
+        SecurityScanEffectDefinition(
+            id="scan", display_name="Scan", type="effect:security:scan-repo",
+            **request(**inputs).model_dump(exclude={"max_parallel_reviews"}),
+            max_parallel_reviews="${{event.payload.parallel_reviews}}",
+        ),
+        EffectRuntimeContext(
+            security_scan_service=service, metadata={"directory_path": "root/project"}
+        ),
+    )
+    execution = {"idempotency_key": "event-1:scan-1", "execution_id": "execution-1"}
+    for invalid in (5, True, "4"):
+        with pytest.raises(ValidationError):
+            provider.execute(
+                resolved_config={"max_parallel_reviews": invalid}, execution_context=execution
+            )
+    assert scanner.starts == []
+    result = provider.execute(
+        resolved_config={"max_parallel_reviews": 4}, execution_context=execution
+    )
+    assert service.store.get(result["scan_id"], "root/project").request.max_parallel_reviews == 4
+    assert start(service, **inputs).scan_id == result["scan_id"]
+    for changed in (None, 2):
+        with pytest.raises(ValueError, match="reused with different inputs"):
+            start(service, **{**inputs, "max_parallel_reviews": changed})
+    assert scanner.starts == [result["scan_id"]]
 
 
 def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
@@ -321,12 +521,14 @@ def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     assert not ({"error", "artifacts", "findings", "repo_path"} & result.keys())
     assert scanner.starts == before
     scanner.describe = lambda **_: {
-        "coverage_progress": {"files_total": 4, "raw_diagnostics": "private"},
+        "coverage_progress": {"files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4, "raw_diagnostics": "private"},
         "execution_configuration": {"model": "synthetic", "api_key": "private"},
         "raw_diagnostics": "private",
     }
     result = provider.execute()
-    assert result["coverage_progress"] == {"files_total": 4}
+    assert result["coverage_progress"] == {
+        "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4
+    }
     assert result["execution_configuration"] == {"model": "synthetic"}
     assert "raw_diagnostics" not in result
     scanner.describe = lambda **_: {"execution_configuration": None}

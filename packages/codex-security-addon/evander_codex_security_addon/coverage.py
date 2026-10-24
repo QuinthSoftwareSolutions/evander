@@ -11,8 +11,16 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 
+from evander.codex_auth import normalize_subscription_profile_id
+
 VERSION = 1
 SDK_VERSION = "0.1.31"
+BATCHING_VERSION = 4
+MAX_BATCH_FILES = 100
+DEFAULT_BATCH_TEXT_BYTES = 1024 * 1024
+MAX_BATCH_TEXT_BYTES = 2 * 1024 * 1024
+DEFAULT_PARALLEL_REVIEWS = 2
+MAX_PARALLEL_REVIEWS = 4
 RETENTION = timedelta(days=7)
 RESERVE_SECONDS = 300
 SEVERITIES = ("critical", "high", "medium", "low", "informational")
@@ -58,23 +66,50 @@ def inventory_digest(entries):
     return digest(sorted(entries, key=lambda x: x["path"]))
 
 
-def batches(entries):
-    """Stable exact-file scopes; never infer an ignore policy from a suffix."""
-    batch, size, directory = [], 0, None
+def batch_text_limit(state):
+    """Read the frozen budget without widening an older active journal."""
+    version = state.get("batching_version", 1)
+    if type(version) is not int or version not in {1, 2, 3, BATCHING_VERSION}:
+        raise ValueError("Source scan batching policy is incompatible")
+    if version in {1, 2}:
+        return 512 * 1024
+    if version == 3:
+        return DEFAULT_BATCH_TEXT_BYTES
+    limit = state.get("max_batch_text_bytes")
+    if type(limit) is not int or not DEFAULT_BATCH_TEXT_BYTES <= limit <= MAX_BATCH_TEXT_BYTES:
+        raise ValueError("Source scan batch text limit is incompatible")
+    return limit
+
+
+def review_parallelism(state):
+    """Keep historical scans at two and honor each new journal's frozen limit."""
+    limit = state.get("max_parallel_reviews", DEFAULT_PARALLEL_REVIEWS)
+    if type(limit) is not int or not 1 <= limit <= MAX_PARALLEL_REVIEWS:
+        raise ValueError("Source scan review parallelism is incompatible")
+    return limit
+
+
+def batches(entries, *, max_text_bytes=DEFAULT_BATCH_TEXT_BYTES):
+    """Pack adjacent paths across folders without omitting non-text entries."""
+    batch, text_bytes = [], 0
     for entry in sorted(entries, key=lambda x: x["path"]):
-        if entry["kind"] != "text":
+        # Keep large or unavailable content from consuming an otherwise
+        # reviewable scope. Other non-text entries still require individual
+        # dispositions, but do not each need a separate SDK invocation.
+        if entry["size"] > max_text_bytes or entry["kind"] == "unavailable":
             if batch:
                 yield batch
-                batch, size = [], 0
+                batch, text_bytes = [], 0
             yield [entry["path"]]
             continue
-        parent = str(PurePosixPath(entry["path"]).parent)
-        if batch and (parent != directory or len(batch) >= 100 or size + entry["size"] > 524288):
+        added_bytes = entry["size"] if entry["kind"] == "text" else 0
+        if batch and (
+            len(batch) >= MAX_BATCH_FILES or text_bytes + added_bytes > max_text_bytes
+        ):
             yield batch
-            batch, size = [], 0
+            batch, text_bytes = [], 0
         batch.append(entry["path"])
-        size += entry["size"]
-        directory = parent
+        text_bytes += added_bytes
     if batch:
         yield batch
 
@@ -112,6 +147,40 @@ def progress(state):
         ),
         "deadline_at": state["deadline_at"],
         "last_progress_at": state["last_progress_at"],
+        "max_batch_text_bytes": batch_text_limit(state),
+        "max_parallel_reviews": review_parallelism(state),
+    }
+
+
+def validate_resume_route(request, route, previous):
+    """Only a named, subscription-to-subscription handoff may differ from the source."""
+    destination = request.resume_subscription_profile_id
+    source = previous["route"]
+    if destination is None:
+        if route != source:
+            raise ValueError("Source scan configuration or snapshot is incompatible")
+        return None
+    if request.resume_from_scan_id != previous["scan_id"]:
+        raise ValueError("Subscription handoff requires the selected source scan")
+    if any(
+        selected.get("auth_mode") != "chatgpt_subscription"
+        or selected.get("model_provider_mode") != "openai_public"
+        for selected in (source, route)
+    ):
+        raise ValueError("Subscription handoff requires two public ChatGPT subscription routes")
+    source_profile = normalize_subscription_profile_id(
+        source.get("subscription_profile_id"), allow_none=False
+    )
+    if route.get("subscription_profile_id") != destination:
+        raise ValueError("Requested resume subscription must match the scanner session")
+    if {k: v for k, v in source.items() if k != "subscription_profile_id"} != {
+        k: v for k, v in route.items() if k != "subscription_profile_id"
+    }:
+        raise ValueError("Subscription handoff cannot change other scanner configuration")
+    return {
+        "source_scan_id": previous["scan_id"],
+        "source_subscription_profile_id": source_profile,
+        "destination_subscription_profile_id": destination,
     }
 
 
@@ -127,6 +196,9 @@ def make_state(
     state = {
         "version": VERSION,
         "sdk_version": SDK_VERSION,
+        "batching_version": BATCHING_VERSION,
+        "max_batch_text_bytes": request.max_batch_text_bytes or DEFAULT_BATCH_TEXT_BYTES,
+        "max_parallel_reviews": request.max_parallel_reviews or DEFAULT_PARALLEL_REVIEWS,
         "scan_id": scan_id,
         "directory_path": directory,
         "managed_repo_id": request.managed_repo_id,
@@ -159,6 +231,12 @@ def make_state(
     if previous:
         if not resumable(previous, at=at, until=previous_until):
             raise ValueError("Source scan is active, complete, expired, or awaiting cleanup")
+        previous_limit = batch_text_limit(previous)
+        previous_parallelism = review_parallelism(previous)
+        if request.max_parallel_reviews is None:
+            state["max_parallel_reviews"] = previous_parallelism
+        if request.max_batch_text_bytes is None:
+            state["max_batch_text_bytes"] = max(DEFAULT_BATCH_TEXT_BYTES, previous_limit)
         for key in (
             "version",
             "sdk_version",
@@ -166,10 +244,12 @@ def make_state(
             "managed_repo_id",
             "revision",
             "inventory_digest",
-            "route",
         ):
             if state[key] != previous[key]:
                 raise ValueError("Source scan configuration or snapshot is incompatible")
+        handoff = validate_resume_route(request, route, previous)
+        if handoff:
+            state["subscription_handoff"] = handoff
         state.update(
             {
                 key: deepcopy(previous[key])
@@ -186,6 +266,24 @@ def make_state(
         )
         state["lineage"] = [*previous["lineage"], previous["scan_id"]]
         state["open_questions"] = deepcopy(previous.get("open_questions", {}))
+        # Older cancellation paths could mark a just-accepted scope blocked.
+        # Restore scheduling from host-owned credit without granting new credit;
+        # the controller verifies all retained native proofs before journal creation.
+        for item in state["tasks"].values():
+            if item["kind"] == "architecture" and state["architecture"] is not None:
+                item["status"] = "completed"
+            elif (
+                item["kind"] == "files"
+                and item["status"] != "split"
+                and item["paths"]
+                and all(
+                    state["files"][path]["disposition"] in {"reviewed", "not_applicable"}
+                    for path in item["paths"]
+                )
+            ):
+                item["status"] = "completed"
+        if previous_limit != state["max_batch_text_bytes"]:
+            _regroup_unstarted_scopes(state)
         for item in state["tasks"].values():
             if item["status"] in {"running", "blocked"}:
                 item["status"] = "pending"
@@ -196,6 +294,8 @@ def make_state(
                 entry.update(disposition="pending", reason=None)
         state["phase"] = "reviewing" if state["architecture"] else "mapping"
     else:
+        if request.resume_subscription_profile_id is not None:
+            raise ValueError("Subscription handoff requires a retained source scan")
         if not entries:
             state.update(
                 architecture={"paths": [], "reason": "The pinned Git tree has no tracked files"},
@@ -205,10 +305,56 @@ def make_state(
             return state
         item = task("architecture", [x["path"] for x in entries])
         state["tasks"][item["id"]] = item
-        for paths in batches(entries):
+        for paths in batches(entries, max_text_bytes=batch_text_limit(state)):
             item = task("files", paths)
             state["tasks"][item["id"]] = item
     return state
+
+
+def _regroup_unstarted_scopes(state):
+    """Resize only untouched work in the new continuation's journal.
+
+    Attempted scopes and split children preserve their learned boundaries.
+    Retained retry errors fence prior attempts whose per-run counters were reset.
+    Accepted file credit, immutable proofs and the source journal are unchanged.
+    """
+    inventory = {entry["path"]: entry for entry in state["inventory"]}
+    for kind in ("files", "boundary"):
+        eligible = {
+            identity: item
+            for identity, item in state["tasks"].items()
+            if item["kind"] == kind
+            and item["status"] == "pending"
+            and not item["attempts"]
+            and not item.get("error")
+            and item.get("parent") is None
+        }
+        if not eligible:
+            continue
+        paths = {
+            path
+            for item in eligible.values()
+            for path in item["paths"]
+            if kind != "files" or state["files"][path]["disposition"] in {"pending", "blocked"}
+        }
+        scopes = [
+            task(kind, paths)
+            for paths in batches(
+                [inventory[path] for path in paths], max_text_bytes=batch_text_limit(state)
+            )
+        ]
+        if any(item["id"] in state["tasks"] and item["id"] not in eligible for item in scopes):
+            raise ValueError("Regrouped scope conflicts with retained review work")
+        for identity in eligible:
+            del state["tasks"][identity]
+        for item in scopes:
+            state["tasks"][item["id"]] = item
+        if kind == "boundary":
+            assign_deferred(
+                state,
+                scopes,
+                sorted({key for item in eligible.values() for key in item["deferred_keys"]}),
+            )
 
 
 def resumable(state, *, at=None, until=None):
@@ -267,7 +413,7 @@ def pending(state, *, at=None):
     occupied = sum(
         not a.get("cleanup_confirmed") for x in state["tasks"].values() for a in x["attempts"]
     )
-    slots = (1 if phase == "architecture" else 2) - occupied
+    slots = (1 if phase == "architecture" else review_parallelism(state)) - occupied
     return candidates[: max(0, slots)]
 
 
@@ -453,7 +599,10 @@ def plan_boundaries(state):
         anchors = set(state["files"])
     if anchors:
         scopes = []
-        for paths in batches([x for x in state["inventory"] if x["path"] in anchors]):
+        max_text_bytes = batch_text_limit(state)
+        for paths in batches(
+            [x for x in state["inventory"] if x["path"] in anchors], max_text_bytes=max_text_bytes
+        ):
             item = task("boundary", paths)
             state["tasks"][item["id"]] = item
             scopes.append(item)
@@ -538,6 +687,8 @@ class CoverageStore:
         self.root.chmod(0o700)
         self.path = self.root / "journal.sqlite3"
         with self.connect() as c:
+            if c.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                raise RuntimeError("Coverage journal requires write-ahead logging")
             c.execute(
                 "CREATE TABLE IF NOT EXISTS campaigns (scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL, repository TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"
             )
@@ -616,13 +767,37 @@ class CoverageStore:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
+    def _retention_metadata(self, repository=None):
+        """Keep historical findings out of Python and out of long-lived read cursors."""
+        query = (
+            "SELECT scan_id,directory,active,"
+            "json_extract(payload,'$.finished_at'),"
+            "json_extract(payload,'$.cleanup_confirmed'),"
+            "json_extract(payload,'$.cleanup_finished_at'),"
+            "json_extract(payload,'$.deadline_at'),"
+            "json_extract(payload,'$.lineage') FROM campaigns"
+        )
+        params = ()
+        if repository is not None:
+            query += " WHERE repository=?"
+            params = (repository,)
+        with self.connect() as c:
+            rows = c.execute(query, params).fetchall()
+        metadata = []
+        for scan_id, directory, active, finished, cleaned, cleanup_at, deadline, parents in rows:
+            lineage = json.loads(parents)
+            if not isinstance(lineage, list) or any(not isinstance(p, str) for p in lineage):
+                raise ValueError("Invalid retained coverage lineage")
+            metadata.append({
+                "scan_id": scan_id, "directory_path": directory, "active": bool(active),
+                "finished_at": finished, "cleanup_confirmed": bool(cleaned),
+                "cleanup_finished_at": cleanup_at, "deadline_at": deadline, "lineage": lineage,
+            })
+        return metadata
+
     def expired(self, *, at=None):
         at = at or now()
-        with self.connect() as c:
-            rows = c.execute("SELECT payload FROM campaigns WHERE active=0").fetchall()
-        states = [json.loads(row[0]) for row in rows]
-        with self.connect() as c:
-            all_states = [json.loads(row[0]) for row in c.execute("SELECT payload FROM campaigns")]
+        all_states = self._retention_metadata()
         referenced = {
             parent
             for s in all_states
@@ -632,22 +807,17 @@ class CoverageStore:
             for parent in s["lineage"]
         }
         return [
-            s
-            for s in states
-            if s["scan_id"] not in referenced
+            self.get(s["scan_id"], s["directory_path"])
+            for s in all_states
+            if not s["active"]
+            and s["scan_id"] not in referenced
             and s["finished_at"]
             and at >= retention_anchor(s) + RETENTION
         ]
 
     def retained_until(self, state):
         """Continuations protect their source journal without mutating its report."""
-        with self.connect() as c:
-            related = [
-                json.loads(row[0])
-                for row in c.execute(
-                    "SELECT payload FROM campaigns WHERE repository=?", (state["managed_repo_id"],)
-                )
-            ]
+        related = self._retention_metadata(state["managed_repo_id"])
         times = [
             (retention_anchor(s) if s["finished_at"] else datetime.fromisoformat(s["deadline_at"]))
             + RETENTION

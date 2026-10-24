@@ -1,6 +1,6 @@
 """Narrow MCP adapters for the shared case-context service."""
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .services.case_context_service import CaseContextAccess, CaseContextService, legacy_notes
 

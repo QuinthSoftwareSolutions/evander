@@ -29,6 +29,7 @@ from evander.host_directories.grants import (
 from evander.models import (
     McpToolName,
     SessionActionResult,
+    SessionManifest,
     SessionSummary,
     ToolName,
     normalize_tool_name,
@@ -260,10 +261,9 @@ class SessionAdminService:
             message=f"Updated allowed script names for session {session_id}",
         )
 
-    def update_session_policy(self, target: str, payload: dict[str, Any]) -> SessionActionResult:
-        session_id, manifest = session_helpers.resolve_session_target(
-            target, self._sessions_by_id()
-        )
+    def _prepare_session_policy_update(
+        self, manifest: SessionManifest, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
         contacts_config = None
         if "allowed_contact_ids" in payload:
             contacts_config = self._deps.runtime.provider_config.resolve_contacts_for_session_id(
@@ -341,6 +341,99 @@ class SessionAdminService:
                     update["approval_notification_target_ids"],
                 )
             )
+        return update
+
+    def reconcile_session_policy(
+        self, target: str, policy: Mapping[str, Any], *, directory_path: str
+    ) -> dict[str, Any]:
+        """Reconcile explicitly managed grants; preserve runtime and unmentioned policy."""
+        allowed_fields = {
+            "allowed_tools", "allowed_script_names", "approval_required_tools",
+            "approval_tool_settings", "tool_argument_policies", "connector_grants",
+            "host_directory_grants", "metadata",
+        }
+        unknown = set(policy) - allowed_fields
+        if unknown:
+            raise ValueError("Unsupported managed policy fields: " + ", ".join(sorted(unknown)))
+        for field in (
+            "allowed_tools", "approval_required_tools", "approval_tool_settings",
+            "tool_argument_policies",
+        ):
+            tools = policy.get(field) or ()
+            if isinstance(tools, str):
+                tools = (tools,)
+            for tool in tools:
+                if isinstance(tool, str) and tool.strip().startswith("ToolName."):
+                    raise ValueError("Use canonical tool names, not ToolName member representations")
+        repository = self._session_repository()
+        original = repository.resolve_session_target(target)
+        if original is None:
+            raise ValueError(f"Unknown session: {target}")
+        changed_fields: list[str] = []
+        before_update: SessionManifest | None = None
+
+        def reconcile(manifest: SessionManifest) -> SessionManifest:
+            nonlocal before_update, changed_fields
+            if manifest.created_at != original.created_at:
+                raise ValueError("Session was replaced during policy reconciliation")
+            if manifest.directory_path != directory_path:
+                raise ValueError("Session is outside the requested policy directory")
+            before_update = manifest.model_copy(deep=True)
+            payload = dict(policy)
+            tools = payload.pop("allowed_tools", None)
+            if "allowed_tools" in policy and not isinstance(tools, list):
+                raise ValueError("allowed_tools must be a list")
+            if tools is not None and any(
+                not isinstance(tool, str) or not tool.strip() for tool in tools
+            ):
+                raise ValueError("allowed_tools must contain non-empty tool names")
+            required = payload.get("approval_required_tools")
+            if isinstance(required, str):
+                required = [required]
+            if isinstance(required, (list, tuple)):
+                payload["approval_required_tools"] = [tool_name_value(tool) for tool in required]
+            if "metadata" in payload:
+                if not isinstance(payload["metadata"], Mapping):
+                    raise ValueError("metadata must be a JSON object")
+                payload["metadata"] = session_helpers.deep_merge_mapping(
+                    manifest.metadata, payload["metadata"]
+                )
+            update = self._prepare_session_policy_update(manifest, payload)
+            if tools is not None:
+                update["allowed_tools"] = session_helpers.normalize_allowed_tools(tools)
+                if "host_directory_grants" in update:
+                    update["allowed_tools"] = session_helpers.normalize_allowed_tools([
+                        *update["allowed_tools"],
+                        *host_directory_tool_names_for_grants(update["host_directory_grants"]),
+                    ])
+                values = {tool_name_value(t) for t in update["allowed_tools"]}
+                required = update.get("approval_required_tools", manifest.approval_required_tools)
+                settings = update.get("approval_tool_settings", manifest.approval_tool_settings)
+                update["approval_required_tools"] = [
+                    t for t in required if tool_name_value(t) in values
+                ]
+                update["approval_tool_settings"] = {
+                    k: v for k, v in settings.items() if k in values
+                }
+            changed_fields = sorted(k for k, v in update.items() if getattr(manifest, k) != v)
+            return manifest.model_copy(update={k: update[k] for k in changed_fields})
+
+        updated = repository.mutate_session(original.session_id, reconcile)
+        if changed_fields:
+            session_helpers.sync_added_discord_session_cursors(
+                self._deps.runtime, previous_session=before_update, updated_session=updated
+            )
+        return {
+            "success": True, "session_id": updated.session_id,
+            "directory_path": updated.directory_path,
+            "changed": bool(changed_fields), "changed_fields": changed_fields,
+        }
+
+    def update_session_policy(self, target: str, payload: dict[str, Any]) -> SessionActionResult:
+        session_id, manifest = session_helpers.resolve_session_target(
+            target, self._sessions_by_id()
+        )
+        update = self._prepare_session_policy_update(manifest, payload)
         if update:
             previous_manifest = manifest
             manifest = manifest.model_copy(update=update)

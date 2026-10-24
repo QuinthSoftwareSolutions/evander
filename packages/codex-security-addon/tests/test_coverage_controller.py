@@ -15,7 +15,7 @@ from evander_codex_security_addon.coverage import make_state, progress
 from evander_codex_security_addon import coverage as c
 from evander_codex_security_addon.coverage_provider import CoverageController
 
-from test_coverage import entry, request, mapping, finish as finish_scope, receipt as c_receipt
+from test_coverage import entry, request, mapping, finish as finish_scope, receipt as c_receipt, subscription_route
 
 
 class Worker:
@@ -170,7 +170,10 @@ def running(tmp_path):
         "a" * 32,
         request(),
         "root/project",
-        {"revision": "d" * 40, "entries": [entry("a/a.py"), entry("b/b.py"), entry("c/c.py")]},
+        {
+            "revision": "d" * 40,
+            "entries": [entry(path, size=600_000) for path in ("a/a.py", "b/b.py", "c/c.py")],
+        },
         {"model": "example"},
     )
     controller.store.create(state)
@@ -234,6 +237,246 @@ def test_full_controller_preserves_native_files_and_runs_at_most_two_reviews(run
         coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
         assert coverage["progress"]["files_total"] == 3
         assert all(value["receipt"] for value in coverage["files"].values())
+
+
+@pytest.mark.parametrize("handoff", [False, True])
+@pytest.mark.parametrize("batching_version", [None, 2, 3])
+@pytest.mark.parametrize("limit", [None, 2097152])
+def test_legacy_resume_packs_untouched_scopes_and_preserves_native_archives(
+    running, handoff, batching_version, limit
+):
+    controller, handle, worker, finish = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    # Earlier plans retain separate small scopes until an explicit continuation.
+    source.pop("max_batch_text_bytes")
+    if batching_version is None:
+        source.pop("batching_version")
+    else:
+        source["batching_version"] = batching_version
+    source["inventory"] = [
+        {**item, "size": {None: 20, 2: 300_000, 3: 600_000}[batching_version]}
+        for item in source["inventory"]
+    ]
+    source["inventory_digest"] = c.inventory_digest(source["inventory"])
+    if handoff:
+        source["route"] = subscription_route()
+        controller.route = lambda _: subscription_route()
+    controller.store.save(source)
+    controller.poll(handle)
+    finish()
+    stopped = controller.cancel(handle)
+    assert stopped.cleanup_confirmed
+    source = controller.store.get(source["scan_id"], "root/project")
+    assert source["architecture"] is not None
+    assert len([item for item in source["tasks"].values() if item["kind"] == "files"]) == 3
+    assert all(
+        not item["attempts"] for item in source["tasks"].values() if item["kind"] == "files"
+    )
+    before = deepcopy(source)
+    artifact = controller.artifacts.get(source["archive_key"])
+    original_archive = artifact.blob_path.read_bytes()
+    command = controller.provider._command
+    controller.provider._command = lambda runtime, sid, args: (
+        {"coverage_runtime": 1, "revision": source["revision"], "entries": source["inventory"]}
+        if args[0] == "coverage-inventory" else command(runtime, sid, args)
+    )
+    controller.runtime.admin_service = SimpleNamespace(
+        managed_git_admin=SimpleNamespace(
+            get_repository=lambda *_: None,
+            pin_retained_snapshot=lambda *_, **__: None,
+        )
+    )
+    controller.verify_inventory = lambda _: None
+    if handoff:
+        controller.route = lambda _: subscription_route("subscription-b")
+    continued_request = request(
+        resume_from_scan_id=source["scan_id"],
+        resume_subscription_profile_id="subscription-b" if handoff else None,
+        max_batch_text_bytes=limit,
+    )
+    resumed = controller.start("b" * 32, continued_request)
+    assert controller.start("b" * 32, continued_request) == resumed
+    journal = controller.store.get("b" * 32, "root/project")
+    scopes = [item for item in journal["tasks"].values() if item["kind"] == "files"]
+    expected = (
+        [["a/a.py"], ["b/b.py"], ["c/c.py"]]
+        if batching_version == 3 and limit is None
+        else [["a/a.py", "b/b.py", "c/c.py"]]
+    )
+    assert [item["paths"] for item in scopes] == expected
+    assert journal["proofs"] == source["proofs"]
+    assert journal["batching_version"] == 4
+    with pytest.raises(ValueError, match="different inputs"):
+        controller.start(
+            "b" * 32, continued_request.model_copy(update={"max_batch_text_bytes": 1048576})
+        )
+    for _ in range(6):
+        result = controller.poll(resumed)
+        if result.status != "running":
+            break
+        finish()
+    assert result.success and result.cleanup_confirmed
+    assert result.coverage_progress["files_reviewed"] == 3
+    assert not worker.active
+    assert controller.store.get(source["scan_id"], "root/project") == before
+    assert artifact.blob_path.read_bytes() == original_archive
+    with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
+        manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+        assert manifest["batching_version"] == coverage["batching_version"] == 4
+        assert manifest["max_batch_text_bytes"] == coverage["max_batch_text_bytes"] == (limit or 1048576)
+        assert result.coverage_progress["max_batch_text_bytes"] == (limit or 1048576)
+        assert source["proofs"][0]["archive_sha256"] in {
+            item["archive_sha256"] for item in manifest["sources"]
+        }
+        if handoff:
+            assert manifest["subscription_handoff"] == coverage["subscription_handoff"] == {
+                "source_scan_id": source["scan_id"],
+                "source_subscription_profile_id": "subscription-a",
+                "destination_subscription_profile_id": "subscription-b",
+            }
+        else:
+            assert "subscription_handoff" not in manifest and "subscription_handoff" not in coverage
+
+
+def test_pre_handoff_request_rejoins_without_rewriting_journal_or_relaunching(running):
+    controller, handle, worker, _ = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    source["request"].pop("resume_subscription_profile_id")
+    source["request"].pop("max_batch_text_bytes")
+    source.pop("max_batch_text_bytes")
+    source["batching_version"] = 3
+    controller.store.save(source)
+    recovered = CoverageController(controller.provider, controller.runtime)
+    assert recovered.start(source["scan_id"], request()) == handle
+    assert not worker.active
+    assert recovered.store.get(source["scan_id"], "root/project") == source
+    with pytest.raises(ValueError, match="different inputs"):
+        recovered.start(source["scan_id"], request(timeout_seconds=18000))
+    with pytest.raises(ValueError, match="different inputs"):
+        recovered.start(source["scan_id"], request(max_batch_text_bytes=1048576))
+
+
+def test_handoff_retains_accepted_work_rejoins_and_stops_on_a_later_profile_change(running):
+    controller, handle, worker, finish = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    source["route"] = subscription_route()
+    controller.store.save(source)
+    controller.route = lambda _: subscription_route()
+    controller.poll(handle)
+    finish()
+    controller.poll(handle)
+    finish()
+    stopped = controller.cancel(handle)
+    assert stopped.cleanup_confirmed and not worker.active
+    source = controller.store.get(source["scan_id"], "root/project")
+    assert progress(source)["files_reviewed"] == 2
+    assert c.aggregate(source)[1]["high"] == 1
+    before = deepcopy(source)
+    original = controller.artifacts.get(source["archive_key"]).blob_path.read_bytes()
+    command = controller.provider._command
+    controller.provider._command = lambda runtime, sid, args: (
+        {"coverage_runtime": 1, "revision": source["revision"], "entries": source["inventory"]}
+        if args[0] == "coverage-inventory" else command(runtime, sid, args)
+    )
+    pins, releases = [], []
+    controller.runtime.admin_service = SimpleNamespace(managed_git_admin=SimpleNamespace(
+        get_repository=lambda *_: None,
+        pin_retained_snapshot=lambda *_, **kwargs: pins.append(kwargs),
+        release_retained_snapshot=lambda *_, **kwargs: releases.append(kwargs),
+    ))
+    controller.verify_inventory = lambda _: None
+    controller.route = lambda _: subscription_route("subscription-b")
+    continued_request = request(
+        resume_from_scan_id=source["scan_id"], resume_subscription_profile_id="subscription-b",
+    )
+    retained = controller.artifacts.get(source["proofs"][0]["archive_key"])
+    native = retained.blob_path.read_bytes()
+    retained.blob_path.write_bytes(b"changed native archive")
+    with pytest.raises(ValueError, match="integrity"):
+        controller.start("b" * 32, continued_request)
+    assert not pins and not worker.active
+    with pytest.raises(ValueError):
+        controller.store.get("b" * 32, "root/project")
+    retained.blob_path.write_bytes(native)
+    resumed = controller.start("b" * 32, continued_request)
+    journal = controller.store.get("b" * 32, "root/project")
+    assert progress(journal)["files_reviewed"] == 2
+    assert c.aggregate(journal) == c.aggregate(source)
+    assert journal["proofs"] == source["proofs"]
+    assert pins[0]["commit_sha"] == source["revision"]
+    recovered = CoverageController(controller.provider, controller.runtime)
+    assert recovered.start("b" * 32, continued_request) == resumed
+    assert len(pins) == 1  # A lost start response rejoins the existing journal.
+    with pytest.raises(ValueError, match="different inputs"):
+        recovered.start("b" * 32, request(resume_from_scan_id=source["scan_id"]))
+    with pytest.raises(ValueError, match="active scan"):
+        controller.start("c" * 32, continued_request)
+    assert releases[0]["binding_id"] == "c" * 32
+    assert not worker.active
+    controller.poll(resumed)
+    assert len(worker.active) == 1
+    controller.route = lambda _: subscription_route("subscription-c")
+    final = controller.poll(resumed)
+    assert final.status == "failed" and final.cleanup_confirmed and not worker.active
+    final_state = controller.store.get("b" * 32, "root/project")
+    assert final_state["stop_reason"] == "Scanner model or access configuration changed"
+    assert c.resumable(final_state)
+    assert progress(final_state)["files_reviewed"] == 2
+    assert c.aggregate(final_state)[1]["high"] == 1
+    assert controller.store.get(source["scan_id"], "root/project") == before
+    assert controller.artifacts.get(source["archive_key"]).blob_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("kind", ["architecture", "files", "boundary"])
+def test_cancellation_preserves_results_accepted_while_stopping(running, kind):
+    controller, handle, worker, finish = running
+    for _ in range(12):
+        controller.poll(handle)
+        accepted = [item["id"] for _, item, _ in worker.active.values() if item["kind"] == kind]
+        finish()
+        if accepted:
+            result = controller.cancel(handle)
+            break
+    assert accepted and result.cleanup_confirmed
+    journal = controller.store.get(handle.metadata["scan_id"], "root/project")
+    assert all(journal["tasks"][identity]["status"] == "completed" for identity in accepted)
+    assert not worker.active
+
+
+def test_cancellation_preserves_partial_scope_splits_for_continuation(running):
+    controller, handle, worker, finish = running
+    source = controller.store.get(handle.metadata["scan_id"], "root/project")
+    source = make_state(
+        source["scan_id"], request(), "root/project",
+        {"revision": source["revision"], "entries": [entry(p) for p in source["files"]]},
+        source["route"],
+    )
+    controller.store.save(source)
+    controller.poll(handle)
+    finish()
+    controller.poll(handle)
+    execution_id, (_, item, attempt) = next(iter(worker.active.items()))
+    unit = c_receipt(source, item, closed=False)
+    native_archive(controller.artifacts, attempt["scan_id"], unit)
+    worker.results[execution_id] = {
+        "status": "failed", "coverage": "partial", "coverage_unit": unit,
+    }
+
+    result = controller.cancel(handle)
+    assert result.cleanup_confirmed
+    stopped = controller.store.get(source["scan_id"], "root/project")
+    assert stopped["tasks"][item["id"]]["status"] == "split"
+    assert progress(stopped)["files_reviewed"] == 0
+    continued = make_state(
+        "b" * 32, request(resume_from_scan_id=source["scan_id"]), "root/project",
+        {"revision": source["revision"], "entries": source["inventory"]},
+        source["route"], previous=stopped,
+    )
+    queued = c.pending(continued)
+    assert len(queued) == 2
+    assert all(child["parent"] == item["id"] for child in queued)
+    assert {p for child in queued for p in child["paths"]} == set(item["paths"])
 
 
 def test_sealed_advisory_questions_allow_completion_and_are_retained_in_reports(running):
@@ -635,6 +878,7 @@ def test_boundary_worker_inputs_only_include_their_own_outstanding_work(running,
         )
         assert list(staged["coverage_task"]["deferred"]) == [expected]
         assert staged["coverage_task"]["paths"] == scope["paths"]
+        assert staged["max_parallel_reviews"] == 2
 
 
 def test_cancel_keeps_repository_claim_until_cleanup_is_confirmed(running):
@@ -722,6 +966,69 @@ def test_uncertain_cleanup_occupies_a_slot_and_survives_controller_restart(runni
     recovered.poll(handle)
     assert len(worker.active) == 2
     assert worker.destroyed
+
+
+def test_four_review_slots_survive_uncertain_cleanup_and_publish_the_frozen_limit(running):
+    controller, handle, worker, finish = running
+    state = make_state(
+        handle.metadata["scan_id"], request(max_parallel_reviews=4), "root/project",
+        {
+            "revision": "d" * 40,
+            "entries": [entry(f"src/{i}.py", size=600_000) for i in range(6)],
+        },
+        {"model": "example"},
+    )
+    controller.store.save(state)
+    deadline = state["deadline_at"]
+    controller.poll(handle)
+    assert len(worker.active) == 1  # Mapping remains serial.
+    finish()
+    worker.fail_destroy = True
+    controller.poll(handle)
+    assert len(worker.active) == 4  # Unconfirmed mapping worker plus three file reviews.
+    occupied = set(worker.active)
+    saved = controller.store.get(state["scan_id"], "root/project")
+    assert progress(saved)["max_parallel_reviews"] == 4
+    assert sum(t["status"] == "running" for t in saved["tasks"].values()) == 3
+    recovered = CoverageController(controller.provider, controller.runtime)
+    recovered.route, recovered.backend, recovered.launch = (
+        controller.route, controller.backend, controller.launch
+    )
+    recovered.poll(handle)
+    assert set(worker.active) == occupied
+    worker.fail_destroy = False
+    recovered.poll(handle)
+    assert len(worker.active) == 4
+    for _ in range(6):
+        finish()
+        result = recovered.poll(handle)
+        assert len(worker.active) <= 4
+        if result.status != "running":
+            break
+    assert result.success and result.cleanup_confirmed and not worker.active
+    assert result.coverage_progress["files_reviewed"] == 6
+    assert result.coverage_progress["max_parallel_reviews"] == 4
+    assert result.coverage_progress["deadline_at"] == deadline
+    with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
+        manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+    assert manifest["max_parallel_reviews"] == coverage["max_parallel_reviews"] == 4
+
+
+def test_legacy_request_rejoins_without_widening_or_changing_identity(running):
+    controller, handle, worker, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    state.pop("max_parallel_reviews")
+    state["request"].pop("max_parallel_reviews")
+    controller.store.save(state)
+    assert controller.start(state["scan_id"], request()) == handle
+    assert not worker.active
+    with pytest.raises(ValueError, match="different inputs"):
+        controller.start(state["scan_id"], request(max_parallel_reviews=4))
+    assert not worker.active
+    saved = controller.store.get(state["scan_id"], "root/project")
+    assert "max_parallel_reviews" not in saved
+    assert progress(saved)["max_parallel_reviews"] == 2
 
 
 def test_lost_launch_response_rejoins_the_saved_generation(running):
@@ -855,7 +1162,8 @@ def test_lost_delete_response_is_reconciled_without_restarting_the_review(runnin
     assert result.coverage_progress["active_reviews"] == 2
 
 
-def test_managed_snapshot_inventory_and_resume_survive_force_push(tmp_path, monkeypatch):
+@pytest.mark.parametrize("handoff", [False, True])
+def test_managed_snapshot_inventory_and_resume_survive_force_push(tmp_path, monkeypatch, handoff):
     import subprocess
     from evander.admin.services.managed_git_service import ManagedGitAdminService
     from evander.security_scans import SecurityScanRequest
@@ -888,7 +1196,7 @@ def test_managed_snapshot_inventory_and_resume_survive_force_push(tmp_path, monk
         admin_service=SimpleNamespace(managed_git_admin=managed),
     )
     controller = CoverageController(provider, runtime)
-    controller.route = lambda _: {"model": "synthetic"}
+    controller.route = lambda _: subscription_route()
     request = SecurityScanRequest(
         session_id="scan-session",
         repo_path="/home/agent/repo",
@@ -910,9 +1218,12 @@ def test_managed_snapshot_inventory_and_resume_survive_force_push(tmp_path, monk
     managed.refresh_repository(repository["managed_repo_id"])
     bare, _ = managed.resolve_internal_repository(repository["managed_repo_id"], "root/project")
     git("gc", "--prune=now", repo=bare)
-    resumed = controller.start(
-        "b" * 32, request.model_copy(update={"resume_from_scan_id": "a" * 32})
-    )
+    if handoff:
+        controller.route = lambda _: subscription_route("subscription-b")
+    resumed = controller.start("b" * 32, request.model_copy(update={
+        "resume_from_scan_id": "a" * 32,
+        "resume_subscription_profile_id": "subscription-b" if handoff else None,
+    }))
     assert resumed.execution_id != first.execution_id
     assert controller.store.get("b" * 32, "root/project")["revision"] == old
     assert git("rev-parse", "refs/evander/security-scans/" + "b" * 32, repo=bare) == old

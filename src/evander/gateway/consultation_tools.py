@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, NoReturn
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.code_consultation_service import CodeConsultationService
 from evander.config import GatewayConfig
@@ -43,7 +43,7 @@ def _raise_tool_error(exc: Exception) -> NoReturn:
 
 
 def register_consultation_tools(
-    server: FastMCP,
+    server: MCPServer,
     context: RuntimeContext,
     deps: GatewayToolDependencies,
     *,

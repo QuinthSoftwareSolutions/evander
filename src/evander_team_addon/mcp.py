@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from evander.addons import AddonContext, AddonMcpTool
 from evander.events.internal import (
@@ -443,7 +443,7 @@ MCP_TOOL_CATALOG = tuple(
 )
 
 
-def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
+def register_mcp_tools(server: MCPServer, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
     register_case_context_tools(
         server,
@@ -688,7 +688,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
 
 
 def _register_collaboration_tools(
-    server: FastMCP,
+    server: MCPServer,
     note_commands: TeamNoteCommandService,
     memory_commands: TeamMemoryCommandService,
     agent_message_commands: TeamAgentMessageCommandService,
@@ -1335,7 +1335,7 @@ def _register_collaboration_tools(
 
 
 def _register_work_management_tools(
-    server: FastMCP,
+    server: MCPServer,
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
     task_update_commands: TeamTaskUpdateCommandService,
@@ -2523,7 +2523,7 @@ def _register_work_management_tools(
 
 
 def _register_delivery_review_tools(
-    server: FastMCP,
+    server: MCPServer,
     deliverable_commands: TeamDeliverableSubmissionCommandService,
     review_commands: TeamReviewCommandService,
     resolver: TeamMcpContextResolver,
@@ -2976,7 +2976,7 @@ def _register_delivery_review_tools(
 
 
 def _register_git_release_tools(
-    server: FastMCP,
+    server: MCPServer,
     command_service: TeamGitReleaseCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
@@ -3504,7 +3504,7 @@ def _team_mcp_memory_artifact_publisher(context: AddonContext):
 
 
 def _register_ephemeral_worker_tools(
-    server: FastMCP,
+    server: MCPServer,
     command_service: TeamEphemeralCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
@@ -3713,7 +3713,7 @@ def _register_ephemeral_worker_tools(
 
 
 def _register_read_tools(
-    server: FastMCP,
+    server: MCPServer,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
     *,
@@ -4845,7 +4845,7 @@ def _optional_event_datetime(value: object) -> datetime | None:
 
 
 def _register_persistent_placeholder(
-    server: FastMCP,
+    server: MCPServer,
     resolver: TeamMcpContextResolver,
     tool_name: str,
 ) -> None:
@@ -4865,7 +4865,7 @@ def _register_persistent_placeholder(
 
 
 def _register_chat_placeholder(
-    server: FastMCP,
+    server: MCPServer,
     resolver: TeamMcpContextResolver,
     tool_name: str,
 ) -> None:
@@ -4885,7 +4885,7 @@ def _register_chat_placeholder(
 
 
 def _register_ephemeral_placeholder(
-    server: FastMCP,
+    server: MCPServer,
     resolver: TeamMcpContextResolver,
     tool_name: str,
 ) -> None:

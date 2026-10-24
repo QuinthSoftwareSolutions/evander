@@ -1,4 +1,4 @@
-"""Carry owned, unreviewed commits across compatible task-specification edits."""
+"""Preserve task work across specification edits and clean ownership handoffs."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ from typing import Any
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.provider_models import AgentExecEffectDefinition
 
-from .models import DependencyGitSource, RetainedTaskWork, TeamGitPreparationAttemptState
+from .models import (
+    DependencyGitSource,
+    RetainedTaskWork,
+    TeamDispatchStatus,
+    TeamGitPreparationAttemptState,
+)
 from .provider_git_errors import DependencyGitPreparationError
 
 
@@ -60,9 +65,11 @@ def run(action, payload):
                 # checkout's composed base without replacing its first receipt.
                 # Only the latest server context can establish that no owned
                 # commits need carrying; never infer this from live config alone.
-                if head == base == source['context_base_commit_sha'] and ancestor(path, source['base_commit_sha'], head):
+                if not payload.get('empty_only') and head == base == source['context_base_commit_sha'] and ancestor(path, source['base_commit_sha'], head):
                     continue
                 raise Failure('workspace_receipt_mismatch', 'Retained checkout base differs from its preparation receipt.', evidence)
+            if payload.get('empty_only') and head != source['base_commit_sha']:
+                raise Failure('policy_conflict', 'A previous owner has committed task work; explicit recovery is required before handoff.', evidence)
             if not ancestor(path, source['base_commit_sha'], head):
                 raise Failure('contradictory_provenance', 'Retained commits do not descend from their recorded preparation base.', evidence)
             if head == source['base_commit_sha']:
@@ -117,14 +124,16 @@ except Failure as exc:
 """
 
 
-def _execute(preparation: Any, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _execute(
+    preparation: Any, action: str, payload: dict[str, Any], *, session_id: str | None = None
+) -> dict[str, Any]:
     provider = AgentExecEffectProvider()
     provider.initialize(
         AgentExecEffectDefinition(
             id=f"team-retained-work-{action}-{preparation.preparation_attempt_id}",
             type="effect:agent:exec",
             display_name="Preserve committed task work across preparation generations",
-            session_id=preparation.batch.session_id,
+            session_id=session_id or preparation.batch.session_id,
             command=["python3", "-c", CONTINUITY_SCRIPT, action, json.dumps(payload)],
             working_directory="/home/agent",
             timeout_seconds=120,
@@ -147,13 +156,48 @@ def _execute(preparation: Any, action: str, payload: dict[str, Any]) -> dict[str
     return result
 
 
+def validate_handoff_writers(preparation: Any, state: Any) -> None:
+    """Recheck historical writers at both inspection and context commit."""
+    p = preparation
+    if p.dependency_composition_mode != "automatic":
+        return
+    contexts = [
+        c
+        for c in state.git_work_contexts.values()
+        if c.task_id == p.task_id and c.worktree_path and c.agent_id != p.batch.agent_id
+    ]
+    if not contexts:
+        return
+    owners = {c.agent_id for c in contexts}
+    receipts = [
+        a
+        for a in state.git_preparation_attempts.values()
+        if a.task_id == p.task_id
+        and a.agent_id in owners
+        and a.state == TeamGitPreparationAttemptState.COMMITTED
+    ]
+    sessions = {a.session_id for a in receipts}
+    dispatch_ids = {c.dispatch_id for c in contexts} | {a.latest_dispatch_id for a in receipts}
+    if any(
+        d.status in (TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED)
+        and (d.agent_id in owners or d.session_id in sessions)
+        and (p.task_id in d.task_ids or d.id in dispatch_ids)
+        for d in state.dispatches.values()
+    ):
+        raise DependencyGitPreparationError(
+            task_id=p.task_id,
+            cause="policy_conflict",
+            message="A previous owner has an active task dispatch; wait for it to finish before handoff.",
+        )
+
+
 def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
     """Select and persist an exact source before any target checkout is changed."""
 
     p = preparation
     state = p.batch.state
     attempt = state.git_preparation_attempts[p.preparation_attempt_id]
-    if attempt.retained_work is not None or attempt.state != TeamGitPreparationAttemptState.PENDING:
+    if attempt.state == TeamGitPreparationAttemptState.COMMITTED:
         return attempt.retained_work
     if p.dependency_composition_mode != "automatic":
         return None  # Explicit reviewed recovery already supplies its own exact source.
@@ -164,6 +208,10 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
         and c.worktree_path is not None
         and (c.agent_branch, c.worktree_path) != (p.agent_branch, p.expected_worktree_path)
     ]
+    if attempt.retained_work is not None or attempt.state != TeamGitPreparationAttemptState.PENDING:
+        # Reuse the exact owned-work pin after interruption, but verify foreign
+        # checkouts again: their emptiness has no immutable Git receipt.
+        contexts = [c for c in contexts if c.agent_id != p.batch.agent_id]
     sources = {}
     for context in sorted(contexts, key=lambda item: (item.created_at, item.updated_at, item.id)):
         matches = [
@@ -185,12 +233,17 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
                 message="Prior task work has no unique committed preparation receipt; recover its provenance before creating a fresh checkout.",
             )
         previous = matches[0]
-        namespace = f"agents/{p.batch.session_id}/"
+        owner = state.agents.get(context.agent_id)
+        foreign = context.agent_id != p.batch.agent_id
+        namespace = f"agents/{previous.session_id}/"
         root = PurePosixPath(f"/home/agent/worktrees/{p.batch.task_worktree_repo_name}")
         path = PurePosixPath(context.worktree_path)
         if (
-            context.agent_id != p.batch.agent_id
-            or previous.session_id != p.batch.session_id
+            owner is None
+            or owner.session_id != previous.session_id
+            or owner.team_id != state.projects[p.batch.project_id].team_id
+            or previous.project_id != p.batch.project_id
+            or (previous.session_id != p.batch.session_id) != foreign
             or previous.managed_repo_id != p.managed_repo_id
             or previous.directory_path != p.directory_path
             or previous.execution_backend != p.execution_backend
@@ -203,7 +256,7 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
                 task_id=p.task_id,
                 cause="policy_conflict",
                 evidence=evidence,
-                message="Prior task work is outside the current owner, session, repository or directory; explicit recovery is required.",
+                message="Prior task work has incompatible owner, session, project or repository provenance; explicit recovery is required.",
             )
         if not previous.base_commit_sha:
             raise DependencyGitPreparationError(
@@ -211,6 +264,13 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
                 cause="workspace_receipt_mismatch",
                 evidence=evidence,
                 message="Prior task work has no authoritative preparation base.",
+            )
+        if foreign and previous.head_commit_sha != previous.base_commit_sha:
+            raise DependencyGitPreparationError(
+                task_id=p.task_id,
+                cause="policy_conflict",
+                evidence=evidence,
+                message="A previous owner's receipt contains retained work; explicit recovery is required before handoff.",
             )
         source_root = (
             context.dependency_composition_manifest.base_commit_sha
@@ -227,7 +287,7 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
             ]
             and context.dependency_composition_recovery_id == p.dependency_composition_recovery_id
         )
-        sources[(context.agent_branch, context.worktree_path)] = {
+        sources[(previous.session_id, context.agent_branch, context.worktree_path)] = {
             "source_context_id": context.id,
             "source_attempt_id": previous.id,
             "source_generation": previous.preparation_generation,
@@ -239,17 +299,39 @@ def pin_retained_task_work(preparation: Any) -> RetainedTaskWork | None:
             "compatible": compatible,
         }
     if not sources:
-        return None
+        return attempt.retained_work
+    validate_handoff_writers(p, state)
     if len(sources) > 32:
         raise DependencyGitPreparationError(
             task_id=p.task_id,
             cause="policy_conflict",
             message="Too many retained task branches for automatic continuity; explicit recovery is required.",
         )
+    # A clean checkout with no owned commits is not work to transfer. Inspect
+    # every historical owner in its original session before preparing a new one.
+    # Foreign commits remain an explicit recovery, never an automatic import.
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for (session_id, _, _), source in sources.items():
+        by_session.setdefault(session_id, []).append(source)
+    for session_id, session_sources in by_session.items():
+        if session_id != p.batch.session_id:
+            _execute(
+                p,
+                "probe",
+                {
+                    "sources": session_sources,
+                    "repo_dir": p.batch.project_repo["target_dir"],
+                    "empty_only": True,
+                },
+                session_id=session_id,
+            )
+    owned_sources = by_session.get(p.batch.session_id)
+    if not owned_sources:
+        return attempt.retained_work
     selected = _execute(
         p,
         "probe",
-        {"sources": list(sources.values()), "repo_dir": p.batch.project_repo["target_dir"]},
+        {"sources": owned_sources, "repo_dir": p.batch.project_repo["target_dir"]},
     )["retained_work"]
     if selected is None:
         return None

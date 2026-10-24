@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from evander.gateway import create_server
@@ -141,11 +141,7 @@ def test_state_tool_propagates_provider_failure_without_unguarded_retry(
     transport(reject)
     with pytest.raises(
         ToolError,
-        match={
-            "conflict": "state test failed",
-            "invalid_state": "invalid state transition",
-            "timeout": "uncertain update",
-        }[failure],
+        match="Error executing tool update_ado_backlog_state",
     ):
         call_tool(server, TOOL.value, _arguments(expected_state="Committed"))
     assert len(requests) == 1

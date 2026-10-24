@@ -72,51 +72,81 @@ def resolve_workflow_bindings(
 ) -> BindingResolutionResult:
     """Resolve `${{node_id.key}}` and nested `${{node_id.key.path}}` bindings against upstream payload values."""
 
-    declared_names = {
-        node_id: set(output_names)
-        for node_id, output_names in declared_upstream_output_names.items()
-    }
-    consumed: set[str] = set()
-    trace_entries: list[BindingResolutionTraceEntry] = []
+    return _WorkflowBindingResolver(
+        upstream_payload,
+        declared_upstream_output_names,
+        system_value_resolver=system_value_resolver,
+        strict_validation=strict_validation,
+    ).resolve(raw_config)
 
-    def _resolve_value(value: Any, *, config_path: tuple[str | int, ...] = ()) -> Any:
+
+class _WorkflowBindingResolver:
+    """Resolve one configuration while keeping traversal and trace state local."""
+
+    def __init__(
+        self,
+        upstream_payload: dict[str, dict[str, Any]],
+        declared_upstream_output_names: dict[str, set[str] | list[str] | tuple[str, ...]],
+        *,
+        system_value_resolver: Callable[[str], Any] | None,
+        strict_validation: bool,
+    ) -> None:
+        self.upstream_payload = upstream_payload
+        self.declared_names = {
+            node_id: set(output_names)
+            for node_id, output_names in declared_upstream_output_names.items()
+        }
+        self.system_value_resolver = system_value_resolver
+        self.strict_validation = strict_validation
+        self.consumed: set[str] = set()
+        self.trace_entries: list[BindingResolutionTraceEntry] = []
+
+    def resolve(self, raw_config: Any) -> BindingResolutionResult:
+        resolved = self._resolve_value(raw_config)
+        trace = BindingResolutionTrace(
+            consumed_output_keys=tuple(sorted(self.consumed)),
+            entries=tuple(self.trace_entries),
+        )
+        return BindingResolutionResult(resolved_config=resolved, trace=trace)
+
+    def _resolve_value(self, value: Any, *, config_path: tuple[str | int, ...] = ()) -> Any:
         if isinstance(value, dict):
             resolved_dict: dict[str, Any] = {}
             for key, item in value.items():
-                resolved_key = _resolve_mapping_key(key, config_path=config_path)
+                resolved_key = self._resolve_mapping_key(key, config_path=config_path)
                 if resolved_key in resolved_dict:
                     formatted_path = _format_config_path(config_path)
                     raise BindingResolutionError(
                         f"Resolved duplicate object key {resolved_key!r} at {formatted_path}"
                     )
-                resolved_dict[resolved_key] = _resolve_value(
+                resolved_dict[resolved_key] = self._resolve_value(
                     item, config_path=(*config_path, resolved_key)
                 )
             return resolved_dict
         if isinstance(value, list):
             return [
-                _resolve_value(item, config_path=(*config_path, index))
+                self._resolve_value(item, config_path=(*config_path, index))
                 for index, item in enumerate(value)
             ]
         if isinstance(value, str):
-            return _resolve_string(value, config_path=config_path)
+            return self._resolve_string(value, config_path=config_path)
         return value
 
-    def _resolve_string(text: str, *, config_path: tuple[str | int, ...]) -> Any:
+    def _resolve_string(self, text: str, *, config_path: tuple[str | int, ...]) -> Any:
         exact_match = _OUTPUT_REF_EXACT_RE.fullmatch(text)
         if exact_match:
             expression = _parse_binding_expression(exact_match.group(1), source_text=text)
-            return _consume_expression(
+            return self._consume_expression(
                 expression,
                 config_path=config_path,
                 source_text=text,
             )
 
-        _validate_malformed_patterns(text)
+        self._validate_malformed_patterns(text)
 
         def _replace(match: re.Match[str]) -> str:
             expression = _parse_binding_expression(match.group(1), source_text=match.group(0))
-            resolved = _consume_expression(
+            resolved = self._consume_expression(
                 expression,
                 config_path=config_path,
                 source_text=match.group(0),
@@ -125,19 +155,19 @@ def resolve_workflow_bindings(
 
         return _OUTPUT_REF_ANY_RE.sub(_replace, text)
 
-    def _resolve_mapping_key(key: Any, *, config_path: tuple[str | int, ...]) -> str:
+    def _resolve_mapping_key(self, key: Any, *, config_path: tuple[str | int, ...]) -> str:
         if not isinstance(key, str):
             return str(key)
         if "${{" not in key:
             return key
-        resolved = _resolve_string(key, config_path=config_path)
+        resolved = self._resolve_string(key, config_path=config_path)
         if resolved is None or isinstance(resolved, (dict, list, tuple, set)):
             raise BindingResolutionError(
                 f"Resolved object key at {_format_config_path(config_path)} must be scalar"
             )
         return str(resolved)
 
-    def _validate_malformed_patterns(text: str) -> None:
+    def _validate_malformed_patterns(self, text: str) -> None:
         if "${{" not in text:
             return
         index = 0
@@ -147,32 +177,33 @@ def resolve_workflow_bindings(
                 return
             end = text.find("}}", start + 3)
             if end == -1:
-                if strict_validation:
+                if self.strict_validation:
                     raise BindingResolutionError(f"Malformed output reference in string: {text!r}")
                 return
             expression_text = text[start + 3 : end]
             try:
                 _parse_binding_expression(expression_text, source_text=text)
             except BindingResolutionError:
-                if strict_validation:
+                if self.strict_validation:
                     raise BindingResolutionError(f"Malformed output reference in string: {text!r}")
                 index = end + 2
                 continue
             index = end + 2
 
     def _consume_expression(
+        self,
         expression: _BindingExpression,
         *,
         config_path: tuple[str | int, ...],
         source_text: str,
     ) -> Any:
         try:
-            value, resolution = _resolve_expression(expression)
+            value, resolution = self._resolve_expression(expression)
         except BindingResolutionError:
             if not expression.has_fallback:
-                if strict_validation:
+                if self.strict_validation:
                     raise
-                value = _render_expression_placeholder(expression)
+                value = self._render_expression_placeholder(expression)
                 resolution = {
                     "reference": f"{expression.primary.node_id}.{expression.primary.output_path}",
                     "source_node_id": expression.primary.node_id,
@@ -183,14 +214,14 @@ def resolve_workflow_bindings(
             else:
                 fallback = expression.fallback
                 if isinstance(fallback, _BindingExpression):
-                    value, resolution = _resolve_expression(fallback)
+                    value, resolution = self._resolve_expression(fallback)
                     resolution = {
                         **resolution,
                         "fallback_used": True,
                         "status": "fallback_used",
                     }
                 elif isinstance(fallback, _BindingReference):
-                    value, reference_text = _resolve_reference(fallback)
+                    value, reference_text = self._resolve_reference(fallback)
                     resolution = {
                         "reference": reference_text,
                         "source_node_id": fallback.node_id,
@@ -208,7 +239,7 @@ def resolve_workflow_bindings(
                         "status": "fallback_literal",
                     }
 
-        trace_entries.append(
+        self.trace_entries.append(
             BindingResolutionTraceEntry(
                 config_path=_format_config_path(config_path),
                 expression=source_text,
@@ -223,22 +254,22 @@ def resolve_workflow_bindings(
         )
         return value
 
-    def _resolve_expression(expression: _BindingExpression) -> tuple[Any, dict[str, Any]]:
+    def _resolve_expression(self, expression: _BindingExpression) -> tuple[Any, dict[str, Any]]:
         try:
-            value, reference = _resolve_reference(expression.primary)
+            value, reference = self._resolve_reference(expression.primary)
         except BindingResolutionError:
             if not expression.has_fallback:
                 raise
             fallback = expression.fallback
             if isinstance(fallback, _BindingExpression):
-                value, resolution = _resolve_expression(fallback)
+                value, resolution = self._resolve_expression(fallback)
                 return value, {
                     **resolution,
                     "fallback_used": True,
                     "status": "fallback_used",
                 }
             if isinstance(fallback, _BindingReference):
-                value, reference_text = _resolve_reference(fallback)
+                value, reference_text = self._resolve_reference(fallback)
                 return value, {
                     "reference": reference_text,
                     "source_node_id": fallback.node_id,
@@ -261,8 +292,8 @@ def resolve_workflow_bindings(
             "status": "resolved",
         }
 
-    def _resolve_reference(reference: _BindingReference) -> tuple[Any, str]:
-        reference = _resolve_available_reference(reference)
+    def _resolve_reference(self, reference: _BindingReference) -> tuple[Any, str]:
+        reference = self._resolve_available_reference(reference)
         output_ref = f"{reference.node_id}.{reference.output_path}"
         output_segments = tuple(segment for segment in reference.output_path.split(".") if segment)
         if not output_segments:
@@ -270,50 +301,50 @@ def resolve_workflow_bindings(
                 f"Malformed output reference in string: '${{{{{output_ref}}}}}'"
             )
         if reference.node_id == "system":
-            if system_value_resolver is None:
-                if strict_validation:
+            if self.system_value_resolver is None:
+                if self.strict_validation:
                     raise BindingResolutionError(
                         f"Output reference node {reference.node_id!r} is not available in this upstream path"
                     )
                 return f"${{{{{output_ref}}}}}", output_ref
             try:
-                resolved_value = system_value_resolver(reference.output_path)
+                resolved_value = self.system_value_resolver(reference.output_path)
             except Exception as exc:  # noqa: BLE001
-                if strict_validation:
+                if self.strict_validation:
                     raise BindingResolutionError(str(exc)) from exc
                 return f"${{{{{output_ref}}}}}", output_ref
-            consumed.add(output_ref)
+            self.consumed.add(output_ref)
             return resolved_value, output_ref
         output_name = output_segments[0]
-        if strict_validation and reference.node_id not in declared_names:
+        if self.strict_validation and reference.node_id not in self.declared_names:
             raise BindingResolutionError(
                 f"Output reference node {reference.node_id!r} is not available in this upstream path"
             )
-        if strict_validation and output_name not in declared_names.get(reference.node_id, set()):
+        if self.strict_validation and output_name not in self.declared_names.get(reference.node_id, set()):
             raise BindingResolutionError(
                 f"Output reference {output_ref!r} is not declared by upstream node"
             )
-        node_payload = upstream_payload.get(reference.node_id, {})
+        node_payload = self.upstream_payload.get(reference.node_id, {})
         try:
             resolved_value = _resolve_output_path(node_payload, output_segments)
         except BindingResolutionError:
-            if strict_validation:
+            if self.strict_validation:
                 raise
             return f"${{{{{output_ref}}}}}", output_ref
-        consumed.add(output_ref)
+        self.consumed.add(output_ref)
         return resolved_value, output_ref
 
-    def _resolve_available_reference(reference: _BindingReference) -> _BindingReference:
+    def _resolve_available_reference(self, reference: _BindingReference) -> _BindingReference:
         full_reference = f"{reference.node_id}.{reference.output_path}"
         segments = tuple(segment for segment in full_reference.split(".") if segment)
         for index in range(len(segments) - 1, 0, -1):
             node_id = ".".join(segments[:index])
             output_path = ".".join(segments[index:])
-            if node_id in declared_names or node_id in upstream_payload:
+            if node_id in self.declared_names or node_id in self.upstream_payload:
                 return _BindingReference(node_id=node_id, output_path=output_path)
         return reference
 
-    def _render_expression_placeholder(expression: _BindingExpression) -> str:
+    def _render_expression_placeholder(self, expression: _BindingExpression) -> str:
         rendered = f"{expression.primary.node_id}.{expression.primary.output_path}"
         if expression.has_fallback:
             fallback = expression.fallback
@@ -325,13 +356,6 @@ def resolve_workflow_bindings(
                 fallback_text = json.dumps(fallback)
             rendered = f"{rendered} ?? {fallback_text}"
         return f"${{{{{rendered}}}}}"
-
-    resolved = _resolve_value(raw_config)
-    trace = BindingResolutionTrace(
-        consumed_output_keys=tuple(sorted(consumed)),
-        entries=tuple(trace_entries),
-    )
-    return BindingResolutionResult(resolved_config=resolved, trace=trace)
 
 
 resolve_effect_config_bindings = resolve_workflow_bindings

@@ -18,6 +18,7 @@ from evander.admin.services.ports import DirectoryPathPort, DirectoryOwnershipPo
 from evander.models import (
     LocalIssueRecord,
     RemoteIssueReference,
+    SessionManifest,
     VmActionResult,
 )
 from evander.repositories.session_manifests import as_session_manifest_repository
@@ -462,10 +463,20 @@ class IssueGitAdminService:
         self, *, target: str, metadata: Mapping[str, Any]
     ) -> dict[str, Any]:
         session_repository = self._session_repository()
-        session_id, manifest = self._resolve_session_target(target)
-        merged_metadata = session_helpers.deep_merge_mapping(manifest.metadata, metadata)
-        updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
-        session_repository.upsert_session(updated_manifest)
+        session_id, original = self._resolve_session_target(target)
+
+        def merge_metadata(manifest: SessionManifest) -> SessionManifest:
+            # Legacy manifests generate a new default timestamp on each read.
+            if (
+                "created_at" in original.model_fields_set
+                and manifest.created_at != original.created_at
+            ):
+                raise ValueError("Session was replaced during metadata update")
+            return manifest.model_copy(
+                update={"metadata": session_helpers.deep_merge_mapping(manifest.metadata, metadata)}
+            )
+
+        updated_manifest = session_repository.mutate_session(session_id, merge_metadata)
         return {
             "success": True,
             "action": "session_update_metadata",
@@ -510,6 +521,7 @@ class IssueGitAdminService:
             "created_at": manifest.created_at.isoformat(),
             "expires_at": manifest.expires_at.isoformat(),
             "model": manifest.model,
+            "reasoning_effort": manifest.reasoning_effort,
         }
         if include_activity:
             from evander.admin.services.conversation_delivery_service import active_conversation

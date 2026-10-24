@@ -3,10 +3,15 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+from array import array
+from collections import OrderedDict
 
 from .models import IndexArtifact, IndexSettings, TOOLCHAIN, digest, source_path
 from .scip import portable_scip
 from .store import IndexStore, search_terms
+
+_LINE_WIDTH_CACHE_BYTES = 4 * 1024 * 1024
+_LINE_WIDTH_CACHE_ENTRIES = 128
 
 
 def validate_artifact(
@@ -36,26 +41,47 @@ def validate_artifact(
                 raise ValueError(f"Indexed document does not match Git snapshot: {document.path}")
         documents[document.path] = document
     occurrences = []
+    line_widths: OrderedDict[tuple[str, str], array] = OrderedDict()
+    retained_width_bytes = 0
     for occurrence in artifact.occurrences:
         document = documents.get(occurrence.path)
         if document is None:
             continue
-        lines = document.text.split("\n")
-        if occurrence.end_line < occurrence.line or occurrence.end_line > len(lines):
+        key = (occurrence.path, occurrence.encoding)
+        widths = line_widths.get(key)
+        if widths is None:
+            # A document can have thousands of occurrences. Retain only line widths,
+            # rather than splitting and re-encoding the source for every range.
+            if occurrence.encoding == "utf-16":
+                widths = array(
+                    "I", (len(line.encode("utf-16-le")) // 2 for line in document.text.split("\n"))
+                )
+            elif occurrence.encoding == "utf-8":
+                widths = array(
+                    "I", (len(line.encode("utf-8")) for line in document.text.split("\n"))
+                )
+            else:
+                widths = array("I", (len(line) for line in document.text.split("\n")))
+            width_bytes = len(widths) * widths.itemsize
+            if width_bytes <= _LINE_WIDTH_CACHE_BYTES:
+                while (
+                    retained_width_bytes + width_bytes > _LINE_WIDTH_CACHE_BYTES
+                    or len(line_widths) >= _LINE_WIDTH_CACHE_ENTRIES
+                ):
+                    _, retired = line_widths.popitem(last=False)
+                    retained_width_bytes -= len(retired) * retired.itemsize
+                    del retired
+                line_widths[key] = widths
+                retained_width_bytes += width_bytes
+        else:
+            line_widths.move_to_end(key)
+        if occurrence.end_line < occurrence.line or occurrence.end_line > len(widths):
             raise ValueError("SCIP range is outside its source document")
         for number, column in (
             (occurrence.line, occurrence.column),
             (occurrence.end_line, occurrence.end_column),
         ):
-            text = lines[number - 1]
-            width = (
-                len(text.encode("utf-16-le")) // 2
-                if occurrence.encoding == "utf-16"
-                else len(text.encode("utf-8"))
-                if occurrence.encoding == "utf-8"
-                else len(text)
-            )
-            if column > width:
+            if column > widths[number - 1]:
                 raise ValueError("SCIP column is outside its source line")
         occurrences.append(occurrence)
     return [list(documents.values()), occurrences]

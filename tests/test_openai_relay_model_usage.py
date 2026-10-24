@@ -1692,3 +1692,73 @@ def test_openai_relay_correlates_container_context_without_backend_filter(
     assert event.dispatch_id == "dispatch-container"
     assert event.workflow_run_id == "workflow-container"
     assert event.execution_backend == "container_worker_vm"
+
+
+@pytest.mark.parametrize("provider_mode", ["openai", "azure_openai"])
+def test_http_relay_releases_steering_after_transport_failure_and_delivers_on_retry(
+    tmp_path: Path, monkeypatch, provider_mode: str
+) -> None:
+    config = make_config(tmp_path)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    if provider_mode == "azure_openai":
+        write_provider_overlay(
+            config,
+            {
+                "model_provider_mode": "azure_openai",
+                "azure_openai_endpoint": "https://synthetic.openai.azure.com/",
+                "azure_openai_api_key_env": "EVANDER_TEST_AZURE_KEY",
+                "azure_openai_model_deployments": {"gpt-5.2-codex": "synthetic-deployment"},
+            },
+        )
+        monkeypatch.setenv("EVANDER_TEST_AZURE_KEY", "synthetic-key")
+    else:
+        monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    register_model_usage_correlation_context(
+        runtime_dir=tmp_path,
+        session_id="session-1",
+        dispatch_id="dispatch-retry",
+        execution_backend="libvirt_vm",
+        directory_path="root/team-a",
+        model="gpt-5.2-codex",
+    )
+    store = operator_steering_note_store(tmp_path)
+    note = store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-retry",
+        message="Run the focused tests.",
+        created_by="operator@example.com",
+    )
+    forwarded = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert store.get_note(note.note_id).status == "injecting"
+        forwarded.append(json.loads(request.content))
+        if len(forwarded) == 1:
+            raise httpx.ConnectError("synthetic connection failure", request=request)
+        return httpx.Response(201, json={"id": "response-retry", "output": []})
+
+    with TestClient(create_app(config, transport=httpx.MockTransport(handler))) as client:
+        payload = {"model": "gpt-5.2-codex", "input": "Start the work."}
+        with pytest.raises(httpx.ConnectError, match="synthetic connection failure"):
+            client.post("/v1/session/session-1/responses", json=payload)
+        pending = store.get_note(note.note_id)
+        assert pending.status == "pending"
+        assert pending.delivery_attempts == 1
+        assert "synthetic connection failure" in pending.error
+
+        response = client.post("/v1/session/session-1/responses", json=payload)
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "response-retry", "output": []}
+    assert len(forwarded) == 2
+    for body in forwarded:
+        assert body["model"] == (
+            "synthetic-deployment" if provider_mode == "azure_openai" else "gpt-5.2-codex"
+        )
+        assert json.dumps(body["input"]).count("Run the focused tests.") == 1
+    delivered = store.get_note(note.note_id)
+    assert delivered.status == "delivered"
+    assert delivered.delivery_attempts == 2
+    assert delivered.provider == "openai"
+    assert delivered.provider_endpoint == "responses"

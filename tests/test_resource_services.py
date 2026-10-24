@@ -434,7 +434,7 @@ def test_workflow_capabilities_trace_scope_and_write_replay(domain):
 
 def test_mcp_lifecycle_schema_and_real_dispatch_use_ambient_scope(domain, monkeypatch):
     import asyncio
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     from evander.resources.surfaces import register_lifecycle
     import evander.resources.surfaces as surfaces
 
@@ -448,18 +448,18 @@ def test_mcp_lifecycle_schema_and_real_dispatch_use_ambient_scope(domain, monkey
         return Owner(key=session, directory="root")
 
     domain.authority.resolve = resolve
-    server = FastMCP("resource-test")
+    server = MCPServer("resource-test")
     register_lifecycle(server, domain.context, lambda _: domain, "sample")
 
     async def scenario():
         tools = await server.list_tools()
         reset = next(t for t in tools if t.name == "sample_reset")
-        assert "request_id" in reset.inputSchema["required"]
-        assert "session_id" not in reset.inputSchema["properties"]
+        assert "request_id" in reset.input_schema["required"]
+        assert "session_id" not in reset.input_schema["properties"]
         result = await server.call_tool(
             "sample_acquire", {"profile_id": "test", "request_id": "mcp-one"}
         )
-        assert json.loads(result[0].text)["state"] == "ready"
+        assert json.loads(result.content[0].text)["state"] == "ready"
 
     asyncio.run(scenario())
     assert calls == [("ambient-session", "sample_acquire")]

@@ -7,13 +7,15 @@ from types import SimpleNamespace
 from typing import Annotated, Any
 
 import httpx
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import Field as PydanticField
 from pydantic import StrictInt
 
 from evander_azure_devops_addon.reports import DEFAULT_DONE_STATES, DEFAULT_EFFORT_FIELDS, DEFAULT_IN_PROGRESS_STATES, build_ado_daily_status_report_data
-from evander_azure_devops_addon.builds import AdoBuildClient
-from evander.ado_builds import positive_id
+from evander_azure_devops_addon.builds import AdoBuildClient, AdoBuildError
+from evander.ado_builds import positive_id as _positive_id
 from evander.issues.service import IssueService
 from evander.models import (
     ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
@@ -56,6 +58,14 @@ AdoMentionRefsArgument = Annotated[
         )
     ),
 ]
+
+
+def positive_id(value: Any, field: str) -> int:
+    """Keep deliberate identifier validation actionable under SDK 2."""
+    try:
+        return _positive_id(value, field)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _ado_inline_media_access(policy: PolicyEngine, session_id: str) -> dict[str, Any]:
@@ -166,6 +176,77 @@ def register_ado_tools(
             directory_path=directory_path,
         )
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def list_ado_builds(
+        build_number: str | None = None,
+        pipeline_id: StrictInt | str | None = None,
+        repository_id: str | None = None,
+        branch: str | None = None,
+        limit: Annotated[StrictInt, PydanticField(ge=1, le=100)] = 25,
+        continuation_token: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Find builds in the session directory's Azure DevOps project, newest queued first.
+
+        Filters are optional and combined. build_number matches exactly; append * for a
+        prefix search. pipeline_id is a build definition ID, repository_id a repository
+        ID, and branch a full ref such as refs/heads/main. Returns all matches on this
+        page with pipeline and repository identities; do not assume build numbers are
+        unique. Pass continuation_token back with the same filters for the next page.
+        Use a returned run_id as build_id with get_ado_build or list_ado_build_work_items.
+        """
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": session_id,
+            "build_number": build_number,
+            "pipeline_id": pipeline_id,
+            "repository_id": repository_id,
+            "branch": branch,
+            "limit": limit,
+            "continuation_token": continuation_token,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ADO_BUILDS)
+            with _build_client(session.directory_path) as client:
+                payload = client.search_builds(
+                    build_number=build_number,
+                    pipeline_id=pipeline_id,
+                    repository_id=repository_id,
+                    branch=branch,
+                    limit=limit,
+                    continuation_token=continuation_token,
+                )
+            audit_success(
+                session_id,
+                ToolName.LIST_ADO_BUILDS,
+                args,
+                {
+                    "count": payload["count"],
+                    "has_more": payload["continuation_token"] is not None,
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ADO_BUILDS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ADO_BUILDS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            if isinstance(exc, (AdoBuildError, ValueError)):
+                raise ToolError(str(exc)) from exc
+            raise
+
     @server.tool()
     def get_ado_build(
         build_id: int | str,
@@ -202,6 +283,8 @@ def register_ado_tools(
                 decision="error",
                 error_class="unexpected_error",
             )
+            if isinstance(exc, AdoBuildError):
+                raise ToolError(str(exc)) from exc
             raise
 
     @server.tool()
@@ -246,6 +329,8 @@ def register_ado_tools(
                 decision="error",
                 error_class="unexpected_error",
             )
+            if isinstance(exc, AdoBuildError):
+                raise ToolError(str(exc)) from exc
             raise
 
     def _fetch_ado_current_iteration_report_pages(

@@ -366,3 +366,54 @@ test("pricing rule search preserves incomplete patterns, blocks invalid saves, a
   assert.deepEqual(writes[0].catalog.rules.map((entry) => entry.model_patterns), [[], ["^model-alpha$"], ["^model-alpha$"]]);
   assert.deepEqual(errors, []);
 });
+
+
+test("Teams auth retains pending login across utility navigation and renders only public fields", { timeout: browserTestTimeout }, async (t) => {
+  const secrets = ["private-device-value", "private-access-value", "private-refresh-value", "/private/auth/store"];
+  const privateFields = { device_code: secrets[0], access_token: secrets[1], refresh_token: secrets[2], store_path: secrets[3] };
+  let authState = "logged_out";
+  let checks = 0;
+  const completions = [];
+  const state = phoneRoutingState([]);
+  const { page, errors } = await fixture(t, "ConfigurationScreen", "configuration", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/teams-auth/status") return route.fulfill({ json: { state: authState, directory_path: "root", backend: "fixture", ...privateFields } });
+    if (path === "/api/teams-auth/login") return route.fulfill({ json: { login_session: { login_session_id: "login-1", user_code: "ABCD-EFGH", verification_uri: "https://example.invalid/login", ...privateFields } } });
+    if (path === "/api/teams-auth/complete") {
+      completions.push(request.postDataJSON());
+      checks += 1;
+      if (checks === 1) return route.fulfill({ json: { state: "pending", message: "Awaiting fixture sign-in", ...privateFields } });
+      authState = "authenticated";
+      return route.fulfill({ json: { state: authState, ...privateFields } });
+    }
+    if (path === "/api/teams-auth/logout") {
+      authState = "logged_out";
+      return route.fulfill({ json: { state: authState, ...privateFields } });
+    }
+    if (path === "/api/configuration/model-pricing") return route.fulfill({ json: { status: "ok", catalog: { version: "1", currency: "usd", sources: [], rules: [] }, revision: "pricing-1", editable: false } });
+    return route.fulfill({ json: state });
+  }, "#configuration?config_tab=people_communications&config_section=teams-auth");
+  const start = page.getByRole("button", { name: "Start sign-in", exact: true });
+  await start.waitFor();
+  assert.equal(await start.isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await start.click();
+  await page.getByText("ABCD-EFGH", { exact: true }).waitFor();
+  await page.evaluate(() => { window.location.hash = "#configuration?config_tab=people_communications&config_section=effective-config"; });
+  await page.getByRole("heading", { name: "Effective configuration", exact: true, level: 3 }).waitFor();
+  await page.evaluate(() => { window.location.hash = "#configuration?config_tab=people_communications&config_section=teams-auth"; });
+  await page.getByText("ABCD-EFGH", { exact: true }).waitFor();
+  const complete = page.getByRole("button", { name: "Check sign-in status", exact: true });
+  await complete.click();
+  await page.getByText("Awaiting fixture sign-in", { exact: true }).waitFor();
+  assert.equal(await page.getByText("ABCD-EFGH", { exact: true }).count(), 1);
+  await complete.click();
+  await page.getByText("Teams sign-in completed.", { exact: true }).waitFor();
+  assert.equal(await page.getByText("ABCD-EFGH", { exact: true }).count(), 0);
+  assert.deepEqual(completions, [{ login_session_id: "login-1", timeout_seconds: 5 }, { login_session_id: "login-1", timeout_seconds: 5 }]);
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page.getByText("Teams auth signed out for root.", { exact: true }).waitFor();
+  for (const value of secrets) assert.equal((await page.locator("body").textContent()).includes(value), false);
+  assert.deepEqual(errors, []);
+});

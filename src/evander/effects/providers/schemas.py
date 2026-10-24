@@ -60,6 +60,9 @@ class SecurityScanEffectDefinition(EffectDefinition):
     coverage_policy: ConfigValue = "provider"
     managed_repo_id: ConfigValue | None = None
     resume_from_scan_id: ConfigValue | None = None
+    resume_subscription_profile_id: ConfigValue | None = None
+    max_batch_text_bytes: ConfigValue | None = None
+    max_parallel_reviews: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None
 
     @model_validator(mode="after")
@@ -293,7 +296,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     )
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
-    # Profile assignment is an immutable editor selector, never a runtime binding.
+    # Bindings select a profile for this session; resolved values remain validated slugs.
     subscription_profile_id: str | None = None
     vm_user: ConfigValue | None = None
     vm_image: ConfigValue | None = None
@@ -340,6 +343,8 @@ class AgentCreateEffectDefinition(EffectDefinition):
     @field_validator("subscription_profile_id", mode="before")
     @classmethod
     def normalize_subscription_profile_id_field(cls, value: object) -> str | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
         return normalize_subscription_profile_id(value)
 
     @field_validator("npm_registry_url", mode="before")
@@ -1376,6 +1381,20 @@ class WebsiteSessionEnsureProfileEffectDefinition(EffectDefinition):
         return value if "${{" in value else profile_origin(value)
 
 
+class SessionReconcilePolicyEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:reconcile-policy"]
+    session_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    policy: ConfigValue
+
+    @field_validator("policy")
+    @classmethod
+    def validate_policy(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError("policy must be a JSON object or workflow binding")
+        return value
+
+
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     type: Literal["effect:session:update-metadata"]
     target: ConfigValue | None = None
@@ -1397,6 +1416,30 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
             raise ValueError(
                 "effect:session:update-metadata requires target, session_id, or vm_name"
             )
+        return self
+
+
+class SessionSetReasoningEffortEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:set-reasoning-effort"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    reasoning_effort: ConfigValue | None
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def validate_effort(cls, value: object) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        return normalize_reasoning_effort(value)
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionSetReasoningEffortEffectDefinition":
+        selectors = [
+            value for value in (self.target, self.session_id, self.vm_name) if value is not None
+        ]
+        if len(selectors) != 1 or not isinstance(selectors[0], str) or not selectors[0].strip():
+            raise ValueError("Provide exactly one non-empty target, session_id, or vm_name")
         return self
 
 
@@ -1532,6 +1575,7 @@ class GitPushBranchEffectDefinition(EffectDefinition):
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
     managed_repo_id: ConfigValue
+    directory_path: ConfigValue | None = None
     source_ref: ConfigValue
     expected_commit_sha: ConfigValue
     destination_branch: ConfigValue

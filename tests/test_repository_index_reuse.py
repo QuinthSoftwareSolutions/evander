@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import subprocess
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 import pytest
 
 from evander.admin.services.repository_index_service import RepositoryIndexService
@@ -252,7 +252,7 @@ def test_gateway_keeps_review_scope_while_reusing_an_ancestor(
     )
     bindings = {(REPO, history.target)}
     monkeypatch.setattr("evander_team_addon.code_index.session_bindings", lambda *args: bindings)
-    server = FastMCP("baseline-test")
+    server = MCPServer("baseline-test")
     audits = []
     register_code_index_tools(
         server,

@@ -14,6 +14,30 @@ bounds and the container-worker backend. It defaults to 21,600 seconds, allows a
 most six hours per run, and reports structured `coverage_progress` and
 `cleanup_confirmed`. `resume_from_scan_id` starts a linked continuation at the
 source snapshot with a fresh budget and verified retained coverage.
+`max_batch_text_bytes` is an optional, bindable integer for tracked coverage,
+from `1048576` (1 MiB) through `2097152` (2 MiB). Omit it for 1 MiB on a new
+scan or to inherit the saved limit on continuation. An explicit new value
+regroups only untouched pending root file/boundary scopes in the new journal;
+accepted results, attempted scopes and split refinements remain intact.
+The effective limit appears in `coverage_progress.max_batch_text_bytes`.
+This input requires core 0.125.0 and Codex Security add-on 0.3.0; an older
+provider cannot silently ignore an explicit limit.
+`max_parallel_reviews` is an optional, bindable integer from `1` through `4`
+for tracked coverage. New scans use two reviews when omitted or null; linked
+continuations inherit the source's saved limit. Architecture mapping stays
+serial. Jobs awaiting launch reconciliation, report retention or cleanup count
+against the limit, including after restart. An active request cannot change its
+saved limit; select a different value on an explicit continuation after cleanup.
+The effective value appears in `coverage_progress.max_parallel_reviews` and
+aggregate reports. This input requires core 0.127.0 and Codex Security add-on
+0.4.0; unsupported providers reject explicit settings before launching work.
+An explicit ChatGPT-subscription handoff additionally names
+`resume_subscription_profile_id`. It must match the new scanner session's
+configured subscription, and both source and destination must use public
+ChatGPT-subscription authentication. All other snapshot, policy, SDK, model,
+reasoning, Cyber access and image settings must match. Omit this field to require
+the original subscription. It neither changes session configuration nor permits
+API billing or automatic profile fallback.
 `query:security:scan` returns directory-scoped progress, lineage and resume
 metadata; unknown or inaccessible IDs return `found: false`. Raw diagnostics are
 never query outputs. See [tracked coverage](../packages/codex-security-addon/docs/tracked-coverage.md).
@@ -109,6 +133,13 @@ For Azure DevOps work-item images, the session needs `list_inline_media`, `downl
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the
 [image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
+
+Azure DevOps build discovery requires `list_ado_builds` in the session's `allowed_tools`.
+The separate `get_ado_build` and `list_ado_build_work_items` grants allow inspection of a
+selected build. These read tools use the session directory's `azure_devops_organization_url`,
+`azure_devops_project` and host-side `azure_devops_pat_env`; they accept no credential or
+project override. No agent receives the new grant automatically. See
+[build read tools](operations.md#host-side-azure-devops-build-read-tools) for filters and paging.
 
 For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachments`,
 `download_pr_feedback_attachment`, and `communication_copy_artifact_to_workspace`. The same
@@ -1045,6 +1076,7 @@ Type-specific keys:
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `cyber_access_program`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
+| `effect:session:set-reasoning-effort` | exactly one of `target`, `session_id`, `vm_name`; `reasoning_effort` (native level or explicit null) | `outputs` |
 | `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `effect:teams:update-message` (Teams/Graph add-on) | `session_id`, `channel_target`, `message_id`, `message` | `thread_id`, `expected_revision`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
@@ -1090,7 +1122,7 @@ Type-specific keys:
 | `effect:git:ensure-managed-repo` | `directory_path`, `repo_source` | `outputs` |
 | `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` | `outputs` |
 | `effect:git:push-branch` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `outputs` |
-| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `base_branch`, `session_id`, `work_item_id`, `publication_context_id`, `publication_policy`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
+| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `directory_path`, `base_branch`, `session_id`, `work_item_id`, `publication_context_id`, `publication_policy`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
 
 `effect:git:ensure-managed-repo` is the only managed workflow surface that accepts a transient
 repository source. It registers or refreshes that source inside `directory_path` and returns a
@@ -1099,6 +1131,11 @@ and Team nodes do not accept host checkout or bare-repository paths and do not e
 temporary paths.
 
 Promotion and publication must receive the exact SHA from the triggering/reviewed event.
+For `effect:pr:create`, optional `directory_path` selects the owning project directory within
+the workflow directory or one of its descendants. Omission uses the workflow directory. Shared
+ancestor workflows should bind the routed project directory so commit-bound publication
+attribution and directory-specific credentials resolve in that scope. Child workflows cannot
+select an ancestor or sibling directory; repository and publication-context checks still apply.
 For Azure DevOps, `publication_policy` is a static enum: `allow_bot_fallback` (default) or
 `require_personal`. The latter requires a commit-bound `publication_context_id`, a captured
 assignee and a usable personal OAuth/PAT connection; it rejects existing PRs with a different
@@ -1310,6 +1347,23 @@ operations. **Agents → Prompt** and the `effect:agent:prompt` and
 `effect:agent:enqueue-prompt` workflow nodes can override it for one prompt.
 `effect:agent:create.reasoning_effort` sets the session default.
 
+`effect:session:set-reasoning-effort` updates that default for an existing session
+in the workflow's directory or a descendant. Supply a native level such as
+`"low"`, or JSON `null` to clear it; omitting the field is an error. The effect
+uses the normal model/provider validation and leaves the model, permissions and
+metadata unchanged. Its result includes `success` and, on success,
+`reasoning_effort`. `query:session-context` exposes the nullable saved default.
+
+Chat command wording, sender checks, acknowledgements and routing belong to the
+workflow configuration. Route setting commands before classification or active-turn
+steering, derive the target from the authenticated sender's session, and acknowledge
+only a successful update. To retain a saved preference, bypass automatic effort
+classification while `query:session-context.reasoning_effort` is non-null and omit
+the prompt override so dispatch inherits the session. Clearing the default then
+restores automatic routing. Other channels which inherit the session default use
+the same setting. Running turns and already captured queue entries keep their
+previous settings.
+
 Resolution is: non-null prompt override, then the session default, then the harness
 fallback. The existing fallback remains `high` for Codex; Claude Code and Copilot
 omit the flag and use their own defaults. Null or an omitted prompt field inherits
@@ -1376,12 +1430,15 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
-`effect:agent:create.subscription_profile_id` is a non-bindable profile
-slug. It is valid only with `execution_backend: container_worker_vm`,
+`effect:agent:create.subscription_profile_id` accepts a literal profile slug or
+a workflow binding. It is valid only with `execution_backend: container_worker_vm`,
 `agent_provider: codex`, `model_provider_mode: openai_public`, and
 `codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
 enabled option from the node's effective worker; directory configuration does
-not default, grant, or restrict the list. The session persists the selection.
+not default, grant, or restrict the list. A binding must resolve to a nonempty,
+valid slug for an enabled profile on that worker. A missing, empty, disabled or
+unresolved bound profile fails rather than selecting the legacy default. The
+session persists the selection.
 Omitting the field on an existing-agent upsert preserves its current profile.
 An upsert can select another enabled profile, and setting `codex_auth_mode` to
 `metered_api` clears the stored profile. Legacy profile-less subscription
@@ -1390,6 +1447,16 @@ agents in Admin Web require a named selection. Workers do not create an empty
 Default profile. Admin Web can delete an unused profile and its saved worker
 login after active jobs, queued prompts, and unexpired session bindings have
 been removed. Deleted profiles are not recreated on worker restart.
+
+For a tracked scan resume, authorize the source scan in the requesting directory
+and channel, then bind the scanner's profile from its retained
+`query:security:scan.execution_configuration.subscription_profile_id` rather than
+the workflow's current new-scan default. Preserve the other retained execution
+settings and snapshot. Leave `resume_subscription_profile_id` unset for this
+ordinary same-subscription resume; it is only for an explicitly authorized
+subscription handoff. A bound profile does not relax the scan's snapshot,
+configuration, cleanup or idempotency checks. Operator-owned channel workflows
+must update their selection logic and scanner node to use this binding.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime
@@ -1517,6 +1584,22 @@ tracks durable retry attempts by queue key and prompt digest, capped by
 `agent_prompt_queue_max_retries` (default `3`). Once the cap is exceeded,
 enqueue fails with `failed_phase: retry_limit` and includes `retry_count` and
 `max_retries` in the error outputs.
+Temporary Codex subscription model-capacity and explicit server-overload failures
+use the separate `model_capacity` queue reason. The runtime retries the same
+session and native conversation up to eight times within one hour, with jittered
+exponential delays starting around 15 seconds and capped at 15 minutes. The retry
+count, first failure time and dispatch identity survive queue replay and process
+restarts. This does not consume the ordinary prompt retry ledger or mark the
+subscription as quota exhausted. Other models on the same subscription can run.
+When the budget is exhausted, history records a failed execution with
+`retry_exhausted`, `retry_count`, `max_retries` and `retry_deadline`; completion
+reports `success: false` and uses the connected `error` branch. An expired queued
+retry fails before another worker job starts. The model and billing route remain
+unchanged. Deploy the control plane first: it also recognizes an older failed
+subscription worker's last explicit native capacity error, allowing the worker
+upgrade to wait for active jobs. Successful jobs and ordinary tool output do not
+trigger this compatibility path. Updated workers return a structured reason.
+
 Codex container-worker prompts that fail because the completed worker execution
 is marked context exhausted are retried once with deterministic reduced context
 by default. Tune this with `agent_context_retry_enabled`,
