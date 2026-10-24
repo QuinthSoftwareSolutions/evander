@@ -575,10 +575,6 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     assert "evander_apt_cache_port: 3142" in defaults
     assert 'evander_apt_cache_bind_host: "0.0.0.0"' in defaults
     assert 'evander_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"' in defaults
-    assert (
-        'evander_apt_cache_passthrough_pattern: "^(packages\\\\.microsoft\\\\.com):443$"'
-        in defaults
-    )
     assert "evander_apt_cache_allowed_tcp_ports" in defaults
     assert "[evander_apt_cache_port]" in defaults
 

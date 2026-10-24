@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-24 - Repair Docker apt access during worker deployment (0.127.1)
+
+- Permit HTTPS tunnels only to the Docker and Microsoft package hosts in the default apt-cache allowlist.
+- Normalize existing Docker apt source URLs to HTTPS before the worker's first apt refresh, preserving source options and signing keys so legacy HTTP redirects cannot block deployment. Keep worker package traffic on the private proxy.
+
 ## 2026-10-24 - Configure tracked-review parallelism per scan (0.127.0)
 
 - Add the bindable workflow input `max_parallel_reviews`, accepting integers from one through four. New tracked scans default to two; linked continuations inherit their saved limit unless explicitly changed. Unsupported providers and coverage modes reject explicit limits before launch.
