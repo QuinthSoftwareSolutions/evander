@@ -121,9 +121,6 @@
     - path: "config/discord-ingest/config.json"
       payload: "{{ evander_discord_ingest_config }}"
       mode: "0640"
-    - path: "config/discord-wake/config.json"
-      payload: "{{ evander_discord_wake_config }}"
-      mode: "0640"
     - path: "config/scheduled-wake/config.json"
       payload: "{{ evander_scheduled_wake_config }}"
       mode: "0640"
@@ -153,13 +150,14 @@
   when: evander_manage_teams_ingest_config | bool
   register: evander_teams_ingest_managed_config_render
 
-- name: Remove retired generated host-heartbeat and issue-orchestrator config files
+- name: Remove retired worker config files
   ansible.builtin.file:
     path: "{{ evander_deploy_path }}/{{ item }}"
     state: absent
   loop:
     - "config/host-heartbeat/config.json"
     - "config/issue-orchestrator/config.json"
+    - "config/discord-wake/config.json"
   register: evander_retired_config_remove
 
 - name: Copy managed workflow pack files

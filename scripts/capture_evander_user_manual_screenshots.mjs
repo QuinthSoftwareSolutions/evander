@@ -75,7 +75,7 @@ function directoryNode(id, name, parentId, nodePath, children = []) {
       metadata: {},
       path: nodePath,
     },
-    config_domains: ["policy", "providers", "automation"],
+    config_domains: ["policy", "providers"],
     children,
   };
 }
@@ -719,10 +719,10 @@ const CONFIGURATION_TABS = [
   },
   {
     key: "automation_assignment",
-    title: "Automation & Assignment",
-    help_text: "Capacity and role controls for automated issue intake and assignment.",
-    underlying_domains: ["automation"],
-    sections: [{ key: "capacity", title: "Capacity", fields: [] }],
+    title: "Workflow Events",
+    help_text: "Event schemas, manual forms, and workflow validation contracts.",
+    underlying_domains: [],
+    sections: [],
   },
   {
     key: "advanced_raw",
@@ -777,11 +777,11 @@ const CONFIGURATION_STATE = {
   tree: { ok: true, data: DIRECTORY_TREE, errors: [], validation_diagnostics: [] },
   directory: {
     ok: true,
-    data: { details: { directory: DIRECTORY_TREE.children[0].children[0].directory, ancestry: [] }, children: [], config_domains: ["policy", "providers", "automation"] },
+    data: { details: { directory: DIRECTORY_TREE.children[0].children[0].directory, ancestry: [] }, children: [], config_domains: ["policy", "providers"] },
     errors: [],
     validation_diagnostics: [],
   },
-  domains: ["contacts", "communication_targets", "policy", "providers", "vm", "automation"],
+  domains: ["contacts", "communication_targets", "policy", "providers", "vm"],
   tabs: CONFIGURATION_TABS,
   tab_snapshots: Object.fromEntries(CONFIGURATION_TABS.map((tab) => [tab.key, tabSnapshot(tab)])),
   directory_overrides: {

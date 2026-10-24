@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-24 - Retire obsolete polling wakes and configuration (0.127.3)
+
+- Remove the standalone Discord wake worker, guest heartbeat timers, and unused wake and automation directory configuration. Discord message workflows continue to dispatch their configured prompt effects; scheduled wakes retain their shared dispatcher.
+- Remove retired settings from the operator UI, CLI, health reporting, and deployment registrations while preserving Managed Git configuration and model fallback behavior.
+
 ## 2026-10-24 - Keep coverage journal readers from blocking review progress (0.127.2)
 
 - Release Codex Security add-on 0.4.1 with write-ahead logging for new and existing coverage journals, allowing review updates to commit while status or retention readers hold a snapshot.

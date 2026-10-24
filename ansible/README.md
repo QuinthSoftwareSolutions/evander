@@ -172,7 +172,6 @@ Service toggles:
 - `evander_services.ado_worker`
 - `evander_services.proxy_issue_sync`
 - `evander_services.discord_ingest`
-- `evander_services.discord_wake`
 - `evander_services.scheduled_wake`
 - `evander_services.teams_ingest`
 - `evander_services.teams_meeting_ingest`
@@ -255,7 +254,6 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/didww-sip-bridge.env`
 - `config/ado-worker/config.json`
 - `config/discord-ingest/config.json`
-- `config/discord-wake/config.json`
 - `config/scheduled-wake/config.json`
 - `config/teams-ingest/config.json`
 - `evander-teams-notifications.service` and its loopback `/healthz` endpoint are deployed with the

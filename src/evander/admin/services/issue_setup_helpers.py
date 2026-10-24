@@ -24,8 +24,6 @@ class EffectiveIssueSetupConfig(BaseModel):
     git_ssh_alias: str
     default_model: str | None = None
     post_exec_verification_prompt: str | None = None
-    enable_guest_heartbeat: bool = False
-    guest_heartbeat_prompt: str = "Resume work for this session. Check for pending feedback first, then continue the most recent task."
     issue_setup_azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
 
 
@@ -70,11 +68,6 @@ def resolve_effective_issue_setup_config(
             "git_ssh_alias": str(effective.get("git_ssh_alias") or "evander-git-host"),
             "default_model": str(effective.get("default_model") or "").strip() or None,
             "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
-            "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
-            "guest_heartbeat_prompt": str(
-                effective.get("guest_heartbeat_prompt")
-                or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-            ),
             "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
         }
     )

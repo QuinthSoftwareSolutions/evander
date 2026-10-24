@@ -39,12 +39,10 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "providers": "providers.json",
     "contacts": "contacts.json",
     "email": "email.json",
-    "wake": "wake.json",
     "ado_worker": "ado-worker.json",
     "vm": "vm.json",
     "issue_setup": "issue-setup.json",
     "pr_template": "pr-template.json",
-    "automation": "automation.json",
     "connectors": "connectors.json",
     "host_directories": "host-directories.json",
 }
@@ -255,12 +253,6 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "email_provider_timeout_seconds",
         }
     ),
-    "wake": frozenset(
-        {
-            "pr_feedback_resume_prompt",
-            "discord_resume_prompt",
-        }
-    ),
     "vm": frozenset(
         {
             "provider",
@@ -296,17 +288,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "git_ssh_alias",
             "default_model",
             "post_exec_verification_prompt",
-            "enable_guest_heartbeat",
-            "guest_heartbeat_prompt",
             "issue_setup_azure_devops_pr_pat_env",
-        }
-    ),
-    "automation": frozenset(
-        {
-            "approved_issue_cap",
-            "originator_roles",
-            "prioritizer_roles",
-            "worker_roles",
         }
     ),
     "pr_template": frozenset({"pr_template_markdown"}),
@@ -327,8 +309,6 @@ class IssueSetupDirectoryConfig(BaseModel):
     git_ssh_alias: str | None = None
     default_model: str | None = None
     post_exec_verification_prompt: str | None = None
-    enable_guest_heartbeat: bool | None = None
-    guest_heartbeat_prompt: str | None = None
     issue_setup_azure_devops_pr_pat_env: str | None = None
 
 
@@ -338,48 +318,11 @@ class EffectiveIssueSetupDirectoryConfig(BaseModel):
     git_ssh_alias: str
     default_model: str | None = None
     post_exec_verification_prompt: str | None = None
-    enable_guest_heartbeat: bool
-    guest_heartbeat_prompt: str
     issue_setup_azure_devops_pr_pat_env: str | None = None
 
 
 class PrTemplateDirectoryConfig(BaseModel):
     pr_template_markdown: str = ""
-
-
-class AutomationDirectoryConfig(BaseModel):
-    approved_issue_cap: int = Field(default=10, ge=0)
-    originator_roles: list[str] = Field(default_factory=list)
-    prioritizer_roles: list[str] = Field(default_factory=list)
-    worker_roles: list[str] = Field(default_factory=list)
-
-    @field_validator("originator_roles", "prioritizer_roles", "worker_roles", mode="before")
-    @classmethod
-    def normalize_role_lists(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("role lists must be JSON arrays")
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            role = str(item).strip()
-            if not role:
-                raise ValueError("role names cannot be empty")
-            if role in seen:
-                raise ValueError(f"duplicate role name: {role!r}")
-            seen.add(role)
-            normalized.append(role)
-        return normalized
-
-
-class EffectiveAutomationDirectoryConfig(BaseModel):
-    approved_issue_cap: int = Field(default=10, ge=0)
-    originator_roles: list[str] = Field(default_factory=list)
-    prioritizer_roles: list[str] = Field(default_factory=list)
-    worker_roles: list[str] = Field(default_factory=list)
 
 
 class DirectoryContactPhoneNumber(BaseModel):
@@ -524,13 +467,6 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
     DirectoryConfigStore._validate_domain_name(domain)
     payload = config.model_dump(mode="json")
     allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
-    if domain == "automation":
-        return {
-            "approved_issue_cap": 10,
-            "originator_roles": [],
-            "prioritizer_roles": [],
-            "worker_roles": [],
-        }
     if domain == "issue_setup":
         return {
             "git_host": os.environ.get("EVANDER_GIT_HOST", "").strip() or "192.168.250.1",
@@ -539,14 +475,6 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
             "git_ssh_alias": os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip()
             or "evander-git-host",
             "default_model": os.environ.get("AGENT_DEFAULT_MODEL", "").strip() or None,
-            "enable_guest_heartbeat": (
-                os.environ.get("ENABLE_GUEST_HEARTBEAT", "").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "guest_heartbeat_prompt": (
-                os.environ.get("GUEST_HEARTBEAT_PROMPT", "").strip()
-                or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-            ),
             "post_exec_verification_prompt": os.environ.get(
                 "AGENT_POST_EXEC_VERIFICATION_PROMPT", ""
             ).strip()
@@ -599,9 +527,6 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
             payload,
             validation_scope="effective",
         )
-    if domain == "automation":
-        validated = EffectiveAutomationDirectoryConfig.model_validate(payload)
-        return validated.model_dump(mode="json")
     if domain == "issue_setup":
         validated = EffectiveIssueSetupDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
@@ -677,6 +602,13 @@ class DirectoryConfigStore:
         path = self._domain_file_path(directory.path, domain=domain)
         if path.exists():
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if domain == "issue_setup" and isinstance(payload, dict):
+                # Older installations may retain retired timer settings beside live Git settings.
+                payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"enable_guest_heartbeat", "guest_heartbeat_prompt"}
+                }
             return self.validate_domain_payload(domain, payload)
         legacy_payload = self._legacy_domain_payload(directory.path, domain=domain)
         if legacy_payload is not None:
@@ -768,6 +700,7 @@ class DirectoryConfigStore:
     @classmethod
     def validate_domain_payload(cls, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
         domain = cls._normalize_domain_name(domain)
+        cls._validate_domain_name(domain)
         if domain == "events":
             from evander.events.schema import EventDirectoryConfig
 
@@ -801,9 +734,6 @@ class DirectoryConfigStore:
                 raise ValueError(
                     f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
                 )
-        if domain == "wake":
-            validated = GatewayConfig.model_validate(payload)
-            return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
             return cls._validate_provider_domain_payload(
                 payload,
@@ -826,9 +756,6 @@ class DirectoryConfigStore:
             return validate_host_directory_directory_overlay(payload)
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
-            return validated.model_dump(mode="json", include=set(payload))
-        if domain == "automation":
-            validated = AutomationDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "pr_template":
             validated = PrTemplateDirectoryConfig.model_validate(payload)
@@ -1018,11 +945,6 @@ class DirectoryConfigStore:
                             field in payload for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
                         ):
                             normalized_domains.add("email")
-        automation_path = root_path.joinpath(
-            *DirectoryPath(segments=directory.path).segments, "automation.json"
-        )
-        if automation_path.exists():
-            normalized_domains.add("automation")
         return sorted(normalized_domains)
 
 
@@ -1054,7 +976,7 @@ class DirectoryConfigResolver:
     ) -> GatewayConfig:
         root_bootstrap = base_gateway_config or build_runtime_gateway_config(host_config)
         payload = root_bootstrap.model_dump(mode="json")
-        for domain in ("policy", "providers", "email", "wake", "vm", "privacy"):
+        for domain in ("policy", "providers", "email", "vm", "privacy"):
             resolution = self.resolve_domain(
                 "root",
                 domain=domain,

@@ -191,7 +191,6 @@ def test_report_artifact_collectors_skip_invalid_handles_and_deduplicate_in_orde
         ("force-complete-await-agent", ["dispatch-17"]),
         ("teams-ingest", []),
         ("teams-meeting-ingest", []),
-        ("discord-wake", []),
         ("scheduled-wake", []),
         ("trigger-orchestrator", []),
         ("proxy-issue-sync", []),

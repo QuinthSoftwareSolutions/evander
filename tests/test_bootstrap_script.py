@@ -115,18 +115,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'line == line.lstrip() and stripped.startswith("export ")' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
-    assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
-    assert 'AGENT_MODEL="${AGENT_MODEL:-}"' in script
-    assert (
-        'GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session.' in script
-    )
-    assert "AGENT_MODEL='${AGENT_MODEL}' bash -s" in script
-    assert (
-        'AGENT_MODEL=$(python3 -c \'import os, shlex; print(shlex.quote(os.environ.get("AGENT_MODEL", "")))\')'
-        in script
-    )
     assert "systemctl --user disable --now agent-heartbeat.timer" in script
-    assert "systemctl --user enable --now agent-heartbeat.timer" in script
 
 
 def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
@@ -260,25 +249,6 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script
     assert 'line == line.lstrip() and stripped.startswith("export ")' in script
     assert "claude --version" in script
-
-
-def test_guest_heartbeat_assets_exist() -> None:
-    root = ROOT / "scripts" / "guest"
-
-    cycle_script = (root / "heartbeat_cycle.sh").read_text(encoding="utf-8")
-    service = (root / "agent-heartbeat.service").read_text(encoding="utf-8")
-    timer = (root / "agent-heartbeat.timer").read_text(encoding="utf-8")
-
-    assert 'EVANDER_GUEST_HEARTBEAT_PROMPT="${EVANDER_GUEST_HEARTBEAT_PROMPT:-' in cycle_script
-    assert 'HEARTBEAT_ENV_FILE="${HOME}/.config/evander/guest-heartbeat.env"' in cycle_script
-    assert '. "${HEARTBEAT_ENV_FILE}"' in cycle_script
-    assert "agent_runner_resume_last" in cycle_script
-    assert "agent-*.state" in cycle_script
-    assert "codex-resume-last.state" in cycle_script
-    assert "EnvironmentFile=-%h/.config/evander/guest-heartbeat.env" in service
-    assert "ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh" in service
-    assert "OnUnitActiveSec=5min" in timer
-    assert "Unit=agent-heartbeat.service" in timer
 
 
 def test_node_bootstraps_preserve_home_bin_precedence() -> None:

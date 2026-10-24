@@ -71,13 +71,6 @@ def migrate_issue_setup_env_to_root(
             "AGENT_POST_EXEC_VERIFICATION_PROMPT", env_values
         )
         or None,
-        enable_guest_heartbeat=_bool_value(
-            _merged_env_value("ENABLE_GUEST_HEARTBEAT", env_values), default=False
-        ),
-        guest_heartbeat_prompt=(
-            _merged_env_value("GUEST_HEARTBEAT_PROMPT", env_values)
-            or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-        ),
         issue_setup_azure_devops_pr_pat_env=(
             _merged_env_value("EVANDER_AZURE_DEVOPS_PR_PAT_ENV", env_values)
             or "AZURE_DEVOPS_PR_PAT"
@@ -163,13 +156,6 @@ def _merged_env_value(name: str, env_values: dict[str, str]) -> str:
     if name in os.environ:
         return os.environ.get(name, "").strip()
     return env_values.get(name, "").strip()
-
-
-def _bool_value(raw: str, *, default: bool) -> bool:
-    normalized = raw.strip().lower()
-    if not normalized:
-        return default
-    return normalized in {"1", "true", "yes", "on"}
 
 
 def _csv_values(raw: str) -> list[str]:

@@ -26,7 +26,6 @@ from evander.admin.web.shared import AdminWebAuth
 from evander.config import (
     AdoWorkerGlobalConfig,
     AssistantSettingsConfig,
-    DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
     ProxyIssueSyncWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
@@ -36,7 +35,6 @@ from evander.config import (
 )
 from evander.directory_config import (
     AdoWorkerDirectoryConfig,
-    AutomationDirectoryConfig,
     ContactDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
@@ -61,7 +59,6 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "discord_operator_channel_allowlist"),
     ("policy", "discord_operator_user_allowlist"),
     ("policy", "discord_poll_operator_dms"),
-    ("wake", "discord_resume_prompt"),
 )
 _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
     ("providers", field_name)
@@ -262,10 +259,6 @@ _ISSUE_SETUP_GIT_FIELDS: tuple[tuple[str, str], ...] = (
     ("issue_setup", "git_ssh_alias"),
     ("issue_setup", "git_user"),
 )
-_ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS: tuple[tuple[str, str], ...] = (
-    ("issue_setup", "enable_guest_heartbeat"),
-    ("issue_setup", "guest_heartbeat_prompt"),
-)
 _ISSUE_SETUP_AZURE_DEVOPS_FIELDS: tuple[tuple[str, str], ...] = (
     ("issue_setup", "issue_setup_azure_devops_pr_pat_env"),
 )
@@ -274,12 +267,6 @@ _ADO_WORKER_FILTER_FIELDS: tuple[tuple[str, str], ...] = (
     ("ado_worker", "ado_team_filters"),
 )
 _ADO_WORKER_REPO_FIELDS: tuple[tuple[str, str], ...] = (("ado_worker", "ado_repo_source"),)
-_AUTOMATION_CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (("automation", "approved_issue_cap"),)
-_AUTOMATION_ROLE_FIELDS: tuple[tuple[str, str], ...] = (
-    ("automation", "originator_roles"),
-    ("automation", "prioritizer_roles"),
-    ("automation", "worker_roles"),
-)
 _PR_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (("pr_template", "pr_template_markdown"),)
 _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
@@ -407,7 +394,6 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         *_CONTAINER_WORKER_PROVIDER_FIELDS,
         *_AGENT_PROMPT_PROVIDER_FIELDS,
         *_ISSUE_SETUP_AGENT_DEFAULT_FIELDS,
-        *_ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS,
     ),
     "code_issues_prs": (
         *_AZURE_DEVOPS_PROVIDER_FIELDS,
@@ -439,10 +425,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         *_VM_NPM_AUDIT_FACADE_FIELDS,
         *_NPM_AUDIT_FACADE_PROVIDER_FIELDS,
     ),
-    "automation_assignment": (
-        *_AUTOMATION_CAPACITY_FIELDS,
-        *_AUTOMATION_ROLE_FIELDS,
-    ),
+    "automation_assignment": (),
     "advanced_raw": (*_PROVIDER_STATE_FIELDS,),
 }
 _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
@@ -452,7 +435,7 @@ _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
     "code_issues_prs": "Code, Issues & Pull Requests",
     "access_approvals_audit": "Access, Approvals & Audit",
     "network_relays_packages": "Network, Relays & Package Access",
-    "automation_assignment": "Automation & Assignment",
+    "automation_assignment": "Workflow Events",
     "advanced_raw": "Advanced & Raw",
 }
 _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
@@ -505,7 +488,6 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("agent_prompt_token_", "agent_prompt_queue_", "agent_context_retry_"),
         ),
         ("Agent defaults", _ISSUE_SETUP_AGENT_DEFAULT_FIELDS, ()),
-        ("Guest heartbeat", _ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS, ("guest_",)),
     ),
     "code_issues_prs": (
         ("Azure DevOps", _AZURE_DEVOPS_PROVIDER_FIELDS, ("azure_devops_",)),
@@ -566,10 +548,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("npm_audit_facade_",),
         ),
     ),
-    "automation_assignment": (
-        ("Capacity", _AUTOMATION_CAPACITY_FIELDS, ()),
-        ("Roles", _AUTOMATION_ROLE_FIELDS, ()),
-    ),
+    "automation_assignment": (),
     "advanced_raw": (("Provider state", _PROVIDER_STATE_FIELDS, ()),),
 }
 _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS: tuple[str, ...] = (
@@ -579,7 +558,6 @@ _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS: tuple[str, ...] = (
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "proxy-issue-sync": ProxyIssueSyncWorkerGlobalConfig,
-    "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
     "teams-meeting-ingest": TeamsMeetingIngestWorkerGlobalConfig,
@@ -833,7 +811,6 @@ def _worker_config_schema(worker_id: str) -> dict[str, Any] | None:
                 GatewayConfig.model_fields,
                 AdoWorkerGlobalConfig.model_fields,
                 ProxyIssueSyncWorkerGlobalConfig.model_fields,
-                DiscordWakeWorkerGlobalConfig.model_fields,
                 ScheduledWakeWorkerGlobalConfig.model_fields,
                 TeamsIngestWorkerGlobalConfig.model_fields,
                 TeamsMeetingIngestWorkerGlobalConfig.model_fields,
@@ -899,8 +876,7 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
         )
     if tab_key == "agent_runtime_launch":
         return (
-            "Execution backend, container worker runtime, prompt delivery, launch defaults, "
-            "and guest heartbeat behavior."
+            "Execution backend, container worker runtime, prompt delivery, and launch defaults."
         )
     if tab_key == "code_issues_prs":
         return (
@@ -915,12 +891,10 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
         return (
             "Host and guest network endpoints, relays, NuGet feeds, and npm audit facade settings."
         )
-    if tab_key == "automation_assignment":
-        return (
-            "Role and capacity controls that govern automated issue intake and worker assignment."
-        )
     if tab_key == "advanced_raw":
         return "Advanced provider-specific JSON state and support diagnostics."
+    if tab_key == "automation_assignment":
+        return "Event schemas, manual forms, and workflow validation contracts."
     return None
 
 
@@ -973,13 +947,11 @@ def _directory_config_field_metadata(
             GatewayConfig.model_fields,
             AdoWorkerGlobalConfig.model_fields,
             ProxyIssueSyncWorkerGlobalConfig.model_fields,
-            DiscordWakeWorkerGlobalConfig.model_fields,
             ScheduledWakeWorkerGlobalConfig.model_fields,
             TeamsIngestWorkerGlobalConfig.model_fields,
             TeamsMeetingIngestWorkerGlobalConfig.model_fields,
             TriggerOrchestratorWorkerGlobalConfig.model_fields,
             AdoWorkerDirectoryConfig.model_fields,
-            AutomationDirectoryConfig.model_fields,
             ContactDirectoryConfig.model_fields,
             IssueSetupDirectoryConfig.model_fields,
             PrTemplateDirectoryConfig.model_fields,

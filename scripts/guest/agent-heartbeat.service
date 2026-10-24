@@ -1,8 +1,0 @@
-[Unit]
-Description=Evander Guest Heartbeat Resume Service
-After=default.target
-
-[Service]
-Type=oneshot
-EnvironmentFile=-%h/.config/evander/guest-heartbeat.env
-ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh

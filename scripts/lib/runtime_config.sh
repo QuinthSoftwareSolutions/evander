@@ -88,8 +88,6 @@ fields = {
     "EVANDER_GIT_HOST": payload.get("git_host"),
     "EVANDER_GIT_USER": payload.get("git_user"),
     "EVANDER_GIT_SSH_ALIAS": payload.get("git_ssh_alias"),
-    "ENABLE_GUEST_HEARTBEAT": "1" if payload.get("enable_guest_heartbeat") else "0",
-    "GUEST_HEARTBEAT_PROMPT": payload.get("guest_heartbeat_prompt"),
     "AGENT_POST_EXEC_VERIFICATION_PROMPT": payload.get("post_exec_verification_prompt"),
     "EVANDER_AZURE_DEVOPS_PR_PAT_ENV": payload.get("issue_setup_azure_devops_pr_pat_env"),
 }
@@ -98,7 +96,7 @@ for key, value in fields.items():
     if value is None:
         continue
     text = str(value).strip()
-    if not text and key != "ENABLE_GUEST_HEARTBEAT":
+    if not text:
         continue
     print(f'if [[ -z "${{{key}:-}}" ]]; then export {key}={shlex.quote(text)}; fi')
 PY

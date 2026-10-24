@@ -86,7 +86,7 @@ The names below often appear in status messages or an administrator's explanatio
 | Capability | Services or components you may see | When they matter |
 |---|---|---|
 | Azure DevOps feedback and proxy issue state | `evander-ado-worker.service`, `evander-proxy-issue-sync.service` | When Azure DevOps supplies review feedback or locally mirrored issue state. |
-| Discord intake and wakes | `evander-discord-ingest.service`, `evander-discord-wake.service` | When Discord messages are ingested or allowed to wake an agent. |
+| Discord intake | `evander-discord-ingest.service` | Stores Discord messages for workflow triggers and downstream prompt effects. |
 | Scheduled resumes | `evander-scheduled-wake.service` | When a session should resume at a recorded future time. |
 | Teams intake | `evander-teams-ingest.service`, `evander-teams-notifications.service`, `evander-teams-meeting-ingest.service` | When Teams messages, optional Graph callbacks, meetings, or media enter configured flows. |
 | Packages and approved HTTP targets | NuGet relay, npm-audit facade, optional package caches, HTTP target relay | When a workspace needs one of those controlled outside routes. |
@@ -211,7 +211,6 @@ Opening a port establishes a route. The service still applies its own session pr
 | `evander-ado-worker.service` | Poll Azure DevOps PR feedback and completion; work-item intake remains workflow-owned. |
 | `evander-proxy-issue-sync.service` | Refresh local proxy issue state from Azure DevOps. |
 | `evander-discord-ingest.service` | Ingest Discord data. |
-| `evander-discord-wake.service` | Turn eligible Discord messages into agent wake activity. |
 | `evander-scheduled-wake.service` | Resume sessions whose scheduled wake is due. |
 | `evander-managed-git-refresh.service` | Refresh an authorized managed repository before clone, fetch, pull, or archive reads. |
 | `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`; poll authorized targets and reconcile optional Graph subscriptions. |

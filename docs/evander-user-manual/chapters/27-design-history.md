@@ -97,7 +97,7 @@ Directory scope began as a way to place configuration and records. It gradually 
 >
 > Early guest heartbeat behavior made the temporary worker responsible for noticing more work. Moving that responsibility to a host heartbeat improved secret ownership and allowed the host to wake idle sessions, reconcile state, and report status without trusting the guest.
 >
-> As periodic duties multiplied, however, one host loop became another ambiguous owner. Azure DevOps feedback and completion, provider ingest, Discord wake, scheduled wake, proxy freshness, and workflow polling acquired dedicated workers. There is no current `evander-host-heartbeat` service; optional guest heartbeat assets remain disabled by default.
+> As periodic duties multiplied, however, one host loop became another ambiguous owner. Azure DevOps feedback and completion, provider ingest, Discord wake, scheduled wake, proxy freshness, and workflow polling acquired dedicated workers. There is no current `evander-host-heartbeat` service. Guest heartbeat timers and the standalone Discord wake worker have been retired; message workflows and scheduled wakes own dispatch.
 >
 > This is evolution rather than reversal: responsibility moved from an isolated worker to the host, then from a shared host loop to the specific host service that owns each duty.
 

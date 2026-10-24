@@ -652,7 +652,7 @@ tools are the only Team action path.
    sudo systemctl stop evander-trigger-orchestrator.service
    sudo systemctl stop evander-effect-orchestrator.service
    sudo systemctl stop evander-admin-web.service
-   sudo systemctl stop evander-discord-wake.service evander-scheduled-wake.service
+   sudo systemctl stop evander-scheduled-wake.service
    sudo systemctl stop evander-discord-ingest.service evander-teams-ingest.service evander-teams-meeting-ingest.service
    ```
 
@@ -695,7 +695,7 @@ tools are the only Team action path.
 
    ```bash
    sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
-   sudo systemctl start evander-discord-ingest.service evander-discord-wake.service
+   sudo systemctl start evander-discord-ingest.service
    sudo systemctl start evander-scheduled-wake.service
    sudo systemctl start evander-teams-ingest.service evander-teams-meeting-ingest.service
    ```
@@ -1346,7 +1346,6 @@ Storage layout for directory config:
   - `policy.json`
   - `providers.json`
   - `email.json`
-  - `wake.json`
   - `ado-worker.json`
   - `issue-setup.json`
   - `vm.json` for guest-facing relay/network defaults plus libvirt VM template selection data
@@ -3364,7 +3363,7 @@ live provider APIs.
 
 ### Wake workers
 
-- `evander-cli discord-wake` owns Discord inbox wakeups and resumes.
+- Discord ingest stores messages for message triggers; downstream workflow prompt effects own agent dispatch.
 - `evander-cli scheduled-wake` owns scheduled resume dispatch.
 - Existing Azure DevOps PR feedback ingestion and PR completion polling are
   still owned by `evander-ado-worker`. Legacy trigger mode writes
@@ -3387,17 +3386,9 @@ live provider APIs.
   session no longer resolves.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
-  - `sudo systemctl start evander-discord-wake.service`
-  - `sudo systemctl stop evander-discord-wake.service`
-  - `sudo systemctl status evander-discord-wake.service`
   - `sudo systemctl start evander-scheduled-wake.service`
   - `sudo systemctl stop evander-scheduled-wake.service`
   - `sudo systemctl status evander-scheduled-wake.service`
-- Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
-  When no explicit directory list is configured, the worker derives its scan scope from active
-  session directories. It wakes sessions from unread Discord inbox messages only for channels
-  resolved from that session's read-capable `discord_channel_allowlist`; global operator Discord
-  channels are not used as wake routes.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
   The scheduled-wake worker reloads that file between cycles, so saved changes
   such as `scheduled_wake_prefix_text` apply without restarting
@@ -3435,7 +3426,6 @@ live provider APIs.
 - In both wake worker configs, `backoff_seconds` controls how long the worker waits before
   retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
   after activity or busy-session checks, not the process-level exception retry delay.
-- `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config, defaults to empty, and lets operators prepend optional text to scheduled wake dispatch prompts.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
 - For `container_worker_vm` sessions, that same-context dispatch uses Codex resume-last behavior when a worker prompt does not already carry an explicit thread id.
@@ -3452,11 +3442,7 @@ live provider APIs.
   - edit existing wake: `evander-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
   - delete wake: `evander-cli wake-schedules delete <request-id>`
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the wake workers check that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
-- Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
-- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
-- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable `agent-heartbeat.timer` inside the guest.
-  The timer resumes via the configured provider adapter and accepts `GUEST_HEARTBEAT_PROMPT` to override the guest wake prompt.
-- Migration note for existing VMs: run `systemctl --user disable --now agent-heartbeat.timer || true` to keep host-only wake behavior.
+- Guest heartbeat timers are retired. Re-running a provider bootstrap disables and removes any old timer assets; message workflows and scheduled wakes own resume dispatch.
 
 ### Failure handling
 
@@ -3947,9 +3933,8 @@ site's expiry. No scheduled job or additional firewall rule is required.
   Teams ingest cycle log fields `messages_matched`,
   `events_created`, `events_deduplicated`, `publication_failures`, `effect_wake_notified`,
   `trigger_wake_notified`, and `workflow_config_revision` when diagnosing delivery.
-- This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
-  `evander-discord-wake` and `evander-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
-  `evander-ado-worker`.
+- Message workflows own Discord dispatch; scheduled resumes stay with `evander-scheduled-wake`,
+  while Azure DevOps PR feedback ingestion stays with `evander-ado-worker`.
 
 Managed Git hook ingestion path:
 
@@ -3994,7 +3979,6 @@ This creates:
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
 - `evander-discord-ingest.service`
-- `evander-discord-wake.service`
 - `evander-scheduled-wake.service`
 - `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
@@ -4039,7 +4023,6 @@ sudo systemctl start evander-http-target-browser-proxy.service
 sudo systemctl start evander-ado-worker.service
 sudo systemctl start evander-proxy-issue-sync.service
 sudo systemctl start evander-discord-ingest.service
-sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
 sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
@@ -4057,7 +4040,6 @@ sudo systemctl status evander-http-target-browser-proxy.service
 sudo systemctl status evander-ado-worker.service
 sudo systemctl status evander-proxy-issue-sync.service
 sudo systemctl status evander-discord-ingest.service
-sudo systemctl status evander-discord-wake.service
 sudo systemctl status evander-scheduled-wake.service
 sudo systemctl status evander-managed-git-refresh.service
 sudo systemctl status evander-teams-ingest.service
@@ -4073,7 +4055,6 @@ write operator-owned wake state. After installing units, verify the rendered ser
 users:
 
 ```bash
-systemctl show -p User evander-discord-wake.service
 systemctl show -p User evander-scheduled-wake.service
 systemctl show -p User evander-managed-git-refresh.service
 ```

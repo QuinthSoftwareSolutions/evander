@@ -1472,11 +1472,51 @@ def test_directory_config_store_rejects_unknown_domain_fields(tmp_path: Path) ->
     team = service.create(parent="root", name="team")
 
     try:
-        config_store.write(team.path, domain="wake", payload={"unexpected": True})
+        config_store.write(team.path, domain="issue_setup", payload={"unexpected": True})
     except ValueError as exc:
         assert "does not allow fields" in str(exc)
     else:
         raise AssertionError("expected write() to reject unknown fields")
+
+
+def test_retired_guest_timer_settings_do_not_break_existing_git_configuration(tmp_path: Path) -> None:
+    import json
+
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    config_store.write(team.path, domain="issue_setup", payload={"git_user": "repository-bot"})
+    path = runtime_dir / "directory-config" / "root" / "team" / "issue-setup.json"
+    path.write_text(json.dumps({
+        "git_user": "repository-bot",
+        "enable_guest_heartbeat": True,
+        "guest_heartbeat_prompt": "retired timer prompt",
+    }))
+
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    result = resolver.resolve_domain(
+        team.path,
+        domain="issue_setup",
+        base_config=get_domain_base_config(GatewayConfig(), "issue_setup"),
+        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+    )
+
+    assert result.validation_errors == []
+    assert result.effective_config["git_user"] == "repository-bot"
+    assert "enable_guest_heartbeat" not in result.effective_config
+    assert "guest_heartbeat_prompt" not in result.effective_config
+    with pytest.raises(ValueError, match="does not allow fields"):
+        config_store.write(team.path, domain="issue_setup", payload={"enable_guest_heartbeat": True})
+
+
+@pytest.mark.parametrize("domain", ["wake", "automation"])
+def test_directory_config_rejects_retired_domains(tmp_path: Path, domain: str) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    config_store = DirectoryConfigStore(store, runtime_dir=tmp_path)
+    with pytest.raises(ValueError, match="unsupported directory config domain"):
+        config_store.write("root", domain=domain, payload={})
 
 
 def test_directory_config_store_metadata_remains_source_of_truth_for_reads(tmp_path: Path) -> None:
@@ -1764,110 +1804,6 @@ def test_directory_config_store_accepts_container_worker_git_allowed_from(
     assert provider_payload == {"container_worker_git_allowed_from": "10.2.1.4/32"}
 
 
-def test_directory_config_store_validates_automation_domain_and_updates_metadata(
-    tmp_path: Path,
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    store = DirectoryStore(runtime_dir / "directories.json")
-    service = DirectoryService(store)
-    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
-    team = service.create(parent="root", name="team")
-
-    written = config_store.write(
-        team.path,
-        domain="automation",
-        payload={
-            "approved_issue_cap": 10,
-            "originator_roles": ["idea_generator", "bug_finder"],
-            "prioritizer_roles": ["issue_prioritizer"],
-            "worker_roles": ["issue_worker"],
-        },
-    )
-
-    assert written == {
-        "approved_issue_cap": 10,
-        "originator_roles": ["idea_generator", "bug_finder"],
-        "prioritizer_roles": ["issue_prioritizer"],
-        "worker_roles": ["issue_worker"],
-    }
-    file_path = runtime_dir / "directory-config" / "root" / "team" / "automation.json"
-    assert file_path.exists()
-    assert config_store.read(team.id, domain="automation") == written
-
-    stored_directory = store.get(team.id)
-    assert stored_directory is not None
-    assert stored_directory.metadata["directory_config"]["domains"] == ["automation"]
-
-
-def test_directory_config_resolver_reads_file_backed_automation_domain_without_metadata(
-    tmp_path: Path,
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    store = DirectoryStore(runtime_dir / "directories.json")
-    service = DirectoryService(store)
-    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
-    resolver = DirectoryConfigResolver(service, config_store=config_store)
-    team = service.create(parent="root", name="team")
-
-    file_path = runtime_dir / "directory-config" / "root" / "team" / "automation.json"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(
-        """
-{
-  "approved_issue_cap": 3,
-  "originator_roles": ["idea_generator"],
-  "prioritizer_roles": ["issue_prioritizer"],
-  "worker_roles": ["issue_worker"]
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    assert config_store.read(team.path, domain="automation") == {
-        "approved_issue_cap": 3,
-        "originator_roles": ["idea_generator"],
-        "prioritizer_roles": ["issue_prioritizer"],
-        "worker_roles": ["issue_worker"],
-    }
-
-    resolution = resolver.resolve_domain(
-        team.path,
-        domain="automation",
-        base_config=get_domain_base_config(GatewayConfig(), "automation"),
-        validator=lambda candidate: validate_effective_domain_payload("automation", candidate),
-    )
-
-    assert resolution.effective_config == {
-        "approved_issue_cap": 3,
-        "originator_roles": ["idea_generator"],
-        "prioritizer_roles": ["issue_prioritizer"],
-        "worker_roles": ["issue_worker"],
-    }
-    assert resolution.provenance["approved_issue_cap"].directory_path == "root/team"
-    assert resolution.validation_errors == []
-
-
-def test_directory_config_store_rejects_duplicate_automation_roles(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    store = DirectoryStore(runtime_dir / "directories.json")
-    service = DirectoryService(store)
-    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
-    team = service.create(parent="root", name="team")
-
-    try:
-        config_store.write(
-            team.path,
-            domain="automation",
-            payload={
-                "originator_roles": ["idea_generator", "idea_generator"],
-            },
-        )
-    except ValueError as exc:
-        assert "duplicate role name" in str(exc)
-    else:
-        raise AssertionError("expected write() to reject duplicate automation roles")
-
-
 def test_directory_config_store_validates_pr_template_domain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
@@ -1927,7 +1863,7 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
             "git_ssh_alias": "team",
         },
     )
-    config_store.write(child.path, domain="issue_setup", payload={"enable_guest_heartbeat": True})
+    config_store.write(child.path, domain="issue_setup", payload={"default_model": "child-model"})
 
     ado_resolution = resolver.resolve_domain(
         child.path,
@@ -1948,48 +1884,4 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     assert "ado_bootstrap_mssql" not in ado_resolution.effective_config
     assert "git_root" not in issue_resolution.effective_config
     assert issue_resolution.effective_config["git_user"] == "team-bot"
-    assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
-
-
-def test_directory_config_resolver_keeps_wake_prompts_directory_scoped_only(
-    tmp_path: Path,
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    store = DirectoryStore(runtime_dir / "directories.json")
-    service = DirectoryService(store)
-    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
-    resolver = DirectoryConfigResolver(service, config_store=config_store)
-    team = service.create(parent="root", name="team")
-
-    config_store.write(
-        team.path,
-        domain="wake",
-        payload={
-            "pr_feedback_resume_prompt": "team PR prompt",
-            "discord_resume_prompt": "team Discord prompt",
-        },
-    )
-
-    read_payload = config_store.read(team.path, domain="wake")
-    assert read_payload == {
-        "pr_feedback_resume_prompt": "team PR prompt",
-        "discord_resume_prompt": "team Discord prompt",
-    }
-
-    resolution = resolver.resolve_domain(
-        team.path,
-        domain="wake",
-        base_config=get_domain_base_config(GatewayConfig(), "wake"),
-        validator=lambda candidate: validate_effective_domain_payload("wake", candidate),
-    )
-
-    assert resolution.effective_config["pr_feedback_resume_prompt"] == "team PR prompt"
-    assert resolution.effective_config["discord_resume_prompt"] == "team Discord prompt"
-    assert "wake_poll_interval_seconds" not in resolution.effective_config
-
-    with pytest.raises(ValueError, match="wake_poll_interval_seconds"):
-        config_store.write(
-            team.path,
-            domain="wake",
-            payload={"wake_poll_interval_seconds": 12.0},
-        )
+    assert issue_resolution.effective_config["default_model"] == "child-model"

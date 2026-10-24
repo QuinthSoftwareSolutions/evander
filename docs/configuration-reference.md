@@ -2377,8 +2377,6 @@ Configuration stores environment-variable names, never secret values:
 | `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | Guest restricted-SSH setup. |
 | `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | Guest restricted-SSH setup. |
 | `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` or host environment | Internal guest clone URL alias; defaults to `evander-git-host`. |
-| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` guest heartbeat toggle. |
-| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` guest heartbeat prompt. |
 | `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` post-exec resume prompt metadata. |
 | `EVANDER_SECRETS_ENV_FILE` | host shell or service environment | General host-only secret loading. Managed Git extracts only configured provider variables into the operation environment. |
 | `EVANDER_PR_FIXED_BODY_FILE` | host shell | Optional host-wide operator PR boilerplate; directory `pr_template` configuration is preferred. |
@@ -2789,8 +2787,6 @@ browser access to the target's complete scheme, host, and port.
 | `ado_organization` | directory provider config | Azure DevOps organization identifier used to construct the trusted `https://dev.azure.com/<org>` origin for credentialed provider clients. |
 | `azure_devops_organization_url` | root or directory `providers.json` | Legacy input migrated only from `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`; arbitrary origins are rejected. |
 | `azure_devops_project` | composed runtime config | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
-| `pr_feedback_resume_prompt` | root or directory `wake.json` | Prompt used when resuming for unread PR feedback. |
-| `discord_resume_prompt` | composed runtime config | `src/evander/messaging/discord_wake.py`. |
 | `pr_map_path` | composed runtime config | `src/evander/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
@@ -2835,9 +2831,8 @@ Supported directory config domains:
 | `providers.json` | Upstream/provider endpoints, credentials-by-reference, and managed Git host identity/cleanup settings | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, managed Git, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
-| `wake.json` | Directory-scoped wake prompt behavior | `pr_feedback_resume_prompt`, `discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps issue intake filters and transient managed-repository registration source | `ado_area_filters`, `ado_team_filters`, `ado_repo_source` |
-| `issue-setup.json` | VM issue setup and restricted-SSH hand-off defaults | `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env`; legacy `git_root` is migration input only |
+| `issue-setup.json` | VM issue setup and restricted-SSH hand-off defaults | `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, optional `issue_setup_azure_devops_pr_pat_env`; legacy `git_root` is migration input only |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults and libvirt VM template selection data | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port, `libvirt_vm_default_template`, `libvirt_vm_templates` |
 | `connectors.json` | Named host-side REST/filesystem integrations available through the generic connector MCP tools | `auth_profiles`, `connectors`; child overlays deep-merge entries by id and may set `disabled: true` to disable inherited connectors |
@@ -3266,8 +3261,8 @@ The following environment variables are consumed directly by scripts as runtime 
 |---|---|
 | `scripts/apply_firewall.sh` | `ALLOWED_TCP_PORTS` |
 | `scripts/bootstrap_claude_vm.sh` | `HOST_CLAUDE_BIN`, `HOST_RIPGREP_BIN`, `ANTHROPIC_BASE_URL`, `GATEWAY_URL`, `SSH_PRIVATE_KEY_PATH` |
-| `scripts/bootstrap_codex_vm.sh` | `SSH_KEY_PATH`, `HOST_CODEX_ROOT`, `HOST_CODEX_SKILLS_DIR`, `HOST_REPO_CODEX_SKILLS_DIR`, `HOST_CODEX_MODELS_CACHE_PATH`, `HOST_RIPGREP_BIN`, `LLM_BASE_URL`, `VM_SSH_USER`, `GUEST_BOOTSTRAP_WAIT_SECONDS`, `AGENT_MODEL`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT`, `OPENAI_API_KEY` |
-| `scripts/bootstrap_copilot_vm.sh` | `SSH_KEY_PATH`, `HOST_COPILOT_BIN`, `HOST_RIPGREP_BIN`, `ENABLE_GUEST_HEARTBEAT`, `GUEST_HEARTBEAT_PROMPT` |
+| `scripts/bootstrap_codex_vm.sh` | `SSH_KEY_PATH`, `HOST_CODEX_ROOT`, `HOST_CODEX_SKILLS_DIR`, `HOST_REPO_CODEX_SKILLS_DIR`, `HOST_CODEX_MODELS_CACHE_PATH`, `HOST_RIPGREP_BIN`, `LLM_BASE_URL`, `VM_SSH_USER`, `GUEST_BOOTSTRAP_WAIT_SECONDS`, `OPENAI_API_KEY` |
+| `scripts/bootstrap_copilot_vm.sh` | `SSH_KEY_PATH`, `HOST_COPILOT_BIN`, `HOST_RIPGREP_BIN` |
 | `scripts/bootstrap_dotnet_vm.sh` | `SSH_KEY_PATH`, `HOST_DOTNET_ROOT`, `HOST_DOTNET_TOOLS_ROOT`, `HOST_NUGET_PACKAGES_ROOT` |
 | `scripts/bootstrap_frontend_deps_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT` |
 | `scripts/bootstrap_git_vm.sh` | `SSH_KEY_PATH` |

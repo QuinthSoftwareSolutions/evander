@@ -25,6 +25,38 @@ def test_install_systemd_units_runs_preflight_before_install() -> None:
     assert "Aborting install because preflight checks failed." in text
 
 
+def test_upgrade_retires_discord_wake_without_touching_scheduled_wakes(tmp_path) -> None:
+    import os
+    import subprocess
+
+    retired = tmp_path / "evander-discord-wake.service"
+    scheduled = tmp_path / "evander-scheduled-wake.service"
+    retired.write_text("retired unit")
+    scheduled.write_text("scheduled unit")
+    retired_drop_ins = tmp_path / "evander-discord-wake.service.d"
+    retired_drop_ins.mkdir()
+    (retired_drop_ins / "10-local-secrets.conf").write_text("retired drop-in")
+    scheduled_drop_ins = tmp_path / "evander-scheduled-wake.service.d"
+    scheduled_drop_ins.mkdir()
+    (scheduled_drop_ins / "10-local-secrets.conf").write_text("scheduled drop-in")
+    log = tmp_path / "commands"
+    body = _script_text().split("retire_discord_wake_service() {", 1)[1].split("\n}\n", 1)[0]
+    invocation = (
+        'set -euo pipefail\nsystemctl() { printf "%s\\n" "$*" >> "$TASK_SYSTEMCTL_LOG"; }\n'
+        + "retire_discord_wake_service() {" + body + "\n}\n"
+        + "retire_discord_wake_service\nretire_discord_wake_service\n"
+    )
+    subprocess.run(
+        ["bash", "-c", invocation], check=True, timeout=10,
+        env={**os.environ, "SYSTEMD_DIR": str(tmp_path), "TASK_SYSTEMCTL_LOG": str(log)},
+    )
+    assert not retired.exists()
+    assert not retired_drop_ins.exists()
+    assert scheduled.read_text() == "scheduled unit"
+    assert (scheduled_drop_ins / "10-local-secrets.conf").read_text() == "scheduled drop-in"
+    assert log.read_text().splitlines() == ["disable --now evander-discord-wake.service"]
+
+
 @pytest.mark.parametrize("addon_id,module_name,enabled_check", [("teams-graph", "evander_teams_graph_addon", "teams_graph_enabled"), ("azure-devops", "evander_azure_devops_addon", "azure_devops_enabled")])
 @pytest.mark.parametrize("configuration", ["absent", "enabled", "disabled"])
 def test_optional_service_discovery_reads_host_config_without_initializing_runtime(
@@ -239,9 +271,6 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     didww_sip_bridge = (repo / "systemd" / "evander-didww-sip-bridge.service.template").read_text(
         encoding="utf-8"
     )
-    discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
-        encoding="utf-8"
-    )
     scheduled_wake = (repo / "systemd" / "evander-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
@@ -305,10 +334,6 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
         "ExecStart=__PROJECT_DIR__/.venv/bin/evander-didww-sip-bridge --runtime-dir __PROJECT_DIR__/runtime"
         in didww_sip_bridge
     )
-    assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
-    assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-wake" in discord_wake
-    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
     assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake
@@ -358,22 +383,13 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
 def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -> None:
     repo = Path(__file__).resolve().parents[1]
 
-    discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
-        encoding="utf-8"
-    )
     scheduled_wake = (repo / "systemd" / "evander-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
 
-    assert discord_wake.count("\nUser=__RUN_USER__\n") == 1
     assert scheduled_wake.count("\nUser=__RUN_USER__\n") == 1
-    assert "WorkingDirectory=__PROJECT_DIR__" in discord_wake
     assert "WorkingDirectory=__PROJECT_DIR__" in scheduled_wake
-    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
-    assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
-    assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-wake" in discord_wake
     assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake

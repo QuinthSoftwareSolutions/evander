@@ -69,6 +69,13 @@ const tabs = [
   },
 ];
 
+test("workflow event configuration remains reachable without role settings", () => {
+  const events = { key: "automation_assignment", title: "Workflow Events", sections: [] };
+  const location = resolveConfigurationLocation([events], configurationHash(events.key, "events"));
+  assert.equal(location.destinationKey, "events");
+  assert.ok(searchConfiguration([events], "events").some(result => result.destinationKey === "events"));
+});
+
 test("configuration destinations expose settings and explicit utilities", () => {
   assert.deepEqual(
     configurationDestinationsForTab(tabs[0]).map((destination) => destination.key),
