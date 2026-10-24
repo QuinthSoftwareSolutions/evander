@@ -76,6 +76,10 @@ class SecurityScanService:
             self.providers[request.provider], "supports_batch_text_limit", False
         ):
             raise ValueError("The selected provider does not support a batch text limit")
+        if request.max_parallel_reviews is not None and not getattr(
+            self.providers[request.provider], "supports_review_parallelism", False
+        ):
+            raise ValueError("The selected provider does not support review parallelism")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(
@@ -155,6 +159,7 @@ class SecurityScanService:
                 "last_progress_at",
                 "cleanup_condition",
                 "max_batch_text_bytes",
+                "max_parallel_reviews",
             }
         }
         if "execution_configuration" in result:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-24 - Configure tracked-review parallelism per scan (0.127.0)
+
+- Add the bindable workflow input `max_parallel_reviews`, accepting integers from one through four. New tracked scans default to two; linked continuations inherit their saved limit unless explicitly changed. Unsupported providers and coverage modes reject explicit limits before launch.
+- Release Codex Security add-on 0.4.0 with frozen per-scan scheduling limits in journals, worker inputs, progress and aggregate reports. Architecture mapping remains serial, and uncertain launches, report retention and cleanup continue occupying slots across restarts. Historical scans retain two-review scheduling; active requests cannot change their limit.
+- Keep original snapshots, accepted coverage, findings, native proofs, batching, deadline and access-route checks unchanged. This host-side change does not require a scanner-image rebuild or a different SDK.
+
 ## 2026-10-23 - Avoid redundant session metadata writes (0.126.2)
 
 - Merge session metadata against the latest manifest under the repository lock and skip unchanged writes on the canonical JSON session store, preserving existing deep-merge rules and response fields.
