@@ -1,12 +1,14 @@
 from copy import deepcopy
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
 import subprocess
 import tracemalloc
+from types import SimpleNamespace
 
 import pytest
 
@@ -787,19 +789,259 @@ def test_review_progress_can_commit_while_a_legacy_journal_reader_is_open(tmp_pa
             reader.rollback()
 
 
-def test_retention_checks_do_not_materialize_retained_finding_payloads(tmp_path):
+def test_retention_lookup_does_not_read_completed_journal_payloads(tmp_path, monkeypatch):
     clock = c.now()
     store = c.CoverageStore(tmp_path)
     s = state()
-    s.update(finished_at=clock.isoformat())
+    s.update(finished_at=clock.isoformat(), cleanup_confirmed=True)
     s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
     store.create(s)
     store.save(s)
+    store = c.CoverageStore(tmp_path)
+    connect = store.connect
+
+    @contextmanager
+    def metadata_only():
+        with connect() as connection:
+            connection.set_authorizer(
+                lambda action, table, column, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and table == "campaigns" and column == "payload"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(store, "connect", metadata_only)
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+
+
+def legacy_journal(tmp_path, states):
+    path = tmp_path / "codex-security-coverage/journal.sqlite3"
+    path.parent.mkdir()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """CREATE TABLE campaigns (scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL,
+            repository TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"""
+        )
+        for s in states:
+            connection.execute(
+                "INSERT INTO campaigns VALUES(?,?,?,?,?)",
+                (s["scan_id"], s["directory_path"], s["managed_repo_id"],
+                 int(not s["finished_at"] or not s["cleanup_confirmed"]), json.dumps(s, indent=2)),
+            )
+    return path
+
+
+def test_legacy_retention_backfill_preserves_journals_and_latest_cleanup(tmp_path):
+    clock = c.now()
+    source = state()
+    source.update(finished_at=(clock - timedelta(days=10)).isoformat())
+    child = state()
+    child.update(scan_id="b" * 32, lineage=[source["scan_id"]],
+                 finished_at=(clock - timedelta(days=8)).isoformat(),
+                 cleanup_finished_at=clock.isoformat())
+    path = legacy_journal(tmp_path, [source, child])
+    with closing(sqlite3.connect(path)) as connection:
+        before = connection.execute("SELECT scan_id,payload FROM campaigns ORDER BY scan_id").fetchall()
+    store = c.CoverageStore(tmp_path)
+    assert store.retained_until(source) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT scan_id,payload FROM campaigns ORDER BY scan_id").fetchall() == before
+
+
+def test_legacy_retention_backfill_skips_large_finding_objects(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    path = legacy_journal(tmp_path, [s])
+    store = c.CoverageStore(tmp_path)
     tracemalloc.start()
     try:
         assert store.retained_until(s) == clock + c.RETENTION
-        assert store.expired(at=clock) == []
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    assert peak < 2 * 1024 * 1024
+    # One raw SQLite text result is unavoidable on first use. Finding dictionaries
+    # and their decoded copies must not coexist with that input during backfill.
+    assert peak < path.stat().st_size + 1024 * 1024
+
+
+def test_legacy_writer_invalidates_cached_summary_and_retention(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    s.update(cleanup_finished_at=clock.isoformat(), cleanup_confirmed=False)
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("UPDATE campaigns SET active=1,payload=? WHERE scan_id=?",
+                           (json.dumps(s), s["scan_id"]))
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.get_description(s["scan_id"], s["directory_path"])["cleanup_confirmed"] is False
+    assert store.expired(at=clock) == []
+
+
+def test_concurrent_legacy_write_cannot_publish_stale_retention(tmp_path, monkeypatch):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    legacy_journal(tmp_path, [s])
+    store = c.CoverageStore(tmp_path)
+    save = store._save_retention
+    raced = False
+
+    def concurrent_write(connection, fields, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            s.update(cleanup_finished_at=clock.isoformat())
+            with closing(sqlite3.connect(store.path)) as writer, writer:
+                writer.execute("UPDATE campaigns SET payload=? WHERE scan_id=?",
+                               (json.dumps(s), s["scan_id"]))
+        return save(connection, fields, **kwargs)
+
+    monkeypatch.setattr(store, "_save_retention", concurrent_write)
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+
+
+def test_wrong_directory_save_cannot_change_cached_metadata(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    wrong_directory = deepcopy(s)
+    wrong_directory.update(directory_path="root/elsewhere", cleanup_confirmed=False,
+                           cleanup_finished_at=(clock + timedelta(days=1)).isoformat())
+    store.save(wrong_directory)
+    assert store.get(s["scan_id"], s["directory_path"]) == s
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.get_description(s["scan_id"], s["directory_path"])["cleanup_confirmed"] is True
+    with pytest.raises(ValueError, match="this directory"):
+        store.get_description(s["scan_id"], "root/elsewhere")
+
+
+def test_failed_metadata_update_rolls_back_journal_and_projection(tmp_path, monkeypatch):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    changed = deepcopy(s)
+    changed.update(cleanup_finished_at=(clock + timedelta(days=1)).isoformat())
+
+    def interrupted(*_args, **_kwargs):
+        raise RuntimeError("Interrupted metadata write")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_save_retention", interrupted)
+        with pytest.raises(RuntimeError, match="Interrupted metadata write"):
+            store.save(changed)
+    assert store.get(s["scan_id"], s["directory_path"]) == s
+    assert store.retained_until(s) == clock + c.RETENTION
+
+
+def test_deleted_descendant_no_longer_extends_source_retention(tmp_path):
+    clock = c.now()
+    source = state()
+    source.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    child = state()
+    child.update(scan_id="b" * 32, lineage=[source["scan_id"]], finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    for s in (source, child):
+        store.create(s)
+        store.save(s)
+    assert store.expired(at=clock) == []
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("DELETE FROM campaigns WHERE scan_id=?", (child["scan_id"],))
+    assert [s["scan_id"] for s in store.expired(at=clock)] == [source["scan_id"]]
+
+
+def test_provider_description_uses_only_compact_metadata_after_reopen(tmp_path, monkeypatch):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat(), route=subscription_route())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    connect = c.CoverageStore.connect
+
+    @contextmanager
+    def metadata_only(self):
+        with connect(self) as connection:
+            connection.set_authorizer(
+                lambda action, table, column, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and table == "campaigns" and column == "payload"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(c.CoverageStore, "connect", metadata_only)
+    result = describe(SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"]), tmp_path)
+    assert result["resumable"] is True
+    assert result["resumable_until"] == (clock + c.RETENTION).isoformat()
+    assert result["execution_configuration"] == subscription_route()
+    assert result["to_commit"] == "d" * 40
+    assert result["coverage_progress"]["files_pending"] == 3
+    assert result["pinned_ref"] == "refs/evander/security-scans/" + s["scan_id"]
+
+
+def test_legacy_description_backfill_keeps_incomplete_source_resumable(tmp_path):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    s = state()
+    s.update(finished_at=c.now().isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    path = legacy_journal(tmp_path, [s])
+    with closing(sqlite3.connect(path)) as connection:
+        before = connection.execute("SELECT payload FROM campaigns").fetchone()[0]
+    record = SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"])
+    tracemalloc.start()
+    try:
+        assert describe(record, tmp_path)["resumable"] is True
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < path.stat().st_size + 1024 * 1024
+    assert describe(record, tmp_path)["coverage_progress"]["files_pending"] == 3
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT payload FROM campaigns").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("complete", False), ("excluded", True), ("cleanup_uncertain", False), ("expired", False),
+])
+def test_legacy_description_preserves_resume_guards(tmp_path, scenario, expected):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    s = state()
+    s.update(finished_at=c.now().isoformat())
+    if scenario in {"complete", "excluded"}:
+        s.update(architecture={"paths": []}, boundary_planned=True)
+        for value in s["files"].values():
+            value["disposition"] = "reviewed"
+        for value in s["tasks"].values():
+            value["status"] = "completed"
+    if scenario == "excluded":
+        s["exclude_paths"] = ["src/a.py"]
+        s["files"]["src/a.py"]["disposition"] = "excluded"
+    elif scenario == "cleanup_uncertain":
+        s["cleanup_confirmed"] = False
+    elif scenario == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    legacy_journal(tmp_path, [s])
+    record = SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"])
+    assert describe(record, tmp_path)["resumable"] is expected

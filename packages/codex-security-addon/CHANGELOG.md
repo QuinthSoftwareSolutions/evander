@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-25 - Compact retained journal metadata (0.6.3)
+
+- Require Evander 0.129.4. Update compact lifecycle and status projections in the journal transaction, avoiding repeated full-payload JSON extraction during metadata and retention lookups.
+- Backfill legacy projections one journal at a time with a typed decoder that skips retained findings and proof bodies. Preserve original journal bytes, evidence, cleanup anchors, source pins and scoped metadata behavior.
+- Invalidate cached projections when older processes write journals, and fence backfill against concurrent changes. No SDK or scanner-image change is required.
+
 ## 2026-10-25 - Separate source coverage and candidate validation (0.6.2)
 
 - Require Evander 0.129.2. Distinguish positive sealed file-review evidence from unverified vulnerability candidates and external validation. Unread source and unknown or contradictory deferred work remain blocking; candidate labels alone cannot grant coverage.

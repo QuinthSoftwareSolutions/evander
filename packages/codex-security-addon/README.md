@@ -75,6 +75,13 @@ metadata while preserving cleanup-based lifetimes and ancestor snapshot pins.
 This is a host-side fix; no scanner-image rebuild is needed. Use SQLite's
 backup API for a consistent journal backup, including committed WAL changes.
 
+Add-on 0.6.3 requires Evander 0.129.4 and stores small lifecycle and status
+projections alongside the original journals. Existing records are backfilled on
+first use without rewriting their evidence; subsequent metadata reads skip the
+large retained payloads. Older writers invalidate their projections, and
+concurrent backfills cannot replace newer metadata. Deploy this host-only fix
+through the normal control-plane pipeline; the SDK and scanner image are unchanged.
+
 Build the pinned runtime on a trusted Linux host with Python 3.12 and Node 22.13+,
 using the same CPU architecture as the target VMs or workers:
 
