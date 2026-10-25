@@ -1151,6 +1151,8 @@ class GraphTeamsService(ManagedTeamsService):
             )
         if attachment is None:
             raise ValueError(f"Unknown Teams attachment: {attachment_id}")
+        if attachment.get("contentType") == "forwardedMessageReference":
+            raise ValueError("Use teams_get_messages to read forwarded Teams message text.")
 
         content_url = str(
             attachment.get("contentUrl") or attachment.get("content_url") or ""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import base64
+import json
 import logging
 import mimetypes
 from datetime import UTC, datetime, timedelta
@@ -254,11 +255,25 @@ def _message_sort_value(value: str) -> tuple[int, int | str]:
 def _sanitize_attachment_metadata(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    return {
+    result = {
         str(key): sanitize_inline_media_metadata(value)
         for key, value in raw.items()
         if str(key).replace("-", "_").lower() not in _ATTACHMENT_SECRET_KEYS
     }
+    # A forwarded Teams message carries its text and attribution in this JSON
+    # field. File content and credentials must still be excluded from metadata.
+    if raw.get("contentType") == "forwardedMessageReference":
+        content = raw.get("content")
+        if isinstance(content, str):
+            try:
+                forwarded = json.loads(content)
+            except ValueError:
+                forwarded = None
+            if isinstance(forwarded, dict):
+                result["content"] = json.dumps(
+                    sanitize_inline_media_metadata(forwarded), ensure_ascii=False
+                )
+    return result
 
 
 def _sanitize_message_payload_attachments(raw: Any) -> Any:

@@ -17,6 +17,14 @@ From an Evander source checkout, install both projects into the same host virtua
 uv pip install --python .venv/bin/python -e . -e ./packages/teams-graph-addon
 ```
 
+Forwarded Teams messages retain their embedded text and original sender in
+`metadata.attachments[].content` for `teams_get_messages`, including compact reads.
+Microsoft represents these as `forwardedMessageReference` attachments containing JSON,
+as shown in its [message retrieval example](https://learn.microsoft.com/en-us/graph/api/chatmessage-get?view=graph-rest-1.0#example-6-get-a-chat-message-with-a-forwarded-message).
+Reading the forwarded copy uses the destination chat's existing grants. It does not grant access
+to the original conversation. File downloads direct callers to the history tool for this text.
+Previously cached forwards with missing text need to be fetched again from Graph after upgrading.
+
 To include the integration in the add-on inventory, append
 `evander_teams_graph_addon` to `addon_loader.modules`, or enable entry-point discovery with
 `addon_loader.enabled_entry_points: true`. If `addon_loader.enabled_addon_ids` is an explicit

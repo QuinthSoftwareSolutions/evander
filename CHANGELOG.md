@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-25 - Preserve forwarded Teams message text (0.129.3)
+
+- Retain embedded forwarded message text and sender attribution through Graph sanitization, inbox persistence, and compact Teams history reads while continuing to omit binary attachment data and credential metadata.
+- Direct forwarded-message attachment downloads to the history tool instead of requesting nonexistent hosted content. Existing chat and sender authorization remains in force; reading a forwarded copy does not fetch its source conversation.
+
 ## 2026-10-25 - Separate source review from unverified candidate validation (0.129.2)
 
 - Release Codex Security add-on 0.6.2. Accept individual file-review facts from hash-checked, exact-snapshot native reports even when a separate vulnerability hypothesis needs unavailable dependency or deployment evidence. Retain those hypotheses explicitly as unverified limitations, separate from validated findings and unfinished source work.
