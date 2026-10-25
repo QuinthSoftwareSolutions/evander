@@ -716,6 +716,19 @@ class InlineMediaHelpers:
 
     def preflight_inline_media_content(self, session: Any, ref: InlineMediaRef) -> None:
         mime_type = ref.mime_type
+        if ref.provider == "teams" and ref.metadata.get("attachment_kind") in {
+            "forwarded_hosted_content",
+            "forwarded_file",
+        }:
+            self.context.policy.require_inline_media_content(
+                session,
+                source_kind=ref.source_kind,
+                filename=ref.filename,
+                mime_type=None if mime_type == "reference" else mime_type,
+                byte_count=ref.byte_count if ref.byte_count is not None else 0,
+                metadata_pending=True,
+            )
+            return
         if not mime_type:
             allowed_mime_types = self.context.policy._communication_file_policy_value(
                 session, "communication_file_allowed_mime_types"

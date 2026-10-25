@@ -34,6 +34,9 @@ message context. File links use the existing SharePoint download path. Text refe
 are omitted from file listings. Microsoft still enforces the configured identity's access to each
 resource; this does not add chat grants or fetch source conversation history. Files represented
 only by an unresolved attachment placeholder have no downloadable URL in the forwarded copy.
+For inferred resources, preflight validates known metadata and defers an unknown extension or MIME
+type until the response supplies it. Final filename, MIME and byte policy checks still run before
+artifact staging, and both download tools apply the session byte limit while reading the stream.
 
 To include the integration in the add-on inventory, append
 `evander_teams_graph_addon` to `addon_loader.modules`, or enable entry-point discovery with

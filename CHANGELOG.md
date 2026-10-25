@@ -4,6 +4,7 @@
 
 - Discover hosted images and SharePoint/OneDrive file links embedded in forwarded message bodies, and expose them through the existing attachment and inline-media tools. Preserve the destination message as the artifact source and download only the referenced resource through the existing Teams identity.
 - Keep text-only forward references out of file listings, validate hosted content endpoints, and retain provider access checks and attachment size enforcement. No source conversation history or additional chat grants are required.
+- Resolve unknown image extensions and file MIME types during download before enforcing the final content policy. Pass the session byte limit through both download tools so oversized streams stop before staging.
 
 ## 2026-10-25 - Bound retained scan metadata reads (0.129.4)
 

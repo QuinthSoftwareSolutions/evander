@@ -15,6 +15,7 @@ from evander.config import GatewayConfig
 from evander.gateway import create_server
 from evander.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from evander.runtime import build_runtime
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 IMAGE_URL = (
@@ -266,3 +267,110 @@ def test_forwarded_image_download_stops_when_the_stream_exceeds_the_byte_limit(
             "forward-1", attachment["id"], channel_target="chat:destination", max_bytes=5
         )
     assert yielded == [b"1234", b"5678"]
+
+
+@pytest.mark.parametrize("resource", ["image", "file"])
+@pytest.mark.parametrize("allowed_response", [True, False])
+def test_forwarded_inline_download_enforces_policy_after_unknown_metadata_is_resolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resource: str,
+    allowed_response: bool,
+) -> None:
+    image = resource == "image"
+    body = f'<img src="{IMAGE_URL}">' if image else f'<a href="{FILE_URL}">Report.pdf</a>'
+    context = context_with_forward(tmp_path, monkeypatch, body)
+    session = context.session_repository.get_session("session-1")
+    context.session_repository.upsert_session(
+        session.model_copy(
+            update={
+                "communication_file_allowed_extensions": [".jpg" if image else ".pdf"],
+                "communication_file_allowed_mime_types": [
+                    "image/jpeg" if image else "application/pdf"
+                ],
+            }
+        )
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        expected_mime = "image/jpeg" if image else "application/pdf"
+        return httpx.Response(
+            200,
+            content=b"permitted-resource",
+            headers={"content-type": expected_mime if allowed_response else "image/gif"},
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    server = create_server(context)
+    args = {
+        "session_id": "session-1",
+        "provider": "teams",
+        "source_kind": "communication",
+        "resource_id": "forward-1",
+        "channel_target": "chat:destination",
+    }
+    listed = call_tool(server, "list_inline_media", args)["media"]
+    if allowed_response:
+        artifact = call_tool(
+            server, "download_inline_media", {**args, "media_id": listed[0]["media_id"]}
+        )["artifact"]
+        assert artifact["filename"].endswith(".jpg" if image else ".pdf")
+        assert artifact["mime_type"] == ("image/jpeg" if image else "application/pdf")
+    else:
+        with pytest.raises(ToolError, match="not allowlisted"):
+            call_tool(server, "download_inline_media", {**args, "media_id": listed[0]["media_id"]})
+        assert not list((tmp_path / "communication-artifacts").rglob("*.json"))
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("tool", ["communication_download_attachment", "download_inline_media"])
+def test_forwarded_tools_stop_oversized_streams_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+) -> None:
+    context = context_with_forward(tmp_path, monkeypatch, f'<img src="{IMAGE_URL}">')
+    session = context.session_repository.get_session("session-1")
+    context.session_repository.upsert_session(
+        session.model_copy(update={"communication_file_max_bytes": 5})
+    )
+    yielded = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            for chunk in (b"1234", b"5678", b"must-not-read"):
+                yielded.append(chunk)
+                yield chunk
+
+    def handler(request):
+        return httpx.Response(
+            200, stream=Chunks(), headers={"content-type": "image/png"}, request=request
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    server = create_server(context)
+    args = {
+        "session_id": "session-1",
+        "provider": "teams",
+        "message_id": "forward-1",
+        "channel_target": "chat:destination",
+    }
+    listed = call_tool(server, "communication_list_attachments", args)["attachments"]
+    if tool == "download_inline_media":
+        download_args = {
+            "session_id": "session-1",
+            "provider": "teams",
+            "source_kind": "communication",
+            "resource_id": "forward-1",
+            "channel_target": "chat:destination",
+            "media_id": listed[0]["attachment_id"],
+        }
+    else:
+        download_args = {**args, "attachment_id": listed[0]["attachment_id"]}
+    with pytest.raises(ToolError):
+        call_tool(server, tool, download_args)
+    assert yielded == [b"1234", b"5678"]
+    assert not list((tmp_path / "communication-artifacts").rglob("*.json"))
