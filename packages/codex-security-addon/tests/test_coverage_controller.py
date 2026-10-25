@@ -1126,6 +1126,31 @@ def test_boundary_external_validation_closes_only_its_verified_component(running
     assert c.progress(state)["validation_questions_pending"] == 1
 
 
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_unknown_native_coverage_cannot_certify_files_or_complete_a_review(running, status):
+    from test_coverage_review import candidate, surface
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["incomplete_review_policy"] = "isolate_blockers"
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item, coverage="unknown", deferred=[candidate(item["paths"])])
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "surfaces": [surface("file:" + item["paths"][0]), surface("candidate:renderer", "needs_follow_up")],
+    })
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    evidence = controller.proof({"status": status, "coverage": "unknown"}, child, receipt, state=state, item=item)
+    assert not receipt["source_review_complete"]
+    assert receipt["source_dispositions"] == {}
+    c.accept(state, item, attempt["scan_id"], receipt, evidence)
+    assert item["status"] == "blocked"
+    assert c.progress(state)["files_reviewed"] == 0
+    assert c.progress(state)["validation_questions_pending"] == 0
+    assert not c.required_work_complete(state)
+
+
 
 def test_cancel_keeps_repository_claim_until_cleanup_is_confirmed(running):
     controller, handle, worker, _ = running

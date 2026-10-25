@@ -123,11 +123,12 @@ def review_facts(coverage, assigned, *, kind="files", known_candidates=None, rev
             eligible.clear()
     # An unexplained partial status cannot be upgraded through file summaries.
     explained = bool(required or source_followups or omissions or validations or advisory_surfaces)
-    if coverage.get("completeness") != "complete" and not explained:
+    completeness = coverage.get("completeness")
+    if completeness not in {"complete", "partial"} or completeness == "partial" and not explained:
         eligible.clear()
     complete = (
-        coverage.get("completeness") == "complete"
-        or source_proven and bool(validations or advisory_surfaces)
+        completeness == "complete"
+        or completeness == "partial" and source_proven and bool(validations or advisory_surfaces)
     ) and not (required or source_followups or omissions)
     if not complete:
         validation_resolutions = {}

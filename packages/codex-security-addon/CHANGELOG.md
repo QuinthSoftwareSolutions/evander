@@ -4,6 +4,7 @@
 
 - Require Evander 0.129.2. Distinguish positive sealed file-review evidence from unverified vulnerability candidates and external validation. Unread source and unknown or contradictory deferred work remain blocking; candidate labels alone cannot grant coverage.
 - Keep certified files out of repeated mixed-batch retries, recover those facts from immutable retained proofs on continuation, and require explicit source-completion evidence for component-local boundary validation limitations. Preserve candidates, uncertainty and native partial reports without counting them as validated findings.
+- Reject unknown native coverage for file credit and source completion, including reports with terminal file surfaces and candidate hypotheses.
 - Publish pending validation counts and honest source-review semantics. Upgrade continuation journals to version 3 while preserving accepted version 1/2 evidence and historical reports. This is a host-only change; no SDK or scanner-image rebuild is required.
 
 ## 2026-10-25 - Confirm cleanup and completion with exclusions (0.6.1)
