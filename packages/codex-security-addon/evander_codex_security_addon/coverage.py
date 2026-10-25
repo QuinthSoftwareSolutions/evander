@@ -577,6 +577,10 @@ def complete(state):
     return not state.get("exclude_paths") and required_work_complete(state)
 
 
+def scope_complete(state):
+    return bool(state["finished_at"] and not state["stop_reason"] and required_work_complete(state))
+
+
 def pending(state, *, at=None):
     at = at or now()
     if state.get("not_before") and at < datetime.fromisoformat(state["not_before"]):

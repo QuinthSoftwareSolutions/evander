@@ -21,6 +21,7 @@ from .models import (
     WorkerFileWriteRequest,
     WorkerGitWriteKeyRequest,
     WorkerJobRequest,
+    WorkerJobCancelRequest,
     WorkerSteerRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
@@ -75,6 +76,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                     "codex_ultrafast_mode": 1,
                     "codex_runtime_bridge": 1,
                     "inference_usage": 1,
+                    "job_cancellation": 1,
                     "codex_native_steering": 1,
                 },
             }
@@ -515,6 +517,18 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
+    async def cancel_job(request: Request) -> JSONResponse:
+        try:
+            payload = WorkerJobCancelRequest.model_validate(await request.json())
+            receipt = await run_in_threadpool(
+                daemon.cancel_job, request.path_params["job_id"], payload.session_id
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(receipt)
+
     async def stop_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
@@ -737,6 +751,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
             Route("/v1/jobs/{job_id}/stop", stop_job, methods=["POST"]),
+            Route("/v1/jobs/{job_id}/cancel", cancel_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}/steer", steer_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}/steering/{delivery_id}", steering_receipt, methods=["GET"]),
             Route(

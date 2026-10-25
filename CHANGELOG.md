@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-25 - Confirm uncertain scan cleanup and scoped completion (0.129.1)
+
+- Add session-bound worker cancellation receipts backed by durable launch fences. Serialize cancellation with admission across worker processes; a missing job can be confirmed clean without creating it, and delayed requests cannot launch after cancellation. Keep failed cleanup unconfirmed and preserve retained session artifacts.
+- Release Codex Security add-on 0.6.1. Resolve lost launch acknowledgements through the worker cancellation protocol, retaining the repository reservation when the worker is unavailable, older or cannot prove cleanup.
+- Succeed when every required review and checkpoint in the agreed scope is complete. Report `scope_complete` and exact `excluded_paths` separately from full repository coverage, which remains partial with exclusions. Incomplete, blocked and budget-stopped scans remain unsuccessful.
+
 ## 2026-10-25 - Isolate tracked-file blockers and support exclusion patterns (0.129.0)
 
 - Add workflow `exclude_patterns` for positive, case-insensitive path globs resolved against the frozen tracked inventory. Support exclusions on new scans and unfinished continuation scopes while retaining exact matches, accepted credit, findings and completed boundaries in the report.

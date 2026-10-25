@@ -278,7 +278,7 @@ class CodexSecurityScanProvider:
 
     def _cancel_raw(self, *, scan_id, request, handle, runtime):
         if handle is None:
-            # Read the stable job identity; never submit a new job to cancel an uncertain launch.
+            # Fence the stable identity without submitting or recreating the missing launch.
             config, session = self._config(runtime, request.session_id)
             if execution_backend_for_session(session, fallback_config=config) == "libvirt_vm":
                 self._command(runtime, request.session_id, ["cancel", scan_id])
@@ -292,25 +292,14 @@ class CodexSecurityScanProvider:
             )
             job_id = "scan-" + scan_id
             try:
-                record = client.get(job_id)
+                receipt = client.cancel(job_id, session_id=request.session_id)
             except ContainerWorkerClientError as exc:
                 if exc.status_code == 404:
                     return False
                 raise
-            if record.session_id != request.session_id:
-                raise ValueError("Security scan job belongs to another session")
-            if request.coverage_policy == "all_tracked_files" and record.status == "starting":
-                raise SecurityScanRetryableError("Worker launch is still being prepared")
-            if (
-                request.coverage_policy == "all_tracked_files"
-                and record.status == "removed"
-                and not record.container_id
-            ):
-                return False
-            if record.status in {"starting", "running"}:
-                client.stop(job_id)
-            client.delete(job_id)
-            return True
+            if receipt.get("session_id") != request.session_id or receipt.get("job_id") != job_id:
+                raise ValueError("Security scan cancellation receipt belongs to another job/session")
+            return receipt.get("launch_cancelled") is True and receipt.get("cleanup_confirmed") is True
         data = handle.metadata
         if data["backend"] == "container_worker_vm":
             config, _ = self._config(runtime, data["session_id"])

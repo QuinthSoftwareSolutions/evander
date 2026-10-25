@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+import fcntl
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from .models import WorkerJobRecord
+from .models import WorkerJobRecord, validate_worker_component_id
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
@@ -116,6 +118,10 @@ class WorkerJobStore:
                         payload_json TEXT NOT NULL,
                         PRIMARY KEY(job_id, delivery_id)
                     );
+                    CREATE TABLE IF NOT EXISTS worker_launch_cancellations (
+                        job_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL
+                    );
                     CREATE INDEX IF NOT EXISTS idx_worker_jobs_session_status_started_job
                         ON worker_jobs(session_id, status, started_at, job_id);
                     CREATE INDEX IF NOT EXISTS idx_worker_jobs_session_started_job
@@ -128,6 +134,46 @@ class WorkerJobStore:
                         ON worker_jobs(status, cleanup_status);
                     """
                 )
+
+    @contextmanager
+    def launch_lock(self, job_id: str):
+        """Serialize admission and cancellation across threads and daemon processes."""
+        job_id = str(validate_worker_component_id(job_id, field_name="job_id"))
+        root = self.path.parent / "worker-launch-locks"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (root / (job_id + ".lock")).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def launch_cancelled(self, job_id: str) -> bool:
+        with self._lock, self._connect() as db:
+            return db.execute(
+                "SELECT 1 FROM worker_launch_cancellations WHERE job_id=?", (job_id,)
+            ).fetchone() is not None
+
+    def cancel_launch(self, job_id: str, session_id: str) -> WorkerJobRecord | None:
+        """Fence a stable identity, including one that has never been admitted.
+
+        The caller holds launch_lock until any existing container is cleaned up.
+        Fences outlive job/session deletion so delayed requests cannot resurrect jobs.
+        """
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT session_id,payload_json FROM worker_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            cancelled = db.execute(
+                "SELECT session_id FROM worker_launch_cancellations WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if any(r is not None and r["session_id"] != session_id for r in (row, cancelled)):
+                raise ValueError("Job belongs to another session")
+            db.execute(
+                "INSERT OR IGNORE INTO worker_launch_cancellations VALUES (?,?)", (job_id, session_id)
+            )
+            return WorkerJobRecord.model_validate_json(row["payload_json"]) if row else None
 
     def recover_steering(self) -> None:
         """A crashed sender cannot prove whether app-server accepted its write."""

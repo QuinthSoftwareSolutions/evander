@@ -48,6 +48,74 @@ def launch(provider):
     )
 
 
+@pytest.fixture
+def cancelling(launching, monkeypatch):
+    provider, _, _, backend, _ = launching
+    backend.config_for_session = lambda _: SimpleNamespace(
+        container_worker_base_url="http://worker.invalid",
+        container_worker_token_env="WORKER_TOKEN", container_worker_request_timeout_seconds=1,
+    )
+    client = SimpleNamespace(cancel=lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(implementation, "ContainerWorkerClient", lambda **_: client)
+    request = SecurityScanRequest(
+        session_id="session-1", repo_path="/home/agent/repo",
+        coverage_policy="all_tracked_files", managed_repo_id="example",
+    )
+    return client, lambda: provider._cancel_raw(scan_id="a" * 32, request=request, handle=None, runtime=None)
+
+
+@pytest.mark.parametrize("flags,expected", [
+    ({"launch_cancelled": True, "cleanup_confirmed": True}, True),
+    ({"launch_cancelled": False, "cleanup_confirmed": True}, False),
+    ({"launch_cancelled": True, "cleanup_confirmed": False}, False),
+    ({"launch_cancelled": "true", "cleanup_confirmed": True}, False),
+    ({}, False),
+])
+def test_unknown_launch_requires_matching_durable_cancellation_receipt(cancelling, flags, expected):
+    client, cancel = cancelling
+    calls = []
+
+    def acknowledge(job_id, *, session_id):
+        calls.append((job_id, session_id))
+        return {"job_id": job_id, "session_id": session_id, **flags}
+
+    client.cancel = acknowledge
+    assert cancel() is expected
+    assert calls == [("scan-" + "a" * 32, "session-1")]
+
+
+@pytest.mark.parametrize("field,value", [("job_id", "other-job"), ("session_id", "other-session")])
+def test_wrong_owner_cancellation_receipt_cannot_confirm_cleanup(cancelling, field, value):
+    client, cancel = cancelling
+    client.cancel = lambda *_args, **_kwargs: {
+        "job_id": "scan-" + "a" * 32, "session_id": "session-1",
+        "launch_cancelled": True, "cleanup_confirmed": True, field: value,
+    }
+    with pytest.raises(ValueError, match="another job/session"):
+        cancel()
+
+
+def test_older_worker_without_cancellation_protocol_remains_unconfirmed(cancelling):
+    client, cancel = cancelling
+
+    def unsupported(*_args, **_kwargs):
+        raise ContainerWorkerClientError("not found", status_code=404)
+
+    client.cancel = unsupported
+    assert cancel() is False
+
+
+def test_lost_cancellation_acknowledgement_does_not_claim_cleanup(cancelling):
+    client, cancel = cancelling
+
+    def unavailable(*_args, **_kwargs):
+        raise ContainerWorkerClientError("lost response")
+
+    client.cancel = unavailable
+    with pytest.raises(ContainerWorkerClientError, match="lost response"):
+        cancel()
+
+
 @pytest.mark.parametrize("route", ["openai_public", "azure", "local"])
 @pytest.mark.parametrize("program", [None, "standard", "daybreak_blue"])
 def test_only_public_openai_route_uses_selected_subscription(launching, route, program):
@@ -247,7 +315,7 @@ def test_missing_runtime_in_exited_job_fails_without_waiting_for_timeout(launchi
     assert destroyed == ["job"]
 
 
-def test_cancel_lost_launch_only_reads_and_stops_existing_job(launching, monkeypatch):
+def test_cancel_lost_launch_fences_identity_without_recreating_job(launching, monkeypatch):
     provider, _, _, backend, _ = launching
     backend.config_for_session = lambda session: SimpleNamespace(
         container_worker_base_url="http://worker.invalid",
@@ -255,15 +323,14 @@ def test_cancel_lost_launch_only_reads_and_stops_existing_job(launching, monkeyp
         container_worker_request_timeout_seconds=5,
     )
     calls = []
-    client = SimpleNamespace(
-        get=lambda job: (
-            calls.append(("get", job)) or SimpleNamespace(session_id="session-1", status="running")
-        ),
-        stop=lambda job: calls.append(("stop", job)),
-        delete=lambda job: calls.append(("delete", job)),
-    )
+    def cancel(job_id, *, session_id):
+        calls.append((job_id, session_id))
+        return {"job_id": job_id, "session_id": session_id,
+                "launch_cancelled": True, "cleanup_confirmed": True}
+
+    client = SimpleNamespace(cancel=cancel)
     monkeypatch.setattr(implementation, "ContainerWorkerClient", lambda **kwargs: client)
-    provider.cancel(
+    assert provider.cancel(
         scan_id="1" * 32,
         request=SecurityScanRequest(
             session_id="session-1",
@@ -271,8 +338,8 @@ def test_cancel_lost_launch_only_reads_and_stops_existing_job(launching, monkeyp
         ),
         handle=None,
         runtime=None,
-    )
-    assert calls == [(action, "scan-" + "1" * 32) for action in ("get", "stop", "delete")]
+    ) is True
+    assert calls == [("scan-" + "1" * 32, "session-1")]
 
 
 def test_staged_coverage_input_keeps_existing_worker_profile_command_prefix(launching):

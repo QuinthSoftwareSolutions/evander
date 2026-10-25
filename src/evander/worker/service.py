@@ -640,6 +640,14 @@ class WorkerDaemon(GitWorkspaceOperations):
         return self._admit_job(request)
 
     def _admit_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
+        if request.job_id is None:
+            request = request.model_copy(update={"job_id": uuid.uuid4().hex})
+        with self.store.launch_lock(request.job_id):
+            if self.store.launch_cancelled(request.job_id):
+                raise ValueError("Job launch was cancelled")
+            return self._admit_uncancelled_job(request)
+
+    def _admit_uncancelled_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         if request.job_id and request.metadata.get("idempotent_start") is True:
             fingerprint_payload = request.model_dump(mode="json")
             # Preserve replay receipts created before optional Cyber selection existed.
@@ -1021,6 +1029,23 @@ class WorkerDaemon(GitWorkspaceOperations):
             except Exception:
                 acknowledge("delivery_unknown", "runner_unavailable")
         return self.store.steering(record.job_id, request.delivery_id)
+
+    def cancel_job(self, job_id: str, session_id: str) -> dict[str, Any]:
+        """Fence late admission and acknowledge only confirmed container cleanup."""
+        job_id = str(validate_worker_component_id(job_id, field_name="job_id"))
+        session_id = str(validate_worker_component_id(session_id, field_name="session_id"))
+        with self.store.launch_lock(job_id):
+            record = self.store.cancel_launch(job_id, session_id)
+            if record is not None:
+                self.remove_job(record)
+            return {
+                "job_id": job_id,
+                "session_id": session_id,
+                "launch_cancelled": True,
+                "cleanup_confirmed": record is None or (
+                    record.status == "removed" and record.cleanup_status == "cleanup_succeeded"
+                ),
+            }
 
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
         self._shutdown_codex_subscription_runner(record.job_id)

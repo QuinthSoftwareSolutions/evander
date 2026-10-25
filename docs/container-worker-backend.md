@@ -1232,6 +1232,7 @@ Routes:
 - `GET /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/model-usage`
 - `POST /v1/jobs/{id}/stop`
+- `POST /v1/jobs/{id}/cancel`
 - `DELETE /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/logs`
 - `GET /v1/jobs/{id}/artifacts`
@@ -1251,6 +1252,19 @@ Routes:
 
 The singleton `/v1/codex-auth` routes are compatibility aliases for reserved profile `default`.
 Profiles have no hard-delete endpoint in V1.
+
+`POST /v1/jobs/{id}/cancel` accepts `{"session_id": "the-owning-session"}` and
+returns the exact job/session identities, `launch_cancelled` and `cleanup_confirmed`.
+The authenticated endpoint validates session ownership and stores a durable launch
+cancellation even if the job was never admitted. Admission and cancellation share
+a per-job process lock, so cleanup acknowledgement cannot race a delayed container
+start. Existing containers are removed through normal worker cleanup; session files
+and retained evidence are preserved. A failed cleanup remains unconfirmed and can
+be retried with the same identities. Cancellation records survive worker restarts
+and job/session history deletion; cancelled job IDs cannot be reused. A timeout or
+404 from an older worker is not cleanup proof. Worker health advertises
+`capabilities.job_cancellation: 1`; deploy both worker and control plane for this
+protocol.
 
 `POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `codex_turn`,
 optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`,

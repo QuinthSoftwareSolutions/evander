@@ -127,6 +127,8 @@ class SecurityScanService:
                 "mode",
                 "status",
                 "coverage",
+                "scope_complete",
+                "excluded_paths",
                 "coverage_policy",
                 "resume_from_scan_id",
                 "to_commit",
@@ -134,6 +136,7 @@ class SecurityScanService:
                 "cleanup_confirmed",
             )
         }
+        result["excluded_paths"] = output.get("excluded_paths") or []
         describe = getattr(self.providers.get(record.request.provider), "describe", None)
         result["resumable"] = False
         if callable(describe):
@@ -232,6 +235,9 @@ class SecurityScanService:
                     }
                 )
                 self.store.save(record)
+            elif updated is True:
+                record.result = record.result.model_copy(update={"cleanup_confirmed": True})
+                self.store.save(record)
             return record
         try:
             self._session(record.request, record.directory_path)
@@ -288,9 +294,9 @@ class SecurityScanService:
                 )
             else:
                 result = SecurityScanResult(status="failed", error=str(exc))
-        if result.status == "completed" and result.coverage != "complete":
+        if result.status == "completed" and not result.success:
             result = result.model_copy(
-                update={"status": "failed", "error": "Security scan coverage is incomplete"}
+                update={"status": "failed", "error": result.error or "Security scan coverage is incomplete"}
             )
         record.result = result
         self.store.save(record)
@@ -307,6 +313,8 @@ class SecurityScanService:
             )
             if isinstance(cancelled, SecurityScanResult):
                 result = cancelled
+            elif cancelled is False:
+                result = result.model_copy(update={"cleanup_confirmed": False})
             elif record.handle:
                 result = provider.poll(handle=record.handle, runtime=runtime)
             else:
