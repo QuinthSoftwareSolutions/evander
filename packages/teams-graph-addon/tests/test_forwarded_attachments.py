@@ -374,3 +374,158 @@ def test_forwarded_tools_stop_oversized_streams_before_staging(
         call_tool(server, tool, download_args)
     assert yielded == [b"1234", b"5678"]
     assert not list((tmp_path / "communication-artifacts").rglob("*.json"))
+
+
+@pytest.mark.parametrize("tool", ["communication_download_attachment", "download_inline_media"])
+@pytest.mark.parametrize(
+    ("file_url", "label", "disposition", "expected_filename"),
+    [
+        (FILE_URL, "Report version 1.2", None, "Report.pdf"),
+        (FILE_URL, "Report version 1.2", 'attachment; filename="Delivered.pdf"', "Delivered.pdf"),
+        (
+            "https://example.sharepoint.com/:b:/s/shared/opaque-token",
+            "Open file",
+            'attachment; filename="Report.pdf"',
+            "Report.pdf",
+        ),
+        (
+            "https://example.sharepoint.com/:b:/s/shared/opaque-token",
+            "Open file",
+            "attachment; filename*=UTF-8''R%C3%A9sum%C3%A9.pdf",
+            "Résumé.pdf",
+        ),
+        (
+            "https://example.sharepoint.com/:b:/s/shared/opaque-token",
+            "Open file",
+            None,
+            "forwarded-file-1.pdf",
+        ),
+    ],
+)
+def test_forwarded_file_names_come_from_the_resource_and_response_not_display_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    file_url: str,
+    label: str,
+    disposition: str | None,
+    expected_filename: str,
+) -> None:
+    context = context_with_forward(tmp_path, monkeypatch, f'<a href="{file_url}">{label}</a>')
+    session = context.session_repository.get_session("session-1")
+    context.session_repository.upsert_session(
+        session.model_copy(
+            update={
+                "communication_file_allowed_extensions": [".pdf"],
+                "communication_file_allowed_mime_types": ["application/pdf"],
+            }
+        )
+    )
+    graph_share = base64.urlsafe_b64encode(file_url.encode()).decode().rstrip("=")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if (
+            str(request.url)
+            == f"https://graph.microsoft.com/v1.0/shares/u!{graph_share}/driveItem/content"
+        ):
+            assert request.headers["authorization"] == "Bearer graph-token"
+            return httpx.Response(
+                302, headers={"location": "https://download.example/download"}, request=request
+            )
+        assert str(request.url) == "https://download.example/download"
+        assert "authorization" not in request.headers
+        headers = {"content-type": "application/pdf"}
+        if disposition:
+            headers["content-disposition"] = disposition
+        return httpx.Response(
+            200, content=b"%PDF-review-regression", headers=headers, request=request
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    server = create_server(context)
+    args = {
+        "session_id": "session-1",
+        "provider": "teams",
+        "message_id": "forward-1",
+        "channel_target": "chat:destination",
+    }
+    attachment = call_tool(server, "communication_list_attachments", args)["attachments"][0]
+    assert attachment["filename"] != label
+    if tool == "download_inline_media":
+        download_args = {
+            "session_id": "session-1",
+            "provider": "teams",
+            "source_kind": "communication",
+            "resource_id": "forward-1",
+            "channel_target": "chat:destination",
+            "media_id": attachment["attachment_id"],
+        }
+    else:
+        download_args = {**args, "attachment_id": attachment["attachment_id"]}
+    artifact = call_tool(server, tool, download_args)["artifact"]
+    assert artifact["original_filename"] == expected_filename
+    assert artifact["filename"].endswith(".pdf")
+    assert artifact["mime_type"] == "application/pdf"
+    assert (
+        CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"]).blob_path.read_bytes()
+        == b"%PDF-review-regression"
+    )
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("tool", ["communication_download_attachment", "download_inline_media"])
+def test_forwarded_response_filename_remains_subject_to_extension_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+) -> None:
+    context = context_with_forward(tmp_path, monkeypatch, f'<a href="{FILE_URL}">Report.pdf</a>')
+    session = context.session_repository.get_session("session-1")
+    context.session_repository.upsert_session(
+        session.model_copy(
+            update={
+                "communication_file_allowed_extensions": [".pdf"],
+                "communication_file_allowed_mime_types": ["application/pdf"],
+            }
+        )
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=b"not-allowed",
+            headers={
+                "content-type": "application/pdf",
+                "content-disposition": 'attachment; filename="program.exe"',
+            },
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    server = create_server(context)
+    args = {
+        "session_id": "session-1",
+        "provider": "teams",
+        "message_id": "forward-1",
+        "channel_target": "chat:destination",
+    }
+    attachment = call_tool(server, "communication_list_attachments", args)["attachments"][0]
+    if tool == "download_inline_media":
+        download_args = {
+            "session_id": "session-1",
+            "provider": "teams",
+            "source_kind": "communication",
+            "resource_id": "forward-1",
+            "channel_target": "chat:destination",
+            "media_id": attachment["attachment_id"],
+        }
+    else:
+        download_args = {**args, "attachment_id": attachment["attachment_id"]}
+    with pytest.raises(ToolError, match="not allowlisted|blocked"):
+        call_tool(server, tool, download_args)
+    assert not list((tmp_path / "communication-artifacts").rglob("*.json"))
+    assert len(requests) == 1

@@ -14,7 +14,11 @@ from evander.models import (
 )
 from evander.repositories.records import TeamsRecordsRepository, teams_records_with_outbound
 from .message_editing import record_outbound, update_message
-from .forwarded_attachments import FORWARDED_ATTACHMENT_KINDS, forwarded_attachment_candidates
+from .forwarded_attachments import (
+    FORWARDED_ATTACHMENT_KINDS,
+    forwarded_attachment_candidates,
+    forwarded_file_filename,
+)
 
 from evander.integration_services.common import (
     _LOGGER,
@@ -1202,8 +1206,10 @@ class GraphTeamsService(ManagedTeamsService):
             )
             content_type = response.headers.get("content-type") or attachment.get("contentType")
         filename = str(attachment.get("name") or attachment.get("filename") or attachment_id)
+        if attachment.get("attachment_kind") == "forwarded_file":
+            filename = forwarded_file_filename(response, content_url, filename)
         if (
-            attachment.get("attachment_kind") in {"hosted_content", "forwarded_hosted_content"}
+            attachment.get("attachment_kind") in {"hosted_content", *FORWARDED_ATTACHMENT_KINDS}
             and not Path(filename).suffix
         ):
             filename = f"{filename}{_teams_content_type_extension(content_type)}"

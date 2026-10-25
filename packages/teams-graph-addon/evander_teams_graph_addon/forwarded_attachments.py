@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import re
 from collections.abc import Callable
+from email.message import Message
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
+import httpx
 
 FORWARDED_ATTACHMENT_KINDS = {"forwarded_hosted_content", "forwarded_file"}
 
@@ -19,23 +22,30 @@ class _Links(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.links: list[dict[str, str]] = []
-        self.anchor: dict[str, str] | None = None
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
         if tag == "img" and values.get("src"):
-            self.links.append({"url": values["src"], "text": "", "tag": tag})
+            self.links.append({"url": values["src"], "tag": tag})
         elif tag == "a" and values.get("href"):
-            self.anchor = {"url": values["href"], "text": "", "tag": tag}
-            self.links.append(self.anchor)
+            self.links.append({"url": values["href"], "tag": tag})
 
-    def handle_data(self, data):
-        if self.anchor is not None:
-            self.anchor["text"] += data
 
-    def handle_endtag(self, tag):
-        if tag == "a":
-            self.anchor = None
+def _filename_from_url(url: str) -> str | None:
+    name = PurePosixPath(unquote(urlparse(url).path)).name
+    # Sharing tokens and viewer routes are provisional, not file extensions.
+    return name if name and mimetypes.guess_type(name) != (None, None) else None
+
+
+def forwarded_file_filename(response: httpx.Response, source_url: str, fallback: str) -> str:
+    disposition = Message()
+    disposition["Content-Disposition"] = response.headers.get("content-disposition", "")
+    filename = disposition.get_filename()
+    if filename:
+        name = PurePosixPath(filename.replace("\\", "/")).name.strip()
+        if name and name not in {".", ".."}:
+            return name
+    return _filename_from_url(str(response.url)) or _filename_from_url(source_url) or fallback
 
 
 def _is_hosted_content_url(url: str, api_base_url: str) -> bool:
@@ -138,13 +148,7 @@ def forwarded_attachment_candidates(
             if hosted:
                 item["name"] = f"forwarded-image-{len(candidates) + 1}"
             else:
-                label = link["text"].strip()
-                item["name"] = (
-                    PurePosixPath(
-                        label if PurePosixPath(label).suffix else unquote(parsed.path)
-                    ).name
-                    or "forwarded-file"
-                )
+                item["name"] = _filename_from_url(url) or f"forwarded-file-{len(candidates) + 1}"
                 item["contentType"] = "reference"
             candidates.append(item)
     return candidates

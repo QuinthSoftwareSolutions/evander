@@ -37,6 +37,9 @@ only by an unresolved attachment placeholder have no downloadable URL in the for
 For inferred resources, preflight validates known metadata and defers an unknown extension or MIME
 type until the response supplies it. Final filename, MIME and byte policy checks still run before
 artifact staging, and both download tools apply the session byte limit while reading the stream.
+File names come from `Content-Disposition` response headers, then a recognizable resource URL;
+link display text never determines a file extension. Opaque links use a neutral name and the
+response MIME extension when no filename is available. Final file policies apply to the resolved name.
 
 To include the integration in the add-on inventory, append
 `evander_teams_graph_addon` to `addon_loader.modules`, or enable entry-point discovery with
