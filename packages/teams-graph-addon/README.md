@@ -25,6 +25,22 @@ Reading the forwarded copy uses the destination chat's existing grants. It does 
 to the original conversation. File downloads direct callers to the history tool for this text.
 Previously cached forwards with missing text need to be fetched again from Graph after upgrading.
 
+Images embedded in a forwarded message and SharePoint/OneDrive file links in its body are
+listed by `communication_list_attachments` and `list_inline_media` under the forwarded message's
+ID. Download them with the corresponding attachment or inline-media tool. Hosted images use
+the exact Graph content endpoint embedded in the forwarded copy, including when the image's
+message differs from the forwarded message; relative references use the embedded original
+message context. File links use the existing SharePoint download path. Text references themselves
+are omitted from file listings. Microsoft still enforces the configured identity's access to each
+resource; this does not add chat grants or fetch source conversation history. Files represented
+only by an unresolved attachment placeholder have no downloadable URL in the forwarded copy.
+For inferred resources, preflight validates known metadata and defers an unknown extension or MIME
+type until the response supplies it. Final filename, MIME and byte policy checks still run before
+artifact staging, and both download tools apply the session byte limit while reading the stream.
+File names come from `Content-Disposition` response headers, then a recognizable resource URL;
+link display text never determines a file extension. Opaque links use a neutral name and the
+response MIME extension when no filename is available. Final file policies apply to the resolved name.
+
 To include the integration in the add-on inventory, append
 `evander_teams_graph_addon` to `addon_loader.modules`, or enable entry-point discovery with
 `addon_loader.enabled_entry_points: true`. If `addon_loader.enabled_addon_ids` is an explicit

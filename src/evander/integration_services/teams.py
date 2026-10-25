@@ -386,7 +386,7 @@ class TeamsInlineMediaProvider:
                 raise ValueError("Inline media exceeds max bytes")
             return embedded
         downloaded = self.service.download_attachment(
-            media.resource_id, media.media_id, channel_target=channel_target
+            media.resource_id, media.media_id, channel_target=channel_target, max_bytes=max_bytes
         )
         data = downloaded.get("content")
         if not isinstance(data, bytes):

@@ -14,6 +14,11 @@ from evander.models import (
 )
 from evander.repositories.records import TeamsRecordsRepository, teams_records_with_outbound
 from .message_editing import record_outbound, update_message
+from .forwarded_attachments import (
+    FORWARDED_ATTACHMENT_KINDS,
+    forwarded_attachment_candidates,
+    forwarded_file_filename,
+)
 
 from evander.integration_services.common import (
     _LOGGER,
@@ -1014,17 +1019,30 @@ class GraphTeamsService(ManagedTeamsService):
         self, message_id: str, *, channel_target: str | None = None
     ) -> list[dict[str, Any]]:
         record, target = self._find_message_record(message_id, channel_target=channel_target)
-        return self._list_attachments_for_record(record, target, include_remote_hosted=True)
+        return [
+            item
+            for item in self._list_attachments_for_record(
+                record, target, include_remote_hosted=True
+            )
+            if item.get("contentType") != "forwardedMessageReference"
+        ]
 
     def _stored_attachment_candidates(self, record: TeamsMessageEnvelope) -> list[dict[str, Any]]:
         raw_attachments = record.metadata.get("attachments")
         if raw_attachments is None and isinstance(record.metadata.get("message"), dict):
             raw_attachments = _teams_payload_attachments(record.metadata["message"])
-        return [
+        stored = [
             _sanitize_attachment_metadata(item)
             for item in raw_attachments or []
             if isinstance(item, dict)
+            and item.get("attachment_kind") not in FORWARDED_ATTACHMENT_KINDS
         ]
+        return self._merge_attachment_lists(
+            stored,
+            forwarded_attachment_candidates(
+                stored, api_base_url=self.api_base_url, is_file_url=self._is_sharepoint_content_url
+            ),
+        )
 
     def _record_has_hosted_content_hint(self, record: TeamsMessageEnvelope) -> bool:
         values = [record.content]
@@ -1035,6 +1053,8 @@ class GraphTeamsService(ManagedTeamsService):
                 values.append(str(body.get("content") or ""))
             values.append(str(raw_message.get("content") or ""))
         for attachment in self._stored_attachment_candidates(record):
+            if attachment.get("attachment_kind") in FORWARDED_ATTACHMENT_KINDS:
+                continue
             values.append(str(attachment.get("contentUrl") or attachment.get("content_url") or ""))
         return "hostedcontents/" in " ".join(values).lower()
 
@@ -1158,7 +1178,10 @@ class GraphTeamsService(ManagedTeamsService):
             attachment.get("contentUrl") or attachment.get("content_url") or ""
         ).strip()
         hosted_content_id = str(attachment.get("hosted_content_id") or attachment_id).strip()
-        if (
+        forwarded = attachment.get("attachment_kind") in FORWARDED_ATTACHMENT_KINDS
+        if forwarded:
+            url = content_url
+        elif (
             attachment.get("attachment_kind") == "hosted_content"
             or _teams_hosted_content_id_from_url(content_url)
             or not content_url
@@ -1177,12 +1200,18 @@ class GraphTeamsService(ManagedTeamsService):
                     url,
                     max_response_bytes=max_bytes,
                 )
-                if attachment.get("attachment_kind") == "hosted_content" or not content_url
+                if not forwarded
+                and (attachment.get("attachment_kind") == "hosted_content" or not content_url)
                 else self._download_attachment_content_url(client, url, max_bytes=max_bytes)
             )
             content_type = response.headers.get("content-type") or attachment.get("contentType")
         filename = str(attachment.get("name") or attachment.get("filename") or attachment_id)
-        if attachment.get("attachment_kind") == "hosted_content" and not Path(filename).suffix:
+        if attachment.get("attachment_kind") == "forwarded_file":
+            filename = forwarded_file_filename(response, content_url, filename)
+        if (
+            attachment.get("attachment_kind") in {"hosted_content", *FORWARDED_ATTACHMENT_KINDS}
+            and not Path(filename).suffix
+        ):
             filename = f"{filename}{_teams_content_type_extension(content_type)}"
         return {
             **attachment,

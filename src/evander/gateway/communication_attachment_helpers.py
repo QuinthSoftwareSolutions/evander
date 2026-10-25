@@ -562,6 +562,15 @@ class CommunicationAttachmentHelpers:
         elif provider == "teams":
             service = self.context.teams_service_for_session(request.session_id)
             kwargs["channel_target"] = ref.channel_target or request.channel_target
+            if ref.metadata.get("attachment_kind") in {
+                "forwarded_hosted_content",
+                "forwarded_file",
+            }:
+                kwargs["max_bytes"] = (
+                    self.artifact_helpers.communication_file_max_bytes_for_session(
+                        self.context.policy.get_session(request.session_id)
+                    )
+                )
         elif provider == "email":
             service = self.context.email_service_for_session(request.session_id)
             kwargs["mailbox_id"] = request.mailbox_id

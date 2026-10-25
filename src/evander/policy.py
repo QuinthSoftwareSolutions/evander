@@ -1650,6 +1650,7 @@ class PolicyEngine:
         filename: str,
         mime_type: str | None,
         byte_count: int,
+        metadata_pending: bool = False,
     ) -> None:
         """Apply the communication-file MIME/size policy to inline media downloads."""
 
@@ -1659,6 +1660,7 @@ class PolicyEngine:
             filename=filename,
             mime_type=mime_type,
             byte_count=byte_count,
+            metadata_pending=metadata_pending,
         )
 
     def require_communication_file_send_enabled(self, session: SessionManifest) -> None:
@@ -1728,7 +1730,10 @@ class PolicyEngine:
         filename: str,
         mime_type: str | None,
         byte_count: int,
+        metadata_pending: bool = False,
     ) -> None:
+        # Preflight can defer fields the provider has not supplied. Completed
+        # downloads use the default strict checks before staging any artifact.
         safe_filename = self.require_safe_communication_filename(session, filename)
         if byte_count < 0:
             raise PolicyError("Communication file size must be non-negative")
@@ -1758,7 +1763,11 @@ class PolicyEngine:
             )
             if str(value or "").strip()
         }
-        if allowed_extensions and extension not in allowed_extensions:
+        if (
+            allowed_extensions
+            and extension not in allowed_extensions
+            and not (metadata_pending and not extension)
+        ):
             raise PolicyError(
                 f"Communication file extension {extension or '<none>'!r} is not allowlisted "
                 f"for session {session.session_id}"
@@ -1771,7 +1780,11 @@ class PolicyEngine:
             )
             if str(value or "").strip()
         }
-        if allowed_mime_types and normalized_mime not in allowed_mime_types:
+        if (
+            allowed_mime_types
+            and normalized_mime not in allowed_mime_types
+            and not (metadata_pending and not normalized_mime)
+        ):
             raise PolicyError(
                 f"Communication file MIME type {normalized_mime or '<unknown>'!r} is not "
                 f"allowlisted for session {session.session_id}"
