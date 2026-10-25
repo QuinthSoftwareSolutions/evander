@@ -444,6 +444,15 @@ every five minutes. It releases pins with the expected commit before deleting
 expired inactive journals. Published reports have their existing independent
 retention; raw-log expiry never removes coverage evidence.
 
+From add-on 0.6.3, lifecycle and public status projections are saved in the same
+SQLite transaction as each journal update. First use of an older journal
+backfills only the needed fields, one record at a time, without rewriting its
+payload. Database triggers invalidate projections written by older processes;
+revision checks prevent concurrent backfills from publishing stale retention or
+cleanup status. Routine metadata lookups no longer parse retained findings and
+proof bodies. Expiry still loads each actual deletion candidate and rechecks
+eligibility before releasing its snapshot pin.
+
 ## Reports and rollout checks
 
 The archive contains an **Evander aggregate report**, normalized findings,

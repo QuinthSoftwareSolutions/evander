@@ -53,7 +53,6 @@ from .coverage import (
     required_work_complete,
     review_parallelism,
     scope_complete,
-    resumable,
     retry,
     valid_path,
 )
@@ -1300,12 +1299,15 @@ def describe(record, runtime_dir):
         return {"resumable": False, "resumable_until": None, "pinned_ref": None}
     try:
         store = CoverageStore(runtime_dir)
-        state = store.get(record.scan_id, record.directory_path)
+        state = store.get_description(record.scan_id, record.directory_path)
     except ValueError:
         return {"resumable": False, "resumable_until": None, "pinned_ref": None}
     until = store.retained_until(state)
     return {
-        "resumable": resumable(state, until=until),
+        "resumable": bool(
+            state["finished_at"] and state["cleanup_confirmed"]
+            and not state["source_complete"] and now() < until
+        ),
         "resumable_until": until.isoformat() if state["finished_at"] else None,
         "lineage": state["lineage"],
         "inventory_digest": state["inventory_digest"],
@@ -1324,6 +1326,6 @@ def describe(record, runtime_dir):
         },
         "pinned_ref": "refs/evander/security-scans/" + state["scan_id"],
         "to_commit": state["revision"],
-        "coverage_progress": progress(state),
+        "coverage_progress": state["coverage_progress"],
         "cleanup_confirmed": state["cleanup_confirmed"],
     }

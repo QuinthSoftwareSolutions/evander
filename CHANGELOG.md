@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-25 - Bound retained scan metadata reads (0.129.4)
+
+- Release Codex Security add-on 0.6.3. Store lifecycle and status projections transactionally so continuation eligibility and retention maintenance do not repeatedly parse retained findings and proof bodies.
+- Backfill existing journals without changing their payloads or evidence. Invalidate projections from older writers and reject stale backfill results, preserving cleanup-based retention, ancestor pins and directory isolation. This is a host-only fix; the SDK and scanner image are unchanged.
+
 ## 2026-10-25 - Preserve forwarded Teams message text (0.129.3)
 
 - Retain embedded forwarded message text and sender attribution through Graph sanitization, inbox persistence, and compact Teams history reads while continuing to omit binary attachment data and credential metadata.

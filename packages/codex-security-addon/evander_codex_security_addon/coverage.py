@@ -11,6 +11,8 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 
+from pydantic import BaseModel, ConfigDict
+
 from evander.codex_auth import normalize_subscription_profile_id
 from .coverage_file_controls import (
     blocked_paths,
@@ -914,6 +916,41 @@ def aggregate(state):
     return findings, counts, list(grouped.values())
 
 
+class _RetentionFields(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    finished_at: str | None
+    cleanup_confirmed: bool
+    cleanup_finished_at: str | None = None
+    deadline_at: str
+    lineage: list[str]
+
+
+class _DescriptionFields(_RetentionFields):
+    scan_id: str
+    directory_path: str
+    managed_repo_id: str
+    inventory_digest: str
+    revision: str
+    route: dict
+    phase: str
+    last_progress_at: str
+    files: dict[str, dict]
+    tasks: dict[str, dict]
+    deferred: dict[str, dict]
+    architecture: dict | None
+    boundary_planned: bool
+    batching_version: int = 1
+    max_batch_text_bytes: int | None = None
+    max_parallel_reviews: int = DEFAULT_PARALLEL_REVIEWS
+    exclude_paths: list[str] = []
+    exclude_patterns: list[str] = []
+    incomplete_review_policy: str = "split"
+    file_blockers: dict = {}
+    deferred_aliases: dict = {}
+    migration_error: str | None = None
+
+
 class CoverageStore:
     def __init__(self, runtime_dir):
         self.root = Path(runtime_dir) / "codex-security-coverage"
@@ -925,6 +962,48 @@ class CoverageStore:
                 raise RuntimeError("Coverage journal requires write-ahead logging")
             c.execute(
                 "CREATE TABLE IF NOT EXISTS campaigns (scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL, repository TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"
+            )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS campaign_retention (
+                    scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL,
+                    repository TEXT NOT NULL, active INTEGER NOT NULL,
+                    revision TEXT NOT NULL, valid INTEGER NOT NULL,
+                    finished_at TEXT, cleanup_confirmed INTEGER,
+                    cleanup_finished_at TEXT, deadline_at TEXT, lineage TEXT,
+                    description TEXT
+                )"""
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS campaign_retention_repository ON campaign_retention(repository)"
+            )
+            # Older processes may still write the original five-column table.
+            # Invalidate their projection without parsing the large journal in SQL.
+            for action in ("INSERT", "UPDATE OF payload,directory,repository,active"):
+                suffix = "insert" if action == "INSERT" else "update"
+                c.execute(
+                    f"""CREATE TRIGGER IF NOT EXISTS campaign_retention_{suffix}
+                    AFTER {action} ON campaigns BEGIN
+                        INSERT INTO campaign_retention
+                            (scan_id,directory,repository,active,revision,valid)
+                        VALUES(NEW.scan_id,NEW.directory,NEW.repository,NEW.active,
+                               lower(hex(randomblob(16))),0)
+                        ON CONFLICT(scan_id) DO UPDATE SET
+                            directory=excluded.directory,repository=excluded.repository,
+                            active=excluded.active,revision=excluded.revision,valid=0,
+                            description=NULL;
+                    END"""
+                )
+            c.execute(
+                """CREATE TRIGGER IF NOT EXISTS campaign_retention_delete
+                AFTER DELETE ON campaigns BEGIN
+                    DELETE FROM campaign_retention WHERE scan_id=OLD.scan_id;
+                END"""
+            )
+            c.execute(
+                """INSERT OR IGNORE INTO campaign_retention
+                    (scan_id,directory,repository,active,revision,valid)
+                SELECT scan_id,directory,repository,active,lower(hex(randomblob(16))),0
+                FROM campaigns"""
             )
         self.path.chmod(0o600)
 
@@ -950,6 +1029,49 @@ class CoverageStore:
             )
         return json.loads(row[0])
 
+    @staticmethod
+    def _description(state):
+        return {
+            **{key: state[key] for key in (
+                "scan_id", "directory_path", "managed_repo_id", "finished_at",
+                "cleanup_confirmed", "lineage", "inventory_digest", "route", "revision",
+            )},
+            "coverage_progress": progress(state),
+            "source_complete": complete(state),
+        }
+
+    def get_description(self, scan_id, directory):
+        """Cache the public summary without rewriting the retained source journal."""
+        for _ in range(3):
+            with self.connect() as connection:
+                cached = connection.execute(
+                    """SELECT revision,valid,description FROM campaign_retention
+                    WHERE scan_id=? AND directory=?""", (scan_id, directory),
+                ).fetchone()
+                if cached is None:
+                    raise ValueError(
+                        "No tracked-coverage journal in this directory; start a new tracked scan"
+                    )
+                revision, valid, description = cached
+                if valid and description is not None:
+                    return json.loads(description)
+                row = connection.execute(
+                    """SELECT c.payload FROM campaigns c JOIN campaign_retention r
+                    ON r.scan_id=c.scan_id WHERE r.scan_id=? AND r.directory=? AND r.revision=?""",
+                    (scan_id, directory, revision),
+                ).fetchone()
+            if row is None:
+                continue
+            # Decode only summary inputs, skipping retained proofs, uncredited
+            # archives and inventory bodies even on the first legacy lookup.
+            state = _DescriptionFields.model_validate_json(row[0]).model_dump(exclude_unset=True)
+            del row
+            description = self._description(state)
+            with self.connect() as connection:
+                if self._save_retention(connection, state, revision=revision, description=description):
+                    return description
+        raise RuntimeError("Coverage description changed during lookup; retry")
+
     def create(self, state):
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -963,6 +1085,7 @@ class CoverageStore:
                     or saved["directory_path"] != state["directory_path"]
                 ):
                     raise ValueError("Coverage identity reused with different inputs")
+                self._save_retention(c, saved, description=self._description(saved))
                 return saved
             if c.execute(
                 "SELECT 1 FROM campaigns WHERE repository=? AND active=1",
@@ -981,15 +1104,62 @@ class CoverageStore:
                     json.dumps(state),
                 ),
             )
+            self._save_retention(c, state, description=self._description(state))
         return state
 
     def save(self, state):
         active = not state["finished_at"] or not state["cleanup_confirmed"]
         with self.connect() as c:
-            c.execute(
+            updated = c.execute(
                 "UPDATE campaigns SET active=?,payload=? WHERE scan_id=? AND directory=?",
                 (int(active), json.dumps(state), state["scan_id"], state["directory_path"]),
-            )
+            ).rowcount
+            if updated:
+                self._save_retention(c, state, description=self._description(state))
+
+    @staticmethod
+    def _save_retention(connection, state, *, revision=None, description=None):
+        fields = _RetentionFields.model_validate(state)
+        query = """UPDATE campaign_retention SET valid=1,finished_at=?,
+            cleanup_confirmed=?,cleanup_finished_at=?,deadline_at=?,lineage=?,description=?
+            WHERE scan_id=?"""
+        values = (
+            fields.finished_at, int(fields.cleanup_confirmed), fields.cleanup_finished_at,
+            fields.deadline_at, json.dumps(fields.lineage),
+            json.dumps(description) if description is not None else None, state["scan_id"],
+        )
+        if revision is not None:
+            query += " AND revision=?"
+            values += (revision,)
+            if description is None:
+                query += " AND valid=0"
+        return connection.execute(query, values).rowcount
+
+    def _backfill_retention(self, repository):
+        query = "SELECT scan_id,revision FROM campaign_retention WHERE valid=0"
+        params = ()
+        if repository is not None:
+            query += " AND repository=?"
+            params = (repository,)
+        with self.connect() as connection:
+            pending = connection.execute(query, params).fetchall()
+        for scan_id, revision in pending:
+            with self.connect() as connection:
+                row = connection.execute(
+                    """SELECT c.payload FROM campaigns c JOIN campaign_retention r
+                    ON r.scan_id=c.scan_id WHERE r.scan_id=? AND r.revision=? AND r.valid=0""",
+                    (scan_id, revision),
+                ).fetchone()
+            if row is None:
+                continue
+            # The typed JSON decoder skips finding bodies and attempt payloads.
+            # Backfill one legacy row at a time, outside any writer transaction.
+            fields = _RetentionFields.model_validate_json(row[0])
+            del row
+            with self.connect() as connection:
+                self._save_retention(
+                    connection, {"scan_id": scan_id, **fields.model_dump()}, revision=revision
+                )
 
     @contextmanager
     def locked(self, scan_id):
@@ -1002,23 +1172,26 @@ class CoverageStore:
             yield
 
     def _retention_metadata(self, repository=None):
-        """Keep historical findings out of Python and out of long-lived read cursors."""
+        """Read compact lifecycle fields, never reparse retained finding journals."""
         query = (
             "SELECT scan_id,directory,active,"
-            "json_extract(payload,'$.finished_at'),"
-            "json_extract(payload,'$.cleanup_confirmed'),"
-            "json_extract(payload,'$.cleanup_finished_at'),"
-            "json_extract(payload,'$.deadline_at'),"
-            "json_extract(payload,'$.lineage') FROM campaigns"
+            "finished_at,cleanup_confirmed,cleanup_finished_at,deadline_at,lineage,valid "
+            "FROM campaign_retention"
         )
         params = ()
         if repository is not None:
             query += " WHERE repository=?"
             params = (repository,)
-        with self.connect() as c:
-            rows = c.execute(query, params).fetchall()
+        for _ in range(3):
+            self._backfill_retention(repository)
+            with self.connect() as c:
+                rows = c.execute(query, params).fetchall()
+            if all(row[-1] for row in rows):
+                break
+        else:
+            raise RuntimeError("Coverage retention metadata changed during lookup; retry")
         metadata = []
-        for scan_id, directory, active, finished, cleaned, cleanup_at, deadline, parents in rows:
+        for scan_id, directory, active, finished, cleaned, cleanup_at, deadline, parents, _ in rows:
             lineage = json.loads(parents)
             if not isinstance(lineage, list) or any(not isinstance(p, str) for p in lineage):
                 raise ValueError("Invalid retained coverage lineage")
