@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-25 - Download images and file links from forwarded Teams messages (0.129.5)
+
+- Discover hosted images and SharePoint/OneDrive file links embedded in forwarded message bodies, and expose them through the existing attachment and inline-media tools. Preserve the destination message as the artifact source and download only the referenced resource through the existing Teams identity.
+- Keep text-only forward references out of file listings, validate hosted content endpoints, and retain provider access checks and attachment size enforcement. No source conversation history or additional chat grants are required.
+
 ## 2026-10-25 - Bound retained scan metadata reads (0.129.4)
 
 - Release Codex Security add-on 0.6.3. Store lifecycle and status projections transactionally so continuation eligibility and retention maintenance do not repeatedly parse retained findings and proof bodies.
