@@ -58,6 +58,14 @@ from .coverage import (
 )
 from .report_files import public_report_path
 from .coverage_projection import symlink_projection
+from .coverage_file_controls import native_file_blockers, record_file_blockers, refresh_blocked_work, blocked_paths
+from .coverage_questions import (
+    blocking_exclusions,
+    ensure_question_scopes,
+    normalize_questions,
+    scope_closed,
+    scoped_questions,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -146,10 +154,19 @@ class CoverageController:
             )
             if previous:
                 native_scopes = self.verify_proofs(previous)
-                if state.get("exclude_paths"):
-                    apply_exclusions(state, native_scopes)
                 if "open_questions" not in previous:
                     self.restore_open_questions(state)
+                proof_scopes = {
+                    **native_scopes,
+                    **{p["archive_key"]: native_scopes[p["provider_scan_id"]] for p in previous["proofs"] if p["provider_scan_id"] in native_scopes},
+                }
+                normalize_questions(state, proof_scopes)
+                if state.get("exclude_paths"):
+                    apply_exclusions(state, native_scopes)
+                if state.get("incomplete_review_policy") == "isolate_blockers":
+                    self.restore_file_blockers(state, previous)
+                self.restore_complete_boundaries(state, previous)
+                ensure_question_scopes(state)
             pin_ref = "refs/evander/security-scans/" + scan_id
             self.git.pin_retained_snapshot(
                 request.managed_repo_id,
@@ -286,6 +303,72 @@ class CoverageController:
                 if isinstance(paths, list) and all(isinstance(path, str) for path in paths):
                     scopes[proof["provider_scan_id"]] = paths
         return scopes
+
+    def restore_file_blockers(self, state, previous):
+        """Read named blockers from retained native reports before rescheduling."""
+        proofs = {proof["archive_key"]: proof for proof in previous["proofs"]}
+        released = set(state["request"].get("retry_blocked_paths") or [])
+        for item in previous["tasks"].values():
+            if item["kind"] != "files" or item["status"] == "completed":
+                continue
+            archived = [a["archive_key"] for a in item["attempts"] if a.get("archive_key") in proofs]
+            if not archived:
+                continue
+            proof = proofs[archived[-1]]
+            _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            prefix = proof["report_prefix"]
+            manifest = json.loads(members[prefix + "scan-manifest.json"])["scan"]
+            if sorted(manifest["scope"]["includePaths"]) != sorted(item["paths"]):
+                raise ValueError("Retained blocker report differs from its assigned scope")
+            coverage = json.loads(members[prefix + "coverage.json"])
+            blockers = {
+                path: reason for path, reason in native_file_blockers(coverage, item["paths"]).items()
+                if path not in released
+            }
+            record_file_blockers(state, blockers, proof)
+        refresh_blocked_work(state)
+
+    def restore_complete_boundaries(self, state, previous):
+        """Reuse complete native scopes rejected only for approved outside exclusions.
+
+        No synthetic worker attempt is created. File credit and every original
+        journal/report remain unchanged; unresolved checkpoint parts still block.
+        """
+        proofs = {proof["archive_key"]: proof for proof in previous["proofs"]}
+        for original in previous["tasks"].values():
+            item = state["tasks"].get(original["id"])
+            if not item or item["kind"] != "boundary" or item["status"] != "pending":
+                continue
+            archived = [a["archive_key"] for a in original["attempts"] if a.get("archive_key") in proofs]
+            if not archived or not scope_closed(state, item):
+                continue
+            proof = proofs[archived[-1]]
+            _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            prefix = proof["report_prefix"]
+            scan = json.loads(members[prefix + "scan-manifest.json"])["scan"]
+            body = members[prefix + "coverage.json"]
+            coverage = json.loads(body)
+            seals = [record for record in scan.get("artifacts", []) if record.get("path") == "coverage.json"]
+            if (
+                scan.get("id") != proof["provider_scan_id"]
+                or scan.get("status") != "completed" or not scan.get("sealedAt")
+                or scan["target"].get("revision") != proof.get("source_projection", {}).get("revision", state["revision"])
+                or scan["target"].get("kind") != "git_revision"
+                or sorted(scan["scope"]["includePaths"]) != item["paths"]
+                or len(seals) != 1 or seals[0]["sha256"] != hashlib.sha256(body).hexdigest()
+            ):
+                raise ValueError("Retained boundary provenance failed verification")
+            exclusions = [*scan["scope"].get("excludePaths", []), *coverage.get("excludePaths", []), *coverage.get("explicitExclusions", [])]
+            if (
+                coverage.get("completeness") == "complete"
+                and not coverage.get("deferred")
+                and not any(surface.get("disposition") == "needs_follow_up" for surface in coverage.get("surfaces", []))
+                and exclusions and not blocking_exclusions(state, item["paths"], exclusions)
+            ):
+                item.update(status="completed", accepted_from_retained_proof={
+                    "archive_key": proof["archive_key"], "archive_sha256": proof["archive_sha256"],
+                    "reason": "Complete exact-scope native review; approved exclusions belong outside this component",
+                })
 
     def restore_open_questions(self, state):
         """Reclassify legacy question blockers only from preserved accepted reports.
@@ -428,11 +511,15 @@ class CoverageController:
             "deferred", []
         ):
             raise ValueError("Native coverage receipt was changed")
-        if scan.get("scope", {}).get("excludePaths") or coverage.get("excludePaths"):
+        omitted = [*scan.get("scope", {}).get("excludePaths", []), *coverage.get("excludePaths", [])]
+        if omitted and (state is None or blocking_exclusions(state, receipt["paths"], omitted)):
             raise ValueError("An exact-scope review cannot omit assigned paths")
         # Derive credit-bearing fields from the sealed native coverage, never
         # from a model-writable wrapper file or aggregate progress count.
         dispositions, resolutions = {}, {}
+        for value in coverage.get("resolvedDeferred", []):
+            if isinstance(value.get("id"), str) and value.get("reason"):
+                resolutions[value["id"]] = {"disposition": "resolved", "reason": value["reason"]}
         for surface in coverage.get("surfaces", []):
             label, disposition, reason = (
                 surface.get("label", ""),
@@ -454,12 +541,14 @@ class CoverageController:
                 resolutions[label[9:]] = {"disposition": disposition, "reason": reason}
         model = scan.get("threatModel")
         receipt.update(
-            exclusions=coverage.get("explicitExclusions", []),
+            exclusions=(blocking_exclusions(state, receipt["paths"], coverage.get("explicitExclusions", [])) if state is not None else coverage.get("explicitExclusions", [])),
             needs_follow_up=any(
                 s.get("disposition") == "needs_follow_up" for s in coverage.get("surfaces", [])
             ),
             open_questions=coverage.get("openQuestions", []),
             dispositions=dispositions,
+            file_blockers=native_file_blockers(coverage, receipt["paths"]) if receipt["kind"] == "files" else {},
+            followup_files=(native_file_blockers({"surfaces": coverage.get("surfaces", [])}, state["files"]) if state is not None else {}),
             resolutions=resolutions,
             architecture=({"threat_model": model, "paths": []} if model else None),
         )
@@ -493,6 +582,22 @@ class CoverageController:
                     "policy": "These paths are outside the assigned review. The host reports them as unreviewed exclusions and retains earlier findings. Do not make their content review a new obligation for this assigned scope.",
                 },
             }
+        isolated = blocked_paths(state)
+        if isolated:
+            architecture = {
+                **(architecture or {}),
+                "host_blocked_files": {
+                    "paths": sorted(isolated),
+                    "policy": "These files and questions depending on their contents are blocked separately without review credit. Do not retry their content review inside another assigned scope. The host retains their unresolved limitations in the final report.",
+                },
+            }
+        if item["kind"] == "boundary":
+            architecture = {
+                **(architecture or {}),
+                "host_checkpoint_scope": {
+                    "policy": "Each supplied checkpoint applies only to its listed component paths. Resolve that local part with its saved deferred key; the host retains all other parts. Do not import the repository-wide remainder or excluded files into this component's required work.",
+                },
+            }
         payload = attempt.get("payload") or {
             **request.model_dump(mode="json"),
             "scan_id": attempt["scan_id"],
@@ -507,12 +612,7 @@ class CoverageController:
                 "assigned_entries": [x for x in state["inventory"] if x["path"] in item["paths"]],
                 "inventory_paths": list(state["files"]),
                 "architecture": architecture,
-                "deferred": {
-                    k: v
-                    for k, v in state["deferred"].items()
-                    if not v.get("resolution")
-                    and item["kind"] == "boundary" and k in item["deferred_keys"]
-                },
+                "deferred": scoped_questions(state, item),
                 "accepted_file_reviews": {
                     p: x["receipt"]
                     for p, x in state["files"].items()
@@ -626,9 +726,16 @@ class CoverageController:
                     self.publish(state)
                 self.store.save(state)
                 return self.output(state)
-            if "open_questions" not in state:
+            if "open_questions" not in state or state.get("question_policy_version") != 1:
                 try:
-                    self.restore_open_questions(state)
+                    if "open_questions" not in state:
+                        self.restore_open_questions(state)
+                    native_scopes = self.verify_proofs(state)
+                    normalize_questions(state, {
+                        **native_scopes,
+                        **{p["archive_key"]: native_scopes[p["provider_scan_id"]] for p in state["proofs"] if p["provider_scan_id"] in native_scopes},
+                    })
+                    state["question_policy_version"] = 1
                 except (ValueError, KeyError, OSError, tarfile.TarError):
                     LOG.warning(
                         "Could not verify stored security coverage for scan %s",
@@ -777,6 +884,7 @@ class CoverageController:
                     item["status"] = "blocked"
             self.cleanup(state)
             plan_boundaries(state)
+            ensure_question_scopes(state)
             for item in pending(state):
                 begin(state, item)
                 self.store.save(state)
@@ -958,6 +1066,10 @@ class CoverageController:
                 "max_batch_text_bytes": batch_text_limit(state),
                 "max_parallel_reviews": review_parallelism(state),
                 "exclude_paths": state.get("exclude_paths", []),
+                "exclude_patterns": state.get("exclude_patterns", []),
+                "exclusion_matches": state.get("exclusion_matches", {}),
+                "file_blockers": state.get("file_blockers", {}),
+                "blocked_followups": state.get("blocked_followups", {}),
                 "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
                 "pending_batch_rebuild": state.get("pending_batch_rebuild"),
                 "revision": state["revision"],
@@ -967,6 +1079,7 @@ class CoverageController:
                 "progress": progress(state),
                 "files": state["files"],
                 "deferred": state["deferred"],
+                "deferred_aliases": state.get("deferred_aliases", {}),
                 "open_questions": state.get("open_questions", {}),
                 "remaining_scopes": [
                     {"kind": x["kind"], "paths": x["paths"], "status": x["status"]}
@@ -989,6 +1102,9 @@ class CoverageController:
                 "lineage": state["lineage"],
                 "coverage_policy": "all_tracked_files",
                 "exclude_paths": state.get("exclude_paths", []),
+                "exclude_patterns": state.get("exclude_patterns", []),
+                "exclusion_matches": state.get("exclusion_matches", {}),
+                "file_blockers": state.get("file_blockers", {}),
                 "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
                 "pending_batch_rebuild": state.get("pending_batch_rebuild"),
                 "batching_version": state.get("batching_version", 1),
@@ -1028,6 +1144,14 @@ class CoverageController:
             "## Explicit file exclusions",
             "",
             *[f"- {path}: excluded by request; any earlier accepted findings and review credit remain retained." for path in state.get("exclude_paths", [])],
+            "",
+            "## Exclusion patterns",
+            "",
+            *[f"- {pattern}: {len(paths)} tracked paths matched." for pattern, paths in state.get("exclusion_matches", {}).items()],
+            "",
+            "## Isolated files requiring attention",
+            "",
+            *[f"- {path}: {state['file_blockers'][path]['reason']} (Native evidence: {state['file_blockers'][path]['receipt']}). No review credit granted; automatic retries are disabled." for path in sorted(blocked_paths(state))],
             "",
             "## Findings",
             "",

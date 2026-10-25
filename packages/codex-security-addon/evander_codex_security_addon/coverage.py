@@ -12,8 +12,24 @@ import re
 import sqlite3
 
 from evander.codex_auth import normalize_subscription_profile_id
+from .coverage_file_controls import (
+    blocked_paths,
+    isolate_file_scope,
+    refresh_blocked_followups,
+    refresh_blocked_work,
+    release_file_blockers,
+    resolve_exclusions,
+)
+from .coverage_questions import (
+    assign_questions,
+    ensure_question_scopes,
+    normalize_questions,
+    record_deferred,
+    resolve_for_scope,
+    scope_closed,
+)
 
-VERSION = 1
+VERSION = 2
 SDK_VERSION = "0.1.31"
 BATCHING_VERSION = 4
 MAX_BATCH_FILES = 100
@@ -151,6 +167,15 @@ def progress(state):
         "max_parallel_reviews": review_parallelism(state),
         "exclude_paths": state.get("exclude_paths", []),
         "incomplete_review_policy": state.get("incomplete_review_policy", "split"),
+        "exclude_patterns": state.get("exclude_patterns", []),
+        "files_isolated": len(blocked_paths(state)),
+        "isolated_files": [
+            {"path": path, **state["file_blockers"][path]}
+            for path in sorted(blocked_paths(state))
+        ],
+        "required_questions_total": len(state["deferred"]),
+        "required_questions_pending": sum(not value.get("resolution") for value in state["deferred"].values()),
+        "required_question_aliases": len(state.get("deferred_aliases", {})),
     }
 
 
@@ -195,14 +220,22 @@ def make_state(
     revision = inventory["revision"]
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", revision):
         raise ValueError("Invalid inventory revision")
+    exact = list(request.exclude_paths or [])
+    patterns = list(request.exclude_patterns or [])
+    excluded, matches = resolve_exclusions(entries, exact, patterns)
     state = {
         "version": VERSION,
         "sdk_version": SDK_VERSION,
         "batching_version": BATCHING_VERSION,
         "max_batch_text_bytes": request.max_batch_text_bytes or DEFAULT_BATCH_TEXT_BYTES,
         "max_parallel_reviews": request.max_parallel_reviews or DEFAULT_PARALLEL_REVIEWS,
-        "exclude_paths": list(request.exclude_paths or []),
+        "requested_exclude_paths": exact,
+        "exclude_patterns": patterns,
+        "exclusion_matches": matches,
+        "exclude_paths": excluded,
         "incomplete_review_policy": request.incomplete_review_policy or "split",
+        "file_blockers": {},
+        "blocked_followups": {},
         "scan_id": scan_id,
         "directory_path": directory,
         "managed_repo_id": request.managed_repo_id,
@@ -224,6 +257,9 @@ def make_state(
         "proofs": [],
         "uncredited": [],
         "deferred": {},
+        "deferred_aliases": {},
+        "deferred_task_ids": {},
+        "question_policy_version": 1,
         "open_questions": {},
         "architecture": None,
         "boundary_planned": False,
@@ -233,6 +269,9 @@ def make_state(
         "tasks": {},
     }
     if previous:
+        if type(previous["version"]) is not int or previous["version"] not in {1, VERSION}:
+            raise ValueError("Source coverage journal version is not supported")
+        state["version"] = previous["version"]
         if not resumable(previous, at=at, until=previous_until):
             raise ValueError("Source scan is active, complete, expired, or awaiting cleanup")
         previous_limit = batch_text_limit(previous)
@@ -270,14 +309,21 @@ def make_state(
         )
         state["lineage"] = [*previous["lineage"], previous["scan_id"]]
         state["open_questions"] = deepcopy(previous.get("open_questions", {}))
+        state["file_blockers"] = deepcopy(previous.get("file_blockers", {}))
+        state["deferred_aliases"] = deepcopy(previous.get("deferred_aliases", {}))
+        state["deferred_task_ids"] = deepcopy(previous.get("deferred_task_ids", {}))
+        normalize_questions(state)
         if request.exclude_paths is None:
-            state["exclude_paths"] = list(previous.get("exclude_paths", []))
-        elif not set(previous.get("exclude_paths", [])) <= set(state["exclude_paths"]):
+            state["requested_exclude_paths"] = list(previous.get("requested_exclude_paths", previous.get("exclude_paths", [])))
+        if request.exclude_patterns is None:
+            state["exclude_patterns"] = list(previous.get("exclude_patterns", []))
+        state["exclude_paths"], state["exclusion_matches"] = resolve_exclusions(
+            entries, state["requested_exclude_paths"], state["exclude_patterns"]
+        )
+        if not set(previous.get("exclude_paths", [])) <= set(state["exclude_paths"]):
             raise ValueError("A continuation cannot reintroduce explicitly excluded paths")
         if request.incomplete_review_policy is None:
             state["incomplete_review_policy"] = previous.get("incomplete_review_policy", "split")
-        if set(state["exclude_paths"]) != set(previous.get("exclude_paths", [])) and previous["boundary_planned"]:
-            raise ValueError("Choose new exclusions before boundary review is planned")
         # Older cancellation paths could mark a just-accepted scope blocked.
         # Restore scheduling from host-owned credit without granting new credit;
         # the controller verifies all retained native proofs before journal creation.
@@ -297,7 +343,9 @@ def make_state(
         if previous_limit != state["max_batch_text_bytes"]:
             _regroup_unstarted_scopes(state)
         for item in state["tasks"].values():
-            if item["status"] in {"running", "blocked", "excluded"}:
+            if item.get("quarantined") and set(item.get("blocked_by_files", item["paths"])) & blocked_paths(state):
+                item["status"] = "blocked"
+            elif item["status"] in {"running", "blocked", "excluded"}:
                 item["status"] = "pending"
             item["attempts"] = []
             item["next_at"] = None
@@ -305,24 +353,33 @@ def make_state(
             if entry["disposition"] in {"blocked", "excluded"}:
                 entry.update(disposition="pending", reason=None)
         state["phase"] = "reviewing" if state["architecture"] else "mapping"
+        if set(request.retry_blocked_paths or []) & set(state["exclude_paths"]):
+            raise ValueError("An excluded file cannot be retried as blocked work")
+        release_file_blockers(state, request.retry_blocked_paths or [])
+        refresh_blocked_work(state)
         apply_exclusions(state)
+        refresh_blocked_work(state)
         if request.rebuild_pending_batches:
             rebuild_file_batches(state, previous["scan_id"])
+        ensure_question_scopes(state)
     else:
         if request.resume_subscription_profile_id is not None:
             raise ValueError("Subscription handoff requires a retained source scan")
-        if not entries:
+        apply_exclusions(state)
+        included = [entry for entry in entries if entry["path"] not in state["exclude_paths"]]
+        if not included:
             state.update(
-                architecture={"paths": [], "reason": "The pinned Git tree has no tracked files"},
+                architecture={"paths": [], "reason": "No tracked files remain in the selected review scope"},
                 boundary_planned=True,
                 phase="finalizing",
             )
-            return state
-        item = task("architecture", [x["path"] for x in entries])
-        state["tasks"][item["id"]] = item
-        for paths in batches(entries, max_text_bytes=batch_text_limit(state)):
-            item = task("files", paths)
+        else:
+            item = task("architecture", [x["path"] for x in included])
             state["tasks"][item["id"]] = item
+            for paths in batches(included, max_text_bytes=batch_text_limit(state)):
+                item = task("files", paths)
+                state["tasks"][item["id"]] = item
+    state["version"] = VERSION
     return state
 
 
@@ -361,8 +418,11 @@ def apply_exclusions(state, native_scopes=None):
         return
     if not excluded <= state["files"].keys():
         raise ValueError("An excluded path is absent from the pinned inventory")
-    if excluded and state["architecture"] is None:
-        raise ValueError("Exclusions require a retained architecture map")
+    pending_boundary_keys = {
+        key for item in state["tasks"].values()
+        if item["kind"] == "boundary" and item["status"] == "pending"
+        for key in item["deferred_keys"]
+    }
     for path in excluded:
         if state["files"][path]["disposition"] not in {"reviewed", "not_applicable"}:
             state["files"][path].update(
@@ -370,7 +430,7 @@ def apply_exclusions(state, native_scopes=None):
                 reason="Explicitly excluded by scan request; no review credit granted",
             )
     for item in list(state["tasks"].values()):
-        if item["kind"] == "architecture" or item["status"] != "pending":
+        if item["status"] != "pending" or (item["kind"] == "architecture" and state["architecture"] is not None):
             continue
         paths = [path for path in item["paths"] if path not in excluded]
         if paths == item["paths"]:
@@ -386,6 +446,11 @@ def apply_exclusions(state, native_scopes=None):
             if existing and existing["status"] not in {"pending", "completed", "split"}:
                 raise ValueError("Excluded scope conflicts with retained review work")
             state["tasks"].setdefault(child["id"], child)
+    if state["architecture"] is None and excluded == state["files"].keys():
+        state.update(
+            architecture={"paths": [], "reason": "No tracked files remain in the selected review scope"},
+            boundary_planned=True, phase="finalizing",
+        )
     native_scopes = native_scopes or {}
     matches = {}
     for key, value in state["deferred"].items():
@@ -414,12 +479,12 @@ def apply_exclusions(state, native_scopes=None):
             value["resolution"] = None
     scopes = [x for x in state["tasks"].values() if x["kind"] == "boundary" and x["status"] == "pending"]
     if scopes:
-        assign_deferred(state, scopes, [key for x in scopes for key in x["deferred_keys"]])
+        assign_deferred(state, scopes, pending_boundary_keys)
 
 
 def rebuild_file_batches(state, source_scan_id):
     """Replan only unfinished file work in a new, explicitly requested continuation."""
-    old = [x for x in state["tasks"].values() if x["kind"] == "files" and x["status"] != "completed"]
+    old = [x for x in state["tasks"].values() if x["kind"] == "files" and x["status"] != "completed" and not x.get("quarantined")]
     if any(x["attempts"] or x["status"] == "running" for x in old):
         raise ValueError("Cannot rebuild active or attempted review work")
     state["pending_batch_rebuild"] = {
@@ -524,6 +589,7 @@ def pending(state, *, at=None):
         x
         for x in state["tasks"].values()
         if x["status"] == "pending"
+        and not x.get("quarantined")
         and (not x["next_at"] or at >= datetime.fromisoformat(x["next_at"]))
     ]
     phase = "architecture" if state["architecture"] is None else "files"
@@ -591,17 +657,15 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     item["attempts"][-1].update(finished_at=at.isoformat(), archive_key=proof["archive_key"])
     # Immutable proofs retain findings even if this scope later gets split or retried.
     state["proofs"].append(proof)
-    for deferred in receipt.get("deferred", []):
-        key = proof["provider_scan_id"] + ":" + str(deferred["id"])
-        state["deferred"].setdefault(key, {**deepcopy(deferred), "resolution": None})
-        if item["kind"] == "boundary" and key not in item["deferred_keys"]:
-            item["deferred_keys"].append(key)
+    record_deferred(state, item, receipt.get("deferred", []), proof)
     # The native schema permits openQuestions on a complete static review.
     # Required work is expressed by partial coverage, deferred work or follow-up
     # surfaces; advisory limitations must not create new review obligations.
     record_open_questions(state, receipt.get("open_questions", []), proof)
     if state.get("exclude_paths"):
         apply_exclusions(state, {proof["provider_scan_id"]: item["paths"]})
+    if state.get("file_blockers"):
+        refresh_blocked_followups(state)
     closed = (
         receipt.get("coverage") == "complete"
         and not receipt.get("deferred")
@@ -619,43 +683,50 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
         return True
     if item["kind"] == "boundary":
         for key, value in receipt.get("resolutions", {}).items():
-            if (
-                key in item["deferred_keys"]
-                and value.get("disposition")
-                in {"reported", "rejected", "not_applicable", "no_issue_found"}
-                and value.get("reason")
-            ):
-                state["deferred"][key]["resolution"] = {**value, "receipt": proof["archive_key"]}
+            resolve_for_scope(state, item, key, value, proof)
         # Other parallel scopes own their outstanding work. Global closure is
         # checked by complete(), without spending retries on another review.
-        closed = closed and all(
-            state["deferred"][key].get("resolution") for key in item["deferred_keys"]
-        )
-    if closed:
-        dispositions = receipt.get("dispositions", {})
-        for path in item["paths"] if item["kind"] == "files" else []:
-            original = next(x for x in state["inventory"] if x["path"] == path)
-            value = dispositions.get(path)
-            if original["kind"] == "unavailable":
-                closed = False
-            elif original["kind"] == "text" and value and value.get("disposition") != "reviewed":
-                closed = False
-            elif original["kind"] != "text" and not (
-                value
-                and value.get("reason")
-                and value.get("disposition") in {"reviewed", "not_applicable"}
-            ):
-                closed = False
-        if closed:
-            item["status"] = "completed"
-            if item["kind"] == "files":
-                for path in item["paths"]:
-                    value = dispositions.get(
-                        path,
-                        {"disposition": "reviewed", "reason": "Complete exact-scope static review"},
-                    )
-                    state["files"][path] = {**value, "receipt": proof["archive_key"]}
-            state["last_progress_at"] = at.isoformat()
+        closed = closed and scope_closed(state, item)
+    missing_dispositions = {}
+    dispositions = receipt.get("dispositions", {})
+    for path in item["paths"] if item["kind"] == "files" else []:
+        original = next(x for x in state["inventory"] if x["path"] == path)
+        value = dispositions.get(path)
+        if original["kind"] == "unavailable":
+            missing_dispositions[path] = "Tracked content is unavailable in the pinned snapshot"
+        elif original["kind"] == "text" and value and value.get("disposition") != "reviewed":
+            missing_dispositions[path] = "Native file disposition does not confirm a complete text review"
+        elif original["kind"] != "text" and not (
+            value and value.get("reason")
+            and value.get("disposition") in {"reviewed", "not_applicable"}
+        ):
+            missing_dispositions[path] = "Native report lacks an explicit reviewed or not-applicable disposition for this non-text file"
+    if closed and not missing_dispositions:
+        item["status"] = "completed"
+        if item["kind"] == "files":
+            for path in item["paths"]:
+                value = dispositions.get(
+                    path,
+                    {"disposition": "reviewed", "reason": "Complete exact-scope static review"},
+                )
+                state["files"][path] = {**value, "receipt": proof["archive_key"]}
+        state["last_progress_at"] = at.isoformat()
+        return True
+    if item["kind"] == "files" and state.get("incomplete_review_policy") == "isolate_blockers":
+        isolate_file_scope(state, item, {**missing_dispositions, **receipt.get("file_blockers", {})}, proof)
+        return True
+    if item["kind"] == "boundary":
+        blocked = blocked_paths(state)
+        owners = set(receipt.get("followup_files", {})) & blocked
+        for question in receipt.get("deferred", []):
+            referenced = _referenced_files(question.get("paths", []), state["files"], {})
+            if referenced and referenced <= blocked:
+                owners.update(referenced)
+        if owners:
+            item.update(
+                status="blocked", quarantined=True, blocked_by_files=sorted(owners),
+                error="Boundary review depends on isolated files; automatic retries are disabled",
+            )
             return True
     retry(
         state, item, "Review coverage remains incomplete",
@@ -668,15 +739,19 @@ def retry(state, item, reason, *, split=False, at=None):
     at = at or now()
     item["error"] = reason
     if split and len(item["paths"]) > 1:
+        from .coverage_file_controls import _new_scope
+
         midpoint = len(item["paths"]) // 2
         children = []
         for paths in (item["paths"][:midpoint], item["paths"][midpoint:]):
-            child = task(item["kind"], paths, parent=item["id"])
-            state["tasks"].setdefault(child["id"], child)
-            children.append(state["tasks"][child["id"]])
+            if item["kind"] == "boundary":
+                children.append(_new_scope(state, "boundary", paths, item["id"], obligation=True))
+            else:
+                child = task(item["kind"], paths, parent=item["id"])
+                children.append(state["tasks"].setdefault(child["id"], child))
+        item["status"] = "split"
         if item["kind"] == "boundary":
             assign_deferred(state, children, item["deferred_keys"])
-        item["status"] = "split"
     elif len(item["attempts"]) < 3:
         item["status"] = "pending"
         item["next_at"] = (
@@ -691,26 +766,8 @@ def retry(state, item, reason, *, split=False, at=None):
 
 
 def assign_deferred(state, scopes, keys):
-    """Give each outstanding item one durable owner, including pathless questions."""
-    for scope in scopes:
-        scope["deferred_keys"] = []
-    for key in sorted(keys):
-        if state["deferred"][key].get("resolution"):
-            continue
-        paths = state["deferred"][key].get("paths", [])
-        owner = next(
-            (
-                scope
-                for scope in scopes
-                if any(
-                    path == pattern or path.startswith(pattern.rstrip("/") + "/")
-                    for path in scope["paths"]
-                    for pattern in paths
-                )
-            ),
-            scopes[0],
-        )
-        owner["deferred_keys"].append(key)
+    """Assign each required path to a component that is authorized to review it."""
+    assign_questions(state, scopes, keys)
 
 
 def plan_boundaries(state):
@@ -721,7 +778,7 @@ def plan_boundaries(state):
         for x in state["tasks"].values()
     ):
         return
-    allowed = set(state["files"]) - set(state.get("exclude_paths", []))
+    allowed = set(state["files"]) - set(state.get("exclude_paths", [])) - blocked_paths(state)
     anchors = {path for path in state["architecture"].get("paths", []) if path in allowed}
     for value in state["deferred"].values():
         for pattern in value.get("paths", []):

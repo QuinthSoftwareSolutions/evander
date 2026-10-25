@@ -1352,3 +1352,249 @@ def test_invalid_access_configuration_still_stops_owned_children(running):
     assert result.cleanup_confirmed
     assert worker.active == {}
     assert result.coverage_progress["attempts"] == 3
+
+
+def test_controller_isolates_only_sealed_blocker_reviews_remainder_and_publishes_limitations(running):
+    controller, _, worker, finish = running
+    state = make_state(
+        "a" * 32, request(incomplete_review_policy="isolate_blockers", exclude_patterns=["*.never"]),
+        "root/project", {"revision": "d" * 40, "entries": [entry("a.py"), entry("b.py"), entry("locked.pfx", kind="binary")]},
+        {"model": "example"},
+    )
+    controller.store.save(state)
+    handle = controller.handle(state)
+    controller.poll(handle)
+    finish()
+    controller.poll(handle)
+    execution_id, (state, item, attempt) = next(iter(worker.active.items()))
+    assert item["paths"] == ["a.py", "b.py", "locked.pfx"]
+    receipt = c_receipt(state, item, closed=False, file_blockers={"a.py": "Forged wrapper diagnosis"})
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "surfaces": [{"label": "file:locked.pfx", "disposition": "needs_follow_up", "notes": "A password is needed to inspect encrypted content"}],
+    })
+    worker.results[execution_id] = {"status": "completed", "coverage": "partial", "coverage_unit": receipt}
+
+    result = controller.poll(handle)
+    assert result.status == "running"
+    assert result.coverage_progress["files_reviewed"] == 0
+    assert [record["path"] for record in result.coverage_progress["isolated_files"]] == ["locked.pfx"]
+    assert [scope["paths"] for _, scope, _ in worker.active.values()] == [["a.py", "b.py"]]
+    finish()
+    controller.poll(handle)
+    assert all(scope["kind"] == "boundary" and scope["paths"] == ["a.py", "b.py"] for _, scope, _ in worker.active.values())
+    finish()
+    result = controller.poll(handle)
+    assert result.status == "failed"
+    assert result.coverage == "partial"
+    assert result.coverage_progress["files_reviewed"] == 2
+    assert result.coverage_progress["files_blocked"] == 1
+    assert result.coverage_progress["files_isolated"] == 1
+    assert result.cleanup_confirmed
+    assert worker.active == {}
+    assert len(worker.destroyed) == 4  # Mapping, partial batch, remainder, boundary.
+    _, documents = controller.archive_members(result.artifacts["archive_key"])
+    prefix = f"security-scans/{state['scan_id']}/reports/aggregate/"
+    ledger = json.loads(documents[prefix + "coverage.json"])
+    assert set(ledger["file_blockers"]) == {"locked.pfx"}
+    assert ledger["exclusion_matches"] == {"*.never": []}
+    assert ledger["files"]["locked.pfx"]["disposition"] == "blocked"
+    assert "locked.pfx" in documents[prefix + "report.md"].decode()
+    assert "automatic retries are disabled" in documents[prefix + "report.md"].decode()
+
+
+@pytest.mark.parametrize("corrupt_hash", [False, True])
+def test_continuation_restores_legacy_exact_blockers_from_hash_checked_native_proofs(running, corrupt_hash):
+    from test_coverage_batching import resume
+
+    controller, _, _, _ = running
+    source = make_state(
+        "a" * 32, request(incomplete_review_policy="retry_scope"), "root/project",
+        {"revision": "d" * 40, "entries": [entry("app.py"), entry("locked.pfx", kind="binary")]},
+        {"model": "example"},
+    )
+    mapping(source)
+    source["proofs"] = []  # Mapping is not the evidence under test.
+    item, = c.pending(source)
+    for _ in range(3):
+        attempt = c.begin(source, item)
+        receipt = c_receipt(source, item, closed=False, deferred=[{
+            "id": "password", "paths": ["locked.pfx"], "reason": "Encrypted content requires a password",
+        }])
+        key = native_archive(controller.artifacts, attempt["scan_id"], receipt)
+        proof = {
+            "archive_key": key, "archive_sha256": controller.artifacts.get(key).metadata.sha256,
+            "provider_scan_id": attempt["scan_id"], "report_prefix": f"security-scans/{attempt['scan_id']}/reports/review/",
+            "findings": [],
+        }
+        c.accept(source, item, attempt["scan_id"], receipt, proof)
+        attempt["cleanup_confirmed"] = True
+    source.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    original = deepcopy(source)
+    continued = resume(source, incomplete_review_policy="isolate_blockers", rebuild_pending_batches=True)
+    if corrupt_hash:
+        source["proofs"][-1]["archive_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="integrity"):
+            controller.restore_file_blockers(continued, source)
+        return
+    controller.verify_proofs(source)
+    controller.restore_file_blockers(continued, source)
+    assert c.pending(continued)[0]["paths"] == ["app.py"]
+    assert set(continued["file_blockers"]) == {"locked.pfx"}
+    assert continued["file_blockers"]["locked.pfx"]["receipt"] == source["proofs"][-1]["archive_key"]
+    assert continued["proofs"] == source["proofs"]
+    assert c.progress(continued)["files_reviewed"] == 0
+    assert source == original
+
+
+def test_frozen_worker_context_separates_blocked_files_from_assigned_boundary_work(running, monkeypatch):
+    from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+
+    controller, _, _, _ = running
+    state = controller.store.get("a" * 32, "root/project")
+    mapping(state)
+    state["file_blockers"] = {"c/c.py": {"reason": "Decoder unavailable", "receipt": "retained-native", "provider_scan_id": "native"}}
+    state["deferred"] = {"native:blocked": {"paths": ["c/c.py"], "resolution": None}}
+    from evander_codex_security_addon.coverage_file_controls import refresh_blocked_work
+
+    refresh_blocked_work(state)
+    for scope in c.pending(state):
+        finish_scope(state, scope)
+    c.plan_boundaries(state)
+    item = c.pending(state)[0]
+    assert item["kind"] == "boundary"
+    attempt = c.begin(state, item)
+    before = deepcopy(state["architecture"])
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", lambda *_: None)
+    controller.provider._start_raw = lambda **kwargs: SecurityScanHandle(execution_id="scan-" + kwargs["scan_id"], metadata={})
+    CoverageController.launch(controller, state, item)
+    staged = json.loads((controller.store.root / "requests" / (attempt["scan_id"] + ".json")).read_text())
+    context = staged["coverage_task"]
+    assert context["architecture"]["host_blocked_files"]["paths"] == ["c/c.py"]
+    assert "c/c.py" not in context["paths"]
+    assert context["deferred"] == {}
+    assert state["architecture"] == before
+
+
+@pytest.mark.parametrize("kind", ["files", "boundary"])
+@pytest.mark.parametrize("native_completeness", ["complete", "partial"])
+def test_approved_outside_exclusions_do_not_falsely_block_complete_scoped_reports(running, kind, native_completeness):
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["exclude_paths"] = ["c/c.py"]
+    c.apply_exclusions(state)
+    if kind == "boundary":
+        for scope in c.pending(state):
+            finish_scope(state, scope)
+        c.plan_boundaries(state)
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item, closed=native_completeness == "complete")
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "excludePaths": ["c/c.py"],
+        "explicitExclusions": [{"pattern": "c/c.py", "reason": "Explicit host exclusion outside this assignment"}],
+    })
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    proof = controller.proof({"status": "completed", "coverage": native_completeness}, child, receipt, state=state, item=item)
+    assert receipt["exclusions"] == []
+    c.accept(state, item, attempt["scan_id"], receipt, proof)
+    assert (item["status"] == "completed") is (native_completeness == "complete")
+    assert state["files"]["c/c.py"]["disposition"] == "excluded"
+    assert not c.complete(state)
+
+
+@pytest.mark.parametrize("omission", ["a/a.py", "missing.py", "*"])
+def test_native_scope_omissions_cannot_be_hidden_by_unrelated_user_exclusions(running, omission):
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["exclude_paths"] = ["c/c.py"]
+    c.apply_exclusions(state)
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item)
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={"excludePaths": [omission]})
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    with pytest.raises(ValueError, match="omit assigned"):
+        controller.proof({"status": "completed", "coverage": "complete"}, child, receipt, state=state, item=item)
+    assert c.progress(state)["files_reviewed"] == 0
+
+
+def test_sealed_generic_checkpoint_resolution_is_bounded_by_its_component_scope(running):
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    for item in c.pending(state):
+        finish_scope(state, item)
+    for item in c.pending(state):
+        finish_scope(state, item)
+    state["deferred"]["native:all"] = {"paths": ["."], "reason": "Review the remaining source", "resolution": None}
+    c.plan_boundaries(state)
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item, resolutions={"native:all": {"disposition": "reported", "reason": "Forged wrapper closure"}})
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "resolvedDeferred": [{"id": "native:all", "reason": "This assigned component's source review is complete"}],
+    })
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    proof = controller.proof({"status": "completed", "coverage": "complete"}, child, receipt, state=state, item=item)
+    assert receipt["resolutions"]["native:all"]["disposition"] == "resolved"
+    c.accept(state, item, attempt["scan_id"], receipt, proof)
+    assert item["status"] == "completed"
+    assert state["deferred"]["native:all"]["resolution"] is None
+    assert state["deferred"]["native:all"]["scope_resolutions"][0]["paths"] == item["paths"]
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_continuation_reuses_only_complete_exact_boundary_proofs_with_approved_outside_exclusions(running, complete):
+    from test_coverage_batching import resume
+
+    controller, _, _, _ = running
+    source = make_state("a" * 32, request(exclude_paths=["excluded.pfx"]), "root/project", {"revision": "d" * 40, "entries": [entry("app.py"), entry("excluded.pfx", kind="binary")]}, {"model": "example"})
+    mapping(source)
+    source["proofs"] = []
+    finish_scope(source, c.pending(source)[0])
+    source["proofs"] = []
+    c.plan_boundaries(source)
+    item, = c.pending(source)
+    attempt = c.begin(source, item)
+    receipt = c_receipt(source, item, closed=complete, exclusions=[{"pattern": "excluded.pfx", "reason": "Outside this component"}])
+    key = native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={"explicitExclusions": receipt["exclusions"]})
+    proof = {"archive_key": key, "archive_sha256": controller.artifacts.get(key).metadata.sha256, "provider_scan_id": attempt["scan_id"], "report_prefix": f"security-scans/{attempt['scan_id']}/reports/review/", "findings": []}
+    c.accept(source, item, attempt["scan_id"], receipt, proof)
+    attempt["cleanup_confirmed"] = True
+    source.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    original = deepcopy(source)
+    continued = resume(source)
+    controller.verify_proofs(source)
+    controller.restore_complete_boundaries(continued, source)
+    assert (continued["tasks"][item["id"]]["status"] == "completed") is complete
+    assert continued["tasks"][item["id"]]["attempts"] == []
+    assert c.progress(continued)["files_reviewed"] == 1
+    assert c.required_work_complete(continued) is complete
+    assert continued["proofs"] == source["proofs"]
+    assert source == original
+
+
+def test_frozen_boundary_checkpoint_inputs_do_not_include_other_components_or_excluded_files(running, monkeypatch):
+    from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["exclude_paths"] = ["c/c.py"]
+    c.apply_exclusions(state)
+    for item in c.pending(state):
+        finish_scope(state, item)
+    state["deferred"]["native:wide"] = {"paths": ["."], "reason": "Review every remaining repository file", "resolution": None}
+    c.plan_boundaries(state)
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", lambda *_: None)
+    controller.provider._start_raw = lambda **kwargs: SecurityScanHandle(execution_id="scan-" + kwargs["scan_id"], metadata={})
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    CoverageController.launch(controller, state, item)
+    payload = json.loads((controller.store.root / "requests" / (attempt["scan_id"] + ".json")).read_text())
+    assert payload["coverage_task"]["deferred"]["native:wide"]["paths"] == item["paths"]
+    assert "c/c.py" not in payload["coverage_task"]["paths"]
+    assert "host_checkpoint_scope" in payload["coverage_task"]["architecture"]
+    assert state["deferred"]["native:wide"]["paths"] == ["."]

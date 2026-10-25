@@ -41,6 +41,23 @@ attempts instead of halving it. Exclusions remain visible and keep overall
 coverage partial. Native file-credit checks, retained evidence and run deadlines
 are unchanged. See [tracked coverage](docs/tracked-coverage.md).
 
+Add-on 0.6.0 requires Evander 0.129.0 and adds `exclude_patterns`, such as
+`["*.pfx", "bin/*"]`, resolved case-insensitively against the frozen tracked
+inventory. Exact matches are retained in reports without new review credit.
+The opt-in `incomplete_review_policy: "isolate_blockers"` parks exact files
+diagnosed by sealed native evidence and reviews the remainder together. Blockers
+survive resumes; `retry_blocked_paths` explicitly retries selected files when
+their prerequisites are available. Partial reports cannot grant file credit.
+Completed boundaries and accepted findings remain retained; the SDK, image,
+route, scheduling limits, cleanup and deadline guards are unchanged.
+
+The same exclusions govern file and boundary reviews. Broad required checkpoints
+are split into component-local obligations, while their global closure remains
+host-owned. Returned saved IDs update existing questions instead of multiplying
+the queue. Complete component reports are not falsely rejected for mentioning
+approved exclusions outside their scope; partial reports and assigned-file
+omissions still receive no coverage credit.
+
 Add-on 0.4.1 uses SQLite write-ahead logging for new and existing coverage
 journals so readers do not block review updates. Retention checks read compact
 metadata while preserving cleanup-based lifetimes and ancestor snapshot pins.

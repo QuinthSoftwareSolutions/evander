@@ -48,6 +48,8 @@ class CodexSecurityScanProvider:
     supports_batch_text_limit = True
     supports_review_parallelism = True
     supports_scan_tail_controls = True
+    supports_file_blocker_isolation = True
+    supports_pattern_exclusions = True
 
     @staticmethod
     def describe(**kwargs):

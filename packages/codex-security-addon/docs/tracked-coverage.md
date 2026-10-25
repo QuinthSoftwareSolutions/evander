@@ -62,8 +62,10 @@ For an explicit linked continuation, core 0.128.0 and add-on 0.5.0 also accept:
 }
 ```
 
-Exclusions must be exact files in the pinned inventory. Select them after a
-retained architecture map exists and before boundary planning. They are inherited
+Exclusions must be exact files in the pinned inventory. Core 0.129.0 and add-on
+0.6.0 also allow exclusions on a new scan or after boundary planning on an explicit
+continuation. Only pending scopes are partitioned; completed scopes stay accepted.
+Exclusions are inherited
 and cannot be removed within the same lineage. Excluded files receive no new
 review credit; accepted findings, existing credit and immutable native reports
 remain retained. Questions wholly owned by an excluded file or original excluded
@@ -77,6 +79,97 @@ time budget. `retry_scope` retains incomplete scopes for at most three attempts;
 the default remains `split`, and omitted policies inherit the previous setting.
 Partial native results never grant file credit.
 
+Core 0.129.0 and add-on 0.6.0 add pattern exclusions and persistent file isolation:
+
+```json
+{
+  "exclude_patterns": ["*.pfx", "bin/*"],
+  "incomplete_review_policy": "isolate_blockers"
+}
+```
+
+Patterns are positive, case-insensitive globs resolved against the frozen tracked
+inventory. A slashless pattern matches names at any depth; a pattern containing
+`/` starts at the repository root. `*` stays within a path segment and `**` spans
+directories: `**/bin/**` matches `bin` directories anywhere. Matched directories
+include tracked descendants, and a trailing slash selects directories only. No
+negation, absolute paths, backslashes or traversal are accepted. Reports retain
+each pattern's exact matches, including zero-match patterns. Exact paths and
+pattern matches are combined and inherited; a continuation cannot reintroduce
+an excluded path. An all-excluded scan schedules no worker reviews and earns no
+coverage. Exclusions remove scheduled review obligations, not access to supporting
+repository context; architecture mapping still uses the full snapshot.
+
+With `isolate_blockers`, exact assigned files named by sealed native
+`deferred[].paths` or `file:<path>` follow-up surfaces enter a persistent blocked
+queue with reasons and native archive references. A missing required non-text
+disposition also identifies its own file. Paths guessed from prose, directories,
+globs or out-of-scope references cannot identify a blocker. A partial report grants
+no file credit: remaining files need a new complete exact-scope review. The host
+keeps that remainder together under the existing caps instead of repeatedly
+halving it. If no exact blocker can be identified, the incomplete file scope
+blocks for operator attention after one attempt.
+
+On a continuation, diagnostics can be recovered from hash-checked retained native
+reports for unfinished file scopes before any new review launches. Blocked files
+remain parked through normal resumes and batch rebuilding. To retry specific
+files after providing a password, decoder or other prerequisite, explicitly pass
+`retry_blocked_paths: ["vendor/encrypted.bin"]` on a continuation. This does not
+retry excluded files, satisfy dependent questions or grant coverage. Accepted
+findings, original native archives, other-file coverage and completed boundary
+scopes stay retained. Unresolved questions depending on blocked content remain
+visible and unresolved outside ordinary boundary work. A boundary review that
+reintroduces a known blocker is parked without repeated attempts.
+
+Version-2 journals persist isolation and pattern controls. Version-1 sources can
+be continued without rewriting them; older runtimes reject version-2 sources on
+resume instead of silently losing quarantine state. Active scans keep their
+frozen configuration. These host-side controls need no SDK or image change and
+do not change the snapshot, execution route, byte limit, parallelism, cleanup
+protocol, or run deadline.
+
+### Checkpoint identity and component closure
+
+File and boundary reviews share the same resolved exclusion set. Excluded files
+are absent from both target queues and from the required path slices supplied
+to component reviews. A native report may mention an approved exclusion outside
+its assignment without invalidating otherwise complete coverage. An assigned
+file omission or an unknown/unapproved exclusion remains blocking. Exact native
+path fields are treated literally; only pattern fields use glob matching. The
+host never upgrades a partial native report to complete.
+
+Required checkpoints keep a stable host identity. Returning a saved ID updates
+that checkpoint; a local ID remains stable across retries of the same task but
+does not merge unrelated tasks. Continuations fold historical saved-ID echoes
+into their canonical requirements, retaining alias references, native proofs and
+each accepted closure's original scope. Native reports and source journals are
+not rewritten. A legacy completion for one component cannot certify the rest of
+a wider requirement.
+
+For a checkpoint spanning several components, each boundary review receives only
+its assigned paths and certifies only that part. The host retains the remaining
+parts until all are explicitly resolved or excluded. Adding required paths
+reopens global closure while preserving already verified parts. Unknown
+nonempty references stay required for operator scope clarification; they cannot
+be resolved by an unrelated component, including a legacy frozen worker.
+Pathless checkpoints remain separate explicit obligations rather than inferred
+file coverage.
+
+Completed scopes remain completed. A genuinely unresolved checkpoint part can
+need a separate bounded follow-up; this does not reset prior accepted scopes or
+give already-failed scopes fresh automatic retry budgets. Split follow-ups create
+real pending children for their current obligations without reusing historical
+completed children. The existing byte, file, parallelism and deadline limits
+still apply.
+
+A continuation can also reuse a complete exact-scope native boundary proof that
+was rejected solely for approved outside-scope exclusions, provided its local
+checkpoint obligations are closed. The host verifies archive and coverage seals,
+snapshot and scope, records the retained proof, and creates no synthetic worker
+attempt. Partial reports, changed scopes and unresolved obligations do not
+qualify. This reconciles the earlier false block without silently granting file
+credit or bypassing source cleanup.
+
 Finishing all non-excluded work produces a completed assessment with partial
 overall coverage, never a fully covered repository or a successful full-coverage
 gate. Reports list the requested exclusions and every file disposition. File
@@ -86,8 +179,12 @@ the required questions assigned to them.
 `coverage_progress` contains `phase`, `files_total`, `files_reviewed`,
 `files_not_applicable`, `files_blocked`, `files_pending`, `files_excluded`, `active_reviews`,
 `completed_reviews`, `attempts`, `max_batch_text_bytes`, `max_parallel_reviews`,
-`deadline_at`, `last_progress_at` and
+`files_isolated`, `isolated_files` (path, reason, native receipt and provider scan ID),
+`exclude_patterns`, `incomplete_review_policy`, `deadline_at`, `last_progress_at` and
 `cleanup_condition`. Waiting workflow executions refresh these outputs.
+`required_questions_total`, `required_questions_pending` and
+`required_question_aliases` distinguish the canonical required-work queue from
+historical ID echoes; per-scope resolution receipts remain in `coverage.json`.
 `cleanup_confirmed: false` means the repository reservation must remain held,
 including when the scan itself is terminal. Failed/partial scans use the `error`
 port and can still provide findings and an archive.

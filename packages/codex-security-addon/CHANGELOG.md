@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-25 - Persistent file blockers and pattern exclusions (0.6.0)
+
+- Require Evander 0.129.0 and add `exclude_patterns`, including extension globs such as `*.pfx` and root-relative paths such as `bin/*`. Resolve exact matches against the pinned inventory, retain exclusions through the lineage and report them without granting new review credit. New scans and pending continuation scopes support exclusions; completed scopes and accepted findings stay intact.
+- Add the opt-in `isolate_blockers` policy. Read exact in-scope blockers from sealed native coverage and required non-text dispositions, retain their evidence and reasons, and create one fresh review of the remainder without crediting partial reports. Unattributed incomplete file scopes require attention after one attempt. A continuation can import diagnostics from hash-checked retained native reports before scheduling new work.
+- Keep isolated files and dependent required questions parked across resumes and batch rebuilding. `retry_blocked_paths` explicitly reopens selected files after prerequisites are supplied; completed boundary reviews remain accepted. Ordinary reviews receive the blocked-file context and cannot silently satisfy those outstanding limitations.
+- Write version-2 coverage journals while accepting retained version-1 sources. Older runtimes cannot resume version-2 sources and discard quarantine state. Preserve original snapshots, immutable archives, route validation, scheduling limits, cleanup and fixed run budgets. The pinned SDK and scanner image are unchanged.
+- Preserve one required checkpoint per saved identity across retries, and fold legacy alias chains while retaining their original references and closure receipts. Project broad requirements onto each component's assigned paths; local closure never certifies the repository-wide remainder. Newly named paths reopen the corresponding requirement. Unsupported nonempty references remain required for scope clarification.
+- Apply the same exact/pattern exclusions to file reviews, boundary reviews and their required checkpoint inputs. Ignore only approved native exclusion notes wholly outside the current assignment; exact native paths stay literal. Never turn a partial native report into complete coverage. Reuse a complete hash-checked boundary proof previously rejected only for outside exclusion notes when its local obligations are already closed.
+- Give genuinely unclosed work bounded pending owners without resetting completed scopes, blocked retries or the deadline. Follow-up splits preserve historical scopes and retry fences. Report distinct/pending checkpoint and folded-alias counts.
+
 ## 2026-10-24 - Explicit continuation exclusions and batch rebuilding (0.5.0)
 
 - Require Evander 0.128.0 and support `exclude_paths`, `rebuild_pending_batches` and `incomplete_review_policy`. Defaults retain existing planning and split behavior; omitted exclusions and retry policies inherit the source settings.

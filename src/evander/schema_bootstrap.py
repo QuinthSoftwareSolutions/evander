@@ -14,16 +14,37 @@ _SECURITY_SCAN_PROGRESS_SCHEMA = {
                 "files_reviewed",
                 "files_not_applicable",
                 "files_blocked",
+                "files_isolated",
+                "files_excluded",
                 "files_pending",
                 "active_reviews",
                 "completed_reviews",
                 "attempts",
+                "required_questions_total",
+                "required_questions_pending",
+                "required_question_aliases",
             )
         },
         "phase": {"type": "string"},
         "deadline_at": {"type": "string"},
         "last_progress_at": {"type": "string"},
         "cleanup_condition": {"type": ["string", "null"]},
+        "max_batch_text_bytes": {"type": "integer"},
+        "max_parallel_reviews": {"type": "integer"},
+        "incomplete_review_policy": {"type": "string"},
+        "exclude_patterns": {"type": "array", "items": {"type": "string"}},
+        "isolated_files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "receipt": {"type": "string"},
+                    "provider_scan_id": {"type": "string"},
+                },
+            },
+        },
     },
 }
 
