@@ -170,9 +170,12 @@ attempt. Partial reports, changed scopes and unresolved obligations do not
 qualify. This reconciles the earlier false block without silently granting file
 credit or bypassing source cleanup.
 
-Finishing all non-excluded work produces a completed assessment with partial
-overall coverage, never a fully covered repository or a successful full-coverage
-gate. Reports list the requested exclusions and every file disposition. File
+Finishing all non-excluded work produces `status: completed`, `success: true`
+and `scope_complete: true`, with exact `excluded_paths` in the result. Overall
+`coverage` remains `partial` when files are excluded; the original denominator
+and individual unreviewed exclusions remain in the reports. The scan effect takes
+its `completed` port. A policy requiring full repository coverage must separately
+require `coverage: complete`. Reports list the requested exclusions and every file disposition. File
 reviews receive no repository-wide outstanding queue; boundary reviews retain
 the required questions assigned to them.
 
@@ -186,8 +189,19 @@ the required questions assigned to them.
 `required_question_aliases` distinguish the canonical required-work queue from
 historical ID echoes; per-scope resolution receipts remain in `coverage.json`.
 `cleanup_confirmed: false` means the repository reservation must remain held,
-including when the scan itself is terminal. Failed/partial scans use the `error`
-port and can still provide findings and an archive.
+including when the scan itself is terminal. Failed scans and partial scans with
+unfinished required work use the `error` port and can still provide findings and
+an archive. Exclusions do not bypass required boundary reviews, unresolved
+checkpoints, cancellation or time-budget stops.
+
+For a submitted launch with no saved execution handle, the host uses the worker's
+session-bound `POST /v1/jobs/{id}/cancel` protocol. The worker durably fences the
+job identity against late admission and acknowledges cleanup only after any
+existing container has been removed. A plain missing-job response is insufficient.
+Deploy Evander 0.129.1 or later on both the control plane and worker to use this
+protocol. Older workers, transport failures and failed cleanup retain the
+reservation. Cancellation preserves session artifacts and never recreates the
+missing launch. No SDK or scanner-image update is required.
 
 The directory-scoped `query:security:scan` node takes `scan_id` and reads safe
 metadata without polling or starting work. It returns `found`, repository ID,

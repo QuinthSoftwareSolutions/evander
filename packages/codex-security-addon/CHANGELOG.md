@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-25 - Confirm cleanup and completion with exclusions (0.6.1)
+
+- Require Evander 0.129.1 and use the worker's durable, session-bound cancellation protocol for submitted launches with no saved handle. Only a matching receipt confirming both the launch fence and container cleanup releases the cleanup hold; older workers, lost responses and failed cleanup remain unconfirmed. Deploy the control plane and worker for this protocol; no SDK or scanner-image change is required.
+- Return successful completion once every non-excluded file, boundary scope and required checkpoint is finished. Expose `scope_complete` and exact `excluded_paths` in results and reports, retain partial repository coverage and the original denominator, and never grant review credit to exclusions. Stops and unresolved obligations remain unsuccessful.
+
 ## 2026-10-25 - Persistent file blockers and pattern exclusions (0.6.0)
 
 - Require Evander 0.129.0 and add `exclude_patterns`, including extension globs such as `*.pfx` and root-relative paths such as `bin/*`. Resolve exact matches against the pinned inventory, retain exclusions through the lineage and report them without granting new review credit. New scans and pending continuation scopes support exclusions; completed scopes and accepted findings stay intact.

@@ -52,6 +52,7 @@ from .coverage import (
     record_open_questions,
     required_work_complete,
     review_parallelism,
+    scope_complete,
     resumable,
     retry,
     valid_path,
@@ -1017,13 +1018,13 @@ class CoverageController:
         findings, counts, _ = aggregate(state)
         finished = bool(state["finished_at"])
         error = state["stop_reason"]
-        if finished and state.get("exclude_paths") and required_work_complete(state) and not error:
-            error = "Review completed with explicit unreviewed exclusions"
         if state.get("migration_error") and state["migration_error"] != error:
             error = f"{error}; {state['migration_error']}" if error else state["migration_error"]
         return SecurityScanResult(
-            status=("completed" if required_work_complete(state) else "failed") if finished else "running",
+            status=("completed" if scope_complete(state) else "failed") if finished else "running",
             coverage="complete" if complete(state) else "partial",
+            scope_complete=scope_complete(state),
+            excluded_paths=list(state.get("exclude_paths", [])),
             to_commit=state["revision"],
             findings=findings,
             severity_counts=counts,
@@ -1076,6 +1077,7 @@ class CoverageController:
                 "inventory_digest": state["inventory_digest"],
                 "inventory": state["inventory"],
                 "completeness": "complete" if complete(state) else "partial",
+                "scope_complete": scope_complete(state),
                 "progress": progress(state),
                 "files": state["files"],
                 "deferred": state["deferred"],
@@ -1084,7 +1086,7 @@ class CoverageController:
                 "remaining_scopes": [
                     {"kind": x["kind"], "paths": x["paths"], "status": x["status"]}
                     for x in state["tasks"].values()
-                    if x["status"] not in {"completed", "split"}
+                    if x["status"] not in {"completed", "split", "excluded"}
                 ],
             },
             "findings.json": {
@@ -1101,6 +1103,7 @@ class CoverageController:
                 "revision": state["revision"],
                 "lineage": state["lineage"],
                 "coverage_policy": "all_tracked_files",
+                "scope_complete": scope_complete(state),
                 "exclude_paths": state.get("exclude_paths", []),
                 "exclude_patterns": state.get("exclude_patterns", []),
                 "exclusion_matches": state.get("exclusion_matches", {}),
@@ -1138,6 +1141,7 @@ class CoverageController:
             "Scan: " + state["scan_id"],
             "Repository: " + state["managed_repo_id"],
             "Revision: " + state["revision"],
+            "Agreed scope: " + ("completed" if scope_complete(state) else "unfinished"),
             "Coverage: " + ("complete" if complete(state) else "partial"),
             f"Files: {p['files_reviewed']} reviewed, {p['files_not_applicable']} not applicable, {p['files_blocked']} blocked, {p['files_pending']} pending, {p['files_excluded']} explicitly excluded; {p['files_total']} total.",
             "",

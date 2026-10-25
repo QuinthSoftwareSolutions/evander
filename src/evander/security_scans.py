@@ -171,6 +171,8 @@ class SecurityScanResult(BaseModel):
     from_commit: str | None = None
     to_commit: str | None = None
     coverage: Literal["complete", "partial", "unknown"] = "unknown"
+    scope_complete: bool = False
+    excluded_paths: list[str] = Field(default_factory=list)
     findings: list[dict[str, Any]] = Field(default_factory=list)
     severity_counts: dict[str, int] = Field(default_factory=dict)
     artifacts: dict[str, Any] = Field(default_factory=dict)
@@ -178,9 +180,19 @@ class SecurityScanResult(BaseModel):
     coverage_progress: dict[str, Any] = Field(default_factory=dict)
     cleanup_confirmed: bool = True
 
+    @model_validator(mode="after")
+    def infer_full_scope_completion(self):
+        if self.status == "completed" and self.coverage == "complete" and not self.error:
+            self.scope_complete = True
+        return self
+
     @property
     def success(self) -> bool:
-        return self.status == "completed" and self.coverage == "complete"
+        return self.status == "completed" and not self.error and (
+            self.coverage == "complete" or (
+                self.coverage == "partial" and self.scope_complete and bool(self.excluded_paths)
+            )
+        )
 
 
 class SecurityScanProvider(Protocol):

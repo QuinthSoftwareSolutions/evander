@@ -183,6 +183,44 @@ def test_findings_are_successful_and_survive_restart(scanning, tmp_path):
     )
 
 
+def test_finished_agreed_scope_with_exclusions_succeeds_and_survives_restart(scanning, tmp_path):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"all_tracked_files"}
+    scanner.supports_scan_tail_controls = scanner.supports_pattern_exclusions = True
+    scanner.result = SecurityScanResult(
+        status="completed", coverage="partial", scope_complete=True,
+        excluded_paths=["opaque.bin"], artifacts={"report": "scan/report.md"},
+    )
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo",
+        **request(coverage_policy="all_tracked_files", managed_repo_id="example", exclude_paths=["opaque.bin"]).model_dump(),
+    )
+    provider = SecurityScanEffectProvider()
+    provider.initialize(definition, EffectRuntimeContext(
+        security_scan_service=service, metadata={"directory_path": "root/project"},
+    ))
+    output = provider.execute(execution_context={"idempotency_key": "scope", "execution_id": "e"})
+    assert output["success"] and output["status"] == "completed"
+    assert output["scope_complete"] and output["coverage"] == "partial"
+    assert output["excluded_paths"] == ["opaque.bin"] and output["error"] is None
+    restarted = SecurityScanService(runtime_dir=tmp_path, providers={}, sessions=service.sessions)
+    assert restarted.poll(output["scan_id"], directory_path="root/project", runtime=None).outputs() == output
+    metadata = restarted.read_metadata(output["scan_id"], directory_path="root/project")
+    assert metadata["scope_complete"] and metadata["excluded_paths"] == ["opaque.bin"]
+
+
+@pytest.mark.parametrize("changes", [
+    {"scope_complete": False}, {"excluded_paths": []}, {"coverage": "unknown"},
+    {"status": "failed"}, {"status": "timed_out"}, {"error": "Unresolved checkpoint"},
+])
+def test_partial_or_stopped_review_cannot_become_success_by_claiming_exclusions(changes):
+    result = SecurityScanResult(**{
+        "status": "completed", "coverage": "partial", "scope_complete": True,
+        "excluded_paths": ["opaque.bin"], **changes,
+    })
+    assert not result.success
+
+
 @pytest.mark.parametrize("coverage", ["partial", "unknown"])
 def test_incomplete_scan_is_failed_without_discarding_report(scanning, coverage):
     service, scanner, _ = scanning
@@ -325,7 +363,9 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     from evander.workflow.contracts import effective_node_output_schema
 
     schema = effective_node_output_schema({"type": "effect:security:scan-repo"})
-    assert {"findings", "coverage", "artifacts", "severity_counts"} <= schema.keys()
+    assert {"findings", "coverage", "artifacts", "severity_counts", "scope_complete", "excluded_paths"} <= schema.keys()
+    assert schema["scope_complete"] == {"type": "boolean"}
+    assert schema["excluded_paths"] == {"type": "array", "items": {"type": "string"}}
     node = next(
         node for node in _WORKFLOW_EDITOR_NODE_CATALOG if node.type == "effect:security:scan-repo"
     )
@@ -363,6 +403,25 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     progress = effective_node_output_schema({"type": "effect:security:scan-repo"})["coverage_progress"]["properties"]
     assert progress["files_isolated"] == {"type": "integer"}
     assert progress["isolated_files"]["items"]["properties"]["path"] == {"type": "string"}
+
+
+def test_unconfirmed_handleless_cancel_stays_unclean_until_positive_acknowledgement(scanning):
+    from evander.security_scans import SecurityScanRetryableError
+
+    service, scanner, _ = scanning
+
+    def uncertain(**kwargs):
+        raise SecurityScanRetryableError("lost acknowledgement")
+
+    scanner.start = uncertain
+    record = start(service)
+    scanner.cancel = lambda **_: False
+    cancelled = service.cancel(record.scan_id, directory_path="root/project", runtime=None)
+    assert cancelled.result.status == "cancelled" and not cancelled.result.cleanup_confirmed
+    scanner.cancel = lambda **_: True
+    reconciled = service.poll(record.scan_id, directory_path="root/project", runtime=None)
+    assert reconciled.result.status == "cancelled" and reconciled.result.cleanup_confirmed
+    assert scanner.starts == []
 
 
 def test_tracked_coverage_defaults_and_unsupported_modes():

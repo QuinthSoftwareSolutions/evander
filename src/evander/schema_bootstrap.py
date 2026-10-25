@@ -771,6 +771,8 @@ _GATE_OUTPUT_SCHEMAS = {
 
 _EFFECT_OUTPUT_SCHEMAS = {
     "effect:security:scan-repo": {
+        "scope_complete": {"type": "boolean"},
+        "excluded_paths": {"type": "array", "items": {"type": "string"}},
         "coverage_policy": {"type": "string"},
         "managed_repo_id": {"type": ["string", "null"]},
         "resume_from_scan_id": {"type": ["string", "null"]},
@@ -1596,6 +1598,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
 
 _QUERY_OUTPUT_SCHEMAS = {
     "query:security:scan": {
+        "scope_complete": {"type": ["boolean", "null"]},
+        "excluded_paths": {"type": "array", "items": {"type": "string"}},
         "found": {"type": "boolean"},
         "lineage": {"type": "array", "items": {"type": "string"}},
         "inventory_digest": {"type": ["string", "null"]},

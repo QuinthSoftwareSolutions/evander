@@ -40,6 +40,26 @@ def _job_payload(status: str = "running") -> dict[str, object]:
     }
 
 
+def test_job_cancellation_client_sends_session_identity_and_returns_receipt(monkeypatch):
+    monkeypatch.setenv("WORKER_TOKEN", "test-token")
+
+    def handler(request):
+        assert request.method == "POST" and request.url.path == "/v1/jobs/job-1/cancel"
+        assert request.headers["authorization"] == "Bearer test-token"
+        assert json.loads(request.content) == {"session_id": "session-1"}
+        return httpx.Response(200, json={
+            "job_id": "job-1", "session_id": "session-1",
+            "launch_cancelled": True, "cleanup_confirmed": True,
+        })
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        worker = ContainerWorkerClient(base_url="http://worker.test", token_env="WORKER_TOKEN", client=client)
+        assert worker.cancel("job-1", session_id="session-1") == {
+            "job_id": "job-1", "session_id": "session-1",
+            "launch_cancelled": True, "cleanup_confirmed": True,
+        }
+
+
 def test_reset_redemption_client_preserves_profile_and_retry_identity(monkeypatch) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
     requests = []

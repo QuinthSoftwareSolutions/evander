@@ -177,6 +177,17 @@ class WorkerJobRequest(BaseModel):
         return data
 
 
+class WorkerJobCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: object) -> str:
+        return str(validate_worker_component_id(value, field_name="session_id"))
+
+
 class WorkerSessionPaths(BaseModel):
     session_id: str
     sessions_root: Path | None = None

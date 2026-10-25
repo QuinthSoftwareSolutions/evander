@@ -910,7 +910,8 @@ def test_file_review_inputs_do_not_inherit_repository_wide_followup_obligations(
     assert controller.store.get(state["scan_id"], "root/project")["deferred"] == before
 
 
-def test_completed_requested_work_with_exclusions_does_not_claim_full_coverage(running):
+@pytest.mark.parametrize("stop_reason", [None, "Review time budget reached", "Workflow execution cancelled"])
+def test_completed_requested_work_with_exclusions_does_not_claim_full_coverage(running, stop_reason):
     from test_coverage_batching import legacy_file_scopes, resume
 
     controller, _, _, _ = running
@@ -922,14 +923,63 @@ def test_completed_requested_work_with_exclusions_does_not_claim_full_coverage(r
     c.plan_boundaries(continued)
     for item in c.pending(continued):
         finish_scope(continued, item)
-    continued.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    continued.update(finished_at=c.now().isoformat(), cleanup_confirmed=True, stop_reason=stop_reason)
     result = controller.output(continued)
-    assert result.status == "completed"
+    assert result.status == ("completed" if stop_reason is None else "failed")
     assert result.coverage == "partial"
-    assert result.success is False
+    assert result.success is (stop_reason is None)
+    assert result.scope_complete is (stop_reason is None)
+    assert result.excluded_paths == ["opaque.bin"]
+    assert result.error == stop_reason
     assert result.coverage_progress["files_reviewed"] == 1
     assert result.coverage_progress["files_excluded"] == 1
     assert result.coverage_progress["files_total"] == 2
+
+
+def test_exclusions_do_not_allow_success_before_boundary_review_finishes(running):
+    from test_coverage_batching import legacy_file_scopes, resume
+
+    controller, _, _, _ = running
+    source = legacy_file_scopes([["opaque.bin"], ["app.py"]])
+    source.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    continued = resume(source, exclude_paths=["opaque.bin"], rebuild_pending_batches=True)
+    for item in c.pending(continued):
+        finish_scope(continued, item)
+    c.plan_boundaries(continued)
+    continued.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    result = controller.output(continued)
+    assert not result.success and not result.scope_complete
+    assert result.coverage_progress["files_reviewed"] == 1
+    assert result.coverage_progress["files_excluded"] == 1
+
+
+def test_completed_scope_publishes_success_without_hiding_excluded_coverage(running):
+    controller, handle, worker, finish = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    state["exclude_paths"] = state["request"]["exclude_paths"] = ["c/c.py"]
+    c.apply_exclusions(state)
+    controller.store.save(state)
+    for _ in range(12):
+        result = controller.poll(handle)
+        if result.status != "running":
+            break
+        finish()
+    assert result.success and result.scope_complete and not worker.active
+    assert result.coverage == "partial" and result.excluded_paths == ["c/c.py"]
+    assert result.coverage_progress["files_total"] == 3
+    assert result.coverage_progress["files_reviewed"] == 2
+    assert result.coverage_progress["files_excluded"] == 1
+    with tarfile.open(controller.artifacts.get(result.artifacts["archive_key"]).blob_path) as archive:
+        coverage = json.load(archive.extractfile(result.artifacts["coverage.json"]))
+        manifest = json.load(archive.extractfile(result.artifacts["scan-manifest.json"]))
+        report = archive.extractfile(result.artifacts["report.md"]).read().decode()
+    assert coverage["scope_complete"] and manifest["scope_complete"]
+    assert coverage["completeness"] == "partial"
+    assert coverage["files"]["c/c.py"]["disposition"] == "excluded"
+    assert coverage["remaining_scopes"] == []
+    assert coverage["exclude_paths"] == manifest["exclude_paths"] == ["c/c.py"]
+    assert "Agreed scope: completed" in report and "Coverage: partial" in report
+    assert "c/c.py: excluded by request" in report
 
 
 def test_verified_native_scopes_support_exclusion_provenance_without_weakening_hash_checks(running):

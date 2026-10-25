@@ -447,6 +447,12 @@ class ContainerWorkerClient:
         response = self._request("POST", f"/v1/jobs/{job_id}/stop")
         return WorkerJobRecord.model_validate(self._json_dict(response, operation="stop job"))
 
+    def cancel(self, job_id: str, *, session_id: str) -> dict[str, Any]:
+        response = self._request(
+            "POST", f"/v1/jobs/{job_id}/cancel", json={"session_id": session_id}
+        )
+        return self._json_dict(response, operation="cancel job")
+
     def steer(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._json_dict(
             self._request("POST", f"/v1/jobs/{job_id}/steer", json=payload), operation="steer job"
