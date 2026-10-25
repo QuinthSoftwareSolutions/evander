@@ -11,6 +11,7 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
+from evander.gateway import create_server
 from evander.events.provider_models import (
     CommunicationNewMessageTriggerDefinition,
     TeamsDirectMessageTriggerDefinition,
@@ -46,6 +47,7 @@ from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTr
 from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_payload
+from gateway_tool_support import call_tool
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -1221,6 +1223,118 @@ def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories
     assert result.directories_polled == 2
     assert result.sessions_seen == 0
     assert result.channel_targets_polled == 0
+
+
+@pytest.mark.parametrize("include_metadata", [False, True])
+def test_forwarded_message_text_survives_ingestion_and_authorized_history_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    include_metadata: bool,
+) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        assert request.url.path == "/v1.0/chats/chat-1/messages"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "forward-1",
+                        "createdDateTime": "2026-10-25T10:05:00Z",
+                        "body": {
+                            "contentType": "html",
+                            "content": '<attachment id="original-1"></attachment>',
+                        },
+                        "from": {"user": {"id": "user-forwarder", "displayName": "Alex"}},
+                        "attachments": [
+                            {
+                                "id": "original-1",
+                                "contentType": "forwardedMessageReference",
+                                "content": json.dumps(
+                                    {
+                                        "originalMessageId": "original-1",
+                                        "originalMessageContent": "<p>Ship the replacement on Monday.</p>",
+                                        "originalConversationId": "private-source-chat",
+                                        "originalSentDateTime": "2026-10-24T09:00:00Z",
+                                        "originalMessageSender": {
+                                            "user": {"id": "other-user", "displayName": "Morgan"},
+                                        },
+                                        "access_token": "must-not-store",
+                                    }
+                                ),
+                                "contentBytes": "must-not-store",
+                                "authorization": "must-not-store",
+                            },
+                            {
+                                "id": "image-1",
+                                "contentType": "image/png",
+                                "content": "must-not-store",
+                                "contentBytes": "must-not-store",
+                            },
+                            {
+                                "id": "malformed-forward",
+                                "contentType": "forwardedMessageReference",
+                                "content": "invalid-json",
+                            },
+                        ],
+                    }
+                ],
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "teams_backend": "graph_api",
+            }
+        ),
+        project_dir=tmp_path,
+    )
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:chat-1"],
+            teams_user_allowlist=["user:user-forwarder"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    assert worker.run_once().new_messages_discovered == 1
+    stored = worker.store.list_all_messages(channel_targets=["chat:chat-1"])[0]
+    for attachments in (
+        stored.metadata["attachments"],
+        stored.metadata["message"]["attachments"],
+    ):
+        forwarded = json.loads(attachments[0]["content"])
+        assert forwarded["originalMessageContent"] == "<p>Ship the replacement on Monday.</p>"
+        assert forwarded["originalMessageSender"]["user"]["displayName"] == "Morgan"
+        assert "must-not-store" not in json.dumps(attachments)
+        assert "content" not in attachments[1]
+        assert "content" not in attachments[2]
+
+    result = call_tool(
+        create_server(worker.runtime),
+        "teams_get_messages",
+        {
+            "session_id": "session-1",
+            "channel_target": "chat:chat-1",
+            "include_metadata": include_metadata,
+        },
+    )
+    message = result["messages"][0]
+    forwarded = json.loads(message["metadata"]["attachments"][0]["content"])
+    assert message["author_id"] == "user-forwarder"
+    assert forwarded["originalMessageSender"]["user"]["id"] == "other-user"
+    assert forwarded["originalMessageContent"] == "<p>Ship the replacement on Monday.</p>"
+    assert "must-not-store" not in json.dumps(result)
+    assert requests == ["/v1.0/chats/chat-1/messages"] * 2
 
 
 def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_entries(

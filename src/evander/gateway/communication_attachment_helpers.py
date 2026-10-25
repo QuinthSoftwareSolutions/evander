@@ -144,8 +144,11 @@ def _teams_message_response(
             ):
                 if key not in summary and attachment.get(alias) is not None:
                     summary[key] = attachment[alias]
-            # A card's content is the message itself, unlike a file's binary data.
-            if str(summary.get("contentType", "")).startswith("application/vnd.microsoft.card."):
+            # Cards and forwarded messages carry readable text in this field.
+            content_type = str(summary.get("contentType", ""))
+            if content_type == "forwardedMessageReference" or content_type.startswith(
+                "application/vnd.microsoft.card."
+            ):
                 if attachment.get("content") is not None:
                     summary["content"] = attachment["content"]
             metadata["attachments"].append(summary)

@@ -38,6 +38,7 @@ from evander.events.provider_models import (
     TeamsNewMessageTriggerDefinition,
 )
 from evander.messaging.targets import load_communication_targets_config
+from evander.integration_services.common import _sanitize_attachment_metadata
 from evander.repositories.cursors import (
     JsonTeamsInboxCursorRepository,
     TeamsInboxCursorRepository,
@@ -96,16 +97,6 @@ from evander.workflow.node_state import workflow_node_is_enabled
 logger = logging.getLogger(__name__)
 _NOTIFICATION_COMPACTION_INTERVAL_SECONDS = 3600.0
 _NOTIFICATION_COMPACTION_RETRY_SECONDS = 60.0
-_ATTACHMENT_SECRET_KEYS = {
-    "authorization",
-    "token",
-    "access_token",
-    "content",
-    "contentBytes",
-    "content_bytes",
-    "content_base64",
-    "data",
-}
 
 
 @dataclass(frozen=True)
@@ -1909,9 +1900,7 @@ def _sanitize_teams_attachments(raw_attachments: object) -> list[dict[str, Any]]
     for raw in raw_attachments:
         if not isinstance(raw, dict):
             continue
-        sanitized.append(
-            {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
-        )
+        sanitized.append(_sanitize_attachment_metadata(raw))
     return sanitized
 
 

@@ -1841,6 +1841,41 @@ def test_graph_teams_service_rejects_unsupported_ascii_reaction_before_http(
     assert requests == []
 
 
+def test_forwarded_message_download_directs_reader_to_history_without_hosted_content_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"Forwarded text must not trigger a file request: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "chat:chat-1/forward-1",
+        TeamsMessageEnvelope(
+            cursor="chat:chat-1/forward-1",
+            message_id="forward-1",
+            author_id="user-1",
+            chat_id="chat-1",
+            content='<attachment id="original-1"></attachment>',
+            metadata={
+                "attachments": [{"id": "original-1", "contentType": "forwardedMessageReference"}],
+            },
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["chat:chat-1"],
+    )
+
+    with pytest.raises(ValueError, match="teams_get_messages"):
+        service.download_attachment("forward-1", "original-1", channel_target="chat:chat-1")
+
+
 def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
