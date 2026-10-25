@@ -47,7 +47,7 @@ inventory. Exact matches are retained in reports without new review credit.
 The opt-in `incomplete_review_policy: "isolate_blockers"` parks exact files
 diagnosed by sealed native evidence and reviews the remainder together. Blockers
 survive resumes; `retry_blocked_paths` explicitly retries selected files when
-their prerequisites are available. Partial reports cannot grant file credit.
+their prerequisites are available. A partial header alone cannot grant file credit.
 Completed boundaries and accepted findings remain retained; the SDK, image,
 route, scheduling limits, cleanup and deadline guards are unchanged.
 
@@ -55,8 +55,19 @@ The same exclusions govern file and boundary reviews. Broad required checkpoints
 are split into component-local obligations, while their global closure remains
 host-owned. Returned saved IDs update existing questions instead of multiplying
 the queue. Complete component reports are not falsely rejected for mentioning
-approved exclusions outside their scope; partial reports and assigned-file
-omissions still receive no coverage credit.
+approved exclusions outside their scope; assigned-file omissions still prevent
+complete scope credit.
+
+Add-on 0.6.2 requires Evander 0.129.2 and separates source review from candidate
+validation. A sealed, exact-snapshot report can certify individual inspected
+files even when a separate hypothesis needs unavailable dependency or deployment
+evidence. Those hypotheses stay explicitly unverified in the aggregate report;
+they are not validated findings. Unread source, unknown deferred work and
+contradictory file surfaces remain blocking. Boundary reviews still require
+their own source analysis and component-local checkpoint evidence. Continuations
+can reuse verified positive file facts without rewriting native reports or old
+journals. Version-3 journals retain version-1/2 evidence. This host-only fix keeps
+the pinned SDK and scanner image unchanged.
 
 Add-on 0.4.1 uses SQLite write-ahead logging for new and existing coverage
 journals so readers do not block review updates. Retention checks read compact

@@ -28,8 +28,9 @@ from .coverage_questions import (
     resolve_for_scope,
     scope_closed,
 )
+from .coverage_review import apply_file_evidence, record_validation_candidates, reconcile_validation_candidates
 
-VERSION = 2
+VERSION = 3
 SDK_VERSION = "0.1.31"
 BATCHING_VERSION = 4
 MAX_BATCH_FILES = 100
@@ -149,6 +150,17 @@ def progress(state):
     for entry in state["files"].values():
         counts[entry["disposition"]] += 1
     tasks = list(state["tasks"].values())
+    validation_only = sum(
+        (q.get("resolution") or {}).get("disposition") == "validation_pending"
+        or (q.get("resolution") or {}).get("validation_status") == "unverified"
+        for q in state["deferred"].values()
+    )
+    validation_pending = sum(
+        (q.get("resolution") or {}).get("disposition") == "validation_pending"
+        or (q.get("resolution") or {}).get("validation_status") == "unverified"
+        or any(r.get("disposition") == "validation_pending" for r in q.get("scope_resolutions", []))
+        for q in state["deferred"].values()
+    )
     return {
         "phase": state["phase"],
         "files_total": len(state["files"]),
@@ -173,8 +185,9 @@ def progress(state):
             {"path": path, **state["file_blockers"][path]}
             for path in sorted(blocked_paths(state))
         ],
-        "required_questions_total": len(state["deferred"]),
+        "required_questions_total": len(state["deferred"]) - validation_only,
         "required_questions_pending": sum(not value.get("resolution") for value in state["deferred"].values()),
+        "validation_questions_pending": validation_pending,
         "required_question_aliases": len(state.get("deferred_aliases", {})),
     }
 
@@ -260,6 +273,7 @@ def make_state(
         "deferred_aliases": {},
         "deferred_task_ids": {},
         "question_policy_version": 1,
+        "source_review_policy_version": 1,
         "open_questions": {},
         "architecture": None,
         "boundary_planned": False,
@@ -269,7 +283,7 @@ def make_state(
         "tasks": {},
     }
     if previous:
-        if type(previous["version"]) is not int or previous["version"] not in {1, VERSION}:
+        if type(previous["version"]) is not int or previous["version"] not in {1, 2, VERSION}:
             raise ValueError("Source coverage journal version is not supported")
         state["version"] = previous["version"]
         if not resumable(previous, at=at, until=previous_until):
@@ -662,17 +676,26 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     # Immutable proofs retain findings even if this scope later gets split or retried.
     state["proofs"].append(proof)
     record_deferred(state, item, receipt.get("deferred", []), proof)
+    record_validation_candidates(state, proof, receipt.get("validation_candidates", []))
     # The native schema permits openQuestions on a complete static review.
     # Required work is expressed by partial coverage, deferred work or follow-up
     # surfaces; advisory limitations must not create new review obligations.
     record_open_questions(state, receipt.get("open_questions", []), proof)
+    record_open_questions(state, receipt.get("validation_notes", []), proof)
+    credited = apply_file_evidence(
+        state, receipt.get("source_dispositions", {}) if item["kind"] == "files" else {},
+        proof, receipt.get("coverage"),
+    )
+    reconcile_validation_candidates(state)
+    if credited:
+        state["last_progress_at"] = at.isoformat()
     if state.get("exclude_paths"):
         apply_exclusions(state, {proof["provider_scan_id"]: item["paths"]})
     if state.get("file_blockers"):
         refresh_blocked_followups(state)
     closed = (
-        receipt.get("coverage") == "complete"
-        and not receipt.get("deferred")
+        (receipt.get("coverage") == "complete" or receipt.get("source_review_complete"))
+        and not receipt.get("review_deferred", receipt.get("deferred"))
         and not receipt.get("exclusions")
         and not receipt.get("needs_follow_up")
     )
@@ -688,6 +711,8 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
     if item["kind"] == "boundary":
         for key, value in receipt.get("resolutions", {}).items():
             resolve_for_scope(state, item, key, value, proof)
+        for key, value in receipt.get("validation_resolutions", {}).items():
+            resolve_for_scope(state, item, key, value, proof, allow_validation=True)
         # Other parallel scopes own their outstanding work. Global closure is
         # checked by complete(), without spending retries on another review.
         closed = closed and scope_closed(state, item)
@@ -714,11 +739,24 @@ def accept(state, item, attempt_id, receipt, proof, *, at=None):
                     {"disposition": "reviewed", "reason": "Complete exact-scope static review"},
                 )
                 state["files"][path] = {**value, "receipt": proof["archive_key"]}
+                if path in credited:
+                    state["files"][path].update(
+                        review_basis="sealed_file_surface", native_coverage=receipt["coverage"]
+                    )
+            reconcile_validation_candidates(state)
         state["last_progress_at"] = at.isoformat()
         return True
     if item["kind"] == "files" and state.get("incomplete_review_policy") == "isolate_blockers":
         isolate_file_scope(state, item, {**missing_dispositions, **receipt.get("file_blockers", {})}, proof)
         return True
+    if item["kind"] == "files" and credited:
+        from .coverage_file_controls import _new_scope
+
+        remaining = [p for p in item["paths"] if state["files"][p]["disposition"] not in {"reviewed", "not_applicable", "excluded"}]
+        if remaining:
+            item["status"] = "split"
+            _new_scope(state, "files", remaining, item["id"])
+            return True
     if item["kind"] == "boundary":
         blocked = blocked_paths(state)
         owners = set(receipt.get("followup_files", {})) & blocked

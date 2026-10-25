@@ -178,6 +178,7 @@ class SecurityScanService:
                 "attempts",
                 "required_questions_total",
                 "required_questions_pending",
+                "validation_questions_pending",
                 "required_question_aliases",
                 "deadline_at",
                 "last_progress_at",

@@ -22,6 +22,7 @@ _SECURITY_SCAN_PROGRESS_SCHEMA = {
                 "attempts",
                 "required_questions_total",
                 "required_questions_pending",
+                "validation_questions_pending",
                 "required_question_aliases",
             )
         },

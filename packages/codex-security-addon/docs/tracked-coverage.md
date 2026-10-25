@@ -77,7 +77,8 @@ including earlier split work. The original journal and accepted evidence stay
 unchanged. This is an explicit continuation action, not a live edit or a fresh
 time budget. `retry_scope` retains incomplete scopes for at most three attempts;
 the default remains `split`, and omitted policies inherit the previous setting.
-Partial native results never grant file credit.
+Partial native headers alone never grant file credit; see the sealed source
+evidence rules below for individual file credit in add-on 0.6.2 and later.
 
 Core 0.129.0 and add-on 0.6.0 add pattern exclusions and persistent file isolation:
 
@@ -104,9 +105,9 @@ With `isolate_blockers`, exact assigned files named by sealed native
 `deferred[].paths` or `file:<path>` follow-up surfaces enter a persistent blocked
 queue with reasons and native archive references. A missing required non-text
 disposition also identifies its own file. Paths guessed from prose, directories,
-globs or out-of-scope references cannot identify a blocker. A partial report grants
-no file credit: remaining files need a new complete exact-scope review. The host
-keeps that remainder together under the existing caps instead of repeatedly
+globs or out-of-scope references cannot identify a blocker. Files lacking positive
+sealed review facts need a new review. The host keeps that remainder together
+under the existing caps instead of repeatedly
 halving it. If no exact blocker can be identified, the incomplete file scope
 blocks for operator attention after one attempt.
 
@@ -258,16 +259,38 @@ runtime is included in the image cache fingerprint. Existing accepted receipts
 and historical archives are unchanged.
 
 Only a sealed native result matching the revision and exact scope can close a
-scope. It must report complete coverage with no exclusions, follow-up surfaces
-or deferred work. Native `openQuestions` are advisory: they remain visible with
-their source receipts in the aggregate report and coverage ledger, without
-preventing an otherwise complete static review from closing. Partial coverage,
-deferred work and `needs_follow_up` surfaces still prevent completion, even when
-the report also contains advisory questions. Binary/symlink/submodule
+scope. Complete native coverage must have no assigned-source exclusions or
+unfinished source work. Native `openQuestions` are advisory: they remain visible
+with their source receipts in the aggregate report and coverage ledger.
+
+Core 0.129.2 and add-on 0.6.2 distinguish source coverage from vulnerability
+validation. A justified terminal `file:<path>` surface in a sealed report can
+certify that individual file even when the native report is partial. A structured
+`deferred[].candidate` with a title, source and exact in-scope paths describes an
+unverified hypothesis, not unread source. Its source obligation closes only after
+all referenced files have accepted credit or explicit exclusions. Candidate
+follow-up surfaces and external validation stay visible with an unverified status
+and native receipts; they do not enter finding/severity counts. Unknown, pathless
+or out-of-scope deferred references, unexplained partial results, contradictory
+file follow-ups and actual omitted source cannot grant credit. The host keeps
+certified files out of retries and queues only unfinished files. Binary/symlink/submodule
 dispositions also need explicit source-backed notes in `file:<path>` coverage surfaces. Unavailable
 content remains blocked. Text cannot be dismissed as not applicable. Boundary
 results must explicitly resolve previously retained work using `deferred:<key>`
-surfaces. Architecture mapping itself earns no file coverage.
+surfaces. A partial boundary report can instead classify a checkpoint as external
+validation only with a justified terminal `review:boundary` surface, accepted
+file coverage for the assigned component, and a `validation:<exact saved key>`
+follow-up explaining the missing evidence. Genuine remaining source work keeps
+the component unfinished. The classification closes only that component's part;
+all other parts remain required. Architecture mapping itself earns no file coverage.
+
+`validation_questions_pending` counts canonical checkpoints with unverified
+validation, including partially resolved boundary checkpoints. A checkpoint may
+therefore also have required source work pending in another component. Aggregate
+reports record `source_review_policy_version`, preserve native partial headers
+unchanged, and clearly separate unverified limitations from findings. Journal
+version 3 can continue retained version 1/2 scans after proof verification; older
+runtimes cannot resume version-3 journals.
 
 Each boundary scope owns a durable subset of outstanding items. Partial scopes
 pass those assignments to their split children; one scope cannot consume retries
@@ -401,9 +424,12 @@ Older journals may have promoted advisory questions into required work. On
 continuation, the controller verifies their preserved native reports and removes
 only exact question-derived blockers with authenticated provenance; genuine
 deferred work and ambiguous records remain required. The same repair applies to
-active journals after an orchestrator restart. This does not grant file credit:
-previously uncredited scopes still require a complete validated review. Earlier
-finished runs and their published reports remain unchanged.
+active journals after an orchestrator restart. Separately, a continuation on
+add-on 0.6.2 can recover positive per-file source facts from the last accepted,
+hash-checked native proof of an unfinished scope. Unread files and unknown work
+remain blocked. This creates no worker attempts and changes neither the source
+journal nor any native archive. Earlier finished runs and published reports
+remain unchanged.
 
 If the saved evidence is missing or fails verification during this conversion,
 the run stops with partial coverage and still stops and cleans up its workers.

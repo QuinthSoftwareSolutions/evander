@@ -991,12 +991,164 @@ def test_verified_native_scopes_support_exclusion_provenance_without_weakening_h
         "archive_key": key, "archive_sha256": controller.artifacts.get(key).metadata.sha256,
         "provider_scan_id": scan_id, "report_prefix": f"security-scans/{scan_id}/reports/review/",
     }
-    state = {"proofs": [proof], "uncredited": []}
+    state = {"proofs": [proof], "uncredited": [], "revision": "d" * 40}
     assert controller.verify_proofs(state) == {scan_id: ["opaque.bin"]}
     assert controller.verify_proofs({"proofs": [], "uncredited": [proof]}) == {}
     proof["archive_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="integrity"):
         controller.verify_proofs(state)
+
+
+@pytest.mark.parametrize("tamper", [None, "seal", "snapshot"])
+def test_certified_partial_file_review_is_derived_from_native_evidence_and_reported_honestly(running, tamper):
+    from test_coverage_review import candidate, surface
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["proofs"] = []
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    question = candidate(item["paths"])
+    receipt = c_receipt(state, item, closed=False, deferred=[question],
+                        source_dispositions={"b/b.py": {"disposition": "reviewed"}},
+                        validation_resolutions={"forged": {"disposition": "validation_pending"}},
+                        source_review_complete=False)
+    native = {"surfaces": [surface("file:" + item["paths"][0]), surface("candidate:renderer", "needs_follow_up")]}
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage=native,
+                   bad_revision=tamper == "snapshot",
+                   mutated_files={"coverage.json": b"{}"} if tamper == "seal" else None)
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    if tamper:
+        with pytest.raises(ValueError, match="seal|scope"):
+            controller.proof({"status": "completed", "coverage": "partial"}, child, receipt, state=state, item=item)
+        assert c.progress(state)["files_reviewed"] == 0
+        return
+    proof = controller.proof({"status": "completed", "coverage": "partial"}, child, receipt, state=state, item=item)
+    assert set(receipt["source_dispositions"]) == {"a/a.py"}
+    assert receipt["source_review_complete"]
+    assert receipt["validation_resolutions"] == {}
+    c.accept(state, item, attempt["scan_id"], receipt, proof)
+    attempt["cleanup_confirmed"] = True
+    assert item["status"] == "completed"
+    assert c.progress(state)["files_reviewed"] == 1
+    assert state["deferred"][attempt["scan_id"] + ":candidate-renderer"]["resolution"]["validation_status"] == "unverified"
+    state.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    controller.publish(state)
+    artifact = controller.artifacts.get(state["archive_key"])
+    with tarfile.open(artifact.blob_path) as archive:
+        prefix = f"security-scans/{state['scan_id']}/reports/aggregate/"
+        coverage = json.load(archive.extractfile(prefix + "coverage.json"))
+        findings = json.load(archive.extractfile(prefix + "findings.json"))
+        report = archive.extractfile(prefix + "report.md").read().decode()
+        assert coverage["source_review_policy_version"] == 1
+        assert coverage["progress"]["validation_questions_pending"] == 1
+        assert len(findings["findings"]) == 1  # Only the fixture's independently retained native finding.
+        assert "Potential unsafe rendering" not in [f["finding"]["title"] for f in findings["findings"]]
+        assert "Unverified candidate or external validation:" in report
+        native_paths = [n for n in archive.getnames() if "/sources/" in n and n.endswith("/coverage.json")]
+        assert len(native_paths) == 1
+        assert json.load(archive.extractfile(native_paths[0]))["completeness"] == "partial"
+
+
+def test_continuation_recovers_only_sealed_source_facts_without_new_attempts_or_changing_history(running):
+    from test_coverage_batching import resume
+    from test_coverage_review import candidate, surface
+
+    controller, _, _, _ = running
+    source = make_state("a" * 32, request(incomplete_review_policy="isolate_blockers"), "root/project",
+                        {"revision": "d" * 40, "entries": [entry("alerts.ts"), entry("deploy.yml"), entry("locked.bin", kind="binary")]}, {"model": "example"})
+    mapping(source)
+    source["proofs"] = []
+    item, = c.pending(source)
+    attempt = c.begin(source, item)
+    questions = [candidate(["alerts.ts", "deploy.yml"]), {"id": "decoder", "paths": ["locked.bin"], "reason": "Decoder unavailable"}]
+    receipt = c_receipt(source, item, closed=False, deferred=questions,
+                        file_blockers={path: "Historical mixed validation and source blocker" for path in item["paths"]})
+    key = native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "surfaces": [surface("file:alerts.ts"), surface("file:deploy.yml", "reported"), surface("file:locked.bin", "needs_follow_up")],
+    })
+    artifact = controller.artifacts.get(key)
+    native_bytes = artifact.blob_path.read_bytes()
+    evidence = {"archive_key": key, "archive_sha256": artifact.metadata.sha256,
+                "provider_scan_id": attempt["scan_id"], "report_prefix": f"security-scans/{attempt['scan_id']}/reports/review/", "findings": []}
+    c.accept(source, item, attempt["scan_id"], receipt, evidence)
+    attempt["cleanup_confirmed"] = True
+    source.update(version=2, finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    before = deepcopy(source)
+    continued = resume(source, rebuild_pending_batches=True)
+    controller.verify_proofs(source)
+    controller.restore_source_reviews(continued, source)
+    controller.restore_file_blockers(continued, source)
+    assert c.progress(continued)["files_reviewed"] == 2
+    assert c.progress(continued)["files_isolated"] == 1
+    assert continued["files"]["alerts.ts"]["receipt"] == key
+    assert continued["files"]["deploy.yml"]["native_coverage"] == "partial"
+    assert set(continued["file_blockers"]) == {"locked.bin"}
+    assert c.progress(continued)["validation_questions_pending"] == 1
+    assert all(not t["attempts"] for t in continued["tasks"].values())
+    assert source == before
+    assert artifact.blob_path.read_bytes() == native_bytes
+
+
+def test_boundary_external_validation_closes_only_its_verified_component(running):
+    from test_coverage_review import surface
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    for scope in c.pending(state):
+        finish_scope(state, scope)
+    for scope in c.pending(state):
+        finish_scope(state, scope)
+    state["deferred"]["native:deployment"] = {"paths": ["."], "reason": "Verify deployed policy", "resolution": None}
+    c.plan_boundaries(state)
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item, closed=False,
+                        deferred=[{"id": "native:deployment", "paths": item["paths"], "reason": "Deployed permissions unavailable"}])
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={"surfaces": [surface("review:boundary"), surface("validation:native:deployment", "needs_follow_up")]})
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    evidence = controller.proof({"status": "completed", "coverage": "partial"}, child, receipt, state=state, item=item)
+    c.accept(state, item, attempt["scan_id"], receipt, evidence)
+    attempt["cleanup_confirmed"] = True
+    question = state["deferred"]["native:deployment"]
+    assert item["status"] == "completed"
+    assert question["resolution"] is None
+    assert question["scope_resolutions"][0]["paths"] == item["paths"]
+    assert c.progress(state)["required_questions_pending"] == 1
+    assert c.progress(state)["validation_questions_pending"] == 1
+    assert not c.required_work_complete(state)
+    for other in c.pending(state):
+        finish_scope(state, other, resolutions={"native:deployment": {"disposition": "resolved", "reason": "Assigned source requirements checked"}})
+    assert c.required_work_complete(state)
+    assert question["resolution"]["validation_status"] == "unverified"
+    assert c.progress(state)["validation_questions_pending"] == 1
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_unknown_native_coverage_cannot_certify_files_or_complete_a_review(running, status):
+    from test_coverage_review import candidate, surface
+
+    controller, handle, _, _ = running
+    state = controller.store.get(handle.metadata["scan_id"], "root/project")
+    mapping(state)
+    state["incomplete_review_policy"] = "isolate_blockers"
+    item = c.pending(state)[0]
+    attempt = c.begin(state, item)
+    receipt = c_receipt(state, item, coverage="unknown", deferred=[candidate(item["paths"])])
+    native_archive(controller.artifacts, attempt["scan_id"], receipt, native_coverage={
+        "surfaces": [surface("file:" + item["paths"][0]), surface("candidate:renderer", "needs_follow_up")],
+    })
+    child = SecurityScanHandle(execution_id="scan-" + attempt["scan_id"], metadata={"scan_id": attempt["scan_id"]})
+    evidence = controller.proof({"status": status, "coverage": "unknown"}, child, receipt, state=state, item=item)
+    assert not receipt["source_review_complete"]
+    assert receipt["source_dispositions"] == {}
+    c.accept(state, item, attempt["scan_id"], receipt, evidence)
+    assert item["status"] == "blocked"
+    assert c.progress(state)["files_reviewed"] == 0
+    assert c.progress(state)["validation_questions_pending"] == 0
+    assert not c.required_work_complete(state)
 
 
 
@@ -1520,6 +1672,7 @@ def test_frozen_worker_context_separates_blocked_files_from_assigned_boundary_wo
     staged = json.loads((controller.store.root / "requests" / (attempt["scan_id"] + ".json")).read_text())
     context = staged["coverage_task"]
     assert context["architecture"]["host_blocked_files"]["paths"] == ["c/c.py"]
+    assert context["architecture"]["host_source_review_policy"]["version"] == 1
     assert "c/c.py" not in context["paths"]
     assert context["deferred"] == {}
     assert state["architecture"] == before

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-25 - Separate source review from unverified candidate validation (0.129.2)
+
+- Release Codex Security add-on 0.6.2. Accept individual file-review facts from hash-checked, exact-snapshot native reports even when a separate vulnerability hypothesis needs unavailable dependency or deployment evidence. Retain those hypotheses explicitly as unverified limitations, separate from validated findings and unfinished source work.
+- Reuse positive sealed source facts on continuation without modifying original journals or archives. Preserve unread-file blockers, explicit exclusions, non-text disposition checks, boundary source reviews and component-local checkpoint closure.
+- Keep unknown native coverage blocking even when file surfaces or candidates are present; only explicitly partial coverage can qualify for the source-review distinction.
+- Expose pending validation questions in progress and report the source-review policy in aggregate artifacts. The pinned SDK and scanner image are unchanged.
+
 ## 2026-10-25 - Confirm uncertain scan cleanup and scoped completion (0.129.1)
 
 - Add session-bound worker cancellation receipts backed by durable launch fences. Serialize cancellation with admission across worker processes; a missing job can be confirmed clean without creating it, and delayed requests cannot launch after cancellation. Keep failed cleanup unconfirmed and preserve retained session artifacts.
