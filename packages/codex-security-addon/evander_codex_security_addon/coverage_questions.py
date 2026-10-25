@@ -67,6 +67,9 @@ def reconcile_question(state, key):
                 {result["receipt"] for result in question.get("scope_resolutions", [])}
             ),
             "excluded_paths": sorted(paths & set(state.get("exclude_paths", []))),
+            **({"validation_status": "unverified"} if any(
+                r.get("disposition") == "validation_pending" for r in question.get("scope_resolutions", [])
+            ) else {}),
         }
 
 
@@ -108,11 +111,14 @@ def scope_closed(state, item):
     return True
 
 
-def resolve_for_scope(state, item, key, value, proof):
+def resolve_for_scope(state, item, key, value, proof, *, allow_validation=False):
     key = canonical_key(state, key)
     if key not in {canonical_key(state, own) for own in item["deferred_keys"]}:
         return
-    if value.get("disposition") not in OUTCOMES or not value.get("reason"):
+    if (
+        value.get("disposition") not in OUTCOMES
+        and not (allow_validation and value.get("disposition") == "validation_pending")
+    ) or not value.get("reason"):
         return
     question = state["deferred"][key]
     if question.get("paths") and referenced_paths(state, question) is None:
@@ -142,7 +148,7 @@ def _extend_references(question, incoming):
     combined = sorted(set(original) | set(incoming))
     if set(combined) != set(original):
         result = question.get("resolution") or {}
-        if result.get("disposition") in OUTCOMES:
+        if result.get("disposition") in OUTCOMES | {"validation_pending"}:
             _retain_resolution(question, result, question.get("paths"))
         question["resolution"] = None
         question["paths"] = combined

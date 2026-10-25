@@ -65,34 +65,9 @@ def _exact_reference(value, assigned):
 
 def native_file_blockers(coverage, assigned):
     """Use sealed structured references, never filenames guessed from prose."""
-    assigned = set(assigned)
-    result = {}
-    for question in coverage.get("deferred", []):
-        references = question.get("paths")
-        reason = question.get("reason")
-        if (
-            not isinstance(references, list)
-            or not references
-            or not isinstance(reason, str)
-            or not reason.strip()
-        ):
-            continue
-        paths = [_exact_reference(value, assigned) for value in references]
-        if all(paths):
-            for path in paths:
-                result.setdefault(path, reason[:2000])
-    for surface in coverage.get("surfaces", []):
-        label, reason = surface.get("label", ""), surface.get("notes")
-        if (
-            surface.get("disposition") != "needs_follow_up"
-            or not isinstance(label, str)
-            or not label.startswith("file:")
-        ):
-            continue
-        path = _exact_reference(label[5:], assigned)
-        if path and isinstance(reason, str) and reason.strip():
-            result[path] = reason[:2000]
-    return result
+    from .coverage_review import review_facts
+
+    return review_facts(coverage, assigned)["file_blockers"]
 
 
 def blocked_paths(state):
@@ -220,10 +195,15 @@ def refresh_blocked_work(state):
 
 
 def isolate_file_scope(state, item, blockers, proof):
-    """A partial report earns no credit; only the remainder gets a new review."""
+    """Keep certified file credit and review only genuinely unfinished source."""
     eligible = {path: reason for path, reason in blockers.items() if path in item["paths"]}
     isolated = record_file_blockers(state, eligible, proof)
     if not isolated:
+        remaining = [p for p in item["paths"] if state["files"][p]["disposition"] not in {"reviewed", "not_applicable", "excluded"}]
+        if remaining and len(remaining) < len(item["paths"]):
+            item["status"] = "split"
+            _new_scope(state, "files", remaining, item["id"])
+            return
         item.update(
             status="blocked",
             error="Incomplete review did not identify exact blocked files; operator attention required",
@@ -232,7 +212,8 @@ def isolate_file_scope(state, item, blockers, proof):
             if state["files"][path]["disposition"] == "pending":
                 state["files"][path].update(disposition="blocked", reason=item["error"])
         return
-    remaining = [path for path in item["paths"] if path not in blocked_paths(state)]
+    remaining = [path for path in item["paths"] if path not in blocked_paths(state)
+                 and state["files"][path]["disposition"] not in {"reviewed", "not_applicable", "excluded"}]
     item["status"] = "split" if remaining or len(item["paths"]) > 1 else "blocked"
     if remaining:
         _new_scope(state, "files", remaining, item["id"])

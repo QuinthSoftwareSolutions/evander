@@ -402,6 +402,7 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     assert definition.exclude_patterns == ["*.pfx", "bin/*"]
     progress = effective_node_output_schema({"type": "effect:security:scan-repo"})["coverage_progress"]["properties"]
     assert progress["files_isolated"] == {"type": "integer"}
+    assert progress["validation_questions_pending"] == {"type": "integer"}
     assert progress["isolated_files"]["items"]["properties"]["path"] == {"type": "string"}
 
 
@@ -663,7 +664,7 @@ def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     scanner.describe = lambda **_: {
         "coverage_progress": {
             "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4,
-            "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"],
+            "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"], "validation_questions_pending": 2,
             "incomplete_review_policy": "isolate_blockers",
             "isolated_files": [{"path": "vendor/locked.bin", "reason": "Decoder required", "receipt": "native-archive", "provider_scan_id": "native"}],
             "raw_diagnostics": "private",
@@ -674,7 +675,7 @@ def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     result = provider.execute()
     assert result["coverage_progress"] == {
         "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4,
-        "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"],
+        "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"], "validation_questions_pending": 2,
         "incomplete_review_policy": "isolate_blockers",
         "isolated_files": [{"path": "vendor/locked.bin", "reason": "Decoder required", "receipt": "native-archive", "provider_scan_id": "native"}],
     }

@@ -204,5 +204,8 @@ def test_native_destination_review_or_unresolved_link_does_not_close_link(review
     )
     c.accept(state, item, attempt["scan_id"], unit, proof)
     assert state["files"]["readme-link"]["disposition"] == "pending"
-    assert state["files"]["README.md"]["disposition"] == "pending"
-    assert c.progress(state)["files_reviewed"] == 0
+    # An explicitly reviewed destination keeps its own credit only when it is
+    # assigned alongside the link. It never implies the link was reviewed.
+    certified_readme = bool(surface and surface["label"] == "file:README.md" and "README.md" in item["paths"])
+    assert state["files"]["README.md"]["disposition"] == ("reviewed" if certified_readme else "pending")
+    assert c.progress(state)["files_reviewed"] == int(certified_readme)

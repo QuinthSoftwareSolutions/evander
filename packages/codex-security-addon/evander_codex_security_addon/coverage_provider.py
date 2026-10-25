@@ -59,6 +59,10 @@ from .coverage import (
 )
 from .report_files import public_report_path
 from .coverage_projection import symlink_projection
+from .coverage_review import (
+    apply_file_evidence, candidate, candidate_context, file_outcomes, record_validation_candidates,
+    reconcile_validation_candidates, review_facts,
+)
 from .coverage_file_controls import native_file_blockers, record_file_blockers, refresh_blocked_work, blocked_paths
 from .coverage_questions import (
     blocking_exclusions,
@@ -76,6 +80,7 @@ class CoverageController:
         self.provider, self.runtime = provider, runtime
         self.store = CoverageStore(runtime.config_path("runtime_dir"))
         self.artifacts = PublishedArtifactStore(runtime.config_path("runtime_dir"))
+        self._candidate_sources = []
 
     @property
     def directory(self):
@@ -164,6 +169,7 @@ class CoverageController:
                 normalize_questions(state, proof_scopes)
                 if state.get("exclude_paths"):
                     apply_exclusions(state, native_scopes)
+                self.restore_source_reviews(state, previous)
                 if state.get("incomplete_review_policy") == "isolate_blockers":
                     self.restore_file_blockers(state, previous)
                 self.restore_complete_boundaries(state, previous)
@@ -290,6 +296,7 @@ class CoverageController:
 
     def verify_proofs(self, state):
         scopes = {}
+        self._candidate_sources = []
         accepted = {proof["archive_key"] for proof in state["proofs"]}
         for proof in [*state["proofs"], *state["uncredited"]]:
             _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
@@ -302,8 +309,81 @@ class CoverageController:
                     raise ValueError("Retained native review identity differs from its proof")
                 paths = scan.get("scope", {}).get("includePaths", [])
                 if isinstance(paths, list) and all(isinstance(path, str) for path in paths):
+                    _, scan, coverage, _ = self.sealed_review(
+                        members, proof.get("source_projection", {}).get("revision", state["revision"]),
+                        paths, expected_id=proof["provider_scan_id"],
+                    )
+                    self._candidate_sources.append((proof, [q for q in coverage.get("deferred", []) if candidate(q)]))
                     scopes[proof["provider_scan_id"]] = paths
         return scopes
+
+    @staticmethod
+    def sealed_review(members, revision, paths, *, expected_id=None):
+        reports = [name for name in members if name.endswith("/scan-manifest.json")]
+        if len(reports) != 1:
+            raise ValueError("Expected one native review manifest")
+        prefix = reports[0].rsplit("/", 1)[0] + "/"
+        scan = json.loads(members[prefix + "scan-manifest.json"])["scan"]
+        if (
+            scan["target"].get("kind") != "git_revision" or scan["target"].get("revision") != revision
+            or sorted(scan["scope"]["includePaths"]) != sorted(paths)
+            or not scan.get("sealedAt") or scan.get("status") != "completed"
+            or (expected_id is not None and scan.get("id") != expected_id)
+        ):
+            raise ValueError("Retained native scope or seal does not match its review")
+        records, collisions = {}, set()
+        for record in scan.get("artifacts", []):
+            if not isinstance(record, dict):
+                raise ValueError("Invalid native artifact seal")
+            path = valid_path(record.get("path"))
+            sha256 = record.get("sha256")
+            if path.lower() in collisions or not isinstance(sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", sha256):
+                raise ValueError("Invalid native artifact seal")
+            collisions.add(path.lower())
+            records[path] = record
+            body = members.get(prefix + path)
+            if body is None:
+                if public_report_path("reports/review/" + path):
+                    raise ValueError("Sealed native report is missing")
+                continue
+            if sha256 != hashlib.sha256(body).hexdigest():
+                raise ValueError("Native artifact seal verification failed")
+        if not {"findings.json", "coverage.json"}.issubset(records):
+            raise ValueError("Native canonical seal verification failed")
+        return prefix, scan, json.loads(members[prefix + "coverage.json"]), json.loads(members[prefix + "findings.json"])
+
+    def restore_source_reviews(self, state, previous):
+        """Import positive sealed file facts into the new continuation only."""
+        for proof, questions in self._candidate_sources:
+            record_validation_candidates(state, proof, questions)
+        proofs = {p["archive_key"]: p for p in previous["proofs"]}
+        credited = []
+        for original in previous["tasks"].values():
+            if original["kind"] != "files" or original["status"] == "completed":
+                continue
+            archived = [a["archive_key"] for a in original["attempts"] if a.get("archive_key") in proofs]
+            if not archived:
+                continue
+            proof = proofs[archived[-1]]
+            if proof.get("source_projection"):
+                continue  # A new projected review must independently establish link coverage.
+            _, members = self.archive_members(proof["archive_key"], proof["archive_sha256"])
+            _, _, coverage, _ = self.sealed_review(members, state["revision"], original["paths"], expected_id=proof["provider_scan_id"])
+            facts = review_facts(coverage, original["paths"], known_candidates=candidate_context(state))
+            credited.extend(apply_file_evidence(state, facts["source_dispositions"], proof, coverage["completeness"]))
+        refresh_blocked_work(state)
+        for item in state["tasks"].values():
+            if item["kind"] == "files" and item["status"] == "pending" and item["paths"] and all(
+                state["files"][p]["disposition"] in {"reviewed", "not_applicable"} for p in item["paths"]
+            ):
+                item.update(status="completed", accepted_from_retained_proof={
+                    "reason": "Every assigned file has a verified sealed source-review disposition",
+                    "receipts": sorted({state["files"][p]["receipt"] for p in item["paths"]}),
+                })
+        reconcile_validation_candidates(state)
+        if credited:
+            state["last_progress_at"] = now().isoformat()
+        state["source_review_policy_version"] = 1
 
     def restore_file_blockers(self, state, previous):
         """Read named blockers from retained native reports before rescheduling."""
@@ -464,50 +544,9 @@ class CoverageController:
         preserved = self.provider._preserve_result(native, handle, self.runtime)
         key = preserved.artifacts["archive_key"]
         artifact, members = self.archive_members(key)
-        reports = [name for name in members if name.endswith("/scan-manifest.json")]
-        if len(reports) != 1:
-            raise ValueError("Expected one native review manifest")
-        prefix = reports[0].rsplit("/", 1)[0] + "/"
-        manifest = json.loads(members[prefix + "scan-manifest.json"])
-        findings = json.loads(members[prefix + "findings.json"])
-        coverage = json.loads(members[prefix + "coverage.json"])
-        scan = manifest["scan"]
         expected = ["."] if receipt["kind"] == "architecture" else receipt["paths"]
         expected_revision = projection["revision"] if projection else receipt["revision"]
-        if (
-            scan["target"].get("kind") != "git_revision"
-            or scan["target"].get("revision") != expected_revision
-            or sorted(scan["scope"]["includePaths"]) != sorted(expected)
-            or not scan.get("sealedAt")
-            or scan.get("status") != "completed"
-        ):
-            raise ValueError("Retained native scope or seal does not match its review")
-        # Recheck every retained sealed artifact after transport, not only the
-        # two canonical JSON documents. Private evidence remains unpublished.
-        records, collisions = {}, set()
-        for record in scan.get("artifacts", []):
-            if not isinstance(record, dict):
-                raise ValueError("Invalid native artifact seal")
-            path = valid_path(record.get("path"))
-            collision = path.lower()
-            sha256 = record.get("sha256")
-            if (
-                collision in collisions
-                or not isinstance(sha256, str)
-                or not re.fullmatch(r"[a-f0-9]{64}", sha256)
-            ):
-                raise ValueError("Invalid native artifact seal")
-            collisions.add(collision)
-            records[path] = record
-            body = members.get(prefix + path)
-            if body is None:
-                if public_report_path("reports/review/" + path):
-                    raise ValueError("Sealed native report is missing")
-                continue
-            if record["sha256"] != hashlib.sha256(body).hexdigest():
-                raise ValueError("Native artifact seal verification failed")
-        if not {"findings.json", "coverage.json"}.issubset(records):
-            raise ValueError("Native canonical seal verification failed")
+        prefix, scan, coverage, findings = self.sealed_review(members, expected_revision, expected)
         if receipt["coverage"] != coverage["completeness"] or receipt["deferred"] != coverage.get(
             "deferred", []
         ):
@@ -517,7 +556,8 @@ class CoverageController:
             raise ValueError("An exact-scope review cannot omit assigned paths")
         # Derive credit-bearing fields from the sealed native coverage, never
         # from a model-writable wrapper file or aggregate progress count.
-        dispositions, resolutions = {}, {}
+        dispositions, _ = file_outcomes(coverage, receipt["paths"])
+        resolutions = {}
         for value in coverage.get("resolvedDeferred", []):
             if isinstance(value.get("id"), str) and value.get("reason"):
                 resolutions[value["id"]] = {"disposition": "resolved", "reason": value["reason"]}
@@ -527,28 +567,21 @@ class CoverageController:
                 surface.get("disposition"),
                 surface.get("notes"),
             )
-            if (
-                label.startswith("file:")
-                and reason
-                and disposition in {"reported", "no_issue_found", "not_applicable"}
-            ):
-                dispositions[label[5:]] = {
-                    "disposition": "not_applicable"
-                    if disposition == "not_applicable"
-                    else "reviewed",
-                    "reason": reason,
-                }
             if label.startswith("deferred:") and reason:
                 resolutions[label[9:]] = {"disposition": disposition, "reason": reason}
         model = scan.get("threatModel")
+        exclusions = blocking_exclusions(state, receipt["paths"], coverage.get("explicitExclusions", [])) if state is not None else coverage.get("explicitExclusions", [])
+        facts = review_facts(
+            coverage, receipt["paths"], kind=receipt["kind"],
+            known_candidates=candidate_context(state) if state is not None else {},
+            reviewed_paths=[p for p, v in state["files"].items() if v["disposition"] in {"reviewed", "not_applicable"}] if state is not None else (),
+            checkpoint_keys=item.get("deferred_keys", []) if item is not None else (), exclusions=exclusions,
+        )
         receipt.update(
-            exclusions=(blocking_exclusions(state, receipt["paths"], coverage.get("explicitExclusions", [])) if state is not None else coverage.get("explicitExclusions", [])),
-            needs_follow_up=any(
-                s.get("disposition") == "needs_follow_up" for s in coverage.get("surfaces", [])
-            ),
+            **facts,
+            exclusions=exclusions,
             open_questions=coverage.get("openQuestions", []),
             dispositions=dispositions,
-            file_blockers=native_file_blockers(coverage, receipt["paths"]) if receipt["kind"] == "files" else {},
             followup_files=(native_file_blockers({"surfaces": coverage.get("surfaces", [])}, state["files"]) if state is not None else {}),
             resolutions=resolutions,
             architecture=({"threat_model": model, "paths": []} if model else None),
@@ -575,6 +608,14 @@ class CoverageController:
         ).total_seconds() - RESERVE_SECONDS
         timeout = max(1, min(3600, remaining))
         architecture = state["architecture"]
+        architecture = {
+            **(architecture or {}),
+            "host_source_review_policy": {
+                "version": 1,
+                "policy": "Source coverage and candidate validation are separate. Review the assigned source and its trust boundaries. Do not require exhaustive transitive dependency or live deployment validation to finish a source review. Keep unverified hypotheses and unavailable external deployment facts explicitly in openQuestions; never call them safe, rejected or validated without evidence. Use needs_follow_up on file:<path> only when the assigned source itself could not be inspected or its source analysis remains unfinished. Add a justified file:<path> surface for every assigned file that was reviewed.",
+                "boundary_policy": "For a boundary pass, add a review:boundary surface with a terminal no_issue_found/reported disposition and source-backed notes only after the assigned cross-component source analysis is complete. If a saved checkpoint only lacks external validation after that source analysis, add a validation:<exact saved checkpoint key> surface with needs_follow_up and the missing evidence; retain the uncertainty in openQuestions. Genuine remaining source review stays deferred and blocking.",
+            },
+        }
         if state.get("exclude_paths"):
             architecture = {
                 **(architecture or {}),
@@ -1063,6 +1104,7 @@ class CoverageController:
             "coverage.json": {
                 "documentType": "evander.security-coverage",
                 "version": 1,
+                "source_review_policy_version": state.get("source_review_policy_version", 0),
                 "batching_version": state.get("batching_version", 1),
                 "max_batch_text_bytes": batch_text_limit(state),
                 "max_parallel_reviews": review_parallelism(state),
@@ -1098,6 +1140,7 @@ class CoverageController:
             "scan-manifest.json": {
                 "documentType": "evander.security-scan",
                 "version": 1,
+                "source_review_policy_version": state.get("source_review_policy_version", 0),
                 "scan_id": state["scan_id"],
                 "managed_repo_id": state["managed_repo_id"],
                 "revision": state["revision"],
@@ -1164,10 +1207,12 @@ class CoverageController:
             "## Open questions and limitations",
             "",
             *[
-                f"- {x['question']} (Source: {x['receipt']})"
+                f"- {'Unverified candidate or external validation: ' if x.get('validation_status') == 'unverified' else ''}{x['question']} (Source: {x['receipt']})"
                 + (f" Follow-up: {x['followUpPrompt']}" if x.get("followUpPrompt") else "")
                 for x in state.get("open_questions", {}).values()
             ],
+            "",
+            f"Unverified validation checkpoints: {p['validation_questions_pending']}. These are retained limitations, not validated findings or evidence that the source was unread. See coverage.json for candidate details and scope receipts.",
             "",
             "## Remaining work",
             "",

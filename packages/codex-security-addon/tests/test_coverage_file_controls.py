@@ -403,7 +403,7 @@ def test_patterns_resolve_against_frozen_tracked_inventory_case_insensitively(pa
 
 def test_all_excluded_scan_has_no_worker_work_no_review_credit_and_versioned_controls():
     s = tracked([entry("certs/secret.PFX")], exclude_patterns=["*.pfx"])
-    assert s["version"] == 2
+    assert s["version"] == 3
     assert s["tasks"] == {}
     assert c.pending(s) == []
     assert c.progress(s)["files_reviewed"] == 0
@@ -446,7 +446,7 @@ def test_unmatched_patterns_and_omitted_controls_inherit_without_reintroducing_f
         tracked([entry("app.py"), entry("secret.pfx")], exclude_patterns=["*.pfx", "*.never"])
     )
     continued = resume(s)
-    assert continued["version"] == 2
+    assert continued["version"] == 3
     assert continued["exclude_paths"] == ["secret.pfx"]
     assert continued["exclusion_matches"] == {"*.never": [], "*.pfx": ["secret.pfx"]}
     with pytest.raises(ValueError, match="reintroduce"):
@@ -461,7 +461,7 @@ def test_unmapped_continuation_can_exclude_paths_without_scheduling_them_for_map
     (item,) = c.pending(continued)
     assert item["kind"] == "architecture"
     assert item["paths"] == ["app.py"]
-    assert continued["version"] == 2
+    assert continued["version"] == 3
     all_excluded = resume(source, exclude_patterns=["*"])
     assert c.pending(all_excluded) == []
     assert c.required_work_complete(all_excluded)
