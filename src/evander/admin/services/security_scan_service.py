@@ -85,6 +85,16 @@ class SecurityScanService:
             or request.incomplete_review_policy is not None
         ) and not getattr(self.providers[request.provider], "supports_scan_tail_controls", False):
             raise ValueError("The selected provider does not support scan tail controls")
+        if (
+            request.incomplete_review_policy == "isolate_blockers"
+            or request.retry_blocked_paths is not None
+        ) and not getattr(self.providers[request.provider], "supports_file_blocker_isolation", False):
+            raise ValueError("The selected provider does not support file blocker isolation")
+        if (
+            request.exclude_patterns is not None
+            or (request.exclude_paths and request.resume_from_scan_id is None)
+        ) and not getattr(self.providers[request.provider], "supports_pattern_exclusions", False):
+            raise ValueError("The selected provider does not support pattern or initial exclusions")
         scan_id = self.store.identity(directory_path, idempotency_key)
         with self._locked(scan_id):
             record = self.store.create(
@@ -156,15 +166,23 @@ class SecurityScanService:
                 "files_reviewed",
                 "files_not_applicable",
                 "files_blocked",
+                "files_isolated",
+                "isolated_files",
+                "files_excluded",
                 "files_pending",
                 "active_reviews",
                 "completed_reviews",
                 "attempts",
+                "required_questions_total",
+                "required_questions_pending",
+                "required_question_aliases",
                 "deadline_at",
                 "last_progress_at",
                 "cleanup_condition",
                 "max_batch_text_bytes",
                 "max_parallel_reviews",
+                "exclude_patterns",
+                "incomplete_review_policy",
             }
         }
         if "execution_configuration" in result:

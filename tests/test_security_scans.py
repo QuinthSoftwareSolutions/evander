@@ -100,6 +100,49 @@ def test_tail_controls_are_exposed_in_workflow_schema_and_reject_unsupported_pro
     assert scanner.starts == []
 
 
+@pytest.mark.parametrize("patterns", [
+    "*.pfx", [""], ["/bin/*"], ["../*.zip"], ["src/../*.pfx"],
+    ["bin//*.dll"], ["!important.pfx"], ["bin\\*"], ["a\x00b"],
+    [123], ["a" * 513], [f"p{i}" for i in range(101)],
+])
+def test_exclusion_patterns_reject_unsafe_or_unbounded_selectors(patterns):
+    with pytest.raises(ValidationError):
+        request(coverage_policy="all_tracked_files", managed_repo_id="example", exclude_patterns=patterns)
+
+
+@pytest.mark.parametrize("inputs", [
+    {"exclude_patterns": ["*.pfx", "bin/*"]},
+    {"retry_blocked_paths": ["locked.pfx"]},
+    {"incomplete_review_policy": "isolate_blockers"},
+])
+def test_file_controls_require_tracked_coverage(inputs):
+    with pytest.raises(ValidationError, match="all_tracked_files"):
+        request(**inputs)
+
+
+def test_explicit_blocker_retry_requires_a_continuation():
+    with pytest.raises(ValidationError, match="retained source"):
+        request(coverage_policy="all_tracked_files", managed_repo_id="example", retry_blocked_paths=["locked.pfx"])
+
+
+@pytest.mark.parametrize(("inputs", "capability", "message"), [
+    ({"exclude_patterns": ["*.pfx"]}, "supports_pattern_exclusions", "pattern or initial exclusions"),
+    ({"exclude_paths": ["opaque.bin"]}, "supports_pattern_exclusions", "pattern or initial exclusions"),
+    ({"incomplete_review_policy": "isolate_blockers"}, "supports_file_blocker_isolation", "file blocker isolation"),
+    ({"retry_blocked_paths": ["opaque.bin"], "resume_from_scan_id": "a" * 32}, "supports_file_blocker_isolation", "file blocker isolation"),
+])
+def test_file_controls_fail_closed_on_older_providers(scanning, inputs, capability, message):
+    service, scanner, _ = scanning
+    scanner.coverage_policies = {"all_tracked_files"}
+    scanner.supports_scan_tail_controls = True
+    with pytest.raises(ValueError, match=message):
+        start(service, coverage_policy="all_tracked_files", managed_repo_id="example", **inputs)
+    assert scanner.starts == []
+    setattr(scanner, capability, True)
+    record = start(service, coverage_policy="all_tracked_files", managed_repo_id="example", **inputs)
+    assert scanner.starts == [record.scan_id]
+
+
 @pytest.mark.parametrize("path", ["repo", "/etc", "/home/agent/../other", "/home/other/repo"])
 def test_paths_cannot_escape_the_session(path):
     with pytest.raises(ValidationError):
@@ -304,6 +347,22 @@ def test_builtin_schema_and_catalog_expose_scan_fields():
     assert schema["max_parallel_reviews"]["default"] is None
     parallelism = SecurityScanRequest.model_json_schema()["properties"]["max_parallel_reviews"]
     assert parallelism["anyOf"][0] == {"type": "integer", "minimum": 1, "maximum": 4}
+    for key in ("exclude_patterns", "retry_blocked_paths"):
+        field = next(field for field in node.fields if field.key == key)
+        assert field.kind == "json" and field.json_value_type == "array" and field.bindable
+        assert field.default_value is None
+        assert schema[key]["default"] is None
+    field = next(field for field in node.fields if field.key == "incomplete_review_policy")
+    assert {option.value for option in field.options} == {"split", "retry_scope", "isolate_blockers"}
+    definition = SecurityScanEffectDefinition(
+        id="scan", display_name="Scan", type="effect:security:scan-repo",
+        session_id="session-1", repo_path="/home/agent/repo", coverage_policy="all_tracked_files",
+        managed_repo_id="example", exclude_patterns=["*.pfx", "bin/*"], incomplete_review_policy="isolate_blockers",
+    )
+    assert definition.exclude_patterns == ["*.pfx", "bin/*"]
+    progress = effective_node_output_schema({"type": "effect:security:scan-repo"})["coverage_progress"]["properties"]
+    assert progress["files_isolated"] == {"type": "integer"}
+    assert progress["isolated_files"]["items"]["properties"]["path"] == {"type": "string"}
 
 
 def test_tracked_coverage_defaults_and_unsupported_modes():
@@ -543,13 +602,22 @@ def test_scan_metadata_query_cannot_poll_start_or_leak_diagnostics(scanning):
     assert not ({"error", "artifacts", "findings", "repo_path"} & result.keys())
     assert scanner.starts == before
     scanner.describe = lambda **_: {
-        "coverage_progress": {"files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4, "raw_diagnostics": "private"},
+        "coverage_progress": {
+            "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4,
+            "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"],
+            "incomplete_review_policy": "isolate_blockers",
+            "isolated_files": [{"path": "vendor/locked.bin", "reason": "Decoder required", "receipt": "native-archive", "provider_scan_id": "native"}],
+            "raw_diagnostics": "private",
+        },
         "execution_configuration": {"model": "synthetic", "api_key": "private"},
         "raw_diagnostics": "private",
     }
     result = provider.execute()
     assert result["coverage_progress"] == {
-        "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4
+        "files_total": 4, "max_batch_text_bytes": 2097152, "max_parallel_reviews": 4,
+        "files_isolated": 1, "files_excluded": 1, "exclude_patterns": ["*.pfx"],
+        "incomplete_review_policy": "isolate_blockers",
+        "isolated_files": [{"path": "vendor/locked.bin", "reason": "Decoder required", "receipt": "native-archive", "provider_scan_id": "native"}],
     }
     assert result["execution_configuration"] == {"model": "synthetic"}
     assert "raw_diagnostics" not in result

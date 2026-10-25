@@ -85,6 +85,32 @@ def test_exclusions_do_not_discard_findings_or_other_files_required_followups():
     assert source == original
 
 
+def test_exclusion_after_boundary_planning_transfers_surviving_required_questions():
+    source = legacy_file_scopes([["app.py"], ["bin/build.py"]])
+    for item in c.pending(source):
+        finish(source, item)
+    source["deferred"] = {
+        "native:app": {"paths": ["app.py"], "resolution": None},
+        "native:build": {"paths": ["bin/build.py"], "resolution": None},
+    }
+    c.plan_boundaries(source)
+    checkpoint(source)
+    original = deepcopy(source)
+
+    continued = resume(source, exclude_patterns=["bin/*"])
+    boundary, = c.pending(continued)
+    assert boundary["paths"] == ["app.py"]
+    assert boundary["deferred_keys"] == ["native:app"]
+    assert continued["deferred"]["native:build"]["resolution"]["explicit_exclusion"]
+    finish(continued, boundary, resolutions={
+        "native:app": {"disposition": "no_issue_found", "reason": "Verified the assigned trust boundary"},
+    })
+    assert c.required_work_complete(continued)
+    assert not c.complete(continued)
+    assert c.pending(continued) == []
+    assert source == original
+
+
 @pytest.mark.parametrize(
     ("references", "excluded"),
     [
@@ -179,13 +205,15 @@ def test_resume_inherits_exclusions_and_retry_policy_without_reintroducing_work(
         resume(first, scan_id="d" * 32, exclude_paths=[])
 
 
-def test_exclusions_are_exact_inventory_entries_and_require_retained_mapping():
+def test_exclusions_require_inventory_entries_but_can_precede_mapping():
     source = checkpoint(legacy_file_scopes([["app.py"]]))
     with pytest.raises(ValueError, match="absent"):
         resume(source, exclude_paths=["missing.py"])
     source["architecture"] = None
-    with pytest.raises(ValueError, match="architecture"):
-        resume(source, exclude_paths=["app.py"])
+    continued = resume(source, exclude_paths=["app.py"])
+    assert c.progress(continued)["files_excluded"] == 1
+    assert c.progress(continued)["files_reviewed"] == 0
+    assert source["files"]["app.py"]["disposition"] == "pending"
 
 
 def test_rebuild_honors_existing_byte_and_file_caps():

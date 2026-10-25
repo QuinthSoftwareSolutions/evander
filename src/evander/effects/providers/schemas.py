@@ -64,6 +64,8 @@ class SecurityScanEffectDefinition(EffectDefinition):
     max_batch_text_bytes: ConfigValue | None = None
     max_parallel_reviews: ConfigValue | None = None
     exclude_paths: ConfigValue | None = None
+    exclude_patterns: ConfigValue | None = None
+    retry_blocked_paths: ConfigValue | None = None
     rebuild_pending_batches: ConfigValue = False
     incomplete_review_policy: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None

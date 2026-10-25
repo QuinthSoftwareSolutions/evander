@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-25 - Isolate tracked-file blockers and support exclusion patterns (0.129.0)
+
+- Add workflow `exclude_patterns` for positive, case-insensitive path globs resolved against the frozen tracked inventory. Support exclusions on new scans and unfinished continuation scopes while retaining exact matches, accepted credit, findings and completed boundaries in the report.
+- Release Codex Security add-on 0.6.0 with the opt-in `isolate_blockers` review policy. Park exact files diagnosed by sealed native reports, review the remainder together, and retain blocked files across resumes until explicitly selected with `retry_blocked_paths`. Partial reports never grant file coverage; unattributed incomplete file scopes stop for attention after one attempt.
+- Expose isolated paths, reasons and native evidence references in progress and aggregate reports. Keep dependent questions unresolved outside ordinary boundary retries, preserve immutable source journals and retain snapshot, route, byte, parallelism, cleanup and deadline guards. No SDK or scanner-image change is required.
+- Keep saved checkpoint identities stable across retries and fold historical ID echoes without dropping their native evidence or accepted closure receipts. Allocate broad requirements by component and accept only that component's explicit closure; the host closes the parent after all required parts are resolved or explicitly excluded.
+- Apply exclusions to both file and boundary targets and checkpoint inputs. Approved exclusion notes wholly outside a component do not invalidate its complete native report; actual assigned-file omissions remain blocking. A continuation can reuse a verified complete boundary proof rejected only for those outside exclusions without creating a worker attempt.
+
 ## 2026-10-24 - Control unfinished tracked reviews on continuation (0.128.0)
 
 - Add workflow inputs for exact tracked-file exclusions, rebuilding unfinished file batches, and bounded retries that retain their scope. Preserve accepted review credit, findings, immutable native evidence, snapshot identity, route checks, cleanup and fixed run budgets.

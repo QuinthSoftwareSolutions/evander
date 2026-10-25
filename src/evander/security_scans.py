@@ -36,8 +36,10 @@ class SecurityScanRequest(BaseModel):
     )
     max_parallel_reviews: int | None = Field(default=None, strict=True, ge=1, le=4)
     exclude_paths: list[str] | None = None
+    exclude_patterns: list[str] | None = None
+    retry_blocked_paths: list[str] | None = None
     rebuild_pending_batches: bool = Field(default=False, strict=True)
-    incomplete_review_policy: Literal["split", "retry_scope"] | None = None
+    incomplete_review_policy: Literal["split", "retry_scope", "isolate_blockers"] | None = None
     timeout_seconds: float = Field(default=3600, gt=0, le=345600, allow_inf_nan=False)
 
     @model_validator(mode="before")
@@ -87,13 +89,13 @@ class SecurityScanRequest(BaseModel):
             raise ValueError("resume_subscription_profile_id must be a subscription profile slug")
         return normalize_subscription_profile_id(value, allow_none=False)
 
-    @field_validator("exclude_paths", mode="before")
+    @field_validator("exclude_paths", "retry_blocked_paths", mode="before")
     @classmethod
     def exact_exclusions(cls, value: Any) -> list[str] | None:
         if value is None:
             return None
         if not isinstance(value, list) or len(value) > 1000:
-            raise ValueError("exclude_paths must be a list of at most 1000 exact paths")
+            raise ValueError("Path selections must be a list of at most 1000 exact paths")
         for item in value:
             if (
                 not isinstance(item, str) or not item or "\x00" in item
@@ -101,7 +103,24 @@ class SecurityScanRequest(BaseModel):
                 or any(part in {"", ".", ".."} for part in item.split("/"))
                 or any(part in item for part in ("*", "?", "[", "]"))
             ):
-                raise ValueError("exclude_paths requires exact repository-relative file paths")
+                raise ValueError("Path selections require exact repository-relative file paths")
+        return sorted(set(value))
+
+    @field_validator("exclude_patterns", mode="before")
+    @classmethod
+    def pattern_exclusions(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list) or len(value) > 100:
+            raise ValueError("exclude_patterns must contain at most 100 repository-relative patterns")
+        if any(
+            not isinstance(item, str)
+            or not item or len(item) > 512 or "\x00" in item or "\\" in item
+            or item.startswith(("/", "!"))
+            or any(part in {"", ".", ".."} for part in item.removesuffix("/").split("/"))
+            for item in value
+        ):
+            raise ValueError("Exclusion patterns must be relative, positive patterns such as *.pfx or bin/*")
         return sorted(set(value))
 
     @model_validator(mode="after")
@@ -120,14 +139,15 @@ class SecurityScanRequest(BaseModel):
         if self.max_parallel_reviews is not None and self.coverage_policy != "all_tracked_files":
             raise ValueError("max_parallel_reviews requires all_tracked_files coverage")
         if (
-            self.exclude_paths is not None or self.rebuild_pending_batches
+            self.exclude_paths is not None or self.exclude_patterns is not None
+            or self.retry_blocked_paths is not None or self.rebuild_pending_batches
             or self.incomplete_review_policy is not None
         ) and self.coverage_policy != "all_tracked_files":
             raise ValueError("scan tail controls require all_tracked_files coverage")
         if self.rebuild_pending_batches and self.resume_from_scan_id is None:
             raise ValueError("rebuild_pending_batches requires a retained source scan")
-        if self.exclude_paths and self.resume_from_scan_id is None:
-            raise ValueError("exclude_paths requires a retained source scan")
+        if self.retry_blocked_paths and self.resume_from_scan_id is None:
+            raise ValueError("retry_blocked_paths requires a retained source scan")
         if self.resume_from_scan_id is not None:
             if self.coverage_policy != "all_tracked_files":
                 raise ValueError("resume requires all_tracked_files coverage")

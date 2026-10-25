@@ -34,9 +34,9 @@ aggregate reports. This input requires core 0.127.0 and Codex Security add-on
 
 Core 0.128.0 and Codex Security add-on 0.5.0 add three tracked-review controls:
 
-- `exclude_paths`: exact repository-relative tracked file paths on a linked
-  continuation. Choose exclusions after mapping and before boundary planning;
-  wildcards, directories, traversal and missing paths are rejected. Exclusions
+- `exclude_paths`: exact repository-relative tracked file paths. Core 0.129.0
+  and add-on 0.6.0 also support new scans and pending continuation scopes after
+  boundary planning. Wildcards, directories, traversal and missing paths are rejected. Exclusions
   are inherited and cannot be removed within the same lineage. Excluded files
   receive no new review credit, remain visible in progress and reports, and
   keep overall coverage partial. Earlier accepted findings and credit remain.
@@ -48,6 +48,58 @@ Core 0.128.0 and Codex Security add-on 0.5.0 add three tracked-review controls:
   `retry_scope` retries the assigned scope at most three times without halving
   it. Omit the field to inherit the saved policy, or use `split` on a new scan.
   A partial native result still cannot grant file coverage.
+
+Core 0.129.0 and add-on 0.6.0 also provide:
+
+- `exclude_patterns`: up to 100 positive, case-insensitive path globs of at most
+  512 characters, resolved against the original tracked inventory. `*.pfx`
+  matches names at any depth; patterns containing `/`, such as `bin/*`, start at
+  the repository root. `*` stays within one path segment; `**` crosses directories,
+  so `**/bin/**` covers `bin` directories anywhere. Matching a directory includes
+  tracked descendants; a trailing `/` matches directories only. Negation,
+  backslashes, absolute paths and traversal are rejected. Unmatched patterns are
+  reported with zero matches. Omit to inherit; exclusions cannot be undone in the
+  same lineage. Reports list exact matches and retain the original denominator.
+- `incomplete_review_policy: "isolate_blockers"`: a partial file review names
+  exact blockers through its sealed native `deferred[].paths` or `file:<path>`
+  follow-up surfaces. The host parks those files without review credit and creates
+  a fresh review of the remaining paths. A missing required non-text disposition
+  also identifies its exact file. If attribution is absent or ambiguous, that file
+  scope blocks for attention after one incomplete attempt instead of retrying or
+  recursively splitting. Default `split` and `retry_scope` behavior is unchanged.
+- `retry_blocked_paths`: exact previously isolated files to reopen on an explicit
+  continuation after supplying a prerequisite. Omitted or empty inputs leave
+  blockers parked, including during batch rebuilding. Excluded paths cannot be
+  retried. Completed boundary scopes and accepted proofs stay retained.
+
+`coverage_progress.files_isolated` and `isolated_files` expose each parked path,
+reason and native evidence reference. Dependent required questions remain
+unresolved in the blocked queue; ordinary boundary reviews do not repeatedly
+retry their contents. Unknown and mixed obligations are never marked resolved by
+isolation. Isolated files keep coverage incomplete unless explicitly excluded;
+exclusions still keep overall coverage partial. Exclusions control scheduled
+review obligations, not a content-access boundary: supporting repository context
+may still be read. These controls do not alter an active scan, supply passwords
+or decoders, override cleanup, or extend its deadline. See the
+[tracked coverage guide](../packages/codex-security-addon/docs/tracked-coverage.md).
+
+Exact and pattern exclusions apply equally to **file and boundary reviews**:
+excluded paths are absent from scheduled targets and from the required paths
+supplied with boundary checkpoints. Earlier accepted findings and native proofs
+remain retained. A complete native component report may describe approved
+exclusions outside its assignment without failing closure; omitted assigned
+paths, unknown exclusions and partial native reports still cannot earn coverage.
+
+Saved checkpoint IDs remain stable when returned by a later review. Historical
+copies are folded through explicit ID references, preserving source journals,
+native archives and accepted local closure receipts. A repository-wide
+requirement is projected onto the responsible components; each review receives
+only its assigned path slice. The host retains the remainder and closes the
+parent only when every required part is resolved or explicitly excluded. Newly
+added paths reopen the requirement, and unsupported references require scope
+clarification rather than being assigned to an unrelated component.
+`coverage_progress.required_questions_total`, `required_questions_pending` and
+`required_question_aliases` report the canonical queue and historical ID echoes.
 
 An explicit ChatGPT-subscription handoff additionally names
 `resume_subscription_profile_id`. It must match the new scanner session's
