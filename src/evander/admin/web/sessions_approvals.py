@@ -106,6 +106,10 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Find Azure DevOps builds by build number, pipeline, repository, or branch."
     ),
     ToolName.GET_ADO_BUILD: ("Fetch one Azure DevOps build and its source commit."),
+    ToolName.GET_ADO_BUILD_TIMELINE: (
+        "Read Azure DevOps build stages, jobs, tasks, issues, and log references."
+    ),
+    ToolName.GET_ADO_BUILD_LOG: ("Read a bounded Azure DevOps build log excerpt."),
     ToolName.LIST_ADO_BUILD_WORK_ITEMS: (
         "List same-project work items associated with one Azure DevOps build."
     ),

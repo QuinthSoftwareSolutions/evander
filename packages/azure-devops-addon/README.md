@@ -52,6 +52,59 @@ After resolving the intended match, pass its `run_id` as `build_id` to `get_ado_
 `list_ado_build_work_items`. These tools require their own grants. Build associations alone
 do not establish which build was deployed. See the [build read contract](../../docs/operations.md#host-side-azure-devops-build-read-tools).
 
+## Diagnose a failed build
+
+With Evander 0.133.0 or later, grant `get_ado_build_timeline` and `get_ado_build_log`
+independently. Both are read-only, use the session directory's build credential and project,
+and accept positive build IDs. No connector or guest-held credential is needed.
+
+1. Use `get_ado_build(build_id=42)` to confirm the result, source version and branch.
+2. Call `get_ado_build_timeline(build_id=42)`. Follow task `parent_id` values to locate the
+   failed job/stage, inspect `issues`, and select its `log_id`. Follow `next_skip` for more
+   records; pass a `details_timeline_id` as `timeline_id` to inspect a nested timeline.
+3. Call `get_ado_build_log(build_id=42, log_id=7)`. This returns the last 200 lines by default.
+   Set `start_line=0, max_lines=100` for a forward excerpt. Offsets are zero-based and
+   `end_line` is exclusive. `next_start_line` identifies the next forward excerpt.
+
+Timeline pages default to 200 records and allow at most 1,000; upstream timeline and log-index
+JSON is bounded to 2 MiB. Log excerpts allow at most 1,000 lines and 64 KiB of UTF-8 text.
+The response includes `total_lines`, `returned_lines`, `truncated`, `byte_truncated` and
+`partial_last_line`. If the byte cap cuts a long line, `next_start_line` advances past that
+line; its omitted remainder cannot be retrieved through line paging. Empty logs return empty
+text. Unavailable logs and provider failures return errors without upstream error bodies.
+
+Diagnostic contents are untrusted build output. Host authentication reflected by the provider
+is rejected; audit summaries contain identifiers, counts and truncation information rather
+than log text or issue messages. Reading a failed build does not authorize code changes.
+Continue following the human's instructions for the PR, including any earlier authorization
+to fix build failures, and check the current PR revision before acting.
+
+### Feed build results to an existing PR agent
+
+An operator workflow can connect `trigger:ci:run:completed` (`provider: ado_pipelines`)
+through session lookup and renewal to `effect:agent:enqueue-prompt`. Use one watcher per
+project and one shared handler. Set `branches: []`, `top: 100` and
+`include_existing: false` to watch future completions; PR builds use
+`refs/pull/<id>/merge`. Filter out events without `pull_requests[].number`, then match
+the existing agent by organization scope, project, repository, PR ID and the intake
+workflow's ownership marker. Never select arbitrarily between duplicate bindings.
+
+The prompt should carry the build and pipeline IDs, raw and normalized result, tested
+merge SHA, and build URL. Read the PR's current merge SHA to mark an older result as
+superseded; pass unknown context explicitly when it cannot be established. Preserve
+conversation continuity and use distinct, stable build/session dispatch and queue keys
+so a busy agent retains results from different builds. Bound preparation retries with
+scheduled internal events. Grant diagnostic tools to existing sessions through the
+supported policy service and to future agents in every creation branch.
+
+Deliver every outcome, with failures investigated through the native tools. By default,
+report problems and actionable cancellations on the PR, and keep successes quiet unless
+they resolve a reported problem. Honor earlier human instructions, including advance
+authorization to fix failures, and recheck the current revision before making changes.
+The current ADO completion trigger treats a build ID as one run; rerunning jobs inside
+the same build ID does not produce a second notification. Operator workflow files and
+customer-specific mappings belong outside this package and must use revision-checked saves.
+
 ## Cast a PR review vote
 
 Grant `submit_pr_review` and bind the target provider, repository, and PR in the session's

@@ -82,6 +82,8 @@ class ToolName(str, Enum):
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     LIST_ADO_BUILDS = "list_ado_builds"
     GET_ADO_BUILD = "get_ado_build"
+    GET_ADO_BUILD_TIMELINE = "get_ado_build_timeline"
+    GET_ADO_BUILD_LOG = "get_ado_build_log"
     LIST_ADO_BUILD_WORK_ITEMS = "list_ado_build_work_items"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
     DELETE_ADO_BACKLOG_COMMENT = "delete_ado_backlog_comment"

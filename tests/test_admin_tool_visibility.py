@@ -192,7 +192,8 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
 
 @pytest.mark.parametrize(
     "tool",
-    [ToolName.UPDATE_ADO_BACKLOG_TITLE, ToolName.UPDATE_ADO_BACKLOG_STATE, ToolName.LIST_ADO_BUILDS],
+    [ToolName.UPDATE_ADO_BACKLOG_TITLE, ToolName.UPDATE_ADO_BACKLOG_STATE, ToolName.LIST_ADO_BUILDS,
+     ToolName.GET_ADO_BUILD_TIMELINE, ToolName.GET_ADO_BUILD_LOG],
 )
 def test_admin_service_tool_visibility_payload_classifies_ado_tool(
     tmp_path: Path,

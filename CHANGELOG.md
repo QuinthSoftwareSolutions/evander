@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-26 - Read native Azure DevOps build diagnostics (0.133.0)
+
+- Add independently granted, read-only `get_ado_build_timeline` and `get_ado_build_log` tools to the Azure DevOps add-on. Inspect failed stages, jobs, task issues, nested timelines and bounded log tails or forward excerpts using the session directory's host-owned credentials.
+- Bound diagnostic responses, mark paging and byte truncation, reject reflected host authentication material, and keep diagnostic contents out of audit summaries. Preserve the existing build-summary and search contracts.
+- Expose the tools in Admin Web permission and visibility views, and document how PR workflows can resume the associated agent with build results while respecting prior human instructions.
+
 ## 2026-10-26 - Give shared-browser replies a more engaged delivery (0.132.0)
 
 - Keep the selected speech voice and synthesize replies through the default OpenAI mini-TTS configuration at 1.1 times normal speed with warm, engaged delivery and natural intonation. Preserve neutral requests for other existing providers and models. Apply the same settings to streamed PCM and WAV replies, including the extension sidebar.
