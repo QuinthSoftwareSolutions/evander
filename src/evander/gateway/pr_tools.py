@@ -246,23 +246,27 @@ def register_pr_tools(
 
     @server.tool()
     def complete_pull_request(
-        provider: Literal["azure_devops", "azure-devops", "ado"],
+        provider: Literal["azure_devops", "azure-devops", "ado", "github"],
         repo: str,
         pr_id: str,
         expected_source_commit: str,
         expected_target_branch: str,
+        completion_id: str | None = None,
         request_id: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Complete a PR bound to this session, without bypassing branch policies.
+        """Complete an Azure DevOps or GitHub PR bound to this session.
 
-        Read the PR first and provide its full source SHA and target branch. A
-        changed source or target, draft, unresolved review, or blocking policy
-        prevents completion. Check merged/pending/blockers in the response;
-        accepting a completion request does not prove the merge has finished.
-        This uses a merge commit and keeps the source branch.
+        Read the PR first and provide its full source SHA and target branch.
+        Source/target changes and drafts block submission; repository policies
+        still govern completion and are never bypassed. Check merged/pending/
+        blockers in the response. For pending GitHub work, pass the returned
+        completion_id with the same inputs to poll that job without resubmitting.
+        GitHub uses its asynchronous merge/queue API;
+        Azure DevOps uses a merge commit. Neither adapter requests source-branch
+        deletion.
         """
         resolved = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
@@ -271,7 +275,9 @@ def register_pr_tools(
             session_id=resolved, provider=normalize_pr_automation_provider(provider),
             repo=repo.strip(), pr_id=pr_id.strip(),
             expected_source_commit=expected_source_commit.strip().lower(),
-            expected_target_branch=expected_target_branch.strip(), request_id=request_id,
+            expected_target_branch=expected_target_branch.strip(),
+            completion_id=completion_id.strip().lower() if completion_id is not None else None,
+            request_id=request_id,
         )
         args = request.model_dump(mode="json")
         try:
@@ -283,6 +289,7 @@ def register_pr_tools(
                 provider=request.provider, repo=request.repo, pr_id=request.pr_id,
                 expected_source_commit=request.expected_source_commit,
                 expected_target_branch=request.expected_target_branch,
+                **({"completion_id": request.completion_id} if request.completion_id else {}),
             )
             result = response.model_dump(mode="json")
             audit_success(resolved, ToolName.COMPLETE_PULL_REQUEST, args, result)
