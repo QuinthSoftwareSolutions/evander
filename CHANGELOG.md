@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-26 - Persist PR ownership and complete bound pull requests (0.130.0)
+
+- Add the Azure DevOps `complete_pull_request` MCP tool for session-bound PRs with expected source and target checks, provider policy enforcement, and verified merge outcomes. Workflow delivery uses the same completion implementation.
+- Extend session policy reconciliation with atomic `add_tools` and `remove_tools` updates that survive later agent and workflow runs while retaining unrelated grants and approval requirements.
+- Require the dedicated completion path for completed PR status updates.
+
 ## 2026-10-25 - Download images and file links from forwarded Teams messages (0.129.5)
 
 - Discover hosted images and SharePoint/OneDrive file links embedded in forwarded message bodies, and expose them through the existing attachment and inline-media tools. Preserve the destination message as the artifact source and download only the referenced resource through the existing Teams identity.

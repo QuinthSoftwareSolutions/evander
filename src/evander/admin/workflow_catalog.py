@@ -4303,7 +4303,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("session_id", "Session ID", "string", required=True, bindable=True),
             _field("directory_path", "Directory", "string", bindable=True),
-            _field("policy", "Managed policy fields", "json", required=True, bindable=True),
+            _field(
+                "policy", "Managed policy fields", "json", required=True, bindable=True,
+                description="Use add_tools/remove_tools for durable incremental grants across runs; allowed_tools replaces the list.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

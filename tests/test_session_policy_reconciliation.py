@@ -190,3 +190,69 @@ def test_real_binding_and_provider_apply_settings_before_the_next_turn(setup):
     with pytest.raises(ValueError, match="outside workflow"):
         provider.execute(resolved_config={"session_id": "assistant-one", "policy": {},
                                           "directory_path": "root/other"})
+
+
+def test_incremental_grant_survives_multiple_runs_and_preserves_concurrent_changes(setup, monkeypatch):
+    service, repository, before, other = setup
+    original = repository.mutate_session
+    def concurrent(session_id, updater):
+        current = repository.get_session(session_id)
+        repository.upsert_session(current.model_copy(update={
+            "allowed_tools": [*current.allowed_tools, ToolName.GET_PULL_REQUEST],
+            "metadata": {**current.metadata, "agent_thread_id": "new-turn"},
+        }))
+        return original(session_id, updater)
+    monkeypatch.setattr(repository, "mutate_session", concurrent)
+    provider = SessionReconcilePolicyEffectProvider()
+    definition = materialize_node_definition(WorkflowNodeEnvelope(
+        id="ownership", display_name="Ownership", type="effect:session:reconcile-policy",
+        config={"session_id": "assistant-one", "policy": {"add_tools": ["complete_pull_request"]}},
+    ))
+    provider.initialize(definition, EffectRuntimeContext(
+        resolved_config=service._deps.config, session_policy_reconciler=service,
+        metadata={"directory_path": "root/team", "graph_id": "first-run"},
+    ))
+    assert provider.execute()["success"]
+    monkeypatch.setattr(repository, "mutate_session", original)
+    second = SessionReconcilePolicyEffectProvider()
+    second.initialize(definition, EffectRuntimeContext(
+        resolved_config=service._deps.config, session_policy_reconciler=service,
+        metadata={"directory_path": "root/team", "graph_id": "later-run"},
+    ))
+    assert second.execute()["changed"] is False
+    reloaded = JsonSessionManifestRepository(repository.path)
+    after = reloaded.get_session("assistant-one")
+    assert set(after.allowed_tools) == {
+        *before.allowed_tools, ToolName.COMPLETE_PULL_REQUEST, ToolName.GET_PULL_REQUEST,
+    }
+    assert after.metadata["agent_thread_id"] == "new-turn"
+    assert reloaded.get_session("assistant-two") == other
+
+
+def test_incremental_grant_preserves_approval_and_can_be_revoked(setup):
+    service, repository, _, _ = setup
+    service.reconcile_session_policy("assistant-one", {
+        "approval_required_tools": ["teams_post_status"],
+        "add_tools": ["complete_pull_request"],
+    }, directory_path="root/team")
+    assert repository.get_session("assistant-one").approval_required_tools == [ToolName.TEAMS_POST_STATUS]
+    service.reconcile_session_policy("assistant-one", {
+        "remove_tools": ["complete_pull_request"],
+    }, directory_path="root/team")
+    after = repository.get_session("assistant-one")
+    assert ToolName.COMPLETE_PULL_REQUEST not in after.allowed_tools
+    assert after.approval_required_tools == [ToolName.TEAMS_POST_STATUS]
+
+
+@pytest.mark.parametrize("policy", [
+    {"add_tools": "complete_pull_request"}, {"remove_tools": None},
+    {"add_tools": [False]}, {"add_tools": ["ToolName.COMPLETE_PULL_REQUEST"]},
+    {"add_tools": ["complete_pull_request"], "remove_tools": ["complete_pull_request"]},
+    {"allowed_tools": [], "add_tools": ["complete_pull_request"]},
+])
+def test_invalid_incremental_grants_are_atomic(setup, policy):
+    service, repository, _, _ = setup
+    before = repository.path.read_bytes()
+    with pytest.raises(ValueError):
+        service.reconcile_session_policy("assistant-one", policy, directory_path="root/team")
+    assert repository.path.read_bytes() == before
