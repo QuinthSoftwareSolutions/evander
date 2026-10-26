@@ -4567,3 +4567,22 @@ other Teams workflows retain queueing. Roll back new traffic by restoring their
 `delivery_mode` to `queue`, while retaining receipt reconciliation for sends
 already in progress. Explicit Admin Web operator steering remains a separate
 control with its existing interruption behavior.
+
+### Durable PR ownership grants
+
+Use `effect:session:reconcile-policy` with `policy: {"add_tools": ["complete_pull_request"]}`
+for a selected PR agent. This adds to the persisted session manifest atomically and
+survives later agent turns, workflow runs, and service restarts. Use `remove_tools`
+to revoke it. Run-scoped approval leases remain temporary and are not ownership grants.
+Keep comment routing and human/agent-directed checks ahead of the grant. Match an
+explicit standalone command such as `!GRANT ownership`; do not grant from quoted
+examples, ordinary discussion, classifier inference, or comments from the bot itself.
+Granting access does not complete the PR.
+
+The `complete_pull_request` tool requires a PR already bound in the session's
+`pr_feedback_streams`, its full `expected_source_commit`, and `expected_target_branch`.
+It respects configured per-call approval and argument policies, rejects changed
+source/target refs, drafts, unresolved reviews and blocking provider policies, and
+never bypasses branch policy. It preserves the source branch and uses a merge commit.
+A `pending` response means the provider has not yet confirmed completion; retry with
+the same expected values to verify. Only `merged: true` confirms the outcome.

@@ -9,6 +9,7 @@ from evander.ado_mentions import AdoResolvedMention, render_ado_mentions_prefix
 from evander_azure_devops_addon.mentions import AdoMentionResolver, resolve_ado_mentions
 from evander.models import (
     AdoPrCommentActivityResponse,
+    CompletePullRequestResponse,
     AdoPrCommitActivityResponse,
     GetPullRequestResponse,
     ListPullRequestsResponse,
@@ -811,6 +812,33 @@ class AzureDevOpsPrQueryProvider:
         )
         response.raise_for_status()
 
+    def complete_pull_request(
+        self, *, repo: str, pr_id: str, expected_source_commit: str,
+        expected_target_branch: str,
+    ) -> CompletePullRequestResponse:
+        from .pr_completion import complete_pull_request
+
+        repository = quote(_normalize_azure_devops_repo_identifier(repo), safe="")
+        pr_path = f"git/repositories/{repository}/pullRequests/{positive_id(pr_id, 'pr_id')}"
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            def request(method, path, **kwargs):
+                params = {"api-version": "7.1", **kwargs.pop("params", {})}
+                response = client.request(
+                    method, f"{self.organization_url}/{quote(self.project, safe='')}/_apis/{path}",
+                    params=params, auth=("", self.pat), **kwargs,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Azure DevOps returned invalid completion data")
+                return payload
+
+            result = complete_pull_request(
+                request, pr_path=pr_path, expected_source_commit=expected_source_commit,
+                expected_target_branch=expected_target_branch,
+            )
+        return CompletePullRequestResponse(repo=repo, pr_id=pr_id, **result)
+
     def update_pull_request(
         self,
         *,
@@ -825,6 +853,8 @@ class AzureDevOpsPrQueryProvider:
         expected_statuses: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> UpdatePullRequestResponse:
+        if (status or "").strip().lower() == "completed":
+            raise ValueError("Use complete_pull_request to complete a pull request")
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         project_name = _normalize_optional_text(project) or self.project
         expected = _normalize_string_list(expected_statuses)

@@ -145,6 +145,7 @@ class ToolName(str, Enum):
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
     UPDATE_PULL_REQUEST = "update_pull_request"
+    COMPLETE_PULL_REQUEST = "complete_pull_request"
     RESOLVE_ADO_IDENTITY = "resolve_ado_identity"
     LIST_ADO_PR_COMMENT_ACTIVITY = "list_ado_pr_comment_activity"
     LIST_ADO_PR_COMMIT_ACTIVITY = "list_ado_pr_commit_activity"
@@ -1978,6 +1979,28 @@ class ListPullRequestsResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class CompletePullRequestRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: Literal["azure_devops"]
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    expected_source_commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
+    expected_target_branch: str = Field(min_length=1)
+    request_id: str | None = None
+
+
+class CompletePullRequestResponse(BaseModel):
+    success: bool = True
+    provider: str = "azure_devops"
+    repo: str
+    pr_id: str
+    status: str | None = None
+    merged: bool = False
+    pending: bool = False
+    merge_commit: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+
+
 class UpdatePullRequestRequest(BaseModel):
     session_id: str = Field(min_length=1)
     provider: Literal["azure_devops"]
@@ -2026,6 +2049,8 @@ class UpdatePullRequestRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_update(self) -> UpdatePullRequestRequest:
+        if (self.status or "").strip().lower() == "completed":
+            raise ValueError("Use complete_pull_request to complete a pull request")
         if (
             self.title is None
             and self.description is None

@@ -315,19 +315,14 @@ class DeliveryClient:
 
     def merge(self):
         p = self.publication
-        self.request(
-            "PATCH",
-            self.pr_path,
-            json={
-                "status": "completed",
-                "lastMergeSourceCommit": {"commitId": p["commit_sha"]},
-                "completionOptions": {
-                    "bypassPolicy": False,
-                    "deleteSourceBranch": False,
-                    "mergeStrategy": "noFastForward",
-                },
-            },
+        from .pr_completion import complete_pull_request
+
+        result = complete_pull_request(
+            self.request, pr_path=self.pr_path, expected_source_commit=p["commit_sha"],
+            expected_target_branch=p["target_branch"],
         )
+        if result["blockers"]:
+            return {"ready": False, "repairable": False, **result}
         return self.inspect()
 
 
