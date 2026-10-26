@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Deliver shared-browser chat without waiting for polling (0.130.1)
+
+- Wake the browser message dispatcher as soon as typed messages, voice transcripts, annotations or explicit retries are saved. Run dispatch independently of browser reconciliation and retain durable message identities, receipts and periodic recovery.
+- Publish Browser Sessions 0.9.5 with message and delivery notifications over the existing authenticated viewer stream. Keep notifications separate from coalesced browser frames and retain cursor-based polling for recovery and older clients.
+
 ## 2026-10-26 - Persist PR ownership and complete bound pull requests (0.130.0)
 
 - Add the Azure DevOps `complete_pull_request` MCP tool for session-bound PRs with expected source and target checks, provider policy enforcement, and verified merge outcomes. Workflow delivery uses the same completion implementation.

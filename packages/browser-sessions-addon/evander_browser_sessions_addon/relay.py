@@ -17,6 +17,8 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
 
+from evander.orchestration.host_polling import HostFileLockManager, HostWakeSleeper
+
 from .models import BrowserCommand, BrowserError, Frame, MessageRequest, TERMINAL, origin
 from .protocol import authorize_command
 from .service import Service
@@ -61,8 +63,16 @@ class Broker:
         self.service, self.store = service, service.store
         self.endpoints = {}
         self.watchers = {}
+        self.message_watchers = {}
         self.pending = {}
         self.latest = {}
+
+    def messages_changed(self):
+        # Message notifications have their own lane: lossy frame queues must not
+        # discard a delivery acknowledgement when the browser is streaming frames.
+        for watchers in list(self.message_watchers.values()):
+            for event in list(watchers):
+                event.set()
 
     async def publish(self, session_id, payload):
         for queue in list(self.watchers.get(session_id, ())):
@@ -273,6 +283,8 @@ class Broker:
 
     async def view(self, websocket, internal_token):
         queue = None
+        message_event = asyncio.Event()
+        tasks = []
         session_id = websocket.path_params["session_id"]
         try:
             require_internal(websocket, internal_token)
@@ -283,21 +295,38 @@ class Broker:
             await websocket.accept()
             queue = asyncio.Queue(maxsize=2)
             self.watchers.setdefault(session_id, set()).add(queue)
+            self.message_watchers.setdefault(session_id, set()).add(message_event)
             if session_id in self.latest:
                 queue.put_nowait(self.latest[session_id])
+            frame_task = asyncio.create_task(queue.get())
+            message_task = asyncio.create_task(message_event.wait())
+            tasks = [frame_task, message_task]
             while True:
                 self.store.active(self.store.get(session_id))
-                try:
-                    frame = await asyncio.wait_for(queue.get(), 5)
-                    await websocket.send_json(frame)
-                except TimeoutError:
+                done, _ = await asyncio.wait(
+                    tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED
+                )
+                if message_task in done:
+                    message_event.clear()
+                    await websocket.send_json({"kind": "messages"})
+                    message_task = asyncio.create_task(message_event.wait())
+                    tasks = [frame_task, message_task]
+                if frame_task in done:
+                    await websocket.send_json(frame_task.result())
+                    frame_task = asyncio.create_task(queue.get())
+                tasks = [frame_task, message_task]
+                if not done:
                     await websocket.send_json({"kind": "heartbeat"})
         except (BrowserError, WebSocketDisconnect, RuntimeError):
             with suppress(Exception):
                 await websocket.close(code=1008)
         finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if queue is not None:
                 self.watchers.get(session_id, set()).discard(queue)
+            self.message_watchers.get(session_id, set()).discard(message_event)
 
 
 def create_app(runtime_dir, *, service=None, internal_token=None):
@@ -306,11 +335,10 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
     speech = Voice(service)
     internal_token = internal_token or os.environ.get("EVANDER_BROWSER_RELAY_TOKEN", "")
 
-    async def tick(stop):
+    async def reconcile(stop):
         while not stop.is_set():
             try:
                 await asyncio.to_thread(service.reconcile)
-                await asyncio.to_thread(service.dispatch_messages)
             except Exception:
                 # A retry preserves durable intent; never log chat or browser credentials.
                 pass
@@ -319,13 +347,37 @@ def create_app(runtime_dir, *, service=None, internal_token=None):
             except TimeoutError:
                 pass
 
+    async def dispatch(stop, sleeper):
+        while not stop.is_set():
+            try:
+                await asyncio.to_thread(service.dispatch_messages)
+            except Exception:
+                # Durable claims and receipts retain the original retry identity.
+                pass
+            broker.messages_changed()
+            await asyncio.to_thread(sleeper.sleep, 5)
+
     @asynccontextmanager
     async def lifespan(app):
-        stop = asyncio.Event()
-        task = asyncio.create_task(tick(stop))
-        yield
-        stop.set()
-        await task
+        # Admin Web, MCP and this relay share the runtime directory. Wake signals
+        # carry no message content and work across those separate processes.
+        with HostFileLockManager().lock(service.runtime_dir / "browser-messages.lock"):
+            sleeper = HostWakeSleeper(service.message_wake_path)
+            sleeper.start()
+            stop = asyncio.Event()
+            tasks = [
+                asyncio.create_task(reconcile(stop)),
+                asyncio.create_task(dispatch(stop, sleeper)),
+            ]
+            try:
+                yield
+            finally:
+                stop.set()
+                service.notify_messages()
+                try:
+                    await asyncio.gather(*tasks)
+                finally:
+                    sleeper.close()
 
     async def health(request):
         return JSONResponse({"ok": True, "capabilities": {"browser_sessions": 1}})

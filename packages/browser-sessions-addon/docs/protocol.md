@@ -20,6 +20,12 @@ The bundled MV3 extension requests a control-plane host permission after an expl
 
 Protocol version 1 uses authenticated WSS. Hosted viewers pass through Admin Web. JPEG frames and viewer queues are bounded; slow consumers drop old frames.
 
+The hosted stream also sends `{"kind":"messages"}` when chat or delivery
+receipts may have changed. These content-free hints use a separate coalescing
+lane from frames. Viewers fetch messages and status updates through their existing
+authenticated cursor API, which remains the source of truth after reconnects or
+missed notifications. No client acknowledgement or message replay is implied.
+
 Broker and endpoint both check live state, origin, generation and controller. Actions are observe, navigate, click, hover, fill, type, selected keys, scroll, dialog, highlight and reload. There is no arbitrary evaluation, CDP passthrough, cookie export or filesystem API. Observation returns a screenshot and bounded accessibility references. Navigation invalidates references; control changes fence input between focus and typing.
 
 The type action emits character keydown, keypress and keyup events for page-level keyboard listeners as well as focused fields. The fill action focuses and replaces a referenced field with direct text insertion. The key action supports Enter, Space and the bounded navigation/editing keys; Enter and Space include their text events. Every input event rechecks the control generation and approved origin.
