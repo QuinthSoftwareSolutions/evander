@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Reconcile resource cleanup during worker deployment (0.133.1)
+
+- Make the normal worker playbook refresh already provisioned RabbitMQ, SQL Server and Test Fixtures packages and migrate their cleanup services. Keep absent and masked services untouched, preserve host-owned configuration, and refresh running API workers.
+- Verify installed package versions against the reviewed source before changing units. Fail deployment if a selected reaper is not persistent, enabled and running, or if its retired timer remains enabled or active.
+
 ## 2026-10-26 - Read native Azure DevOps build diagnostics (0.133.0)
 
 - Add independently granted, read-only `get_ado_build_timeline` and `get_ado_build_log` tools to the Azure DevOps add-on. Inspect failed stages, jobs, task issues, nested timelines and bounded log tails or forward excerpts using the session directory's host-owned credentials.

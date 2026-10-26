@@ -21,6 +21,22 @@ with `--reap-loop`.
 
 ## Reviewed deployment and rollback
 
+The normal `ansible/worker.yml` deployment now performs this migration automatically
+for already provisioned, unmasked cleanup services. It refreshes only those add-on
+packages from the same reviewed checkout as the core, verifies installed versions
+against that checkout, migrates the units, and restarts their running API workers.
+It does not provision absent add-ons or unmask services. Deployment fails if a
+selected reaper is not persistent, enabled and running without restart failures,
+or if an old timer remains enabled or active. No separate operator pipeline step
+is needed when the pipeline already invokes the worker playbook.
+
+The playbook invokes `--packages-installed`, which verifies package versions and
+command compatibility before touching service schedules. This mode and `--wheel`
+are mutually exclusive. Keep package installation and migration within the same
+reviewed worker deployment.
+
+### Separate wheel-based deployment
+
 Use the established CI/CD pipeline after human review. Do not install wheels,
 replace units or restart production services through an ad hoc SSH session.
 Build core and selected add-on wheels from the same reviewed revision and stage

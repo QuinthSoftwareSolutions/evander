@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """CI/CD migration for explicitly installed resource cleanup services.
 
-Run only with reviewed wheels and units. The timer mode restores units and wheels
+Run only with reviewed packages and units. The timer mode restores units and wheels
 from a previous reviewed release; it is not an automatic production rollback.
 """
 
 import argparse
 from configparser import ConfigParser
 from email.parser import BytesParser
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
+import tomllib
 from zipfile import ZipFile
 
 
@@ -43,11 +45,24 @@ def _wheel_name(path):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def migrate(*, addons, wheels, mode, unit_source, unit_dir, python, uv, run=subprocess.run):
+def migrate(
+    *,
+    addons,
+    wheels,
+    mode,
+    unit_source,
+    unit_dir,
+    python,
+    uv,
+    packages_installed=False,
+    run=subprocess.run,
+):
     """Install compatible artifacts before changing any existing service schedule."""
     addons = list(dict.fromkeys(addons))
     if not addons or any(addon not in ADDONS for addon in addons):
         raise ValueError("Select only supported resource add-ons explicitly")
+    if packages_installed and wheels:
+        raise ValueError("Select installed packages or wheel installation, not both")
 
     def command(*args):
         return run(list(map(str, args)), check=True, capture_output=True, text=True)
@@ -62,8 +77,10 @@ def migrate(*, addons, wheels, mode, unit_source, unit_dir, python, uv, run=subp
     if not selected:
         return []
     expected_wheels = {"evander", *(f"evander-{addon}-addon" for addon in selected)}
-    actual_wheels = [_wheel_name(path) for path in wheels]
-    if set(actual_wheels) != expected_wheels or len(actual_wheels) != len(expected_wheels):
+    actual_wheels = [_wheel_name(path) for path in wheels or []]
+    if not packages_installed and (
+        set(actual_wheels) != expected_wheels or len(actual_wheels) != len(expected_wheels)
+    ):
         raise ValueError(
             "Provide exactly the core wheel and one wheel per installed selected add-on"
         )
@@ -90,9 +107,41 @@ def migrate(*, addons, wheels, mode, unit_source, unit_dir, python, uv, run=subp
         if mode == "timer":
             timers[base] = (source / f"{base}.timer").read_text()
 
-    command(
-        uv, "pip", "install", "--python", python, "--no-index", "--no-deps", "--reinstall", *wheels
-    )
+    if packages_installed:
+        projects = {"evander": Path(unit_source)}
+        projects.update(
+            {
+                f"evander-{addon}-addon": Path(unit_source) / "packages" / f"{addon}-addon"
+                for addon in selected
+            }
+        )
+        expected_versions = {
+            name: tomllib.loads((path / "pyproject.toml").read_text())["project"]["version"]
+            for name, path in projects.items()
+        }
+        installed_versions = json.loads(
+            command(
+                python,
+                "-c",
+                "import importlib.metadata,json,sys; "
+                "print(json.dumps({name:importlib.metadata.version(name) for name in sys.argv[1:]}))",
+                *projects,
+            ).stdout
+        )
+        if installed_versions != expected_versions:
+            raise ValueError("Installed core/add-on versions do not match the reviewed unit source")
+    else:
+        command(
+            uv,
+            "pip",
+            "install",
+            "--python",
+            python,
+            "--no-index",
+            "--no-deps",
+            "--reinstall",
+            *wheels,
+        )
     for addon in selected:
         help_text = command(Path(python).parent / f"evander-{addon}-worker", "--help").stdout
         flag = "--reap-loop" if mode == "persistent" else "--reap"
@@ -121,7 +170,13 @@ def migrate(*, addons, wheels, mode, unit_source, unit_dir, python, uv, run=subp
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--addon", action="append", choices=ADDONS, required=True)
-    parser.add_argument("--wheel", action="append", type=Path, required=True)
+    packages = parser.add_mutually_exclusive_group(required=True)
+    packages.add_argument("--wheel", action="append", type=Path)
+    packages.add_argument(
+        "--packages-installed",
+        action="store_true",
+        help="Verify packages already installed by the worker playbook",
+    )
     parser.add_argument("--mode", choices=("persistent", "timer"), default="persistent")
     parser.add_argument("--unit-source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--unit-dir", type=Path, default=Path("/etc/systemd/system"))
@@ -138,6 +193,7 @@ def main():
         unit_dir=args.unit_dir,
         python=args.python,
         uv=args.uv,
+        packages_installed=args.packages_installed,
     )
     print("Migrated cleanup services: " + (", ".join(selected) or "none installed"))
 
