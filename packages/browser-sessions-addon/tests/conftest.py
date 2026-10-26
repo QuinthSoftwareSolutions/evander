@@ -129,7 +129,10 @@ def speech_provider(domain, monkeypatch):
 
     service, _, _ = domain
     revision, settings = service.store.settings("root")
-    settings.voice = VoiceSettings(enabled=True, api_base_url="https://speech.test/v1")
+    # Redirect the native OpenAI configuration to the mocked provider origin.
+    settings.voice = VoiceSettings(enabled=True).model_copy(
+        update={"api_base_url": "https://speech.test/v1"}
+    )
     service.store.save_settings("root", revision, settings)
     settings.voice.credential_ref = service.credentials.create(
         "root", "voice", settings.voice.api_base_url, "fixture-speech-secret"

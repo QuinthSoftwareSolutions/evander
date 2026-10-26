@@ -253,6 +253,10 @@ test("guided browser-profile setup saves through the production settings API", a
     await page.getByLabel("Browser image", { exact: true }).fill("seeded-preview:2");
     await page.getByLabel("Maximum steps",{exact:true}).fill("12");
     await page.getByLabel("Time limit (seconds)",{exact:true}).fill("15");
+    assert.equal(await page.getByLabel("Speech speed", {exact:true}).inputValue(), "1");
+    assert.equal(await page.getByLabel("Delivery style", {exact:true}).inputValue(), "");
+    await page.getByLabel("Speech speed", {exact:true}).fill("1.25");
+    await page.getByLabel("Delivery style", {exact:true}).fill("Speak with a warm conversational tone.");
     const saved = page.waitForResponse(response =>
       response.request().method() === "PUT" &&
       response.url().includes("/api/addons/browser-sessions-addon/settings"));
@@ -266,6 +270,9 @@ test("guided browser-profile setup saves through the production settings API", a
       "seeded-preview:2");
     assert.equal(await page.getByLabel("Maximum steps",{exact:true}).inputValue(),"12");
     assert.equal(await page.getByLabel("Time limit (seconds)",{exact:true}).inputValue(),"15");
+    assert.equal(await page.getByLabel("Speech speed", {exact:true}).inputValue(), "1.25");
+    assert.equal(await page.getByLabel("Delivery style", {exact:true}).inputValue(),
+      "Speak with a warm conversational tone.");
     await page.emulateMedia({colorScheme:"dark"});
     await page.screenshot({path:"test-output/fast-settings.png",fullPage:true});
   } finally {

@@ -136,10 +136,38 @@ class VoiceSettings(Contract):
     transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
     speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
     voice: str = Field(default="onyx", min_length=1, max_length=128)
+    speed: float = Field(default=1.1, ge=0.25, le=4.0, allow_inf_nan=False)
+    instructions: str = Field(
+        default=(
+            "Speak in a warm, engaged, conversational tone with natural intonation and clear "
+            "articulation. Keep pauses brief and the delivery lightly upbeat."
+        ),
+        max_length=2000,
+    )
     max_recording_seconds: int = Field(default=45, ge=5, le=120)
     max_audio_bytes: int = Field(default=2_000_000, ge=65536, le=5_000_000)
     max_speech_characters: int = Field(default=2000, ge=100, le=4096)
     requests_per_minute: int = Field(default=20, ge=2, le=60)
+
+    @model_validator(mode="before")
+    @classmethod
+    def compatible_delivery_defaults(cls, value):
+        if not isinstance(value, dict):
+            return value
+        endpoint = value.get("api_base_url", "https://api.openai.com/v1")
+        model = value.get("speech_model", "gpt-4o-mini-tts")
+        if (
+            isinstance(endpoint, str)
+            and endpoint.strip().rstrip("/") == "https://api.openai.com/v1"
+            and isinstance(model, str)
+            and model.strip() in {"gpt-4o-mini-tts", "gpt-4o-mini-tts-2025-12-15"}
+        ):
+            return value
+        # An old custom connection did not opt into optional synthesis controls.
+        value = dict(value)
+        value.setdefault("speed", 1.0)
+        value.setdefault("instructions", "")
+        return value
 
     @field_validator("api_base_url")
     @classmethod
