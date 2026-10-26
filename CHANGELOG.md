@@ -3,6 +3,7 @@
 ## 2026-10-26 - Deliver shared-browser chat without waiting for polling (0.131.1)
 
 - Wake the browser message dispatcher as soon as typed messages, voice transcripts, annotations or explicit retries are saved. Run dispatch independently of browser reconciliation and retain durable message identities, receipts and periodic recovery.
+- Recheck directory enablement and owner eligibility before dispatch so disabled or removed sessions cannot start work while reconciliation is delayed.
 - Publish Browser Sessions 0.9.5 with message and delivery notifications over the existing authenticated viewer stream. Keep notifications separate from coalesced browser frames and retain cursor-based polling for recovery and older clients.
 - State the required human review and CI/CD process for production source changes and rollbacks in the repository's agent instructions.
 

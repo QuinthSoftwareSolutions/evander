@@ -90,7 +90,8 @@ session cancels requests still waiting to start.
 
 Messages wake the relay dispatcher immediately through a local runtime socket.
 Browser reconciliation runs independently so slow worker health checks do not
-hold up chat. Hosted viewers receive message and delivery notifications over
+hold up chat. Dispatch rechecks directory enablement and the owning agent before
+starting work. Hosted viewers receive message and delivery notifications over
 their authenticated browser stream; periodic dispatch and cursor-based polling
 recover missed notifications and support older clients. Notifications contain
 no message text. Admin Web, MCP and the relay share the runtime directory, and

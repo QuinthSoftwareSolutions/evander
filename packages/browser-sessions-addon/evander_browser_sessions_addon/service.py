@@ -1174,6 +1174,17 @@ class Service:
                         "INSERT OR REPLACE INTO dispatches VALUES(?,?,?)",
                         (message["id"], "dispatching", self.now() + 60),
                     )
+                # Dispatch no longer waits for the broad reconciliation sweep.
+                # Recheck its eligibility conditions before starting any work.
+                eligible = self.store.settings(session.directory)[1].enabled
+                if eligible:
+                    try:
+                        self.bindings.parent(session.agent_session_id)
+                    except Exception:
+                        eligible = False
+                if not eligible:
+                    self._cancel_messages(session)
+                    continue
                 session = self.bind_conversation(session, required=True)
                 delivery = self.bindings.enqueue(session, message)
                 state = (

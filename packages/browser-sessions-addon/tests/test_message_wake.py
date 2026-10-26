@@ -85,6 +85,58 @@ def test_startup_recovers_message_saved_without_a_wake_listener(domain, hosted):
     asyncio.run(exercise())
 
 
+def test_disabled_directory_cancels_before_slow_reconciliation_finishes(domain, hosted, monkeypatch):
+    service, bindings, _ = domain
+    message = service.enqueue_message(
+        hosted.id, "user:operator", MessageRequest(request_id="disabled", body="Do not start this")
+    )
+    revision, settings = service.store.settings("root")
+    settings.enabled = False
+    service.store.save_settings("root", revision, settings)
+    checking_parent, release_parent, cancelled = threading.Event(), threading.Event(), threading.Event()
+    original_parent = bindings.parent
+
+    def parent(*args, **kwargs):
+        checking_parent.set()
+        assert release_parent.wait(10)
+        return original_parent(*args, **kwargs)
+
+    def cancel(session, value):
+        cancelled.set()
+
+    monkeypatch.setattr(bindings, "parent", parent)
+    bindings.cancel_message = cancel
+    app = create_app(service.runtime_dir, service=service, internal_token="test-relay")
+
+    async def exercise():
+        async with app.router.lifespan_context(app):
+            try:
+                assert await asyncio.to_thread(checking_parent.wait, 2)
+                assert await asyncio.to_thread(cancelled.wait, 2)
+                assert not release_parent.is_set()
+                assert bindings.prompts == []
+            finally:
+                release_parent.set()
+        assert service.store.message_updates(hosted.id) == [
+            {"id": message["id"], "status": "cancelled", "delivery_status": "cancelled"}
+        ]
+
+    asyncio.run(exercise())
+
+
+def test_dispatch_cancels_when_the_owning_agent_was_removed(domain, hosted):
+    service, bindings, _ = domain
+    message = service.enqueue_message(
+        hosted.id, "user:operator", MessageRequest(request_id="removed-owner", body="Do not start this")
+    )
+    bindings.denied.add(hosted.agent_session_id)
+    service.dispatch_messages()
+    assert bindings.prompts == []
+    assert service.store.message_updates(hosted.id) == [
+        {"id": message["id"], "status": "cancelled", "delivery_status": "cancelled"}
+    ]
+
+
 def test_message_notifications_survive_frame_coalescing_and_cleanup(domain, hosted):
     service, _, _ = domain
     broker = Broker(service)
