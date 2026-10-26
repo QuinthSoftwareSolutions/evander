@@ -1874,9 +1874,10 @@ A transport-terminated warning without client-visible failure can be expected fo
 
 ## Host-Side Azure DevOps Build Read Tools
 
-- Grant `list_ado_builds`, `get_ado_build` and `list_ado_build_work_items` separately in the
+- Grant `list_ado_builds`, `get_ado_build`, `get_ado_build_timeline`, `get_ado_build_log` and
+  `list_ado_build_work_items` separately in the
   session's `allowed_tools`. Installing or upgrading does not change existing grants.
-- All three tools use the session directory's configured Azure DevOps organization, project,
+- These tools use the session directory's configured Azure DevOps organization, project,
   and host credential, and make read-only requests. They accept no project or credential override.
 - `list_ado_builds` accepts optional, combined filters: `build_number` (exact match, or append
   `*` for a prefix search), positive `pipeline_id` (build definition ID), `repository_id` and
@@ -1893,12 +1894,34 @@ A transport-terminated warning without client-visible failure can be expected fo
 - `get_ado_build` and `list_ado_build_work_items` take a positive numeric `build_id`.
 - `get_ado_build` returns the build number, status, source branch, source commit
   (`source_version`), timestamps, and build URL.
+- `get_ado_build_timeline(build_id, timeline_id?, skip=0, limit=200)` returns normalized stages,
+  jobs and tasks with parent IDs, status/result, issue messages, attempts, log IDs and nested
+  timeline IDs. `limit` is at most `1000`. The response includes `total_count`, `count`,
+  `truncated` and `next_skip`; follow `next_skip` until null. The provider JSON is bounded to
+  2 MiB. Pass a returned `details_timeline_id` as `timeline_id` to inspect a nested timeline.
+- `get_ado_build_log(build_id, log_id, start_line?, max_lines=200)` reads a log referenced by
+  the timeline. Omit `start_line` to read a bounded tail, or supply a zero-based offset to read
+  forward. `max_lines` is at most `1000`; output text is capped at 64 KiB. The response includes
+  `text`, `start_line`, exclusive `end_line`, `returned_lines`, `total_lines`, `next_start_line`
+  and explicit truncation flags. A byte-truncated final line is marked `partial_last_line`;
+  continuation advances past that line. Log metadata is resolved on the configured build,
+  never through provider-supplied URLs. Empty logs return empty text; unavailable logs fail
+  explicitly. Diagnostic audit summaries omit issue messages and log contents, and responses
+  reflecting the host credential are rejected.
 - `list_ado_build_work_items` returns associated work-item IDs for the configured project.
   `limit` defaults to `200` and can be at most `1000`; `truncated` indicates that more IDs were
   returned by Azure DevOps than the tool included. Azure DevOps excludes work items from other
   projects in this operation. Use `get_ado_backlog_item` to inspect a returned ID.
 - A build's associated work items are evidence about that build. Confirm which build was deployed
   before reporting an item's inclusion in a release.
+
+For automated PR-build feedback, `query:ado:pr-build-context` takes a raw PR object,
+`tested_commit`, configured `intake_tags`/`reviewer_ids`, and an optional
+`preparation_deadline`. It returns intake eligibility, current/superseded/unknown revision
+context, and a fixed 15-minute preparation deadline with `within_preparation_window` and
+`retry_delay_seconds`. Preserve the returned deadline across retries. This query performs no
+network or state operations. Set `include_labels: true` on `query:pull-request:get` when its
+raw response will be used for eligibility; ADO labels require an additional opt-in GET.
 
 ## Host-Side Azure DevOps Work Item Activity Tool
 

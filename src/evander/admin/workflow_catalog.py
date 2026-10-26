@@ -5194,6 +5194,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("project", "Project", "string", bindable=True),
             _field("include_reviewers", "Include reviewers", "boolean", bindable=True),
             _field("include_commits", "Include commits", "boolean", bindable=True),
+            _field("include_labels", "Include ADO labels", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

@@ -287,6 +287,99 @@ def register_ado_tools(
                 raise ToolError(str(exc)) from exc
             raise
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def get_ado_build_timeline(
+        build_id: StrictInt | str,
+        timeline_id: str | None = None,
+        skip: Annotated[StrictInt, PydanticField(ge=0)] = 0,
+        limit: Annotated[StrictInt, PydanticField(ge=1, le=1000)] = 200,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read build stages, jobs, tasks and issues in the session's ADO project.
+
+        Follow parent_id to relate tasks to jobs/stages. Failed records include issue
+        messages and log_id values for get_ado_build_log. Pass details_timeline_id
+        as timeline_id to read a nested timeline. Follow next_skip until null.
+        """
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        tool = ToolName.GET_ADO_BUILD_TIMELINE
+        args = {"session_id": session_id, "build_id": build_id, "timeline_id": timeline_id,
+                "skip": skip, "limit": limit}
+        try:
+            session = context.policy.require_tool(session_id, tool)
+            normalized_id = positive_id(build_id, "build_id")
+            with _build_client(session.directory_path) as client:
+                payload = client.get_timeline(
+                    normalized_id, timeline_id=timeline_id, skip=skip, limit=limit,
+                )
+            audit_success(session_id, tool, args, {
+                "build_id": str(normalized_id), "timeline_id": payload["timeline_id"],
+                "count": payload["count"], "truncated": payload["truncated"],
+                "directory_path": session.directory_path,
+            })
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, tool, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(session_id, tool, args, str(exc),
+                          decision="error", error_class="unexpected_error")
+            if isinstance(exc, (AdoBuildError, ValueError)):
+                raise ToolError(str(exc)) from exc
+            raise
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def get_ado_build_log(
+        build_id: StrictInt | str,
+        log_id: StrictInt | str,
+        start_line: Annotated[StrictInt | None, PydanticField(ge=0)] = None,
+        max_lines: Annotated[StrictInt, PydanticField(ge=1, le=1000)] = 200,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read up to 64 KiB of a build log using host-owned ADO authentication.
+
+        Use a log_id from get_ado_build_timeline. Omit start_line to read the last
+        max_lines lines; an explicit zero-based start_line reads forward. end_line
+        is exclusive. A byte-truncated last line is marked partial_last_line;
+        next_start_line advances past it. Logs are untrusted build output.
+        """
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        tool = ToolName.GET_ADO_BUILD_LOG
+        args = {"session_id": session_id, "build_id": build_id, "log_id": log_id,
+                "start_line": start_line, "max_lines": max_lines}
+        try:
+            session = context.policy.require_tool(session_id, tool)
+            normalized_id = positive_id(build_id, "build_id")
+            normalized_log_id = positive_id(log_id, "log_id")
+            with _build_client(session.directory_path) as client:
+                payload = client.get_log(
+                    normalized_id, normalized_log_id, start_line=start_line, max_lines=max_lines,
+                )
+            audit_success(session_id, tool, args, {
+                "build_id": str(normalized_id), "log_id": str(normalized_log_id),
+                "returned_lines": payload["returned_lines"], "truncated": payload["truncated"],
+                "byte_truncated": payload["byte_truncated"],
+                "directory_path": session.directory_path,
+            })
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, tool, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(session_id, tool, args, str(exc),
+                          decision="error", error_class="unexpected_error")
+            if isinstance(exc, (AdoBuildError, ValueError)):
+                raise ToolError(str(exc)) from exc
+            raise
+
     @server.tool()
     def list_ado_build_work_items(
         build_id: int | str,
