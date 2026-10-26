@@ -270,6 +270,10 @@ Optional tarballs are written under ignored `dist/optional/` and are not consume
 worker playbook. Operator-owned pipeline overlays live outside this product repository and must
 preserve the same exclusion if automatic Godot deployment is not wanted.
 
+The worker playbook also [refreshes existing resource cleanup services](resource-cleanup.md),
+including their optional packages and persistent reapers. It does not provision new
+resource add-ons, and it rejects deployments that leave old cleanup timers active.
+
 The worker playbook copies each configured local runner image archive to the worker VM, runs
 `docker load`, verifies every configured image tag exists, installs Docker, deploys the repo
 package, renders `config/worker-daemon.env`, installs `evander-worker-daemon.service`,

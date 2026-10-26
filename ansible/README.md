@@ -446,6 +446,10 @@ The playbook is intended to be safe to re-run:
 - `init-state` is re-run against the same runtime directory
 - managed env files and workflow pack files are re-rendered from variables
 - worker/global JSON files are created when missing and otherwise preserved
+- existing, unmasked RabbitMQ, SQL Server and Test Fixtures cleanup services receive
+  their current add-on packages and persistent units during `worker.yml`; the worker
+  deployment fails if their old timers remain enabled or active. Absent add-ons and
+  masked services are left alone. See [resource cleanup](../docs/resource-cleanup.md).
 - `create_libvirt_network.sh` and `create_base_vm.sh` are repo-native and idempotent in the `full`
   profile
 - if the configured run user's supplementary groups change, managed services are restarted so

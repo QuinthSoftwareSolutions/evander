@@ -33,12 +33,18 @@ evander_worker_revision_guard_paths:
   - ansible/roles/worker_mssql_client_toolchain
   - ansible/roles/worker_container_egress_policy
   - ansible/roles/container_worker_service
+  - ansible/roles/resource_cleanup_runtime
   - ansible/roles/container_worker_verification
   - pyproject.toml
   - src/evander/worker
   - src/evander/codex_capacity.py
   - src/evander_mssql_seed_addon
   - src/evander/worker_daemon.py
+  - src/evander/resources
+  - scripts/migrate_resource_cleanup.py
+  - packages/rabbitmq-addon
+  - packages/sqlserver-addon
+  - packages/test-fixtures-addon
 
 evander_host_packages:
   - acl

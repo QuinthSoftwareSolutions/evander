@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import runpy
 import subprocess
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ class Host:
         self.calls = []
         self.enabled = {"evander-rabbitmq-reap.timer"}
         self.flags = "--reap --reap-loop"
+        self.versions = {}
 
     def run(self, command, **kwargs):
         self.calls.append(command)
@@ -34,6 +36,8 @@ class Host:
             output = "loaded" if (self.units / command[-1]).exists() else "not-found"
         elif command[-1] == "--help":
             output = self.flags
+        elif "-c" in command:
+            output = json.dumps(self.versions)
         elif command[:2] == ["systemctl", "disable"]:
             self.enabled.discard(command[-1])
         elif command[:2] == ["systemctl", "enable"]:
@@ -127,3 +131,38 @@ def test_reviewed_rollback_restores_timer_and_is_repeatable(tmp_path, host):
         assert host.enabled == {"evander-rabbitmq-reap.timer"}
         assert "Type=oneshot" in (host.units / "evander-rabbitmq-reap.service").read_text()
         assert "OnUnitActiveSec=5" in (host.units / "evander-rabbitmq-reap.timer").read_text()
+
+
+def installed_arguments(tmp_path, host):
+    args = arguments(tmp_path, host)
+    source = tmp_path / "reviewed"
+    templates = source / "packages/rabbitmq-addon/examples/systemd"
+    templates.mkdir(parents=True)
+    (source / "pyproject.toml").write_text('[project]\nversion = "9.8.7"\n')
+    (source / "packages/rabbitmq-addon/pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
+    (templates / "evander-rabbitmq-reap.service").write_text(
+        (
+            ROOT / "packages/rabbitmq-addon/examples/systemd/evander-rabbitmq-reap.service"
+        ).read_text()
+    )
+    args.update(packages_installed=True, wheels=None, unit_source=source)
+    host.versions = {"evander": "9.8.7", "evander-rabbitmq-addon": "1.2.3"}
+    return args
+
+
+def test_worker_playbook_can_migrate_preinstalled_reviewed_packages(tmp_path, host):
+    args = installed_arguments(tmp_path, host)
+    assert migrate(**args) == ["rabbitmq"]
+    assert host.enabled == {"evander-rabbitmq-reap.service"}
+    assert not any(c[:3] == ["uv", "pip", "install"] for c in host.calls)
+    assert not (host.units / "evander-rabbitmq-reap.timer").exists()
+
+
+@pytest.mark.parametrize("package", ["evander", "evander-rabbitmq-addon"])
+def test_stale_preinstalled_package_cannot_disable_existing_cleanup(tmp_path, host, package):
+    args = installed_arguments(tmp_path, host)
+    host.versions[package] = "0.0.1"
+    with pytest.raises(ValueError, match="versions do not match"):
+        migrate(**args)
+    assert host.enabled == {"evander-rabbitmq-reap.timer"}
+    assert not any(c[:2] == ["systemctl", "stop"] for c in host.calls)
