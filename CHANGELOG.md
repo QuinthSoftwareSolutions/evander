@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-26 - Support Ubuntu 26.04 worker browser preparation (0.129.6)
+
+- Pin the seeded worker Playwright runtime and shared-browser test package to 1.64.1, with matching Chromium downloads and refreshed npm lockfiles. Worker artifact preparation can run on Ubuntu 26.04 without downgrading the build-agent image.
+
 ## 2026-10-25 - Download images and file links from forwarded Teams messages (0.129.5)
 
 - Discover hosted images and SharePoint/OneDrive file links embedded in forwarded message bodies, and expose them through the existing attachment and inline-media tools. Preserve the destination message as the artifact source and download only the referenced resource through the existing Teams identity.
