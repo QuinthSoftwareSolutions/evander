@@ -246,7 +246,7 @@ def register_pr_tools(
 
     @server.tool()
     def complete_pull_request(
-        provider: Literal["azure_devops", "azure-devops", "ado"],
+        provider: Literal["azure_devops", "azure-devops", "ado", "github"],
         repo: str,
         pr_id: str,
         expected_source_commit: str,
@@ -256,13 +256,15 @@ def register_pr_tools(
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Complete a PR bound to this session, without bypassing branch policies.
+        """Complete an Azure DevOps or GitHub PR bound to this session.
 
-        Read the PR first and provide its full source SHA and target branch. A
-        changed source or target, draft, unresolved review, or blocking policy
-        prevents completion. Check merged/pending/blockers in the response;
-        accepting a completion request does not prove the merge has finished.
-        This uses a merge commit and keeps the source branch.
+        Read the PR first and provide its full source SHA and target branch.
+        Source/target changes and drafts block submission; repository policies
+        still govern completion and are never bypassed. Check merged/pending/
+        blockers in the response. For pending work, retry with the same inputs
+        to check the outcome. GitHub uses its asynchronous merge/queue API;
+        Azure DevOps uses a merge commit. Neither adapter requests source-branch
+        deletion.
         """
         resolved = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map

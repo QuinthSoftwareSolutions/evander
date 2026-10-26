@@ -338,6 +338,11 @@ class PrReplyProvider(Protocol):
 
 
 class PrQueryProvider(Protocol):
+    def complete_pull_request(
+        self, *, repo: str, pr_id: str, expected_source_commit: str,
+        expected_target_branch: str,
+    ) -> CompletePullRequestResponse: ...
+
     def list_pull_requests(
         self,
         *,
@@ -467,6 +472,22 @@ class GitHubPrQueryProvider:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def complete_pull_request(
+        self, *, repo: str, pr_id: str, expected_source_commit: str,
+        expected_target_branch: str,
+    ) -> CompletePullRequestResponse:
+        from .github_pr_completion import complete_github_pull_request
+
+        if not self.token:
+            raise ValueError("GitHub PR completion requires a configured token")
+        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
+            return complete_github_pull_request(
+                client=client, api_base_url=self.api_base_url,
+                headers={**self._headers(), "X-GitHub-Api-Version": "2026-03-10"},
+                repo=repo, pr_id=pr_id, expected_source_commit=expected_source_commit,
+                expected_target_branch=expected_target_branch,
+            )
 
     def list_pull_requests(
         self,

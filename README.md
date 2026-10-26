@@ -1162,10 +1162,14 @@ Use this when you want the guest to wake only for new review feedback and post t
    directly to the PR and append their Markdown image/download links to the supplied description,
    or to its current text when `description` is omitted. Use `expected_statuses=["active"]`
    to guard against stale requests.
-   Complete a bound Azure DevOps PR with `complete_pull_request(provider, repo, pr_id,
+   Complete a bound Azure DevOps or GitHub PR with `complete_pull_request(provider, repo, pr_id,
    expected_source_commit, expected_target_branch)` after reading its current state. The
    dedicated tool enforces the expected source and target, honors branch policies, and reports
    `merged`, `pending`, and `blockers`; a status update cannot substitute for completion.
+   GitHub completion uses the asynchronous API with rule bypass disabled and honors merge
+   queues. A pending or enqueued request is not a completed merge. The host GitHub token needs
+   repository Pull requests read and Contents write permissions. A PR targeting another open
+   PR is blocked so one completion request cannot automatically merge the rest of a stack.
    For durable permission across runs, use `effect:session:reconcile-policy` with
    `policy: {"add_tools": ["complete_pull_request"]}`. Other session permissions are retained.
    For full thread history, including already-consumed items and agent-authored replies suppressed

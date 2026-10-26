@@ -4579,10 +4579,15 @@ explicit standalone command such as `!GRANT ownership`; do not grant from quoted
 examples, ordinary discussion, classifier inference, or comments from the bot itself.
 Granting access does not complete the PR.
 
-The `complete_pull_request` tool requires a PR already bound in the session's
+The `complete_pull_request` tool supports Azure DevOps and GitHub and requires a PR already
+bound in the session's
 `pr_feedback_streams`, its full `expected_source_commit`, and `expected_target_branch`.
 It respects configured per-call approval and argument policies, rejects changed
 source/target refs, drafts, unresolved reviews and blocking provider policies, and
-never bypasses branch policy. It preserves the source branch and uses a merge commit.
+never bypasses branch policy. Azure DevOps preserves the source branch and uses a merge
+commit. GitHub uses its asynchronous merge/queue API with `bypass_rules=false`, requires
+a host token with Pull requests read and Contents write permissions, and blocks a target
+branch belonging to another open PR. The adapter does not delete source branches (repository automation may do so).
+`completion_id` and `message`, when present, describe GitHub's asynchronous result.
 A `pending` response means the provider has not yet confirmed completion; retry with
 the same expected values to verify. Only `merged: true` confirms the outcome.

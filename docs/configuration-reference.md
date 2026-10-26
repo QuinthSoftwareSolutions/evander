@@ -3482,7 +3482,14 @@ changes. Existing directory restrictions and per-invocation approval still apply
 Unlike `effect:session:approve-mcp-tools-for-run`, these grants last across runs
 for the lifetime of the session unless revoked by a later policy change.
 
-Azure DevOps PR ownership may grant `complete_pull_request`. The tool is limited
+Azure DevOps or GitHub PR ownership may grant `complete_pull_request`. The tool is limited
 to the session's bound PR streams and requires the current full source commit and
 target branch. `update_pull_request(status="completed")` is rejected in favor of
 the dedicated completion path shared with workflow delivery.
+
+For GitHub, `repo` is `owner/repository`. Completion uses the existing host-owned
+GitHub token and requires Pull requests read and Contents write permissions. GitHub computes
+mergeability asynchronously and may enqueue a merge; check `merged`, `pending`, `blockers`, and
+the optional `completion_id`/`message`. Retry pending work with the same source SHA
+and target branch. Rule bypass is always false. The adapter refuses a target branch
+that belongs to another open PR rather than completing an unapproved stack.

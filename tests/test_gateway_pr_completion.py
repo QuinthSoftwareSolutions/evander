@@ -11,30 +11,30 @@ from evander.runtime import build_runtime
 from gateway_tool_support import call_tool as _call_tool
 
 
-@pytest.fixture
-def gateway(tmp_path):
+@pytest.fixture(params=["azure_devops", "github"])
+def gateway(tmp_path, request):
+    provider = request.param
+    repo = "owner/repo" if provider == "github" else "repo"
     context = build_runtime(GatewayConfig(runtime_dir=tmp_path))
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="reviewer",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={
-                "pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo", "pr_id": "17"}]
-            },
+            metadata={"pr_feedback_streams": [{"provider": provider, "repo": repo, "pr_id": "17"}]},
         )
     )
     calls = []
 
     def complete(**kwargs):
         calls.append(kwargs)
-        return CompletePullRequestResponse(repo="repo", pr_id="17", merged=True)
+        return CompletePullRequestResponse(provider=provider, repo=repo, pr_id="17", merged=True)
 
     context.pr_query_service = SimpleNamespace(complete_pull_request=complete)
     arguments = dict(
         session_id="reviewer",
-        provider="ado",
-        repo="repo",
+        provider="ado" if provider == "azure_devops" else provider,
+        repo=repo,
         pr_id="17",
         expected_source_commit="a" * 40,
         expected_target_branch="main",
@@ -60,8 +60,8 @@ def test_completion_requires_permission_and_a_bound_pr(gateway):
     assert result["merged"] is True
     assert calls == [
         {
-            "provider": "azure_devops",
-            "repo": "repo",
+            "provider": "azure_devops" if arguments["provider"] == "ado" else "github",
+            "repo": arguments["repo"],
             "pr_id": "17",
             "expected_source_commit": "a" * 40,
             "expected_target_branch": "main",
@@ -85,7 +85,7 @@ def test_completion_keeps_per_invocation_approval(gateway):
     [
         {"expected_source_commit": "short"},
         {"pr_id": "17/threads"},
-        {"provider": "github"},
+        {"provider": "gitlab"},
     ],
 )
 def test_completion_rejects_invalid_arguments(gateway, change):
