@@ -6,6 +6,15 @@
 - Use GitHub's asynchronous completion API with rule bypass disabled. Distinguish a queued or pending request from a verified merge, allow read-only polling of a returned completion ID across runs, and block automatic completion of open downstack PRs.
 - Add HTTP-boundary tests for GitHub authorization, changed refs, pending work, provider failures, and merge verification.
 
+## 2026-10-26 - Support Ubuntu 26.04 worker browser preparation (0.130.2)
+
+- Pin the seeded worker Playwright runtime and shared-browser test package to 1.64.1, with matching Chromium downloads and refreshed npm lockfiles. Worker artifact preparation can run on Ubuntu 26.04 without downgrading the build-agent image.
+
+## 2026-10-26 - Reintegrate reviewed contribution correction chains (0.130.1)
+
+- Allow a pinned integration to include a reviewed correction based on another explicitly selected, accepted contribution when that predecessor chain is anchored in the pinned integration base.
+- Preserve immutable source and base checks, and reject missing predecessors, unanchored chains and contradictory provenance before preparing or accepting Git work.
+
 ## 2026-10-26 - Persist PR ownership and complete bound pull requests (0.130.0)
 
 - Add the Azure DevOps `complete_pull_request` MCP tool for session-bound PRs with expected source and target checks, provider policy enforcement, and verified merge outcomes. Workflow delivery uses the same completion implementation.
