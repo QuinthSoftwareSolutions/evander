@@ -2,6 +2,25 @@
 
 This file is for future Codex instances working in the `evander` repo.
 
+## Production Source Changes
+
+- Develop and test source changes in a local worktree and publish a reviewable branch.
+- Production source changes require human review before deployment. An agent or subagent review
+  does not replace human review.
+- Deploy production source changes only through the established CI/CD pipelines. Do not edit
+  production source files, switch the running installation to another Git revision, copy source
+  or built assets into it, or reinstall packages manually. Do not use manual service restarts to
+  activate source changes outside CI/CD.
+- Approval to implement, fix, test, review, commit, or push a change is not approval to deploy it.
+  Explicit deployment approval still requires the reviewed source and the established pipeline.
+- Rollbacks follow the same approved CI/CD process unless Jonathan explicitly authorizes a
+  different rollback procedure.
+- If required review or pipeline access is unavailable, report the blocker before changing
+  production. Do not substitute an ad hoc SSH or Ansible deployment.
+- Read-only production inspection remains available for authorized diagnosis. Operational
+  configuration and workflow changes retain their own authorization, API, revision, and lock
+  requirements below.
+
 ## Purpose
 
 This repo implements a host-side control plane for isolated agent execution. The main execution
