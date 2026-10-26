@@ -350,14 +350,14 @@ class SessionAdminService:
         allowed_fields = {
             "allowed_tools", "allowed_script_names", "approval_required_tools",
             "approval_tool_settings", "tool_argument_policies", "connector_grants",
-            "host_directory_grants", "metadata",
+            "host_directory_grants", "metadata", "add_tools", "remove_tools",
         }
         unknown = set(policy) - allowed_fields
         if unknown:
             raise ValueError("Unsupported managed policy fields: " + ", ".join(sorted(unknown)))
         for field in (
             "allowed_tools", "approval_required_tools", "approval_tool_settings",
-            "tool_argument_policies",
+            "tool_argument_policies", "add_tools", "remove_tools",
         ):
             tools = policy.get(field) or ()
             if isinstance(tools, str):
@@ -380,7 +380,25 @@ class SessionAdminService:
                 raise ValueError("Session is outside the requested policy directory")
             before_update = manifest.model_copy(deep=True)
             payload = dict(policy)
+            additions = payload.pop("add_tools", [])
+            removals = payload.pop("remove_tools", [])
+            for name, values in (("add_tools", additions), ("remove_tools", removals)):
+                if not isinstance(values, list) or any(
+                    not isinstance(value, str) or not value.strip() for value in values
+                ):
+                    raise ValueError(f"{name} must be a list of non-empty tool names")
+            if "allowed_tools" in payload and (additions or removals):
+                raise ValueError("Use allowed_tools or add_tools/remove_tools, not both")
+            additions = session_helpers.normalize_allowed_tools(additions)
+            removal_names = {tool_name_value(t) for t in session_helpers.normalize_allowed_tools(removals)}
+            if removal_names & {tool_name_value(t) for t in additions}:
+                raise ValueError("A tool cannot be added and removed in the same update")
             tools = payload.pop("allowed_tools", None)
+            if additions or removals:
+                tools = session_helpers.normalize_allowed_tools([
+                    *[t for t in manifest.allowed_tools if tool_name_value(t) not in removal_names],
+                    *additions,
+                ])
             if "allowed_tools" in policy and not isinstance(tools, list):
                 raise ValueError("allowed_tools must be a list")
             if tools is not None and any(
