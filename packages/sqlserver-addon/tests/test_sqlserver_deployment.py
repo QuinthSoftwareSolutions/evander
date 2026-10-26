@@ -18,8 +18,11 @@ def test_worker_and_independent_reaper_keep_private_writable_sqlite_temp(unit):
         "/var/lib/agent-worker/runtime",
     }
     command = shlex.split(service["ExecStart"])
-    assert ("--reap" in command) == (unit == "reap")
+    assert ("--reap-loop" in command) == (unit == "reap")
     if unit == "reap":
-        timer = ConfigParser(interpolation=None)
-        timer.read(root / "evander-sqlserver-reap.timer")
-        assert 0 < int(timer["Timer"]["OnUnitActiveSec"]) <= 5
+        assert service["Type"] == "simple"
+        assert service["Restart"] == "on-failure"
+        assert service["RestartSec"] == "5s"
+        assert service["TimeoutStopSec"] == "30s"
+        assert config["Install"]["WantedBy"] == "multi-user.target"
+        assert not (root / "evander-sqlserver-reap.timer").exists()

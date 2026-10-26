@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import hmac
+import logging
 import os
 from pathlib import Path
 import time
@@ -373,13 +374,22 @@ def main(addon_id, adapter_factory, default_port):
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=default_port)
-    parser.add_argument("--reap", action="store_true")
+    cleanup = parser.add_mutually_exclusive_group()
+    cleanup.add_argument("--reap", action="store_true", help="Run one independent cleanup pass")
+    cleanup.add_argument(
+        "--reap-loop", action="store_true", help="Run persistent independent cleanup"
+    )
     args = parser.parse_args()
     os.umask(0o077)
     settings = WorkerSettings.model_validate_json(args.config.read_bytes())
     service = WorkerService(addon_id, settings, adapter_factory(settings))
     if args.reap:
         service.tick()
+    elif args.reap_loop:
+        from .reaper import run_cleanup_loop
+
+        logging.basicConfig(level=logging.INFO)
+        run_cleanup_loop(service.tick)
     else:
         import uvicorn
 

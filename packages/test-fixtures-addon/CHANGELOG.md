@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 - 2026-10-26
+
+- Keep independent cleanup running between five-second passes instead of launching a new process each time. Preserve the two-second API watchdog, durable recovery and single-pass `--reap` command.
+- Replace the reaper timer with a persistent service using Evander 0.131.2 or later and the reviewed CI/CD migration. Keep cleanup installed while legacy leases drain.
+
 ## 0.1.4 - 2026-10-16
 
 - Add explicit drain mode that rejects new bundles while retaining existing rebind, renewal, reset, release and cleanup.

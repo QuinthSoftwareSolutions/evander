@@ -25,3 +25,11 @@ def test_fixture_services_allow_sqlite_sorting_without_broad_host_writes(unit):
         "/var/lib/evander-test-fixtures",
         "/var/lib/agent-worker/runtime",
     }
+    if unit == "reap":
+        assert "--reap-loop" in shlex.split(service["ExecStart"])
+        assert service["Type"] == "simple"
+        assert service["Restart"] == "on-failure"
+        assert service["RestartSec"] == "5s"
+        assert service["TimeoutStopSec"] == "30s"
+        assert config["Install"]["WantedBy"] == "multi-user.target"
+        assert not path.with_suffix(".timer").exists()
