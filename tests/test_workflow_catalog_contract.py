@@ -1348,6 +1348,7 @@ def test_workflow_catalog_query_pull_request_get(catalog_payload) -> None:
         "project",
         "include_reviewers",
         "include_commits",
+        "include_labels",
     ]
     assert [option["value"] for option in pr_get["fields"][0]["options"]] == [
         "azure_devops",
