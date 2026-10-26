@@ -11,6 +11,7 @@ from pydantic import Field as PydanticField
 
 from evander.models import (
     CancelScheduledWakeResponse,
+    CompletePullRequestRequest,
     DeletePrCommentRequest,
     DownloadPrFeedbackAttachmentRequest,
     DownloadPrFeedbackAttachmentResponse,
@@ -240,6 +241,59 @@ def register_pr_tools(
                 str(exc),
                 decision="error",
                 error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def complete_pull_request(
+        provider: Literal["azure_devops", "azure-devops", "ado"],
+        repo: str,
+        pr_id: str,
+        expected_source_commit: str,
+        expected_target_branch: str,
+        request_id: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Complete a PR bound to this session, without bypassing branch policies.
+
+        Read the PR first and provide its full source SHA and target branch. A
+        changed source or target, draft, unresolved review, or blocking policy
+        prevents completion. Check merged/pending/blockers in the response;
+        accepting a completion request does not prove the merge has finished.
+        This uses a merge commit and keeps the source branch.
+        """
+        resolved = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request = CompletePullRequestRequest(
+            session_id=resolved, provider=normalize_pr_automation_provider(provider),
+            repo=repo.strip(), pr_id=pr_id.strip(),
+            expected_source_commit=expected_source_commit.strip().lower(),
+            expected_target_branch=expected_target_branch.strip(), request_id=request_id,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(resolved, ToolName.COMPLETE_PULL_REQUEST)
+            context.policy.require_pr_feedback_stream(
+                session, provider=request.provider, repo=request.repo, pr_id=request.pr_id
+            )
+            response = context.pr_query_service_for_session(resolved).complete_pull_request(
+                provider=request.provider, repo=request.repo, pr_id=request.pr_id,
+                expected_source_commit=request.expected_source_commit,
+                expected_target_branch=request.expected_target_branch,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(resolved, ToolName.COMPLETE_PULL_REQUEST, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved, ToolName.COMPLETE_PULL_REQUEST, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved, ToolName.COMPLETE_PULL_REQUEST, args, str(exc),
+                decision="error", error_class="completion_error",
             )
             raise
 

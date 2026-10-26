@@ -972,10 +972,12 @@ class ManagedGitAdminService:
         base_commit_sha: str,
         sources: Sequence[Mapping[str, str]],
     ) -> None:
-        """Reject contributions whose starting history is outside the pinned base.
+        """Verify selected contributions and their exact reviewed predecessor chains.
 
         Only immutable object IDs are consulted. A newer live branch tip cannot
         authorize additional source history for an already pinned integration.
+        A correction may start at another selected contribution's reviewed commit
+        when that predecessor's chain is anchored in the pinned integration base.
         """
 
         record = self._require_scoped_record(managed_repo_id, directory_path)
@@ -996,6 +998,8 @@ class ManagedGitAdminService:
             record = self._require_scoped_record(managed_repo_id, directory_path)
             bare_path = _managed_bare_path(self._managed_root, record)
             self._require_commit(bare_path, base_commit)
+            verified_commits = {base_commit}
+            pending_sources = []
             for source_id, commit, source_base in normalized_sources:
                 self._require_commit(bare_path, commit)
                 self._require_commit(bare_path, source_base)
@@ -1005,7 +1009,19 @@ class ManagedGitAdminService:
                         f"its recorded base {source_base}", cause="contradictory_provenance",
                         evidence={"source_id": source_id, "source_commit": commit, "source_base": source_base},
                     )
-                if not self._is_ancestor(bare_path, source_base, base_commit):
+                if self._is_ancestor(bare_path, source_base, base_commit):
+                    verified_commits.add(commit)
+                else:
+                    pending_sources.append((source_id, commit, source_base))
+            while pending_sources:
+                remaining = []
+                for source_id, commit, source_base in pending_sources:
+                    if source_base in verified_commits:
+                        verified_commits.add(commit)
+                    else:
+                        remaining.append((source_id, commit, source_base))
+                if len(remaining) == len(pending_sources):
+                    source_id, _commit, source_base = remaining[0]
                     raise GitPreparationFailure(
                         f"contribution {source_id} was prepared from {source_base}, "
                         f"which is outside pinned integration base {base_commit}; "
@@ -1013,6 +1029,7 @@ class ManagedGitAdminService:
                         "explicit integration boundary", cause="incompatible_source_base",
                         evidence={"source_id": source_id, "source_base": source_base, "expected_base": base_commit},
                     )
+                pending_sources = remaining
 
     def verify_excluded_ancestors(self, managed_repo_id: str, *, directory_path: str,
                                   commit_shas: Sequence[str], excluded_ancestor_shas: Sequence[str]) -> None:

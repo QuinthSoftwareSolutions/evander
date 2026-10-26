@@ -3471,3 +3471,18 @@ Optional shared-browser voice settings and host credential setup are described i
 Optional [multi-step decision execution](../packages/browser-sessions-addon/docs/fast-execution.md) uses the directory’s Jev or OpenAI Decisions provider in the existing shared browser. It is disabled by default; the owning PA supplies exact input values and verifies the result.
 
 The managed Admin Web Caddy role discovers the optional browser relay through evander_admin_web_browser_relay_environment_file (default /etc/evander/browser-relay.env). evander_admin_web_browser_relay_enabled overrides discovery; evander_admin_web_browser_relay_upstream_host and evander_admin_web_browser_relay_upstream_port select the private upstream (default 127.0.0.1:11890).
+
+### Incremental persistent session tool grants
+
+`effect:session:reconcile-policy` accepts `policy.add_tools` and `policy.remove_tools`
+as lists of canonical MCP tool names. These atomically update the latest persisted
+`allowed_tools` without replacing unrelated permissions or runtime metadata. They
+cannot be combined with `policy.allowed_tools`, and a tool cannot occur in both
+changes. Existing directory restrictions and per-invocation approval still apply.
+Unlike `effect:session:approve-mcp-tools-for-run`, these grants last across runs
+for the lifetime of the session unless revoked by a later policy change.
+
+Azure DevOps PR ownership may grant `complete_pull_request`. The tool is limited
+to the session's bound PR streams and requires the current full source commit and
+target branch. `update_pull_request(status="completed")` is rejected in favor of
+the dedicated completion path shared with workflow delivery.

@@ -22,6 +22,7 @@ from evander.ado_mentions import (
 )
 from evander.models import (
     AdoPrCommentActivityResponse,
+    CompletePullRequestResponse,
     AdoPrCommitActivityResponse,
     HasPendingFeedbackResponse,
     GetPullRequestResponse,
@@ -1140,6 +1141,20 @@ class PrQueryService:
             skip=skip,
             exhaustive=exhaustive,
             max_candidates=max_candidates,
+        )
+
+    def complete_pull_request(
+        self, *, provider: str, repo: str, pr_id: str,
+        expected_source_commit: str, expected_target_branch: str,
+    ) -> CompletePullRequestResponse:
+        provider_name = normalize_pr_automation_provider(provider)
+        implementation = self.providers.get(provider_name)
+        complete = getattr(implementation, "complete_pull_request", None)
+        if not callable(complete):
+            raise ValueError(f"PR provider {provider_name!r} does not support completion")
+        return complete(
+            repo=repo, pr_id=pr_id, expected_source_commit=expected_source_commit,
+            expected_target_branch=expected_target_branch,
         )
 
     def update_pull_request(
