@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Continue recovery past missing worker mappings (0.133.4)
+
+- Bind container-worker ownership inside the first background RPC so missing execution mappings follow the existing inspection retry path instead of aborting a recovery page. Continue processing later jobs without finalizing or deleting unresolved records.
+- Verify completion behind stale records across recovery pages, recovery after a mapping is restored, and single-flight background binding with continued use of the pinned backend.
+
 ## 2026-10-26 - Keep worker reconciliation and Team reads responsive (0.133.3)
 
 - Move container-worker completion RPCs to a bounded background pool while retaining workflow transitions on the orchestration thread. Wake recovery when results arrive, preserve retry counters, and fence observations against cancelled, deleted or replaced jobs.

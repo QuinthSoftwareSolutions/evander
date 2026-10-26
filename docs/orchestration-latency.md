@@ -51,6 +51,12 @@ Each continuation pins its worker job, and RPC observations commit conditionally
 current lifecycle row. Late results cannot restore deleted jobs, overwrite cleanup or target a
 replacement job. Concurrent receipt progress and unrelated metadata are retained.
 
+Ownership binding runs inside the first background RPC. A missing worker mapping follows the
+existing inspection retry path: retain that waiting record and continue through the recovery
+page. Missing mappings never imply successful completion or authorize deletion. If a mapping
+is restored, a later pass can reconcile it normally. Binding succeeds once per continuation,
+and subsequent RPCs keep using that pinned backend.
+
 Configuration rebinding and orderly shutdown drain the pool before releasing runtime bindings.
 Locked single-cycle operator runs reconcile inline so results are consumed before shutdown.
 Restart loses only process-local results; durable waiting records are inspected again. These
@@ -206,6 +212,7 @@ Run focused coverage from the checkout using its own source path:
 PYTHONPATH=src timeout 120s .venv/bin/pytest -q -s tests/test_orchestration_handoff_latency.py
 PYTHONPATH=src timeout 120s .venv/bin/pytest -q -s tests/test_team_isolated_maintenance.py
 PYTHONPATH=src:tests timeout 120s .venv/bin/pytest -q tests/test_deferred_backend_reconciliation.py tests/test_team_mcp_read_scope.py
+PYTHONPATH=src:tests timeout 120s .venv/bin/pytest -q tests/test_missing_worker_reconciliation.py
 ```
 
 The 30-chain benchmark stubs external work. Its target is cumulative inter-provider handoff p95
