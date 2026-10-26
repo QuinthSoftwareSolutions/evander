@@ -52,6 +52,7 @@ current lifecycle row. Late results cannot restore deleted jobs, overwrite clean
 replacement job. Concurrent receipt progress and unrelated metadata are retained.
 
 Configuration rebinding and orderly shutdown drain the pool before releasing runtime bindings.
+Locked single-cycle operator runs reconcile inline so results are consumed before shutdown.
 Restart loses only process-local results; durable waiting records are inspected again. These
 changes benefit container-backed agents across entrypoints, including personal assistants and
 browser sessions, as well as Team agents. Libvirt reconciliation retains its existing path.

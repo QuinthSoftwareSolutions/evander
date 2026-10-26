@@ -40,7 +40,9 @@ def test_registered_read_tools_do_not_hydrate_the_aggregate(tmp_path, monkeypatc
         (TEAM_GET_TASK_TOOL, {"task_id": "alpha-task-a"}),
         (TEAM_LIST_TASKS_TOOL, {"limit": 2}),
     ):
-        _assert_read_success(_call_tool(server, name, {"session_id": "session-alpha-dev", **extra}))
+        result = _call_tool(server, name, {"session_id": "session-alpha-dev", **extra})
+        _assert_read_success(result)
+        assert "attention_error" not in result
 
 
 def test_keyed_reads_decode_only_the_requested_record_and_its_children(tmp_path, monkeypatch):

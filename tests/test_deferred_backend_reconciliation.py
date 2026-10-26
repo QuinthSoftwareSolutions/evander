@@ -154,6 +154,30 @@ def test_rpc_errors_follow_existing_retry_semantics():
         pool.close()
 
 
+def test_single_cycle_consumes_worker_result_before_draining(tmp_path):
+    from test_orchestration_handoff_latency import _worker
+
+    worker = _worker(tmp_path, chain_length=2)
+    rec, published = record(), []
+    backend = SimpleNamespace(inspect=lambda target: "stopped")
+
+    def reconcile(port):
+        assert port.inspect("job-a") == "stopped"
+        published.append(True)
+        return 1
+
+    def recover(**kwargs):
+        return worker.reconcile_container_backend(record=rec, backend=backend, reconcile=reconcile)
+
+    worker._lifecycle_reconciliation_hooks = (SimpleNamespace(reconcile=recover),)
+    worker._completion_dispatch_hooks = ()
+    worker._recovery_schedule.next_due = 0
+    worker.run_once_with_lock()
+    assert published == [True]
+    assert worker._deferred_backends is None
+    assert worker._inline_container_reconciliation is False
+
+
 @pytest.mark.parametrize("reason", ["model_capacity", "rate_limited"])
 def test_suspended_cleanup_does_not_advance_capacity_retry_twice(tmp_path, monkeypatch, reason):
     from test_model_capacity_retry import Backend, waiting_record, worker_at
