@@ -3535,6 +3535,16 @@ submission. If voting fails after comments were published, inspect the PR before
 avoid duplicate comments. Existing tool grants, argument policies, and approval requirements
 still apply. GitHub retains its existing `COMMENT`, `APPROVE`, and `REQUEST_CHANGES` events.
 
+Azure DevOps disables voting on draft PRs. After checking the assigned host reviewer, the
+host reads the PR's draft state before publishing a voting submission. For a draft it publishes
+the comments successfully, skips the vote, and returns `event=COMMENT`, the original
+`requested_event`, `vote_deferred=true`, and `vote_deferred_reason=draft_pull_request`.
+The response and audit do not claim a `vote`. Failed or unconfirmed draft-state reads stop
+before comment publication. Comment-only submissions do not need this additional lookup.
+Retries with the same idempotency key reuse the successful comment publication even if the
+PR has since been published. After publication, recheck the current source commit and submit
+a new review with a new key if a vote is appropriate; no deferred vote is replayed automatically.
+
 Maintain existing comments with `delete_pr_comment(provider, repo, pr_id, comment_id, ...)`
 and `resolve_pr_comment(provider, repo, pr_id, ...)`. Both require their own explicit
 `allowed_tools` grant and use the session directory's host credentials. Normal directory

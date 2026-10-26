@@ -48,6 +48,8 @@ def test_azure_review_votes_as_the_assigned_host_identity_and_deduplicates_retri
                 200,
                 json={"id": reviewer_id, "isRequired": is_required, "vote": expected_vote},
             )
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17"):
+            return httpx.Response(200, json={"isDraft": False})
         if request.method == "POST" and request.url.path.endswith("/pullRequests/17/threads"):
             return httpx.Response(201, json={"id": 44, "comments": [{"id": 10}]})
         if request.method == "PUT" and request.url.path == reviewer_path:
@@ -86,7 +88,71 @@ def test_azure_review_votes_as_the_assigned_host_identity_and_deduplicates_retri
     assert result["published_feedback_ids"] == ["azure_devops:thread_comment:44:10"]
     assert retry["status"] == "deduplicated"
     assert retry["vote"] == expected_vote
-    assert [r.method for r in requests] == ["GET", "GET", "POST", "PUT"]
+    assert [r.method for r in requests] == ["GET", "GET", "GET", "POST", "PUT"]
+
+
+@pytest.mark.parametrize(
+    "event",
+    ["APPROVE", "APPROVE_WITH_SUGGESTIONS", "WAITING_FOR_AUTHOR", "REQUEST_CHANGES", "RESET"],
+)
+def test_azure_draft_review_defers_vote_and_persists_publication_for_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    reviewer_id = "11111111-1111-1111-1111-111111111111"
+    pr_path = "/example/proj/_apis/git/repositories/repo1/pullRequests/17"
+    is_draft = True
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/_apis/connectionData"):
+            return httpx.Response(200, json={"authenticatedUser": {"id": reviewer_id}})
+        if request.method == "GET" and request.url.path == f"{pr_path}/reviewers/{reviewer_id}":
+            return httpx.Response(200, json={"id": reviewer_id, "vote": 0})
+        if request.method == "GET" and request.url.path == pr_path:
+            return httpx.Response(200, json={"isDraft": is_draft})
+        if request.method == "POST" and request.url.path == f"{pr_path}/threads":
+            return httpx.Response(201, json={"id": 44, "comments": [{"id": 10}]})
+        pytest.fail(f"draft review attempted an unexpected operation: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handle))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example", project="proj", pat="secret"
+    )
+    store_path = tmp_path / "idempotency.json"
+    service = PrPublishService(
+        providers={"azure_devops": provider}, idempotency_store_path=store_path
+    )
+    arguments = dict(
+        provider="ado",
+        repo="repo1",
+        pr_id="17",
+        body_text="Summary",
+        event=event,
+        idempotency_key="draft-review",
+    )
+
+    result = service.submit_review(**arguments)
+    assert result["status"] == "posted"
+    assert result["event"] == "COMMENT"
+    assert result["requested_event"] == event
+    assert result["vote_deferred"] is True
+    assert result["vote_deferred_reason"] == "draft_pull_request"
+    assert "vote" not in result
+    assert result["published_feedback_ids"] == ["azure_devops:thread_comment:44:10"]
+
+    # A process restart and PR publication must not replay a cached draft review or vote.
+    is_draft = False
+    restarted_service = PrPublishService(
+        providers={"azure_devops": provider}, idempotency_store_path=store_path
+    )
+    retry = restarted_service.submit_review(**arguments)
+    assert retry["status"] == "deduplicated"
+    assert retry["vote_deferred"] is True
+    assert "vote" not in retry
+    assert [r.method for r in requests] == ["GET", "GET", "GET", "POST"]
 
 
 @pytest.mark.parametrize("event", ["REJECT", "REJECTED", "-10", "UNKNOWN"])
@@ -114,21 +180,24 @@ def test_azure_review_rejects_unsupported_votes_before_provider_io(
         ("identity", 401, {}, httpx.HTTPStatusError, ["GET"]),
         ("reviewer", 404, {}, ValueError, ["GET", "GET"]),
         ("reviewer", 200, {"id": "another-user"}, ValueError, ["GET", "GET"]),
-        ("summary", 500, {}, httpx.HTTPStatusError, ["GET", "GET", "POST"]),
-        ("vote", 403, {}, httpx.HTTPStatusError, ["GET", "GET", "POST", "PUT"]),
+        ("draft-state", 503, {}, httpx.HTTPStatusError, ["GET", "GET", "GET"]),
+        ("draft-state", 200, {}, ValueError, ["GET", "GET", "GET"]),
+        ("draft-state", 200, {"isDraft": "false"}, ValueError, ["GET", "GET", "GET"]),
+        ("summary", 500, {}, httpx.HTTPStatusError, ["GET", "GET", "GET", "POST"]),
+        ("vote", 403, {}, httpx.HTTPStatusError, ["GET", "GET", "GET", "POST", "PUT"]),
         (
             "vote",
             200,
             {"id": "another-user", "vote": 10},
             ValueError,
-            ["GET", "GET", "POST", "PUT"],
+            ["GET", "GET", "GET", "POST", "PUT"],
         ),
         (
             "vote",
             200,
             {"id": "11111111-1111-1111-1111-111111111111", "vote": -10},
             ValueError,
-            ["GET", "GET", "POST", "PUT"],
+            ["GET", "GET", "GET", "POST", "PUT"],
         ),
     ],
 )
@@ -151,6 +220,9 @@ def test_azure_review_does_not_vote_before_publication_or_report_unconfirmed_vot
         elif request.method == "GET" and request.url.path.endswith(f"/reviewers/{reviewer_id}"):
             current_stage = "reviewer"
             success = {"id": reviewer_id}
+        elif request.method == "GET" and request.url.path.endswith("/pullRequests/17"):
+            current_stage = "draft-state"
+            success = {"isDraft": False}
         elif request.method == "POST" and request.url.path.endswith("/pullRequests/17/threads"):
             current_stage = "summary"
             success = {"id": 44, "comments": [{"id": 10}]}
