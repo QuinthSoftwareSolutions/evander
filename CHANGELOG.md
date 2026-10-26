@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-26 - Keep worker reconciliation and Team reads responsive (0.133.3)
+
+- Move container-worker completion RPCs to a bounded background pool while retaining workflow transitions on the orchestration thread. Wake recovery when results arrive, preserve retry counters, and fence observations against cancelled, deleted or replaced jobs.
+- Resolve read-only Team MCP calls from one request-owned SQLite snapshot. Hydrate keyed records and required collections lazily, and avoid aggregate attention scans when the caller has no pending operator messages. Preserve tool schemas, visibility checks and the existing attention delivery/write path.
+- Add concurrency, ownership, retry and snapshot regression coverage. Model selection, reasoning effort, fast mode and resource policies are unchanged; rollout requires human review and CI/CD.
+
 ## 2026-10-26 - Defer Azure DevOps review votes on draft pull requests (0.133.2)
 
 - Check draft state before publishing a voting review. Publish draft review comments successfully without attempting an unavailable vote, and report the deferral in the tool response and audit.

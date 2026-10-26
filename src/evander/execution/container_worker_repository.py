@@ -107,6 +107,40 @@ class ContainerWorkerExecutionRepository:
                 self._update_delivery_queue(connection, current)
             self._copy_model_usage_progress(current.metadata, record.metadata)
 
+    def save_observation(
+        self, record: ContainerWorkerExecutionRecord, *, expected: ContainerWorkerExecutionRecord,
+    ) -> ContainerWorkerExecutionRecord | None:
+        """Commit an RPC observation only while its job/lifecycle still owns the row."""
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._current_execution(connection, expected.execution_id)
+            if current is None:
+                return None
+            if (
+                not self._same_worker_job(current, expected)
+                or current.last_status != expected.last_status
+                or current.cleanup_status != expected.cleanup_status
+                or current.cleanup_attempted_at != expected.cleanup_attempted_at
+            ):
+                return current
+            # Preserve metadata written while the RPC was in flight. Apply only
+            # the observation's changes relative to the snapshot it inspected.
+            metadata = dict(current.metadata)
+            for key, value in record.metadata.items():
+                if key not in expected.metadata or value != expected.metadata[key]:
+                    metadata[key] = value
+            for key in expected.metadata.keys() - record.metadata.keys():
+                if metadata.get(key) == expected.metadata[key]:
+                    metadata.pop(key, None)
+            if self._newer_progress(current.metadata, metadata):
+                self._copy_model_usage_progress(current.metadata, metadata)
+            record.metadata = sanitize_metadata(metadata)
+            record.updated_at = now_utc()
+            self._insert_record(connection, record)
+            self._update_delivery_queue(connection, record)
+            return record
+
     def _current_execution(
         self, connection: sqlite3.Connection, execution_id: str,
     ) -> ContainerWorkerExecutionRecord | None:
