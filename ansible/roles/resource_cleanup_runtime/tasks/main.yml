@@ -1,0 +1,116 @@
+---
+- name: Discover provisioned resource cleanup services
+  ansible.builtin.service_facts:
+
+- name: Initialize installed resource add-on selection
+  ansible.builtin.set_fact:
+    evander_resource_cleanup_addons: []
+
+- name: Select only installed unmasked resource cleanup services
+  ansible.builtin.set_fact:
+    evander_resource_cleanup_addons: "{{ evander_resource_cleanup_addons + [item] }}"
+  loop:
+    - rabbitmq
+    - sqlserver
+    - test-fixtures
+  when:
+    - "('evander-' ~ item ~ '-reap.service') in ansible_facts.services"
+    - "ansible_facts.services.get('evander-' ~ item ~ '-reap.service', {}).get('status') not in ['masked', 'masked-runtime']"
+
+- name: Reconcile already provisioned resource cleanup
+  when: evander_resource_cleanup_addons | length > 0
+  block:
+    - name: Install selected resource add-ons from the reviewed checkout
+      ansible.builtin.command:
+        argv:
+          - uv
+          - pip
+          - install
+          - --python
+          - "{{ evander_deploy_path }}/.venv/bin/python"
+          - --no-deps
+          - -e
+          - "./packages/{{ item }}-addon"
+      args:
+        chdir: "{{ evander_deploy_path }}"
+      environment: "{{ evander_python_install_env | default({}) }}"
+      become_user: "{{ evander_run_user }}"
+      changed_when: false
+      loop: "{{ evander_resource_cleanup_addons }}"
+
+    - name: Initialize the cleanup migration command
+      ansible.builtin.set_fact:
+        evander_resource_cleanup_migration_command:
+          - "{{ evander_deploy_path }}/.venv/bin/python"
+          - "{{ evander_deploy_path }}/scripts/migrate_resource_cleanup.py"
+          - --packages-installed
+          - --unit-source
+          - "{{ evander_deploy_path }}"
+          - --python
+          - "{{ evander_deploy_path }}/.venv/bin/python"
+
+    - name: Add installed services to the cleanup migration
+      ansible.builtin.set_fact:
+        evander_resource_cleanup_migration_command: "{{ evander_resource_cleanup_migration_command + ['--addon', item] }}"
+      loop: "{{ evander_resource_cleanup_addons }}"
+
+    - name: Migrate installed cleanup services and retire their timers
+      ansible.builtin.command:
+        argv: "{{ evander_resource_cleanup_migration_command }}"
+      args:
+        chdir: "{{ evander_deploy_path }}"
+
+    - name: Refresh running resource API workers after package installation
+      ansible.builtin.systemd:
+        name: "evander-{{ item }}-worker.service"
+        state: restarted
+      loop: "{{ evander_resource_cleanup_addons }}"
+      when: "ansible_facts.services.get('evander-' ~ item ~ '-worker.service', {}).get('state') == 'running'"
+
+    - name: Verify migrated resource cleanup
+      when: not ansible_check_mode
+      block:
+        - name: Allow initial cleanup startup failures to surface
+          ansible.builtin.pause:
+            seconds: 5
+
+        - name: Verify persistent cleanup is enabled and running
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - show
+              - --property=Type
+              - --property=ActiveState
+              - --property=SubState
+              - --property=UnitFileState
+              - --property=NRestarts
+              - --property=ExecStart
+              - "evander-{{ item }}-reap.service"
+          changed_when: false
+          register: evander_resource_cleanup_health
+          until:
+            - "'Type=simple' in evander_resource_cleanup_health.stdout_lines"
+            - "'ActiveState=active' in evander_resource_cleanup_health.stdout_lines"
+            - "'SubState=running' in evander_resource_cleanup_health.stdout_lines"
+            - "'UnitFileState=enabled' in evander_resource_cleanup_health.stdout_lines"
+            - "'NRestarts=0' in evander_resource_cleanup_health.stdout_lines"
+            - "'--reap-loop' in evander_resource_cleanup_health.stdout"
+          retries: 5
+          delay: 1
+          loop: "{{ evander_resource_cleanup_addons }}"
+
+        - name: Verify legacy cleanup timers are not enabled
+          ansible.builtin.command:
+            argv: [systemctl, is-enabled, "evander-{{ item }}-reap.timer"]
+          changed_when: false
+          register: evander_resource_cleanup_timer_enabled
+          failed_when: evander_resource_cleanup_timer_enabled.rc == 0
+          loop: "{{ evander_resource_cleanup_addons }}"
+
+        - name: Verify legacy cleanup timers are not active
+          ansible.builtin.command:
+            argv: [systemctl, is-active, "evander-{{ item }}-reap.timer"]
+          changed_when: false
+          register: evander_resource_cleanup_timer_active
+          failed_when: evander_resource_cleanup_timer_active.rc == 0
+          loop: "{{ evander_resource_cleanup_addons }}"
