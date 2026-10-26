@@ -192,11 +192,11 @@ class AdoBuildClient:
             )
             self._protect_diagnostic(content)
             decoded = content.decode("utf-8", errors="replace")
-            selected = "".join(decoded.splitlines(keepends=True)[:stop - start]).encode("utf-8")
+            selected = "".join(_log_lines(decoded)[:stop - start]).encode("utf-8")
             byte_truncated = len(selected) > _LOG_MAX_BYTES or stream_truncated
             text = selected[:_LOG_MAX_BYTES].decode("utf-8", errors="ignore")
-            partial_last_line = len(selected) > _LOG_MAX_BYTES and not text.endswith(("\n", "\r"))
-        returned = len(text.splitlines())
+            partial_last_line = len(selected) > _LOG_MAX_BYTES and not text.endswith("\n")
+        returned = len(_log_lines(text))
         end = start + returned
         return {
             "build_id": str(build_id), "project": self.project, "log_id": str(log_id),
@@ -318,6 +318,14 @@ def _bounded_integer(value: Any, name: str, *, minimum: int, maximum: int | None
         bound = f" from {minimum} to {maximum}" if maximum is not None else f" of at least {minimum}"
         raise ValueError(f"{name} must be an integer{bound}")
     return value
+
+
+def _log_lines(text: str) -> list[str]:
+    # ADO offsets count LF-delimited log lines. Progress carriage returns and
+    # Unicode line separators inside a message must not hide later diagnostics
+    # or advance the continuation offset by more than one physical line.
+    parts = text.split("\n")
+    return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
 
 
 def _timeline_record(record: dict[str, Any]) -> dict[str, Any]:

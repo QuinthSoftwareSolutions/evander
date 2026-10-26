@@ -182,6 +182,29 @@ class CountingStream(httpx.SyncByteStream):
         self.closed = True
 
 
+def test_log_paging_preserves_carriage_returns_unicode_separators_and_crlf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = gateway(tmp_path, monkeypatch, [ToolName.GET_ADO_BUILD_LOG])
+    lines = ["progress 10%\rbuild failed\n", "expected first\u2028second; got empty\n", "last diagnostic\r\n"]
+
+    def respond(request):
+        if request.url.path.endswith("/logs"):
+            return httpx.Response(200, json={"value": [{"id": 7, "lineCount": 3}]})
+        start, end = int(request.url.params["startLine"]), int(request.url.params["endLine"])
+        return httpx.Response(200, text="".join(lines[start - 1:end]))
+
+    install_transport(monkeypatch, respond)
+    args = {"session_id": "session-1", "build_id": 42, "log_id": 7, "max_lines": 2}
+    first = call_tool(server, "get_ado_build_log", {**args, "start_line": 0})
+    second = call_tool(server, "get_ado_build_log", {**args, "start_line": first["next_start_line"]})
+    assert first["text"] == "progress 10%\rbuild failed\nexpected first\u2028second; got empty\n"
+    assert first["returned_lines"] == 2 and first["next_start_line"] == 2
+    assert second["text"] == "last diagnostic\r\n"
+    assert second["returned_lines"] == 1 and second["end_line"] == 3
+    assert second["next_start_line"] is None
+
+
 def test_oversized_log_stops_reading_and_marks_partial_utf8_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,6 +242,23 @@ def test_reflected_authentication_is_rejected_even_across_log_byte_boundary(
         asyncio.run(server.call_tool("get_ado_build_log", {"session_id": "session-1", "build_id": 42, "log_id": 7}))
     audit = (tmp_path / "audit.jsonl").read_text()
     assert token not in str(error.value) and token not in audit
+
+
+def test_byte_cap_ending_at_embedded_carriage_return_marks_partial_physical_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = gateway(tmp_path, monkeypatch, [ToolName.GET_ADO_BUILD_LOG])
+
+    def respond(request):
+        if request.url.path.endswith("/logs"):
+            return httpx.Response(200, json={"value": [{"id": 7, "lineCount": 1}]} )
+        return httpx.Response(200, content=b"x" * 65535 + b"\rdiagnostic failure\n")
+
+    install_transport(monkeypatch, respond)
+    log = call_tool(server, "get_ado_build_log", {"session_id": "session-1", "build_id": 42, "log_id": 7})
+    assert log["text"].endswith("\r") and len(log["text"].encode()) == 65536
+    assert log["partial_last_line"] is True and log["byte_truncated"] is True
+    assert log["returned_lines"] == 1 and log["end_line"] == 1
 
 
 def test_timeline_reflected_credentials_are_rejected_before_return_and_audit(
