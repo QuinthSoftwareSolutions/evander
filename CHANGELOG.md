@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Give shared-browser replies a more engaged delivery (0.132.0)
+
+- Keep the selected speech voice and synthesize replies at 1.1 times normal speed with warm, engaged delivery and natural intonation by default. Apply the same settings to streamed PCM and WAV replies, including the extension sidebar.
+- Add directory-level Speech speed and Delivery style controls. Allow neutral delivery and automatically omit unsupported style instructions for legacy `tts-1` models. Publish Browser Sessions 0.10.0.
+
 ## 2026-10-26 - Keep independent resource cleanup processes running (0.131.2)
 
 - Replace five-second process launches with persistent RabbitMQ, SQL Server and legacy Test Fixtures cleanup services, retaining independent recovery, existing journals and the API workers' two-second checks.

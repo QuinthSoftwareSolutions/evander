@@ -136,6 +136,14 @@ class VoiceSettings(Contract):
     transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
     speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
     voice: str = Field(default="onyx", min_length=1, max_length=128)
+    speed: float = Field(default=1.1, ge=0.25, le=4.0, allow_inf_nan=False)
+    instructions: str = Field(
+        default=(
+            "Speak in a warm, engaged, conversational tone with natural intonation and clear "
+            "articulation. Keep pauses brief and the delivery lightly upbeat."
+        ),
+        max_length=2000,
+    )
     max_recording_seconds: int = Field(default=45, ge=5, le=120)
     max_audio_bytes: int = Field(default=2_000_000, ge=65536, le=5_000_000)
     max_speech_characters: int = Field(default=2000, ge=100, le=4096)

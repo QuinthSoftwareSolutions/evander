@@ -29,6 +29,20 @@ DECODE_TIMEOUT_SECONDS = 10
 PROVIDER_TIMEOUT_SECONDS = 40
 
 
+def speech_payload(config, text, response_format):
+    payload = {
+        "model": config.speech_model,
+        "voice": config.voice,
+        "input": text,
+        "response_format": response_format,
+        "speed": config.speed,
+    }
+    # The legacy OpenAI models accept speed but do not support delivery instructions.
+    if config.instructions and config.speech_model not in {"tts-1", "tts-1-hd"}:
+        payload["instructions"] = config.instructions
+    return payload
+
+
 async def read_audio(request, maximum):
     mime = request.headers.get("content-type", "").split(";")[0].lower()
     if mime not in AUDIO_TYPES:
@@ -288,12 +302,7 @@ class Voice:
                 config,
                 "/audio/speech",
                 maximum=8_000_000,
-                json={
-                    "model": config.speech_model,
-                    "voice": config.voice,
-                    "input": text,
-                    "response_format": "wav",
-                },
+                json=speech_payload(config, text, "wav"),
             )
             if not content.startswith(b"RIFF") or content[8:12] != b"WAVE":
                 raise BrowserError("Invalid speech response", "speech_provider", 502)
@@ -316,8 +325,7 @@ class Voice:
             async with aclosing(self.provider_chunks(
                 config, "/audio/speech", maximum=8_000_000,
                 content_types={"audio/pcm", "application/octet-stream"},
-                json={"model": config.speech_model, "voice": config.voice,
-                      "input": text, "response_format": "pcm"},
+                json=speech_payload(config, text, "pcm"),
             )) as chunks:
                 async for chunk in chunks:
                     self.configured(session_id)

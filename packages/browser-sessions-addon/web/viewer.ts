@@ -315,6 +315,8 @@ function renderSettings() {
     ["voice-stt", "transcription_model", "gpt-transcribe"],
     ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
     ["voice-name", "voice", "onyx"],
+    ["voice-speed", "speed", 1.1],
+    ["voice-instructions", "instructions", ""],
     ["voice-seconds", "max_recording_seconds", 45],
   ] as const) {
     input(id).value = String(settings.voice[key] ?? fallback);

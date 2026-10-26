@@ -26,6 +26,23 @@ def test_speech_settings_require_https_and_only_credential_references():
         VoiceSettings(api_key_env="not a reference")
     assert not VoiceSettings().enabled
     assert VoiceSettings().voice == "onyx"
+    assert VoiceSettings().speed == 1.1
+    assert VoiceSettings().instructions
+
+
+@pytest.mark.parametrize("speed", [0.24, 4.01, float("nan"), float("inf")])
+def test_speech_speed_rejects_values_outside_provider_limits(speed):
+    with pytest.raises(ValueError):
+        VoiceSettings(speed=speed)
+
+
+def test_speech_delivery_settings_allow_neutral_delivery_and_bound_style():
+    settings = VoiceSettings(speed=1, instructions="")
+    assert settings.speed == 1 and settings.instructions == ""
+    assert VoiceSettings(speed=0.25).speed == 0.25
+    assert VoiceSettings(speed=4).speed == 4
+    with pytest.raises(ValueError):
+        VoiceSettings(instructions="x" * 2001)
 
 
 def test_transcription_retry_does_not_bill_twice_or_persist_audio(domain, hosted, speech_provider):
@@ -61,7 +78,10 @@ def test_speech_can_only_read_an_agent_reply_from_this_browser(domain, hosted, s
     )
     reply = service.reply("agent-a", hosted.id, question["id"], "I have moved the button.")
     audio = asyncio.run(voice.speech(hosted.id, "user:alice", "read-a", reply["id"]))
-    assert json.loads(speech_provider["calls"][0].content)["voice"] == "onyx"
+    request = json.loads(speech_provider["calls"][0].content)
+    assert request["voice"] == "onyx"
+    assert request["speed"] == 1.1
+    assert request["instructions"] == service.store.settings("root")[1].voice.instructions
     assert audio.startswith(b"RIFF")
     assert len(speech_provider["calls"]) == 1
     with pytest.raises(BrowserError):
@@ -72,6 +92,58 @@ def test_speech_can_only_read_an_agent_reply_from_this_browser(domain, hosted, s
     with pytest.raises(BrowserError) as duplicate:
         asyncio.run(voice.speech(hosted.id, "user:alice", "read-a", reply["id"]))
     assert duplicate.value.status == 409 and len(speech_provider["calls"]) == 1
+
+
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+@pytest.mark.parametrize("model,instructions,expected_instructions", [
+    ("gpt-4o-mini-tts", "Speak with a lively conversational tone.", "Speak with a lively conversational tone."),
+    ("gpt-4o-mini-tts", "", None),
+    ("tts-1", "Speak with a lively conversational tone.", None),
+    ("tts-1-hd", "Speak with a lively conversational tone.", None),
+])
+def test_speech_delivery_settings_reach_both_provider_formats(
+    domain, hosted, speech_provider, response_format, model, instructions, expected_instructions
+):
+    import httpx
+
+    service, _, _ = domain
+    revision, settings = service.store.settings("root")
+    settings.voice.speech_model = model
+    settings.voice.speed = 1.25
+    settings.voice.instructions = instructions
+    service.store.save_settings("root", revision, settings)
+    question = service.enqueue_message(
+        hosted.id, "user:alice", MessageRequest(request_id="delivery-question", body="Show me")
+    )
+    reply = service.reply("agent-a", hosted.id, question["id"], "Here is the shared application.")
+
+    async def respond(request):
+        speech_provider["calls"].append(request)
+        return httpx.Response(200, content=b"\0\1" * 2400, headers={"Content-Type": "audio/pcm"})
+
+    async def run():
+        voice = Voice(service, transport=httpx.MockTransport(respond))
+        if response_format == "wav":
+            audio = await voice.speech(hosted.id, "user:alice", "delivery", reply["id"])
+            assert audio.startswith(b"RIFF")
+        else:
+            audio = b"".join([chunk async for chunk in voice.speech_chunks(
+                hosted.id, "user:alice", "delivery", reply["id"], validate=lambda: None
+            )])
+            assert audio == b"\0\1" * 2400
+
+    asyncio.run(run())
+    assert len(speech_provider["calls"]) == 1
+    request = json.loads(speech_provider["calls"][0].content)
+    assert request["model"] == model
+    assert request["voice"] == "onyx"
+    assert request["speed"] == 1.25
+    assert request["input"] == "Here is the shared application."
+    assert request["response_format"] == response_format
+    if expected_instructions is None:
+        assert "instructions" not in request
+    else:
+        assert request["instructions"] == expected_instructions
 
 
 def test_provider_failure_is_redacted_and_unknown_requests_are_not_replayed(
@@ -318,7 +390,10 @@ def test_streamed_speech_starts_before_provider_finishes_and_closes_on_stop(
         )
         first = await asyncio.wait_for(anext(stream), 2)
         assert first == b"\0\1" * 2400 and not release.is_set()
-        assert json.loads(requests[0].content)["response_format"] == "pcm"
+        request = json.loads(requests[0].content)
+        assert request["response_format"] == "pcm"
+        assert request["speed"] == 1.1
+        assert request["instructions"] == service.store.settings("root")[1].voice.instructions
         await stream.aclose()
         assert closed, "Stopping playback must close the upstream HTTP stream immediately"
         with service.store.connect() as db:

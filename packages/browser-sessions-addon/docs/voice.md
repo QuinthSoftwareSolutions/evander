@@ -4,9 +4,13 @@ Voice is optional and disabled by default. It uses the same task, transcript and
 
 ## Operator setup
 
-Install the updated core and Browser Sessions 0.9.3 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
+Install the updated core and Browser Sessions 0.10.0 package, update the Chrome extension, and restart Admin Web and the browser relay through normal deployment before enabling voice. Install FFmpeg with the ffmpeg executable available on the PATH of both Admin Web and the browser relay; only optional microphone transcription needs it. If it is missing, text and spoken replies remain available.
 
 In **Shared Browsers → Configure → Voice**, enable voice for the directory and select the speech API base URL, transcription model, speech model and voice. The defaults use the OpenAI Audio API with gpt-transcribe, gpt-4o-mini-tts and onyx. The API contract is documented in [file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [text to speech](https://developers.openai.com/api/docs/guides/text-to-speech).
+
+**Speech speed** defaults to `1.1`, about 10% faster than normal. Values from `0.25` to `4` are supported. **Delivery style** defaults to warm, engaged conversation with natural intonation, clear articulation, brief pauses and a lightly upbeat tone. These settings apply during synthesis to both streamed PCM and WAV replies, including the extension sidebar. Existing settings that omit these fields inherit the new defaults when the updated services are deployed; the selected voice stays unchanged.
+
+Set speed to `1` and clear the delivery style to restore the provider's neutral delivery. Leave the style blank for compatible providers or models without instruction support; `tts-1` and `tts-1-hd` automatically omit instructions. Style changes keep the reply text intact and take effect on subsequent speech requests through the existing directory settings API.
 
 An owner stores the speech credential with **Store credential** after saving the provider address and unlocking privileged operations. Admin Web and the browser relay resolve its managed reference from the shared platform credential store. Speech uses that credential independently of the agent's model authentication. The worker, extension and page receive no speech API credential. No additional worker ports or service are needed.
 
