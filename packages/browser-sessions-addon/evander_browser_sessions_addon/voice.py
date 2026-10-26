@@ -35,8 +35,9 @@ def speech_payload(config, text, response_format):
         "voice": config.voice,
         "input": text,
         "response_format": response_format,
-        "speed": config.speed,
     }
+    if config.speed != 1.0:
+        payload["speed"] = config.speed
     # The legacy OpenAI models accept speed but do not support delivery instructions.
     if config.instructions and config.speech_model not in {"tts-1", "tts-1-hd"}:
         payload["instructions"] = config.instructions

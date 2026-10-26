@@ -45,6 +45,23 @@ def test_speech_delivery_settings_allow_neutral_delivery_and_bound_style():
         VoiceSettings(instructions="x" * 2001)
 
 
+@pytest.mark.parametrize("endpoint,model", [
+    ("https://speech.test/v1", "custom-tts"),
+    ("https://speech.test/v1", "gpt-4o-mini-tts"),
+    ("https://api.openai.com/v1", "custom-tts"),
+    ("https://api.openai.com/v1", "tts-1"),
+    ("https://api.openai.com/v1", "tts-1-hd"),
+])
+def test_existing_other_provider_models_retain_neutral_delivery(endpoint, model):
+    settings = VoiceSettings(api_base_url=endpoint, speech_model=model)
+    assert settings.speed == 1 and settings.instructions == ""
+
+
+def test_known_openai_snapshot_inherits_engaged_delivery():
+    settings = VoiceSettings(speech_model="gpt-4o-mini-tts-2025-12-15")
+    assert settings.speed == 1.1 and settings.instructions
+
+
 def test_transcription_retry_does_not_bill_twice_or_persist_audio(domain, hosted, speech_provider):
     service, _, _ = domain
     voice = Voice(service)
@@ -100,6 +117,9 @@ def test_speech_can_only_read_an_agent_reply_from_this_browser(domain, hosted, s
     ("gpt-4o-mini-tts", "", None),
     ("tts-1", "Speak with a lively conversational tone.", None),
     ("tts-1-hd", "Speak with a lively conversational tone.", None),
+    ("custom-tts", "Speak with a lively conversational tone.", "Speak with a lively conversational tone."),
+    ("custom-tts", None, None),
+    ("gpt-4o-mini-tts", None, None),
 ])
 def test_speech_delivery_settings_reach_both_provider_formats(
     domain, hosted, speech_provider, response_format, model, instructions, expected_instructions
@@ -108,9 +128,11 @@ def test_speech_delivery_settings_reach_both_provider_formats(
 
     service, _, _ = domain
     revision, settings = service.store.settings("root")
-    settings.voice.speech_model = model
-    settings.voice.speed = 1.25
-    settings.voice.instructions = instructions
+    old_voice = settings.voice.model_dump(exclude={"speed", "instructions"})
+    old_voice["speech_model"] = model
+    if instructions is not None:
+        old_voice.update(speed=1.25, instructions=instructions)
+    settings.voice = VoiceSettings.model_validate(old_voice)
     service.store.save_settings("root", revision, settings)
     question = service.enqueue_message(
         hosted.id, "user:alice", MessageRequest(request_id="delivery-question", body="Show me")
@@ -137,7 +159,10 @@ def test_speech_delivery_settings_reach_both_provider_formats(
     request = json.loads(speech_provider["calls"][0].content)
     assert request["model"] == model
     assert request["voice"] == "onyx"
-    assert request["speed"] == 1.25
+    if instructions is None:
+        assert "speed" not in request
+    else:
+        assert request["speed"] == 1.25
     assert request["input"] == "Here is the shared application."
     assert request["response_format"] == response_format
     if expected_instructions is None:

@@ -253,8 +253,8 @@ test("guided browser-profile setup saves through the production settings API", a
     await page.getByLabel("Browser image", { exact: true }).fill("seeded-preview:2");
     await page.getByLabel("Maximum steps",{exact:true}).fill("12");
     await page.getByLabel("Time limit (seconds)",{exact:true}).fill("15");
-    assert.equal(await page.getByLabel("Speech speed", {exact:true}).inputValue(), "1.1");
-    assert.ok(await page.getByLabel("Delivery style", {exact:true}).inputValue());
+    assert.equal(await page.getByLabel("Speech speed", {exact:true}).inputValue(), "1");
+    assert.equal(await page.getByLabel("Delivery style", {exact:true}).inputValue(), "");
     await page.getByLabel("Speech speed", {exact:true}).fill("1.25");
     await page.getByLabel("Delivery style", {exact:true}).fill("Speak with a warm conversational tone.");
     const saved = page.waitForResponse(response =>
