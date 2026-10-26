@@ -340,7 +340,7 @@ class PrReplyProvider(Protocol):
 class PrQueryProvider(Protocol):
     def complete_pull_request(
         self, *, repo: str, pr_id: str, expected_source_commit: str,
-        expected_target_branch: str,
+        expected_target_branch: str, completion_id: str | None = None,
     ) -> CompletePullRequestResponse: ...
 
     def list_pull_requests(
@@ -475,7 +475,7 @@ class GitHubPrQueryProvider:
 
     def complete_pull_request(
         self, *, repo: str, pr_id: str, expected_source_commit: str,
-        expected_target_branch: str,
+        expected_target_branch: str, completion_id: str | None = None,
     ) -> CompletePullRequestResponse:
         from .github_pr_completion import complete_github_pull_request
 
@@ -486,7 +486,7 @@ class GitHubPrQueryProvider:
                 client=client, api_base_url=self.api_base_url,
                 headers={**self._headers(), "X-GitHub-Api-Version": "2026-03-10"},
                 repo=repo, pr_id=pr_id, expected_source_commit=expected_source_commit,
-                expected_target_branch=expected_target_branch,
+                expected_target_branch=expected_target_branch, completion_id=completion_id,
             )
 
     def list_pull_requests(
@@ -1167,6 +1167,7 @@ class PrQueryService:
     def complete_pull_request(
         self, *, provider: str, repo: str, pr_id: str,
         expected_source_commit: str, expected_target_branch: str,
+        completion_id: str | None = None,
     ) -> CompletePullRequestResponse:
         provider_name = normalize_pr_automation_provider(provider)
         implementation = self.providers.get(provider_name)
@@ -1176,6 +1177,7 @@ class PrQueryService:
         return complete(
             repo=repo, pr_id=pr_id, expected_source_commit=expected_source_commit,
             expected_target_branch=expected_target_branch,
+            **({"completion_id": completion_id} if completion_id is not None else {}),
         )
 
     def update_pull_request(

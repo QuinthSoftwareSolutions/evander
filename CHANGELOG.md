@@ -3,7 +3,7 @@
 ## 2026-10-26 - Complete bound GitHub pull requests (0.131.0)
 
 - Allow `complete_pull_request` for GitHub as well as Azure DevOps, retaining session/PR scope, per-call approval, and expected source/target checks.
-- Use GitHub's asynchronous completion API with rule bypass disabled. Distinguish a queued or pending request from a verified merge, reuse matching pending requests, and block automatic completion of open downstack PRs.
+- Use GitHub's asynchronous completion API with rule bypass disabled. Distinguish a queued or pending request from a verified merge, allow read-only polling of a returned completion ID across runs, and block automatic completion of open downstack PRs.
 - Add HTTP-boundary tests for GitHub authorization, changed refs, pending work, provider failures, and merge verification.
 
 ## 2026-10-26 - Persist PR ownership and complete bound pull requests (0.130.0)

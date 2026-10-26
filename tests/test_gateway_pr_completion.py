@@ -114,3 +114,33 @@ def test_status_update_cannot_bypass_completion(gateway):
             },
         )
     assert calls == []
+
+
+def test_completion_id_is_github_only_and_retains_pr_scope(gateway):
+    context, server, calls, arguments = gateway
+    grant(context)
+    completion_id = "630b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42"
+    if arguments["provider"] == "ado":
+        with pytest.raises(ToolError, match="only supported for GitHub"):
+            _call_tool(
+                server, "complete_pull_request", {**arguments, "completion_id": completion_id}
+            )
+        assert calls == []
+        return
+    with pytest.raises(ToolError, match="not allowlisted"):
+        _call_tool(
+            server,
+            "complete_pull_request",
+            {**arguments, "pr_id": "18", "completion_id": completion_id},
+        )
+    assert calls == []
+    _call_tool(server, "complete_pull_request", {**arguments, "completion_id": completion_id})
+    assert calls[-1]["completion_id"] == completion_id
+
+
+def test_completion_id_schema_rejects_paths(gateway):
+    context, server, calls, arguments = gateway
+    grant(context)
+    with pytest.raises(ToolError):
+        _call_tool(server, "complete_pull_request", {**arguments, "completion_id": "../../other"})
+    assert calls == []

@@ -4589,5 +4589,7 @@ commit. GitHub uses its asynchronous merge/queue API with `bypass_rules=false`, 
 a host token with Pull requests read and Contents write permissions, and blocks a target
 branch belonging to another open PR. The adapter does not delete source branches (repository automation may do so).
 `completion_id` and `message`, when present, describe GitHub's asynchronous result.
-A `pending` response means the provider has not yet confirmed completion; retry with
-the same expected values to verify. Only `merged: true` confirms the outcome.
+A `pending` response means the provider has not yet confirmed completion. For GitHub,
+pass its returned `completion_id` with the same expected values to poll the existing
+job, including a later failure, without starting another attempt. For Azure DevOps,
+retry with the same expected values. Only `merged: true` confirms the outcome.

@@ -54,7 +54,11 @@ def github(monkeypatch):
                 return httpx.Response(302, headers={"Location": "https://untrusted.test/stolen"})
             return httpx.Response(200, json=copy.deepcopy(state["pr"]))
         if request.url.path == "/repos/owner/repo/pulls":
-            assert dict(request.url.params) == {"state": "open", "head": "owner:main", "per_page": "1"}
+            assert dict(request.url.params) == {
+                "state": "open",
+                "head": "owner:main",
+                "per_page": "1",
+            }
             return httpx.Response(200, json=state["downstack"])
         if request.url.path == PR + "/merge-async" and request.method == "PUT":
             state["writes"].append(json.loads(request.content))
@@ -227,3 +231,46 @@ def test_provider_permission_error_remains_an_error(github):
     state["submitted"] = {"message": "Forbidden"}
     with pytest.raises(httpx.HTTPStatusError):
         complete()
+
+
+def test_retry_reads_a_failed_job_without_submitting_another(github):
+    state, complete = github
+    state["poll"] = {"status": "pending", "details": {"uuid": UUID, "expected_head_sha": SOURCE}}
+    first = complete()
+    assert first.pending and first.completion_id == UUID
+    state["poll"] = {
+        "status": "failed",
+        "details": {"message": "A required review is missing."},
+    }
+    # Even if the PR is no longer mergeable, retrieve this job's terminal error.
+    state["pr"]["mergeable"] = False
+    state["submitted"]["details"]["uuid"] = "530b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42"
+    second = complete(completion_id=first.completion_id)
+    assert second.blockers == ["github_merge_failed"]
+    assert second.message == "A required review is missing."
+    assert not second.pending and not second.merged
+    assert second.completion_id == first.completion_id
+    assert len(state["writes"]) == 1
+
+
+def test_explicit_poll_does_not_require_new_submission_eligibility(github):
+    state, complete = github
+    state["pr"].update(draft=True, mergeable=None)
+    state["poll"] = {"status": "pending", "details": {"uuid": UUID, "expected_head_sha": SOURCE}}
+    result = complete(completion_id=UUID)
+    assert result.pending and state["writes"] == []
+    assert state["requests"] == [("GET", PR), ("GET", PR + "/merge-async/" + UUID), ("GET", PR)]
+
+
+def test_explicit_poll_rejects_invalid_id_before_network(github):
+    state, complete = github
+    with pytest.raises(ValueError, match="Invalid GitHub completion ID"):
+        complete(completion_id="../../other")
+    assert state["requests"] == []
+
+
+def test_explicit_poll_keeps_expected_source_guard(github):
+    state, complete = github
+    state["pr"]["head"]["sha"] = "d" * 40
+    assert complete(completion_id=UUID).blockers == ["source_commit_changed"]
+    assert state["requests"] == [("GET", PR)]

@@ -251,6 +251,7 @@ def register_pr_tools(
         pr_id: str,
         expected_source_commit: str,
         expected_target_branch: str,
+        completion_id: str | None = None,
         request_id: str | None = None,
         *,
         session_id: str | None = None,
@@ -261,8 +262,9 @@ def register_pr_tools(
         Read the PR first and provide its full source SHA and target branch.
         Source/target changes and drafts block submission; repository policies
         still govern completion and are never bypassed. Check merged/pending/
-        blockers in the response. For pending work, retry with the same inputs
-        to check the outcome. GitHub uses its asynchronous merge/queue API;
+        blockers in the response. For pending GitHub work, pass the returned
+        completion_id with the same inputs to poll that job without resubmitting.
+        GitHub uses its asynchronous merge/queue API;
         Azure DevOps uses a merge commit. Neither adapter requests source-branch
         deletion.
         """
@@ -273,7 +275,9 @@ def register_pr_tools(
             session_id=resolved, provider=normalize_pr_automation_provider(provider),
             repo=repo.strip(), pr_id=pr_id.strip(),
             expected_source_commit=expected_source_commit.strip().lower(),
-            expected_target_branch=expected_target_branch.strip(), request_id=request_id,
+            expected_target_branch=expected_target_branch.strip(),
+            completion_id=completion_id.strip().lower() if completion_id is not None else None,
+            request_id=request_id,
         )
         args = request.model_dump(mode="json")
         try:
@@ -285,6 +289,7 @@ def register_pr_tools(
                 provider=request.provider, repo=request.repo, pr_id=request.pr_id,
                 expected_source_commit=request.expected_source_commit,
                 expected_target_branch=request.expected_target_branch,
+                **({"completion_id": request.completion_id} if request.completion_id else {}),
             )
             result = response.model_dump(mode="json")
             audit_success(resolved, ToolName.COMPLETE_PULL_REQUEST, args, result)

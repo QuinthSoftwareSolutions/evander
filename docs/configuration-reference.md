@@ -3490,6 +3490,8 @@ the dedicated completion path shared with workflow delivery.
 For GitHub, `repo` is `owner/repository`. Completion uses the existing host-owned
 GitHub token and requires Pull requests read and Contents write permissions. GitHub computes
 mergeability asynchronously and may enqueue a merge; check `merged`, `pending`, `blockers`, and
-the optional `completion_id`/`message`. Retry pending work with the same source SHA
-and target branch. Rule bypass is always false. The adapter refuses a target branch
+the optional `completion_id`/`message`. For pending GitHub work, supply the returned
+`completion_id` with the same source SHA and target branch to poll that exact job.
+Omitting the ID explicitly requests a new merge attempt. Azure DevOps does not
+accept a completion ID. Rule bypass is always false. The adapter refuses a target branch
 that belongs to another open PR rather than completing an unapproved stack.

@@ -814,8 +814,10 @@ class AzureDevOpsPrQueryProvider:
 
     def complete_pull_request(
         self, *, repo: str, pr_id: str, expected_source_commit: str,
-        expected_target_branch: str,
+        expected_target_branch: str, completion_id: str | None = None,
     ) -> CompletePullRequestResponse:
+        if completion_id is not None:
+            raise ValueError("completion_id is only supported for GitHub")
         from .pr_completion import complete_pull_request
 
         repository = quote(_normalize_azure_devops_repo_identifier(repo), safe="")
