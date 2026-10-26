@@ -20,6 +20,7 @@ class _Continuation:
     owner: str
     target: str
     backend: Any
+    bound: bool = False
     observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     calls: dict[str, Future] = field(default_factory=dict)
     consumed: set[str] = field(default_factory=set)
@@ -59,12 +60,9 @@ class DeferredBackendReconciliation:
         if state is None:
             if len(self._states) >= self._capacity:
                 return 0
-            bind = getattr(backend, "for_reconciliation", None)
-            state = self._states[key] = _Continuation(
-                *key, bind(key[1]) if callable(bind) else backend
-            )
+            state = self._states[key] = _Continuation(*key, backend)
         try:
-            result = reconcile(_DeferredBackend(self, state, state.backend))
+            result = reconcile(_DeferredBackend(self, state))
         except _PendingBackendCall:
             return 0
         except BaseException:
@@ -73,11 +71,11 @@ class DeferredBackendReconciliation:
         self.discard(key)
         return result
 
-    def call(self, state: _Continuation, backend: Any, method: str, args: tuple, kwargs: dict):
+    def call(self, state: _Continuation, method: str, args: tuple, kwargs: dict):
         key = json.dumps([method, args, kwargs], sort_keys=True)
         future = state.calls.get(key)
         if future is None:
-            future = self._executor.submit(getattr(backend, method), *args, **kwargs)
+            future = self._executor.submit(self._invoke, state, method, args, kwargs)
             state.calls[key] = future
             future.add_done_callback(self._completed)
             raise _PendingBackendCall()
@@ -85,6 +83,18 @@ class DeferredBackendReconciliation:
             raise _PendingBackendCall()
         state.consumed.add(key)
         return future.result()
+
+    @staticmethod
+    def _invoke(state: _Continuation, method: str, args: tuple, kwargs: dict):
+        # Bind in the first RPC's future, so missing mappings follow the
+        # provider's existing inspect-error/retry path instead of escaping the
+        # record and aborting the recovery page. Only one RPC runs per state.
+        if not state.bound:
+            bind = getattr(state.backend, "for_reconciliation", None)
+            if callable(bind):
+                state.backend = bind(state.target)
+            state.bound = True
+        return getattr(state.backend, method)(*args, **kwargs)
 
     def _completed(self, future: Future) -> None:
         try:
@@ -109,15 +119,13 @@ class _DeferredBackend:
         "interrupt_active_tool",
     }
 
-    def __init__(self, pool: DeferredBackendReconciliation, state: _Continuation, backend: Any):
-        self._pool, self._state, self._backend = pool, state, backend
+    def __init__(self, pool: DeferredBackendReconciliation, state: _Continuation):
+        self._pool, self._state = pool, state
         self.reconciliation_observed_at = state.observed_at
 
     def __getattr__(self, name: str):
         # Preserve optional backend capabilities (for example get_log_page).
-        getattr(self._backend, name)
+        attribute = getattr(self._state.backend, name)
         if name not in self._RPC_METHODS:
-            return getattr(self._backend, name)
-        return lambda *args, **kwargs: self._pool.call(
-            self._state, self._backend, name, args, kwargs
-        )
+            return attribute
+        return lambda *args, **kwargs: self._pool.call(self._state, name, args, kwargs)
