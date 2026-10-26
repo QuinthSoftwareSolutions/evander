@@ -78,9 +78,15 @@ class TeamMcpContextResolver:
         self._repo = repo
         self._context = context
 
-    def resolve(self, *, session_id: str | None, tool_name: str) -> TeamMcpCallerContext:
+    def resolve(
+        self, *, session_id: str | None, tool_name: str, read_only: bool = False,
+    ) -> TeamMcpCallerContext:
         resolved_session_id = self._require_tool(session_id, tool_name)
-        state = self._repo.read()
+        from .mcp_read_scope import current_read_snapshot
+
+        state = current_read_snapshot(self._repo) if read_only else None
+        if state is None:
+            state = self._repo.read()
         return replace(
             resolve_team_mcp_caller(state, resolved_session_id),
             team_repository=self._repo,
@@ -127,7 +133,7 @@ class TeamMcpContextResolver:
         session_id: str | None,
         tool_name: str,
     ) -> TeamMcpCallerContext:
-        caller = self.resolve(session_id=session_id, tool_name=tool_name)
+        caller = self.resolve(session_id=session_id, tool_name=tool_name, read_only=True)
         if caller.agent is None:
             raise ToolError(f"{tool_name} requires a persistent Team agent session")
         if caller.agent.status != AgentStatus.ACTIVE:

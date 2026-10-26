@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from copy import copy
 import hashlib
 import logging
 from datetime import datetime
@@ -227,12 +228,13 @@ class ContainerWorkerVmExecutionBackend:
 
     def inspect(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
         if mapping.cleanup_status == "cleanup_succeeded" or mapping.last_status == "removed":
             self.sync_model_usage(mapping)
-            self.repository.put(mapping)
+            current = self._save_observation(mapping, expected=expected)
             return self._status_from_record(
-                mapping,
-                "removed",
+                current or mapping,
+                current.last_status if current is not None else "removed",
                 message="container worker job was destroyed",
             )
         try:
@@ -241,14 +243,15 @@ class ContainerWorkerVmExecutionBackend:
             if exc.status_code != 404:
                 raise
             observed_at = now_utc()
-            self._mark_cleanup_succeeded(
+            current = self._mark_cleanup_succeeded(
                 mapping,
                 attempted_at=observed_at,
                 completed_at=observed_at,
+                expected=expected,
             )
             return self._status_from_record(
-                mapping,
-                "removed",
+                current or mapping,
+                current.last_status if current is not None else "removed",
                 message="container worker job no longer exists",
             )
         mapping.last_status = record.status
@@ -256,19 +259,26 @@ class ContainerWorkerVmExecutionBackend:
         mapping.finished_at = record.finished_at
         mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
         self.sync_model_usage(mapping)
-        self.repository.put(mapping)
-        return self._status_from_record(mapping, record.status, message=record.error)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
 
     def stop(self, target: ExecutionTarget, *, timeout_seconds: int = 60) -> ExecutionStatus:
         del timeout_seconds
         mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
         record = self._client_for_mapping(mapping).stop(mapping.worker_job_id)
         mapping.last_status = record.status
         mapping.finished_at = record.finished_at
         mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
         self.sync_model_usage(mapping)
-        self.repository.put(mapping)
-        return self._status_from_record(mapping, record.status, message=record.error)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
 
     def interrupt_active_tool(
         self,
@@ -283,6 +293,7 @@ class ContainerWorkerVmExecutionBackend:
         deliberately receives neither a caller-selected process ID nor a command string.
         """
         mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
         record = self._client_for_mapping(mapping).interrupt_active_tool(
             mapping.worker_job_id,
             max_elapsed_seconds=max_elapsed_seconds,
@@ -299,11 +310,15 @@ class ContainerWorkerVmExecutionBackend:
             if max_elapsed_seconds is not None:
                 interruption["watchdog_threshold_seconds"] = float(max_elapsed_seconds)
             mapping.metadata["active_tool_interruption"] = sanitize_metadata(interruption)
-        self.repository.put(mapping)
-        return self._status_from_record(mapping, record.status, message=record.error)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
 
     def destroy(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
         attempted_at = now_utc()
         try:
             self._client_for_mapping(mapping).delete(mapping.worker_job_id)
@@ -312,16 +327,21 @@ class ContainerWorkerVmExecutionBackend:
                 mapping,
                 error=sanitize_text(str(exc)),
                 attempted_at=attempted_at,
+                expected=expected,
             )
             raise
         completed_at = now_utc()
         self.sync_model_usage(mapping)
-        self._mark_cleanup_succeeded(
+        current = self._mark_cleanup_succeeded(
             mapping,
             attempted_at=attempted_at,
             completed_at=completed_at,
+            expected=expected,
         )
-        return self._status_from_record(mapping, "removed", message="container worker job deleted")
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message="container worker job deleted",
+        )
 
     def get_log_snapshot(
         self,
@@ -720,10 +740,33 @@ class ContainerWorkerVmExecutionBackend:
             return command
         raise ValueError("ExecutionSpec.command must be a non-empty string or list of strings.")
 
+    def for_reconciliation(self, target: ExecutionTarget) -> "ContainerWorkerVmExecutionBackend":
+        """Pin a continuation to one immutable worker job, never its replacement."""
+        bound = copy(self)
+        bound._reconciliation_owner = self._mapping_for_target(target)
+        return bound
+
+    def _save_observation(
+        self, mapping: ContainerWorkerExecutionRecord, *, expected: ContainerWorkerExecutionRecord,
+    ) -> ContainerWorkerExecutionRecord | None:
+        current = self.repository.save_observation(mapping, expected=expected)
+        owner = getattr(self, "_reconciliation_owner", None)
+        if current is not None and owner is not None and not self.repository._same_worker_job(current, owner):
+            raise RuntimeError("container worker reconciliation job was replaced")
+        return current
+
     def _mapping_for_target(self, target: ExecutionTarget) -> ContainerWorkerExecutionRecord:
         if isinstance(target, PreparedExecution | ExecutionHandle):
-            return self.repository.resolve(target.execution_id)
-        return self.repository.resolve(str(target or ""))
+            mapping = self.repository.resolve(target.execution_id)
+        else:
+            mapping = self.repository.resolve(str(target or ""))
+        owner = getattr(self, "_reconciliation_owner", None)
+        if owner is not None and (
+            mapping.execution_id != owner.execution_id
+            or not self.repository._same_worker_job(mapping, owner)
+        ):
+            raise RuntimeError("container worker reconciliation job was replaced")
+        return mapping
 
     def _spec_from_target(self, target: ExecutionTarget) -> ExecutionSpec:
         if isinstance(target, ExecutionHandle):
@@ -882,7 +925,8 @@ class ContainerWorkerVmExecutionBackend:
         *,
         attempted_at: datetime,
         completed_at: datetime,
-    ) -> None:
+        expected: ContainerWorkerExecutionRecord | None = None,
+    ) -> ContainerWorkerExecutionRecord | None:
         mapping.last_status = "removed"
         mapping.finished_at = mapping.finished_at or completed_at
         mapping.cleanup_status = "cleanup_succeeded"
@@ -896,7 +940,10 @@ class ContainerWorkerVmExecutionBackend:
             "cleanup_attempted_at": attempted_at.isoformat(),
             "cleanup_completed_at": completed_at.isoformat(),
         }
+        if expected is not None:
+            return self._save_observation(mapping, expected=expected)
         self.repository.put(mapping)
+        return mapping
 
     def _mark_cleanup_failed(
         self,
@@ -904,6 +951,7 @@ class ContainerWorkerVmExecutionBackend:
         *,
         error: str,
         attempted_at: datetime,
+        expected: ContainerWorkerExecutionRecord | None = None,
     ) -> None:
         completed_at = now_utc()
         sanitized_error = sanitize_text(error)
@@ -921,7 +969,10 @@ class ContainerWorkerVmExecutionBackend:
             "cleanup_completed_at": completed_at.isoformat(),
             "cleanup_error": sanitized_error,
         }
-        self.repository.put(mapping)
+        if expected is not None:
+            self._save_observation(mapping, expected=expected)
+        else:
+            self.repository.put(mapping)
 
     def _mark_session_cleanup_succeeded(
         self,

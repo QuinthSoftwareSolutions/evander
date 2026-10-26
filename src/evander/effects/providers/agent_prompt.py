@@ -1010,6 +1010,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
         backend = cls._container_backend_for_worker(worker=worker, session_id=session_id)
         if backend is None:
             return 0
+        def reconcile(selected):
+            return cls._reconcile_container_waiting_backend(
+                worker=worker, record=record, backend=selected,
+                execution_id=execution_id, session_id=session_id,
+            )
+        deferred = getattr(worker, "reconcile_container_backend", None)
+        if callable(deferred):
+            return deferred(record=record, backend=backend, reconcile=reconcile)
+        return reconcile(backend)
+
+    @classmethod
+    def _reconcile_container_waiting_backend(
+        cls, *, worker: Any, record: Any, backend: Any, execution_id: str, session_id: str,
+    ) -> int:
         try:
             status = backend.inspect(execution_id)
         except Exception:
@@ -1171,6 +1185,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
             resume_thread_id = current_thread_id or resume_thread_id
             if resume_thread_id:
                 resume_mode = "same_context"
+        # Finish the terminal job's RPC before updating the retry ledger. A
+        # suspended RPC continuation can replay this code; queuing a capacity
+        # deferral twice would incorrectly advance its retry/backoff counters.
+        if status.status != ExecutionStatusKind.DESTROYED:
+            try:
+                backend.destroy(execution_id)
+            except Exception:
+                pass
         try:
             queued = enqueue_agent_prompt(
                 runtime_dir=runtime_dir,
@@ -1205,11 +1227,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
             AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json").delete_if_dispatch_id(
                 queue_key, dispatch_id
             )
-            if status.status != ExecutionStatusKind.DESTROYED:
-                try:
-                    backend.destroy(execution_id)
-                except Exception:
-                    pass
             return True
         note_id = str(deferral_metadata.get("operator_steering_note_id") or "").strip()
         if note_id:
@@ -1240,11 +1257,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     "Queued operator steering note could not return to pending after "
                     f"subscription deferral: {note.note_id} status={note.status}"
                 )
-        if status.status != ExecutionStatusKind.DESTROYED:
-            try:
-                backend.destroy(execution_id)
-            except Exception:
-                pass
         finished_at = datetime.now(UTC)
         record.status = "succeeded"
         record.outputs = {
@@ -1337,7 +1349,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if isinstance(active_tool, Mapping)
             else None
         )
-        elapsed_seconds = cls._elapsed_seconds_since(started_at)
+        elapsed_seconds = cls._elapsed_seconds_since(
+            started_at, observed_at=getattr(backend, "reconciliation_observed_at", None),
+        )
         timeout_seconds = cls._container_active_tool_timeout_seconds(backend)
         if elapsed_seconds is None or elapsed_seconds <= timeout_seconds:
             return
@@ -1400,7 +1414,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         started_at = (
             cls._container_status_started_at(status) or record.finished_at or record.started_at
         )
-        elapsed_seconds = cls._elapsed_seconds_since(started_at)
+        elapsed_seconds = cls._elapsed_seconds_since(
+            started_at, observed_at=getattr(backend, "reconciliation_observed_at", None),
+        )
         if elapsed_seconds is None or elapsed_seconds <= timeout_seconds:
             return 0
 
@@ -1467,14 +1483,17 @@ class AgentPromptEffectProvider(EffectProviderBase):
         return value if isinstance(value, datetime) else None
 
     @staticmethod
-    def _elapsed_seconds_since(started_at: datetime | None) -> float | None:
+    def _elapsed_seconds_since(
+        started_at: datetime | None, *, observed_at: datetime | None = None,
+    ) -> float | None:
         if started_at is None:
             return None
         if started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=UTC)
         else:
             started_at = started_at.astimezone(UTC)
-        return max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+        observed_at = observed_at if isinstance(observed_at, datetime) else datetime.now(UTC)
+        return max(0.0, (observed_at - started_at).total_seconds())
 
     @staticmethod
     def _stop_and_destroy_container_job(*, backend: Any, execution_id: str) -> str | None:

@@ -33,6 +33,45 @@ before claiming; FIFO, single-flight, capacity/profile deferrals and compare-del
 Process-local cursors only reduce repeated work: restart begins a fresh recovery pass, and durable
 records remain the source of truth. Missing events are repaired by recovery.
 
+### Container-worker RPC continuations
+
+Container-worker prompt reconciliation uses four background RPC workers and retains at most 32
+pending execution continuations. Inspection, log reads, watchdog interruption, stop and cleanup
+run there with their existing client timeouts. A slow worker request leaves the dispatcher free
+to process events and other recovery candidates. Completed operations are reused while that
+reconciliation pass continues, so a later pending log read or cleanup does not repeat an RPC.
+Timeout decisions use the pass's observation time; waiting for the RPC pool cannot turn an
+earlier running observation into a newly expired job. Capacity deferral is recorded after cleanup,
+so resuming a pass cannot advance the retry ledger twice.
+
+Callbacks only wake the dispatcher. The orchestration thread rechecks the durable waiting record
+and worker execution identity, then performs local state changes and completion publication. A
+ready result makes recovery due immediately rather than adding another five-second polling delay.
+Each continuation pins its worker job, and RPC observations commit conditionally against the
+current lifecycle row. Late results cannot restore deleted jobs, overwrite cleanup or target a
+replacement job. Concurrent receipt progress and unrelated metadata are retained.
+
+Configuration rebinding and orderly shutdown drain the pool before releasing runtime bindings.
+Locked single-cycle operator runs reconcile inline so results are consumed before shutdown.
+Restart loses only process-local results; durable waiting records are inspected again. These
+changes benefit container-backed agents across entrypoints, including personal assistants and
+browser sessions, as well as Team agents. Libvirt reconciliation retains its existing path.
+
+### Request-scoped Team MCP reads
+
+Read-only Team tools open one lazy, query-only SQLite transaction after the session policy check.
+Caller authorization and operational data use that committed revision. Keyed lookups hydrate
+only the selected records and their child rows; enumeration loads the requested collection.
+Existing relationship, assessment, pagination and visibility rules still apply. The request
+closes its snapshot on both success and failure, and the partial view cannot be persisted as
+complete Team state. Tool names and input/output schemas are unchanged.
+
+An indexed attention-candidate check avoids full state hydration when an active caller has no
+pending operator messages. Pending messages retain the existing current-lease checks, delivery
+bookkeeping and conversation context. That exceptional write path can still load full state,
+as can ordinary action tools; this is not a bound on every Team operation. Immutable archived
+case-context snapshots retain their existing dispatch-scoped lookup.
+
 ### Isolated Team maintenance
 
 `TeamAgentPromptCompletionFinalizeHook` opts into a dedicated single-flight background lane.
@@ -166,6 +205,7 @@ Run focused coverage from the checkout using its own source path:
 ```bash
 PYTHONPATH=src timeout 120s .venv/bin/pytest -q -s tests/test_orchestration_handoff_latency.py
 PYTHONPATH=src timeout 120s .venv/bin/pytest -q -s tests/test_team_isolated_maintenance.py
+PYTHONPATH=src:tests timeout 120s .venv/bin/pytest -q tests/test_deferred_backend_reconciliation.py tests/test_team_mcp_read_scope.py
 ```
 
 The 30-chain benchmark stubs external work. Its target is cumulative inter-provider handoff p95

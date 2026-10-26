@@ -562,6 +562,7 @@ class EffectOrchestratorWorker:
         self.workflow_config_snapshot_store = resolved_wiring.workflow_config_snapshot_store
         self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
         self._executor = resolved_wiring.executor
+        self._deferred_backends = None
         self._inflight: dict[str, InflightExecution] = {}
         self._inflight_lock = RLock()
         self._completion_budget: CompletionBudget | None = None
@@ -637,12 +638,27 @@ class EffectOrchestratorWorker:
 
     def close(self) -> None:
         """Drain isolated lifecycle work before releasing runtime bindings."""
+        pool = getattr(self, "_deferred_backends", None)
+        if pool is not None:
+            pool.close()
+            self._deferred_backends = None
         self._wal_checkpoint_maintenance.close()
         for hook in self._completion_dispatch_hooks:
             close = getattr(hook, "close", None)
             if callable(close):
                 close()
         self._lifecycle_hooks_closed = True
+
+    def reconcile_container_backend(self, *, record: Any, backend: Any, reconcile: Any) -> int:
+        from evander.orchestration.deferred_backend import DeferredBackendReconciliation
+
+        if getattr(self, "_inline_container_reconciliation", False):
+            return reconcile(backend)
+        if self._deferred_backends is None:
+            self._deferred_backends = DeferredBackendReconciliation(
+                notify=lambda: self._wake_notifier.notify(),
+            )
+        return self._deferred_backends.run(record=record, backend=backend, reconcile=reconcile)
 
     def _bind_provider_factory_runtime_ports(self) -> None:
         from evander.orchestration.event_publisher import InternalEventPublisherRuntime
@@ -719,7 +735,14 @@ class EffectOrchestratorWorker:
         self._managed_git_lifecycle.cleanup_active_worktrees()
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        return self._kernel.run_once_with_lock(on_stop=self.close)
+        # Operator single-cycle runs have no later cycle to consume an RPC
+        # continuation. Keep their existing synchronous reconciliation contract.
+        previous = getattr(self, "_inline_container_reconciliation", False)
+        self._inline_container_reconciliation = True
+        try:
+            return self._kernel.run_once_with_lock(on_stop=self.close)
+        finally:
+            self._inline_container_reconciliation = previous
 
     def force_complete_await_agent(self, dispatch_id: str) -> bool:
         return self._run_force_complete_hooks(dispatch_id=dispatch_id)
@@ -1432,6 +1455,21 @@ class EffectOrchestratorWorker:
         schedule = getattr(self, "_recovery_schedule", None)
         if schedule is None:
             schedule = self._recovery_schedule = RecoverySchedule()
+        pool = getattr(self, "_deferred_backends", None)
+        if pool is not None:
+            ready = False
+            for key in pool.ready_owners():
+                current = self.execution_store.get_execution(key[0])
+                if (
+                    current is None or current.status != "waiting"
+                    or current.outputs.get("interrupt_in_progress")
+                    or str(current.outputs.get("execution_id")) != key[1]
+                ):
+                    pool.discard(key)
+                else:
+                    ready = True
+            if ready:
+                schedule.next_due = min(schedule.next_due, time.monotonic())
         tasks = [
             ("waiting_reconciliation", hook)
             for hook in sorted(

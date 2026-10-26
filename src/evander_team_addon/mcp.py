@@ -519,6 +519,9 @@ def register_mcp_tools(server: MCPServer, context: AddonContext) -> tuple[str, .
         session_lookup=getattr(context.service, "session_repository", None),
     )
     resolver = TeamMcpContextResolver(repo=repo, context=context)
+    from .mcp_read_scope import ScopedTeamToolRegistration
+
+    server = ScopedTeamToolRegistration(server, repo)
     attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
     attachment_policy_service = TeamChatAttachmentPolicyService(repo)
 
@@ -4664,6 +4667,10 @@ def _team_mcp_result_with_attention(
     if not agent_id or not dispatch_id or not isinstance(repository, TeamStateRepository):
         return payload
     try:
+        from .mcp_read_scope import TeamMcpReadSnapshot
+
+        if isinstance(caller.state, TeamMcpReadSnapshot) and not caller.state.has_operator_attention_candidates(agent_id):
+            return payload
         reconcile_operator_chat_steering_deliveries(repository)
         state, messages = TeamChatService(repository).list_pending_operator_attention_messages(
             agent_id=agent_id,
