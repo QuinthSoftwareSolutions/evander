@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Reintegrate reviewed contribution correction chains (0.129.6)
+
+- Allow a pinned integration to include a reviewed correction based on another explicitly selected, accepted contribution when that predecessor chain is anchored in the pinned integration base.
+- Preserve immutable source and base checks, and reject missing predecessors, unanchored chains and contradictory provenance before preparing or accepting Git work.
+
 ## 2026-10-25 - Download images and file links from forwarded Teams messages (0.129.5)
 
 - Discover hosted images and SharePoint/OneDrive file links embedded in forwarded message bodies, and expose them through the existing attachment and inline-media tools. Preserve the destination message as the artifact source and download only the referenced resource through the existing Teams identity.

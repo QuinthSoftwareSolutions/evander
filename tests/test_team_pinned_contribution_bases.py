@@ -17,6 +17,7 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.provider_git_sources import _project_repo_task_dependency_git_sources
+from evander_team_addon.provider_git_errors import DependencyGitPreparationError
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands import TeamTaskCreationCommandService
 from evander_team_addon.services.domain.git_work_contexts import (
@@ -250,6 +251,86 @@ def test_source_on_same_or_older_base_can_integrate(tmp_path: Path, advance_targ
     assert (
         dependency_source_base_requirements(state, sources=sources)[0]["base_commit_sha"] == pinned
     )
+
+
+def _accepted_correction_chain(tmp_path: Path, *, anchored: bool = True):
+    state, managed, repo_id, pinned, newer, _branch, candidate = _state(
+        tmp_path, clean_source=anchored
+    )
+    source = tmp_path / "source"
+    correction_branch = "agents/session-backend/correction"
+    _run("git", "switch", "-c", correction_branch, candidate, cwd=source)
+    corrected = _commit(source, "correction.txt", "reviewed correction\n", "Correct contribution")
+    _run(
+        "git", "push", str(_bare_path(managed, repo_id)),
+        f"{correction_branch}:refs/evander/{correction_branch}", cwd=source,
+    )
+    state.tasks["a-correction"] = state.tasks["contribution"].model_copy(
+        update={"id": "a-correction", "deliverable_ids": ["correction-accepted"]}
+    )
+    state.git_work_contexts["correction-context"] = GitWorkContext(
+        id="correction-context",
+        agent_id="backend",
+        task_id="a-correction",
+        base_branch="main",
+        base_commit=candidate,
+        agent_branch=correction_branch,
+        commit_sha=corrected,
+        state=GitWorkContextState.SUBMITTED,
+    )
+    state.deliverables["correction-accepted"] = Deliverable(
+        id="correction-accepted",
+        task_id="a-correction",
+        producer_agent_id="backend",
+        summary="Reviewed correction of the accepted contribution",
+        state=TeamRecordState.ACCEPTED,
+        git_refs=DeliverableGitRefs(
+            branch_context_id="correction-context",
+            agent_branch=correction_branch,
+            commit_sha=corrected,
+            submitted_commit_sha=corrected,
+        ),
+    )
+    state.tasks["integration"].git_base_commit_sha = newer if anchored else pinned
+    state.tasks["integration"].deliverable_contract.required_contribution_task_ids = [
+        "a-correction", "contribution"
+    ]
+    return state, managed, repo_id, candidate, corrected
+
+
+def test_preparation_accepts_correction_based_on_selected_accepted_predecessor(tmp_path: Path):
+    state, managed, repo_id, candidate, corrected = _accepted_correction_chain(tmp_path)
+    sources = _project_repo_task_dependency_git_sources(
+        SimpleNamespace(admin_service=SimpleNamespace(managed_git_admin=managed)),
+        state=state,
+        task_id="integration",
+        managed_repo_id=repo_id,
+    )
+    assert {row["deliverable_id"]: row["commit_sha"] for row in sources} == {
+        "accepted": candidate,
+        "correction-accepted": corrected,
+    }
+
+
+@pytest.mark.parametrize("missing_predecessor", [False, True])
+def test_preparation_rejects_correction_without_selected_anchored_predecessor(
+    tmp_path: Path, missing_predecessor: bool
+):
+    state, managed, repo_id, _candidate, _corrected = _accepted_correction_chain(
+        tmp_path, anchored=missing_predecessor
+    )
+    if missing_predecessor:
+        state.tasks["integration"].deliverable_contract.required_contribution_task_ids = [
+            "a-correction"
+        ]
+    with pytest.raises(DependencyGitPreparationError) as error:
+        _project_repo_task_dependency_git_sources(
+            SimpleNamespace(admin_service=SimpleNamespace(managed_git_admin=managed)),
+            state=state,
+            task_id="integration",
+            managed_repo_id=repo_id,
+        )
+    assert error.value.cause == "incompatible_source_base"
 
 
 def test_submission_rechecks_already_composed_worktree(tmp_path: Path):
