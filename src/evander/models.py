@@ -1981,23 +1981,35 @@ class ListPullRequestsResponse(BaseModel):
 
 class CompletePullRequestRequest(BaseModel):
     session_id: str = Field(min_length=1)
-    provider: Literal["azure_devops"]
+    provider: Literal["azure_devops", "github"]
     repo: str = Field(min_length=1)
     pr_id: str = Field(pattern=r"^[1-9][0-9]*$")
     expected_source_commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
     expected_target_branch: str = Field(min_length=1)
+    completion_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
     request_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_completion_provider(self) -> CompletePullRequestRequest:
+        if self.completion_id is not None and self.provider != "github":
+            raise ValueError("completion_id is only supported for GitHub")
+        return self
 
 
 class CompletePullRequestResponse(BaseModel):
     success: bool = True
-    provider: str = "azure_devops"
+    provider: Literal["azure_devops", "github"] = "azure_devops"
     repo: str
     pr_id: str
     status: str | None = None
     merged: bool = False
     pending: bool = False
     merge_commit: str | None = None
+    completion_id: str | None = None
+    message: str | None = None
     blockers: list[str] = Field(default_factory=list)
 
 

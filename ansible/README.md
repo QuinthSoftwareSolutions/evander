@@ -385,6 +385,11 @@ The selected agent pool must have Python and Docker for the runner-image build. 
 in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
 worker access.
 
+The worker Playwright runtime is pinned to 1.64.1 in `frontend/admin-web/package.json`
+and its lockfile, including support for Ubuntu 26.04 build agents. Install its packages
+with `npm ci` and download Chromium from that same installation before exporting the
+runtime and browser cache; the worker cannot download missing browsers at runtime.
+
 The worker stage installs Node.js 24.22.1 before building `dist/evander-runner.tar` from the
 host-seeded Codex binary and matching `codex-code-mode-host`, and
 `dist/evander-runner-claude.tar` from a host-resolved Claude Code
