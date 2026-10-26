@@ -1420,6 +1420,7 @@ class AzureDevOpsPrPublishProvider:
                 + ", ".join(_AZURE_DEVOPS_REVIEW_VOTES)
             )
         vote = _AZURE_DEVOPS_REVIEW_VOTES.get(normalized_event)
+        vote_deferred = False
         normalized_body = body_text.strip()
         normalized_comments = _normalize_pr_review_comments(comments)
         if not normalized_body and not normalized_comments:
@@ -1445,6 +1446,20 @@ class AzureDevOpsPrPublishProvider:
                 reviewer_id, reviewer_url = self._reviewer_vote_target(
                     client=client, repo=repo, pr_id=pr_id
                 )
+                pr_response = client.get(
+                    reviewer_url.rsplit("/reviewers/", 1)[0],
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                )
+                _raise_azure_devops_pr_publish_error(
+                    pr_response, action="check PR draft state before review voting"
+                )
+                pr_payload = pr_response.json()
+                if not isinstance(pr_payload, dict) or type(pr_payload.get("isDraft")) is not bool:
+                    raise ValueError("Azure DevOps did not confirm the PR draft state")
+                if pr_payload["isDraft"]:
+                    vote_deferred = True
+                    vote = None
             resolved_summary_mentions = resolve_ado_mentions(
                 client=client,
                 organization_url=self.organization_url,
@@ -1610,6 +1625,20 @@ class AzureDevOpsPrPublishProvider:
         }
         if vote is not None:
             result.update({"reviewer_id": reviewer_id, "vote": vote})
+        if vote_deferred:
+            result.update(
+                {
+                    "event": "COMMENT",
+                    "requested_event": normalized_event,
+                    "vote_deferred": True,
+                    "vote_deferred_reason": "draft_pull_request",
+                    "message": (
+                        "Review comments were published without voting because the pull request "
+                        "is a draft. After publication, recheck the source commit before "
+                        "submitting a new review vote."
+                    ),
+                }
+            )
         return result
 
     def _reviewer_vote_target(

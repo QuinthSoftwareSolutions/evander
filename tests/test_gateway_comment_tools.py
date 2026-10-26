@@ -136,6 +136,43 @@ def test_comment_only_reviews_and_github_keep_existing_target_policy(tmp_path, p
     assert len(publisher.calls) == 1
 
 
+def test_azure_draft_review_returns_and_audits_deferred_vote(tmp_path):
+    context, server, publisher = review_gateway(
+        tmp_path,
+        metadata={
+            "pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]
+        },
+    )
+    publisher.result.update(
+        {
+            "event": "COMMENT",
+            "requested_event": "APPROVE",
+            "vote_deferred": True,
+            "vote_deferred_reason": "draft_pull_request",
+        }
+    )
+    result = call_tool(
+        server,
+        "submit_pr_review",
+        {
+            "session_id": "session-a",
+            "provider": "ado",
+            "repo": "repo-1",
+            "pr_id": "17",
+            "body_text": "Summary",
+            "event": "APPROVE",
+        },
+    )
+    assert result["event"] == "COMMENT"
+    assert result["vote_deferred"] is True
+    assert "vote" not in result
+    entries = [json.loads(line) for line in context.config.audit_log_path.read_text().splitlines()]
+    assert entries[-1]["decision"] == "allowed"
+    assert entries[-1]["result"]["vote_deferred"] is True
+    assert entries[-1]["result"]["vote_deferred_reason"] == "draft_pull_request"
+    assert "vote" not in entries[-1]["result"]
+
+
 @pytest.mark.parametrize("tool", [ToolName.DELETE_PR_COMMENT, ToolName.RESOLVE_PR_COMMENT])
 def test_github_comment_tools_reach_the_provider_through_the_session_gateway(
     tmp_path, monkeypatch, tool

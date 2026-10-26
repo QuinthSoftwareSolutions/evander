@@ -1531,8 +1531,9 @@ def register_pr_tools(
                     "supports APPROVE, APPROVE_WITH_SUGGESTIONS, WAITING_FOR_AUTHOR, and RESET "
                     "(no vote); REQUEST_CHANGES means Waiting for author. Azure voting requires "
                     "a session-bound PR and the authenticated host identity already assigned as "
-                    "a reviewer. Reject is unsupported. GitHub supports COMMENT, APPROVE, "
-                    "and REQUEST_CHANGES."
+                    "a reviewer. Draft Azure DevOps PRs publish comments with vote_deferred=true; "
+                    "after publication, recheck the source before a new voting submission. "
+                    "Reject is unsupported. GitHub supports COMMENT, APPROVE, and REQUEST_CHANGES."
                 )
             ),
         ] = None,
@@ -1615,6 +1616,13 @@ def register_pr_tools(
             if result.get("vote") is not None:
                 audit_result.update(
                     {"reviewer_id": result.get("reviewer_id"), "vote": result["vote"]}
+                )
+            if result.get("vote_deferred"):
+                audit_result.update(
+                    {
+                        "vote_deferred": True,
+                        "vote_deferred_reason": result.get("vote_deferred_reason"),
+                    }
                 )
             if result.get("resolved_mentions"):
                 audit_result["resolved_mentions"] = result.get("resolved_mentions")

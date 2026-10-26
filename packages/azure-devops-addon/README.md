@@ -131,6 +131,13 @@ then casts and confirms that identity's vote; agents never receive the credentia
 another reviewer. See the [review workflow contract](../../docs/operations.md#review-request-workflow)
 for response fields, permissions, and retry behavior.
 
+For draft PRs, a voting submission publishes the review comments without changing the vote.
+The successful response reports `event=COMMENT`, the original `requested_event`,
+`vote_deferred=true` and `vote_deferred_reason=draft_pull_request`; no `vote` is claimed.
+Retries with the same idempotency key reuse that publication, including after the PR is
+published. Recheck the source commit and submit a new review with a new key before voting
+after publication; draft votes are not replayed automatically.
+
 ## Deliver one issue
 
 1. Configure the organization's name, project, work-item/build credential and PR

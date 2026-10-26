@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26 - Defer Azure DevOps review votes on draft pull requests (0.133.2)
+
+- Check draft state before publishing a voting review. Publish draft review comments successfully without attempting an unavailable vote, and report the deferral in the tool response and audit.
+- Preserve publication idempotency across retries and process restarts, including after the PR is published. Require a new review of the current source before a later voting submission; deferred votes are not replayed automatically.
+
 ## 2026-10-26 - Reconcile resource cleanup during worker deployment (0.133.1)
 
 - Make the normal worker playbook refresh already provisioned RabbitMQ, SQL Server and Test Fixtures packages and migrate their cleanup services. Keep absent and masked services untouched, preserve host-owned configuration, and refresh running API workers.
