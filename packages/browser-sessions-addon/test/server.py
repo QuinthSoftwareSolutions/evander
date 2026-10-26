@@ -9,6 +9,7 @@ from pathlib import Path
 import socket
 import sys
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from starlette.applications import Starlette
@@ -303,7 +304,17 @@ async def speech_events(request):
 
 
 relay = relay_app(folder, service=service, internal_token="fixture-relay-token")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # Mounted Starlette apps do not start their own lifespan automatically.
+    async with relay.router.lifespan_context(relay):
+        yield
+
+
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route("/test/voice/events", speech_events),
         Route("/test/provider/audio/{action}", speech_provider, methods=["POST"]),

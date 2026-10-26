@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
+import { fixture } from "./fixture.mjs";
 
 test("hosted viewer keeps text feedback usable when voice is disabled", async () => {
   const received = [], messages = [];
@@ -77,6 +78,34 @@ test("hosted viewer keeps text feedback usable when voice is disabled", async ()
     await page.screenshot({ path: "test-output/viewer.png", fullPage: true });
   } finally {
     await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("hosted viewer receives delivery and reply notifications without a scheduled poll", async t => {
+  const f = await fixture();
+  let browser;
+  try {
+    const config = await f.api("/test/setup", {});
+    browser = await chromium.launch({headless:true,args:["--no-sandbox"]});
+    const page = await browser.newPage(); page.setDefaultTimeout(3000);
+    // Suppress recovery polling: a missing push handler must fail this test.
+    await page.addInitScript(() => { window.setInterval = () => 0; });
+    await page.request.post(f.base + "/api/auth/login");
+    await page.goto(f.base + "/addons/browser-sessions-addon/view/" + config.session.id,
+      {waitUntil:"domcontentloaded"});
+    await page.getByRole("textbox",{name:"Message agent"}).fill("Continue here");
+    const sentAt = performance.now();
+    await page.getByRole("button",{name:"Send",exact:true}).click();
+    await page.getByRole("log").getByText("Delivered",{exact:true}).waitFor();
+    t.diagnostic("Local viewer send to Delivered: " + Math.round(performance.now() - sentAt) + " ms (fixture worker)");
+    const messages = (await f.api("/test/" + config.session.id + "/messages")).messages;
+    assert.equal(messages.length, 1);
+    await f.api("/test/" + config.session.id + "/reply", {message_id:messages[0].id,body:"Working on it."});
+    await page.getByRole("log").getByText("Working on it.").waitFor();
+    assert.equal(await page.locator('[data-message-id="' + messages[0].id + '"]').count(), 1);
+  } finally {
+    await browser?.close();
+    await f.stop();
   }
 });
 

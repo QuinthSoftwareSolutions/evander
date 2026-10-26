@@ -1143,6 +1143,9 @@ async function openViewer() {
   websocket = new WebSocket(location.origin.replace(/^http/, "ws") + base + "/sessions/" + sessionId + "/stream");
   websocket.addEventListener("message", async (event) => {
     const payload = JSON.parse(String(event.data));
+    if (payload.kind === "messages") {
+      void messages().catch(showError);
+    }
     if (payload.kind === "state") {
       actor = payload.actor ?? actor;
       update(payload.session);

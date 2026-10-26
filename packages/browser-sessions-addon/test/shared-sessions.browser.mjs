@@ -42,6 +42,9 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const original=tabs.find(tab=>tab.url===config.entry_url);
     const second=tabs.find(tab=>tab.url===f.base+"/position");
     assert.ok(original&&second);
+    // A static page need not emit another screencast frame when a tab opens.
+    // Refresh the cached frame's page list before opening the viewer.
+    await f.api(path+"/command",command(state,"select_page",{page_id:original.id}));
     browser = await chromium.launch({headless:true,args:["--no-sandbox"]});
     const viewer = await browser.newPage({viewport:{width:1600,height:1000}});
     await viewer.request.post(f.base+"/api/auth/login");

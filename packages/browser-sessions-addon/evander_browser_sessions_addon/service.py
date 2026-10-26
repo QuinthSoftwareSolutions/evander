@@ -876,6 +876,16 @@ class Service:
 
         return self.store.mutate(session.id, "system", bind, kind="conversation_bound")
 
+    @property
+    def message_wake_path(self):
+        return self.runtime_dir / "browser-messages.wake.sock"
+
+    def notify_messages(self):
+        from evander.orchestration.host_polling import HostWakeNotifier
+
+        # The database owns delivery intent; a missing listener only delays recovery.
+        HostWakeNotifier(self.message_wake_path).notify()
+
     def enqueue_message(self, session_id, actor, request, *, channel="viewer"):
         session = self.store.get(session_id)
         self.store.active(session)
@@ -894,6 +904,7 @@ class Service:
             lambda value: setattr(value, "last_activity_at", self.now()),
             kind="message",
         )
+        self.notify_messages()
         return message
 
     def reply(self, agent_session_id, session_id, message_id, body, *, request_id=None):
@@ -932,6 +943,7 @@ class Service:
                 "UPDATE messages SET status='answered' WHERE id IN (?,?)",
                 (message_id, result["id"]),
             )
+        self.notify_messages()
         return result
 
     def retry_message(self, session_id, actor, message_id, request_id):
@@ -1016,6 +1028,7 @@ class Service:
         self.store.mutate(
             session_id, actor, lambda value: setattr(value, "last_activity_at", self.now())
         )
+        self.notify_messages()
         return result
 
     def close(self, session_id, actor="system", *, expired=False):
@@ -1161,6 +1174,17 @@ class Service:
                         "INSERT OR REPLACE INTO dispatches VALUES(?,?,?)",
                         (message["id"], "dispatching", self.now() + 60),
                     )
+                # Dispatch no longer waits for the broad reconciliation sweep.
+                # Recheck its eligibility conditions before starting any work.
+                eligible = self.store.settings(session.directory)[1].enabled
+                if eligible:
+                    try:
+                        self.bindings.parent(session.agent_session_id)
+                    except Exception:
+                        eligible = False
+                if not eligible:
+                    self._cancel_messages(session)
+                    continue
                 session = self.bind_conversation(session, required=True)
                 delivery = self.bindings.enqueue(session, message)
                 state = (

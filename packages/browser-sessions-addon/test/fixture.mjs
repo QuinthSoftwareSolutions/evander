@@ -23,6 +23,12 @@ export async function fixture() {
     if (!chunk) return null;
     return JSON.parse(String(chunk).trim().split("\n")[0]);
   }, "integration fixture");
+  await until(async () => {
+    if (child.exitCode !== null) throw new Error("Fixture exited during startup: " + logs);
+    try {
+      return (await fetch(first.base + "/healthz", {signal:AbortSignal.timeout(1000)})).ok;
+    } catch { return false; }
+  }, "integration fixture readiness");
   const api = async (path, body) => {
     const response = await fetch(first.base+path, { method: body ? "POST" : "GET",
       headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : undefined, signal:AbortSignal.timeout(10000) });

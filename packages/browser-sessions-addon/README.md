@@ -88,6 +88,15 @@ the active turn, or uncertain. A delivery acknowledgement does not mean the agen
 has acted; its reply still appears in this browser chat. Closing the sharing
 session cancels requests still waiting to start.
 
+Messages wake the relay dispatcher immediately through a local runtime socket.
+Browser reconciliation runs independently so slow worker health checks do not
+hold up chat. Dispatch rechecks directory enablement and the owning agent before
+starting work. Hosted viewers receive message and delivery notifications over
+their authenticated browser stream; periodic dispatch and cursor-based polling
+recover missed notifications and support older clients. Notifications contain
+no message text. Admin Web, MCP and the relay share the runtime directory, and
+only one relay dispatcher may own its wake socket.
+
 Deploy the core worker before the control plane and this add-on. See
 [conversation steering operations](../../docs/operations.md#conversation-steering-from-teams-and-shared-browsers)
 for capability checks, receipt recovery and Teams workflow activation.
