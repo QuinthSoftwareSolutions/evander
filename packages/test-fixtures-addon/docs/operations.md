@@ -21,16 +21,17 @@ uses an isolated interpreter and never imports code from the agent repository.
    Create `/var/lib/evander-test-fixtures` root-owned mode0700. Its SQLite registry,
    SQL intent file and broker definition files must share its durable filesystem.
    Back it up with the worker resource registry; never replace it while leases exist.
-3. Install the three example systemd units explicitly. Adapt the venv paths and
+3. Install the two example systemd service units explicitly. Adapt the venv paths and
    bind address to the deployment. The API defaults to loopback; bind only the
    worker's control-plane-facing private interface when remote access is needed.
    Allow TCP11991 only from the control plane. Do not add it to guest egress ports.
    Give the control plane a distinct fixture bearer token via its environment.
-   Start the service and independent reap timer. Both use the same process lock.
+   Start the API service and independent persistent reap service. Both use the same process lock.
    Keep `PrivateTmp=yes` on both service units: `ProtectSystem=strict` otherwise
    makes the host temporary directories read-only, preventing SQLite from sorting
-   larger worker-job histories. Reload systemd and restart the fixture API after
-   installing updated units; the next independent reap uses its updated unit.
+   larger worker-job histories. Use the reviewed [cleanup migration](../../../docs/resource-cleanup.md)
+   to retire old timers. Restart both services through CI/CD after changing their
+   startup configuration or environment.
    Docker retains privileged host operations; agents receive neither a Docker
    socket nor a general host command surface.
 4. Enable `test-fixtures-addon` and `evander_test_fixtures_addon` explicitly in
@@ -101,7 +102,7 @@ revalidate scope and receive a fresh binding. Task reassignment releases the old
 lease; a new owner acquires new SQL and broker identities.
 
 The worker watchdog checks deadlines every 2 seconds while its API is running,
-with an independent systemd timer every 5 seconds after a completed reap. Recovery
+with an independent persistent process waiting 5 seconds after each completed reap. Recovery
 can be delayed by host/daemon unavailability or an in-flight bounded operation;
 the deadline is retained and retried. Idle resources are never renewed locally.
 Uninstall only after all leases are released; disabling the allocation switch is

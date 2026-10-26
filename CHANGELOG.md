@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-26 - Keep independent resource cleanup processes running (0.131.2)
+
+- Replace five-second process launches with persistent RabbitMQ, SQL Server and legacy Test Fixtures cleanup services, retaining independent recovery, existing journals and the API workers' two-second checks.
+- Keep cleanup entrypoints free of unrelated admin, gateway and MCP imports. Retry failed passes with sanitized diagnostics and stop cleanly on termination signals.
+- Publish RabbitMQ and SQL Server 0.1.1 and Test Fixtures 0.1.5 with compatible single-pass commands and a reviewed-artifact CI/CD migration for upgrade and rollback. Retire legacy cleanup timers without changing resource grants or lease formats.
+
 ## 2026-10-26 - Deliver shared-browser chat without waiting for polling (0.131.1)
 
 - Wake the browser message dispatcher as soon as typed messages, voice transcripts, annotations or explicit retries are saved. Run dispatch independently of browser reconciliation and retain durable message identities, receipts and periodic recovery.

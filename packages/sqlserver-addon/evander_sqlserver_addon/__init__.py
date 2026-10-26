@@ -1,29 +1,15 @@
-from pathlib import Path
-from evander.addons import AddonAdminNavigation, AddonRegistration
-from evander.integration_contracts import (
-    AddonIntegration,
-    IntegrationConfigSection,
-    IntegrationReadinessCheck,
-)
-from .settings import Settings
-from evander.resources.surfaces import (
-    admin_routes,
-    catalog,
-    register_calls,
-    register_lifecycle,
-    ui_routes,
-)
-from evander.resources.providers import register_providers as resource_providers
-from .adapter import Adapter
-from .service import service
-from evander.resources.starters import maintenance
-from evander.resources.readiness import check as check_readiness
+"""Optional registration; worker entrypoints do not load control-plane surfaces."""
 
 PREFIX = "sqlserver"
 OPERATIONS = ["inspect", "query", "execute", "manage_database", "manage_principal"]
 
 
 def register_mcp(server, context):
+    from evander.resources.surfaces import register_calls, register_lifecycle
+
+    from .adapter import Adapter
+    from .service import service
+
     register_lifecycle(server, context, service, PREFIX, control="control" in OPERATIONS)
     calls = [op for op in OPERATIONS if op != "control"]
     register_calls(
@@ -35,6 +21,23 @@ def register_mcp(server, context):
 
 
 def register_addon():
+    from pathlib import Path
+
+    from evander.addons import AddonAdminNavigation, AddonRegistration
+    from evander.integration_contracts import (
+        AddonIntegration,
+        IntegrationConfigSection,
+        IntegrationReadinessCheck,
+    )
+    from evander.resources.providers import register_providers as resource_providers
+    from evander.resources.readiness import check as check_readiness
+    from evander.resources.starters import maintenance
+    from evander.resources.surfaces import admin_routes, catalog, ui_routes
+
+    from .adapter import Adapter
+    from .service import service
+    from .settings import Settings
+
     return AddonRegistration(
         addon_id=PREFIX + "-addon",
         display_name="SQL Server",

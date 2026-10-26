@@ -1,8 +1,0 @@
-[Unit]
-Description=Independent SQL Server resource recovery
-[Timer]
-OnBootSec=15
-OnUnitActiveSec=5
-AccuracySec=1
-[Install]
-WantedBy=timers.target

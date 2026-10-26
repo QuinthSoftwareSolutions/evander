@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -65,7 +66,7 @@ def create_app(settings, *, service=None, periodic=True):
                 return JSONResponse(
                     dict(
                         protocol=1,
-                        version="0.1.4",
+                        version="0.1.5",
                         worker_id=settings.worker_id,
                         deployment_revision=os.environ.get("EVANDER_WORKER_DEPLOYMENT_REVISION"),
                         allocations_enabled=settings.allocations_enabled,
@@ -125,12 +126,22 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=11991)
-    parser.add_argument("--reap", action="store_true")
+    cleanup = parser.add_mutually_exclusive_group()
+    cleanup.add_argument("--reap", action="store_true", help="Run one independent cleanup pass")
+    cleanup.add_argument(
+        "--reap-loop", action="store_true", help="Run persistent independent cleanup"
+    )
     args = parser.parse_args()
     os.umask(0o077)
     settings = WorkerSettings.model_validate_json(args.config.read_bytes())
     if args.reap:
         WorkerService(settings).tick()
+    elif args.reap_loop:
+        from evander.resources.reaper import run_cleanup_loop
+
+        logging.basicConfig(level=logging.INFO)
+        service = WorkerService(settings)
+        run_cleanup_loop(service.tick)
     else:
         import uvicorn
 
