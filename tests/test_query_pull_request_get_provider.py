@@ -43,8 +43,9 @@ def _execute(
     return provider.execute(resolved_config=resolved_config)
 
 
+@pytest.mark.parametrize("include_labels", [False, True])
 def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, include_labels: bool
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -114,6 +115,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
         project="Explicit Project",
         include_reviewers="false",
         include_commits="true",
+        include_labels=include_labels,
     )
 
     provider = factory.build(query)
@@ -128,6 +130,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
         "pr_id": "17",
         "include_reviewers": False,
         "include_commits": True,
+        **({"include_labels": True} if include_labels else {}),
     }
     assert output["provider"] == "azure_devops"
     assert output["title"] == "Fix race"

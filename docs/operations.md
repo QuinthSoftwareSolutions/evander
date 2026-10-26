@@ -1915,6 +1915,14 @@ A transport-terminated warning without client-visible failure can be expected fo
 - A build's associated work items are evidence about that build. Confirm which build was deployed
   before reporting an item's inclusion in a release.
 
+For automated PR-build feedback, `query:ado:pr-build-context` takes a raw PR object,
+`tested_commit`, configured `intake_tags`/`reviewer_ids`, and an optional
+`preparation_deadline`. It returns intake eligibility, current/superseded/unknown revision
+context, and a fixed 15-minute preparation deadline with `within_preparation_window` and
+`retry_delay_seconds`. Preserve the returned deadline across retries. This query performs no
+network or state operations. Set `include_labels: true` on `query:pull-request:get` when its
+raw response will be used for eligibility; ADO labels require an additional opt-in GET.
+
 ## Host-Side Azure DevOps Work Item Activity Tool
 
 - Gateway tool name: `query_ado_work_item_activity`.

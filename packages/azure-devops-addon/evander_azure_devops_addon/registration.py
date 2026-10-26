@@ -89,18 +89,23 @@ class HostWorker:
 def register_workflow_providers():
     from .delivery import register_providers as delivery_providers
     from .pipeline_tasks import register_providers as task_providers
+    from .queries.pr_build_context import register_providers as build_context_providers
 
     delivery, tasks = delivery_providers(), task_providers()
+    build_context = build_context_providers()
     return replace(
         delivery,
         effect_providers={**delivery.effect_providers, **tasks.effect_providers},
+        query_providers={**delivery.query_providers, **build_context.query_providers},
         node_definition_resolvers={
             **delivery.node_definition_resolvers,
             **tasks.node_definition_resolvers,
+            **build_context.node_definition_resolvers,
         },
         workflow_editor_catalog_entries=(
             *delivery.workflow_editor_catalog_entries,
             *tasks.workflow_editor_catalog_entries,
+            *build_context.workflow_editor_catalog_entries,
         ),
     )
 

@@ -399,6 +399,7 @@ class PullRequestGetQueryDefinition(QueryDefinition):
     project: ConfigValue | None = None
     include_reviewers: ConfigValue | None = None
     include_commits: ConfigValue | None = None
+    include_labels: ConfigValue | None = None
 
     @model_validator(mode="before")
     @classmethod

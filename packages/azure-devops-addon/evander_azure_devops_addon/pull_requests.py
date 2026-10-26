@@ -1025,6 +1025,7 @@ class AzureDevOpsPrQueryProvider:
         pr_id: str,
         include_reviewers: bool | None = None,
         include_commits: bool | None = None,
+        include_labels: bool = False,
     ) -> GetPullRequestResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -1038,6 +1039,10 @@ class AzureDevOpsPrQueryProvider:
             )
             response.raise_for_status()
             payload = response.json()
+
+            if include_labels:
+                tags = self._list_pr_labels(client=client, repo_identifier=repo_identifier, pr_id=pr_id)
+                payload = {**payload, "labels": [{"name": tag} for tag in tags]}
 
             commits_payload: list[dict[str, Any]] = []
             if include_commits:

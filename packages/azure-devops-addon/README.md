@@ -105,6 +105,20 @@ The current ADO completion trigger treats a build ID as one run; rerunning jobs 
 the same build ID does not produce a second notification. Operator workflow files and
 customer-specific mappings belong outside this package and must use revision-checked saves.
 
+`query:ado:pr-build-context` provides the deterministic eligibility, revision and deadline
+checks for this flow. Pass `query:pull-request:get`'s `raw` output as `pull_request`, request
+`include_labels: true` on that PR query, and supply `tested_commit`, configured `intake_tags`
+and `reviewer_ids`. ADO's main PR response does not include labels; the opt-in label read
+preserves the existing default query behavior. The context query itself performs no I/O.
+
+Use `intake_eligible` before retrying a missing agent; already associated agents do not need
+another tag or reviewer assignment. The first context check returns a 15-minute
+`preparation_deadline`. Carry that exact value through every scheduled retry and pass it
+back to the query. Continue only while `within_preparation_window` is true, and schedule
+the next check using `retry_delay_seconds` (at most 60 seconds, shortened at the deadline).
+A delayed or restarted worker cannot extend the deadline. `revision_context` is `current`,
+`superseded` or `unknown`, comparing the tested merge with `lastMergeCommit.commitId`.
+
 ## Cast a PR review vote
 
 Grant `submit_pr_review` and bind the target provider, repository, and PR in the session's

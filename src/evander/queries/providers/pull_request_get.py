@@ -37,6 +37,9 @@ class PullRequestGetQueryProvider(PullRequestQueryProviderBase):
             payload.get("include_commits"),
             field_name="include_commits",
         )
+        include_labels = self._coerce_optional_bool(
+            payload.get("include_labels"), field_name="include_labels",
+        )
 
         if provider_name == "github":
             config = self._resolve_directory_config(directory_path)
@@ -70,6 +73,7 @@ class PullRequestGetQueryProvider(PullRequestQueryProviderBase):
             pr_id=pr_id,
             include_reviewers=include_reviewers,
             include_commits=include_commits,
+            **({"include_labels": True} if include_labels else {}),
         )
         return response.model_dump(mode="json")
 
@@ -85,6 +89,7 @@ class PullRequestGetQueryProvider(PullRequestQueryProviderBase):
             "project",
             "include_reviewers",
             "include_commits",
+            "include_labels",
         ):
             if query is not None and hasattr(query, field_name):
                 payload[field_name] = getattr(query, field_name)
