@@ -866,6 +866,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:session:set-reasoning-effort": (
         "Set a session's native reasoning default for future turns, or clear it with null."
     ),
+    "effect:session:set-model-settings": (
+        "Persist a session's model, reasoning and speed defaults for future turns in every channel."
+    ),
     "effect:website-session:ensure-profile": (
         "Create or reuse an exact-origin website login from a host-approved template. "
         "Returns a profile ID without exposing credentials or performing a login."
@@ -4277,6 +4280,23 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("browser_origin", "Website origin", "string", required=True, bindable=True),
             _field("login_origin", "Login API origin", "string", required=True, bindable=True),
             _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:set-model-settings",
+        label="Session model settings",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "settings", "Model settings", "json", required=True, bindable=True,
+                description=(
+                    "Supply model, reasoning_effort and/or fast_mode. Null clears a default; "
+                    "omitted fields and running turns are unchanged."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

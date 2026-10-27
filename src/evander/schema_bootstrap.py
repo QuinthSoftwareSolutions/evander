@@ -1502,6 +1502,13 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "directory_path": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
     },
+    "effect:session:set-model-settings": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+    },
     "effect:session:renew-if-expired": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},

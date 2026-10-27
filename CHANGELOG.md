@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-27 - Persist session execution preferences across channels (0.135.0)
+
+- Add a scoped workflow effect for saving real session model, reasoning and speed defaults, so preference changes apply to later browser-chat and other dispatches that omit prompt overrides.
+- Validate the complete settings update before saving, preserve unmentioned settings and grants, and keep in-flight turns unchanged. Document why updating model metadata alone does not change the execution default.
+
 ## 2026-10-27 - Wait for browser checkpoints with compact decision context (0.134.0)
 
 - Add optional ordered browser-run checkpoints that wait for explicit observation predicates before later input, retaining metadata-only evidence of intermediate results across retries. Allow an explicit final checkpoint to return for owning-agent verification without another decision.

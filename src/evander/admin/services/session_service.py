@@ -479,7 +479,7 @@ class SessionAdminService:
     def update_session_model_settings(
         self, target: str, settings: Mapping[str, Any]
     ) -> SessionActionResult:
-        session_id, manifest = session_helpers.resolve_session_target(
+        session_id, _ = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
         if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode", "cyber_access_program"}:
@@ -496,17 +496,21 @@ class SessionAdminService:
             update["fast_mode"] = normalize_fast_mode(settings["fast_mode"])
         if "cyber_access_program" in settings:
             update["cyber_access_program"] = normalize_cyber_access_program(settings["cyber_access_program"])
-        updated = manifest.model_copy(update=update)
-        resolver = getattr(self._deps.runtime, "provider_config", None)
-        config = (
-            resolver.resolve_for_directory(updated.directory_path)
-            if resolver is not None
-            else self._deps.config
-        )
-        validate_session_reasoning_effort(updated, config)
-        validate_session_fast_mode(updated, config)
-        session_cyber_access_program(updated, config)
-        self._session_repository().upsert_session(updated)
+
+        def apply_settings(manifest: SessionManifest) -> SessionManifest:
+            updated = manifest.model_copy(update=update)
+            resolver = getattr(self._deps.runtime, "provider_config", None)
+            config = (
+                resolver.resolve_for_directory(updated.directory_path)
+                if resolver is not None
+                else self._deps.config
+            )
+            validate_session_reasoning_effort(updated, config)
+            validate_session_fast_mode(updated, config)
+            session_cyber_access_program(updated, config)
+            return updated
+
+        self._session_repository().mutate_session(session_id, apply_settings)
         return SessionActionResult(
             success=True,
             session_id=session_id,
