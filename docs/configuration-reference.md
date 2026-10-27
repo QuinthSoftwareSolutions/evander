@@ -1,5 +1,15 @@
 # Configuration Reference
 
+## Optional narrated PR demonstrations
+
+The [Demo Video add-on](../packages/demo-video-addon/docs/interfaces.md) owns the
+`demo_video_narration` connector driver and generic `!EXPLAIN` workflow example.
+Its host-owned connector configuration fixes the Speech API endpoint, model, voice and
+delivery instructions; agents supply only text. Existing connector grants and file approval
+rules apply. Configure video file allowances for the intended review sessions explicitly
+(the core 10 MiB default is not changed). Keep live enablement and configuration deferred
+until after source review; see the [operator procedure](../packages/demo-video-addon/docs/operations.md).
+
 ## Repository security scan effect
 
 `effect:security:scan-repo` requires bindable `session_id` and `repo_path` fields.

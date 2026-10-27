@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evander-demo-video-addon"
+version = "0.1.0"
+description = "Narrated, evidence-backed PR demonstrations for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.137.0", "httpx>=0.28.1", "pydantic>=2.8.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.3", "pillow>=13.0.0"]
+
+[project.entry-points."evander.addons"]
+demo_video = "evander_demo_video_addon:register_addon"
+
+[project.scripts]
+evander-demo-video = "evander_demo_video_addon.cli:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_demo_video_addon*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+evander_demo_video_addon = ["addon.json", "capture.mjs", "skills/demo-video/SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

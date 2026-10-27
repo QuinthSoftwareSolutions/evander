@@ -1,5 +1,10 @@
 # Operations
 
+For narrated PR demonstrations, see the separately installed
+[Demo Video add-on](../packages/demo-video-addon/docs/operations.md). Its optional,
+host-seeded media bundle reconciles recording and rendering tools into existing sessions.
+Source review must finish before production deployment, skill import, grants or workflow edits.
+
 For repository security scans, use `effect:security:scan-repo` with a live session
 and its absolute repository path. The [Codex Security provider guide](../packages/codex-security-addon/README.md)
 describes separate installation, host-seeded VM/worker runtimes, subscription

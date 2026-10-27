@@ -12,6 +12,7 @@ the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
 - [Loading and enablement](#loading), [extension contract](#boundary-contract),
   and [private storage](#storage)
 - [Miro](miro-addon.md), [Figma](figma.md),
+  [Demo videos](../packages/demo-video-addon/README.md),
   [SQL Server](../packages/sqlserver-addon/README.md),
   [RabbitMQ](../packages/rabbitmq-addon/README.md),
   [WordPress](../packages/wordpress-addon/docs/operations.md),
