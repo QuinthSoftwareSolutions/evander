@@ -473,7 +473,7 @@ def build_workflow() -> dict:
             "resume_mode": "same_context",
             "resume_thread_id": ref("explain-session.metadata.agent_thread_id"),
             "queue_key": "pr-explain:" + request_key + ":video",
-            "prompt": "Use the demo-video skill to explain this PR in plain, human English: what changed, why it matters and how to use it. Explain material backend behavior with a practical example, even when it cannot be shown in the UI. A tour of form controls alone is insufficient. Inspect the pinned diff and relevant tests, prepare bounded synthetic data, rehearse, then record browser scenes and explanatory cards. The host already deployed the build; do not redeploy, reset the database, change code or push commits. Coordinate target use manually; preserve unrelated data and local work.\n\nRepository: "
+            "prompt": "Use the installed demo-video skill as the authoritative guidance for preparation, presentation, narration, verification and publication. Produce an English explanation of this pinned PR using the supplied request context. The host has already deployed the build. Do not redeploy, reset the database, modify application source or push commits. Preserve unrelated data and local work; coordinate target use manually.\n\nRepository: "
             + ref(feedback + "repo")
             + "\nPR: "
             + ref(feedback + "pr_id")
@@ -499,7 +499,7 @@ def build_workflow() -> dict:
             + ref("explain-deploy.run_url")
             + "\nPublic UI: "
             + public
-            + "\nBrowser target: demo-admin (managed website login). Use the seeded helper; never print or persist authentication state. Keep the original PR title in the manifest.\n\nAim for two to three minutes, at most five. Explain the business meaning of formulas and controls with a small worked example. Distinguish observed results, source-backed explanations and illustrations. Inspect representative video frames and audio; attach the verified MP4 and transcript with post_pr_feedback_reply(provider=azure_devops) to the thread/comment above using the publication receipt and idempotency key. Preserve file approvals. Report any gaps honestly; deployment success alone does not establish demonstration success.",
+            + "\nBrowser target: demo-admin (managed website login). Use the seeded helper; never print or persist authentication state. Keep the original PR title in the manifest.\n\nUse post_pr_feedback_reply(provider=azure_devops) for the supplied thread/comment. Follow the skill's publication receipts and idempotency key, preserve file approvals, and report any demonstration or review gaps honestly.",
         },
     )
     edge("explain-targets", "explain-prompt")

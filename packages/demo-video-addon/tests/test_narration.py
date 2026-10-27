@@ -76,7 +76,10 @@ def test_host_auth_and_settings_produce_session_owned_wav(tmp_path):
         requests.append(request)
         return httpx.Response(200, content=wav_bytes(), headers={"content-type": "audio/wav"})
 
-    service, session, _ = configured_service(tmp_path, provider)
+    service, session, config = configured_service(tmp_path, provider)
+    delivery = "Speak with interest, pause at sentences and emphasize the outcome."
+    config.connectors["demo-narration"].config["instructions"] = delivery
+    config.connectors["demo-narration"].config["speed"] = 1.15
     result = invoke(service, session)
     request = requests[0]
     assert request.headers["authorization"] == "Bearer synthetic-host-secret"
@@ -85,6 +88,9 @@ def test_host_auth_and_settings_produce_session_owned_wav(tmp_path):
     assert body["model"] == "gpt-4o-mini-tts"
     assert body["voice"] == "onyx"
     assert body["response_format"] == "wav"
+    assert body["input"] == "Here is why the change matters."
+    assert body["instructions"] == delivery
+    assert body["speed"] == 1.15
     artifact = CommunicationArtifactStore(tmp_path).get(result.artifact.artifact_id)
     assert artifact.metadata.session_id == "review-42"
     assert artifact.metadata.mime_type == "audio/wav"
@@ -97,6 +103,7 @@ def test_host_auth_and_settings_produce_session_owned_wav(tmp_path):
     "arguments",
     [
         {"text": "hello", "voice": "other"},
+        {"text": "hello", "instructions": "Override the host delivery settings."},
         {"text": "hello", "base_url": "https://other.example.test"},
         {"text": "x" * 2001},
     ],

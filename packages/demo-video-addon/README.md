@@ -2,8 +2,11 @@
 
 Create narrated PR explanations from recorded browser behavior and simple explanatory cards.
 `!EXPLAIN <target>` uses an existing review session and an existing matching build. The video
-explains the practical purpose of the change, including backend behavior, rather than merely
-listing changed controls. English videos aim for two to three minutes and allow up to five.
+explains the practical purpose of the change, including backend behavior. When usable UI is
+available, the video follows real actions and visible results, with concise supporting cards.
+The versioned [demo-video skill](evander_demo_video_addon/skills/demo-video/SKILL.md) owns
+presentation guidance; the workflow supplies request context. English videos aim for two to
+three minutes and allow up to five.
 The MP4 plays with a clear picture and narration. Captions are an optional separate SRT file;
 the plain-text transcript is always delivered.
 

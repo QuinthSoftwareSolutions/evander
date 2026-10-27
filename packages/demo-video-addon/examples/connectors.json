@@ -13,7 +13,7 @@
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini-tts",
         "voice": "onyx",
-        "instructions": "Read the supplied words only, with a natural, warm and clear delivery.",
+        "instructions": "Read the supplied words only. Sound like an interested colleague giving a practical demonstration: conversational, engaged and clear. Vary intonation, emphasize choices and results, and use natural pauses so the listener can follow. Keep the delivery grounded and unhurried.",
         "speed": 1.0
       },
       "operations": {
