@@ -161,7 +161,7 @@ Model `done` cannot override an unsatisfied completion condition.
 The receipt's optional `completion` evidence contains only the condition kind,
 status, observation/page identities, time and matched counts/references. It does
 not persist predicate text, target names or literal values. Identical retries
-return that receipt without repeating input. Older requests remain compatible.
+return that receipt without repeating input. Older saved-run retries remain compatible.
 
 An optional ordered `request.checkpoints` list binds observation predicates to
 completed actions. A checkpoint fires once after its matching action and blocks

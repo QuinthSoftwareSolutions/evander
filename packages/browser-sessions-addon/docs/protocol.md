@@ -110,3 +110,6 @@ returning for owning-agent verification. It cannot be combined with a stopping
 checkpoint or overridden by a model `done` choice. Read-only stale observations
 may be retried up to three attempts with fresh control, grant and deadline checks;
 input and uncertain outcomes are never replayed by this recovery.
+New objectives must explicitly choose a completion predicate or `null` for manual
+verification, or supply a stopping checkpoint. Older saved-run retries retain
+their original request identity and do not replay input.
