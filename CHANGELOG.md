@@ -9,6 +9,7 @@
 - Persist command outcomes and indexed plan progress atomically. Identical retries only return durable receipts; restarts retain the original lease and never resume or replay input. Retire pending commands on settlement and preserve uncertainty against late replies.
 - Add stable engine observation identities and local regression coverage for concurrent retries, process death around dispatch/persistence, unexpected page changes and human takeover.
 - Publish per-target supported actions and action-specific plan schemas. Add bounded native date, number and exact-option form operations, with complete-value validation, isolated fixed-function dispatch, range/step checks and durable retry coverage; retain keyboard tools for trusted event input.
+- Stabilize native-sidebar browser coverage by activating the real panel before input and waiting for spoken replies to finish before ending sharing.
 
 ## 2026-10-27 - Explain PR changes with narrated demonstration videos (0.137.0)
 

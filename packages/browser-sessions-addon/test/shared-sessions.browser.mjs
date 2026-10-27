@@ -609,6 +609,10 @@ async function nativeSidebar(host) {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? "Native sidebar evaluation failed");
     return result.result.value;
   };
+  // A headless side-panel target can be attached before Chrome makes it visible.
+  // Activate the real WebContents before sending input or requesting its microphone.
+  await send("Page.bringToFront");
+  await until(async () => await evaluate(() => document.visibilityState === "visible"), "native sidebar visibility");
   const down = async selector => {
     const point = await until(async () => evaluate(selector => {
       const target = document.querySelector(selector);
@@ -666,6 +670,7 @@ test("native Chrome side panel captures speech and plays replies alongside the s
       row => row.body === "Move the button to the left."), "native sidebar transcription");
     await f.api("/test/" + host.setup.session.id + "/reply", { message_id: question.id, body: "Updated from the sidebar." });
     await until(async () => await sidebar.evaluate(() => window.__voicePlayCount > 0), "native sidebar spoken reply");
+    await until(async () => await sidebar.evaluate(() => document.querySelector("[data-voice-stop]").disabled), "native sidebar reply completed");
     assert.equal(context.pages().length, pages, "The real side panel must not create another tab");
     assert.equal((await f.api("/test/" + host.setup.session.id + "/state")).controller, null);
     await sidebar.click("#disconnect");
