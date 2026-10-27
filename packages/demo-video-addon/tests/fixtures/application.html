@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Production overview — local demonstration fixture</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf2f5;color:#173145;font:22px system-ui,sans-serif}
+header{background:#173145;color:white;padding:22px 56px;font-size:18px;letter-spacing:.04em}
+main{max-width:1120px;margin:30px auto;padding-bottom:180px}h1{font-size:36px;margin:12px 0}p{line-height:1.5;color:#456174}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.panel{background:white;border:1px solid #d8e1e6;border-radius:12px;padding:28px}
+.score{font-size:76px;font-weight:700;color:#087e70;line-height:1.2}label{display:block;font-size:24px;line-height:1.5;margin:20px 0}input{width:24px;height:24px;margin-right:12px;accent-color:#087e70}
+button{background:#087e70;color:white;border:0;border-radius:8px;padding:13px 22px;font:inherit;cursor:pointer}
+small{font-size:17px;color:#647c8d}.details{font-size:22px;line-height:1.7;margin-top:14px}textarea{font:inherit;width:100%;height:160px;padding:18px;border:2px solid #b8ccd6;border-radius:8px}#save-status{display:inline-block;margin-left:20px;font-weight:650;color:#745200}.hidden{display:none}
+</style>
+<header>PRODUCTION OVERVIEW · SYNTHETIC LOCAL DEMONSTRATION</header>
+<main>
+<section id="calculation">
+<h1>Measure the time you planned to produce</h1>
+<p>A practical example of how planned breaks affect a production score.</p>
+<div class="grid">
+<div class="panel"><small>Equipment effectiveness</small><div class="score" id="score">52.5%</div><p>Good production compared with the production time we planned.</p>
+<label><input id="exclude-breaks" type="checkbox">Exclude planned breaks</label>
+<button id="details-button">Show production details</button></div>
+<div class="panel"><h2 style="margin-top:0">The example shift</h2><div class="details">Shift: 480 minutes<br>Planned break: 60 minutes<br>Time running: 336 minutes<br>Pieces made: 280<br>Good pieces: 252</div></div>
+</div>
+<div class="panel details hidden" id="details">Planned production: <strong id="planned">480 minutes</strong><br>One good piece represents one minute at the agreed production pace.</div>
+</section>
+<section id="bugfix" class="hidden"><h1>Know when a saved note has changed</h1><p>The save message should describe the note you are looking at now.</p><div class="panel"><label for="note">Production note</label><textarea id="note"></textarea><p><button id="save">Save note</button><span id="save-status">No saved note</span></p></div></section>
+</main>
+<script>
+const mode=new URLSearchParams(location.search).get('mode');
+if(mode==='bugfix'){document.querySelector('#calculation').classList.add('hidden');document.querySelector('#bugfix').classList.remove('hidden')}
+document.querySelector('#exclude-breaks').addEventListener('change',event=>{
+ const planned=480-(event.target.checked?60:0);
+ const availability=336/planned,pace=280/336,quality=252/280;
+ document.querySelector('#score').textContent=(100*availability*pace*quality).toFixed(1)+'%';
+ document.querySelector('#planned').textContent=planned+' minutes';
+});
+document.querySelector('#details-button').addEventListener('click',()=>document.querySelector('#details').classList.toggle('hidden'));
+document.querySelector('#save').addEventListener('click',()=>{
+ localStorage.setItem('production-note', document.querySelector('#note').value);
+ document.querySelector('#save-status').textContent='Saved';
+});
+document.querySelector('#note').addEventListener('input',()=>{if(document.querySelector('#save-status').textContent==='Saved')document.querySelector('#save-status').textContent='Unsaved changes'});
+</script>
+</html>

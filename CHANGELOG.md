@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-27 - Explain PR changes with narrated demonstration videos (0.137.0)
+
+- Add the independently installed Demo Video add-on with host-owned Speech API narration, managed browser recording, isolated MP4 assembly with optional SRT captions, and media/publication recovery receipts.
+- Supply a customer-neutral `!EXPLAIN <target>` workflow example and managed skill that explain practical purpose and backend behavior as well as visible UI, with offline media-toolchain provisioning and synthetic local verification fixtures.
+- Keep production enablement, live workflow configuration and a coordinated speech-provider migration behind their separate operator review and rollout steps.
+
 ## 2026-10-27 - Collapse Admin Web navigation sections (0.136.0)
 
 - Let operators expand or collapse each navigation section, with Extensions initially collapsed and browser-local preferences preserved. Keep section controls available in compact and mobile navigation and reveal a section when navigating to one of its pages.

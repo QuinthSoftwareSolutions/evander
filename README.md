@@ -26,6 +26,10 @@ Git, and HTTP surfaces.
 
 ## Capabilities
 
+- Optional [narrated PR explanations](packages/demo-video-addon/README.md) with recorded
+  browser scenes, explanatory cards, captions and PR video attachments; source review
+  precedes production activation
+
 - Optional [integration contracts](docs/optional-integrations.md) for add-on settings,
   host credentials, readiness checks, worker factories and editable workflow starters
 
