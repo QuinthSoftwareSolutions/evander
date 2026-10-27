@@ -60,8 +60,15 @@ Operation, target, supplied input, key and scroll direction remain separate
 questions batched in one provider request. Only choices needed by the selected
 operation are scored. Waiting, readiness for verification and assistance do not
 need a target or input. Every conditional question includes an explicit
-no-operation option. All eligible targets remain available up to the 200-target
-cap; truncation yields to the owning agent instead of discarding controls.
+no-operation option. Controls occur once in `page.elements`; their context IDs
+refer to shared `page.contexts`, and target choices refer back to those controls.
+On larger pages, up to 100 ordinary controls remain in view and overflow controls
+and rows/cells are exposed as regions of at most 50 targets. The model can choose
+`inspect` with a listed region to reveal its targets on a fresh observation,
+without sending browser input. Omitted targets are counted explicitly, so a
+projected view cannot establish absence. The complete observation remains the
+authority for input validation and the returned page. Truncated observations or
+a decision payload exceeding 64 KiB yield to the owning agent.
 
 When a relevant choice is below threshold, the durable receipt includes a
 `decision` object with `question`, `choice`, `probability`, `threshold` and at most
@@ -127,12 +134,66 @@ Example arguments for `browser_session_run`:
 ```
 
 The model can choose click, hover, fill, character typing, bounded keyboard
-navigation, scrolling, waiting, done or help. It cannot generate text, scripts,
+navigation, scrolling, region inspection, waiting, done or help. It cannot generate text, scripts,
 selectors, coordinates, URLs or new values. Missing data, unsupported surfaces,
 truncation, ambiguous decisions and repeated lack of progress return to the owning agent.
 Dropdowns use the existing click/key paths. Rich observations include current
 field state, surrounding row/form/dialog context and bounded page text. The
 human's stream and pointer continue; intermediate observations omit images.
+
+## Condition waits and checkpoint evidence
+
+An optional ordered `request.checkpoints` list binds observation predicates to
+completed actions. A checkpoint fires once after its matching action and blocks
+all later input until its condition holds. For example, after filling a known
+field, require its value to equal the exact supplied literal:
+
+```json
+{
+  "id": "name-entered",
+  "after": {"action": "fill", "ref": "node-123", "input": "name"},
+  "condition": {"kind": "value", "target": {"ref": "node-123"}, "input": "name"},
+  "timeout_seconds": 5
+}
+```
+
+Use actual observed references and the keys of `request.values`, not model-local
+aliases. Fill/type triggers require an input ID and can constrain the target ref;
+click/key triggers require a ref, and key triggers also require the exact key.
+Conditions support unique element presence, element absence, exact supplied
+values, explicit checked/expanded/disabled state, positive page-text matching,
+and bounded counts of matching observed elements. Targets match an observed ref
+or role, optionally with an exact name and surrounding context name. Multiple
+matches for a unique-element condition return assistance. Missing state is not
+evidence of a false boolean. Only roles exposed by the snapshot are accepted;
+an unsupported role cannot establish absence or a zero count. Exact-value checks
+cannot establish equality at the 1,000 UTF-16-unit clipping boundary; use another
+application result predicate when the value may be clipped.
+Counts include all matching elements, including
+header rows; they do not infer application data-row semantics. Use a known text
+sentinel or direct verification when the observation cannot express the condition.
+
+The controller obtains fresh, text-only observations and checks the predicate,
+polling at most every 200 ms between completed observations without calling the
+decision model. Each checkpoint has a default five-second timeout (maximum 15),
+bounded by the run deadline. There can be at most eight checkpoints. Truncation,
+ambiguity, timeout or loss of authority stops further input. A later checkpoint
+cannot fire before an earlier one, and `done` cannot bypass an unreached check.
+Ordinary `wait` without a triggered checkpoint keeps its existing model-guided
+behavior.
+
+Set `stop_after: true` on the final checkpoint when it defines the end of this
+bounded objective. Once observed, the run returns `needs_verification` without
+another model decision about `done`. It cannot bypass any earlier checkpoint and
+does not establish success beyond the stated predicate. Other checkpoints default
+to `stop_after: false`, allowing the model to select further actions.
+
+Receipts persist checkpoint IDs, outcomes, observation/page identities, times,
+observation counts and matched counts/references where relevant. They omit
+condition descriptions, page text and literal values. This preserves evidence
+of intermediate states that may disappear before the final observation, and
+identical retries return it without replay. A satisfied checkpoint establishes
+only its stated predicate; the owning agent still verifies the complete goal.
 
 A `needs_verification` receipt is not proof of success. Verify the returned actual
 page state before reporting success. If `observation_current` is false, or a

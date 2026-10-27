@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-27 - Wait for browser checkpoints with compact decision context (0.134.0)
+
+- Add optional ordered browser-run checkpoints that wait for explicit observation predicates before later input, retaining metadata-only evidence of intermediate results across retries. Allow an explicit final checkpoint to return for owning-agent verification without another decision.
+- Deduplicate decision controls and shared context, expose overflow controls and table cells through inspectable regions, and bound the serialized decision payload while retaining complete observations for command validation and final verification.
+- Preserve pre-upgrade run retries and authoritative keyboard-focus checks. Reject unobservable checkpoint roles and refuse exact-value evidence at the observation clipping boundary.
+
 ## 2026-10-26 - Continue recovery past missing worker mappings (0.133.4)
 
 - Bind container-worker ownership inside the first background RPC so missing execution mappings follow the existing inspection retry path instead of aborting a recovery page. Continue processing later jobs without finalizing or deleting unresolved records.

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 ADDON_ID = "browser-sessions-addon"
 PROTOCOL_VERSION = 1
@@ -25,6 +33,22 @@ State = Literal[
 ]
 IDENTIFIER = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
 CREDENTIAL_REF = r"^cred_[0-9a-f]{32}$"
+ObservationRole = Literal[
+    "button",
+    "link",
+    "textbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "tab",
+    "menuitem",
+    "option",
+    "heading",
+    "dialog",
+    "alert",
+    "gridcell",
+    "row",
+]
 
 
 class BrowserError(ValueError):
@@ -216,6 +240,98 @@ class RunValue(Contract):
     )
 
 
+class CheckpointTarget(Contract):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    ref: str | None = Field(default=None, min_length=1, max_length=128)
+    role: ObservationRole | None = None
+    name: str | None = Field(default=None, max_length=400)
+    context: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="Exact observed surrounding row, form or dialog name, if needed.",
+    )
+
+    @model_validator(mode="after")
+    def identified(self):
+        if self.ref is None and self.role is None:
+            raise ValueError("A checkpoint target needs an observed ref or role")
+        return self
+
+
+class ElementCondition(Contract):
+    kind: Literal["present", "absent"]
+    target: CheckpointTarget
+
+
+class ValueCondition(Contract):
+    kind: Literal["value"]
+    target: CheckpointTarget
+    input: str = Field(pattern=IDENTIFIER, description="Compare with this request.values literal.")
+
+
+class StateCondition(Contract):
+    kind: Literal["checked", "expanded", "disabled"]
+    target: CheckpointTarget
+    expected: bool = Field(strict=True)
+
+
+class TextCondition(Contract):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    kind: Literal["text"]
+    text: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Observed page text that must appear. Only positive text checks are supported.",
+    )
+
+
+class CountCondition(Contract):
+    kind: Literal["count"]
+    target: CheckpointTarget
+    minimum: int = Field(default=0, ge=0, le=600, strict=True)
+    maximum: int | None = Field(default=None, ge=0, le=600, strict=True)
+
+    @model_validator(mode="after")
+    def bounds(self):
+        if self.maximum is not None and self.maximum < self.minimum:
+            raise ValueError("Checkpoint maximum must not be below minimum")
+        return self
+
+
+class CheckpointTrigger(Contract):
+    action: Literal["click", "fill", "type", "key"]
+    ref: str | None = Field(default=None, min_length=1, max_length=128)
+    input: str | None = Field(default=None, pattern=IDENTIFIER)
+    key: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def constrained(self):
+        if self.action in {"fill", "type"}:
+            if self.input is None:
+                raise ValueError("A fill/type checkpoint trigger requires a supplied input ID")
+        elif self.ref is None or self.input is not None:
+            raise ValueError("A click/key checkpoint trigger requires a ref and no input ID")
+        if (self.action == "key") != (self.key is not None):
+            raise ValueError("Only a key trigger requires a key")
+        return self
+
+
+class RunCheckpoint(Contract):
+    id: str = Field(pattern=IDENTIFIER)
+    after: CheckpointTrigger
+    condition: Annotated[
+        ElementCondition | ValueCondition | StateCondition | TextCondition | CountCondition,
+        Field(discriminator="kind"),
+    ]
+    timeout_seconds: float = Field(default=5, ge=0.1, le=15, allow_inf_nan=False)
+    stop_after: bool = Field(
+        default=False,
+        strict=True,
+        description="Only on the final checkpoint: return for owning-agent verification as soon as it holds, without another model decision. This is not a claim that the whole goal succeeded.",
+    )
+
+
 class RunRequest(Contract):
     request_id: str = Field(
         pattern=IDENTIFIER,
@@ -253,6 +369,27 @@ class RunRequest(Contract):
         allow_inf_nan=False,
         description="Optional lower time budget in seconds, bounded by the directory cap (default 30, maximum 60).",
     )
+    checkpoints: list[RunCheckpoint] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Ordered checks triggered after specified actions. Each blocks further input until its observation predicate holds, with metadata-only evidence in the receipt. Counts include every matching observed element, including header rows. Truncated observations cannot prove a checkpoint.",
+    )
+
+    @model_validator(mode="after")
+    def checkpoint_inputs(self):
+        ids = [checkpoint.id for checkpoint in self.checkpoints]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Checkpoint IDs must be unique")
+        if any(checkpoint.stop_after for checkpoint in self.checkpoints[:-1]):
+            raise ValueError("Only the final checkpoint can request stop_after")
+        for checkpoint in self.checkpoints:
+            for input_id in (
+                checkpoint.after.input,
+                checkpoint.condition.input if checkpoint.condition.kind == "value" else None,
+            ):
+                if input_id is not None and input_id not in self.values:
+                    raise ValueError("Checkpoint input IDs must refer to request.values")
+        return self
 
     @field_validator("values")
     @classmethod
@@ -293,6 +430,7 @@ class Settings(Contract):
             if urlsplit(value).query or urlsplit(value).fragment:
                 raise ValueError("Base URLs cannot contain query parameters or fragments")
         return value.rstrip("/")
+
 
 class Session(Contract):
     id: str = Field(pattern=IDENTIFIER)

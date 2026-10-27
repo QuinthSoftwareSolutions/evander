@@ -199,7 +199,7 @@ wheels = [
 
 [[package]]
 name = "evander"
-version = "0.133.2"
+version = "0.134.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

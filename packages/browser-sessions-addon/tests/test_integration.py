@@ -9,7 +9,12 @@ from zipfile import ZipFile
 
 from evander.addons import AddonContext
 from evander_browser_sessions_addon import register_addon
-from evander_browser_sessions_addon.models import BrowserError, CreateRequest, RunRequest
+from evander_browser_sessions_addon.models import (
+    BrowserError,
+    CreateRequest,
+    RunCheckpoint,
+    RunRequest,
+)
 from evander_browser_sessions_addon.providers import BrowserEffect, Definition
 from evander_browser_sessions_addon.service import Bindings
 
@@ -43,6 +48,7 @@ def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
         "values",
         "max_steps",
         "timeout_seconds",
+        "checkpoints",
     } <= schema.keys()
     assert all(schema[field].get("description") for field in schema)
     for example in schema["values"]["examples"]:
@@ -75,15 +81,27 @@ def test_any_owning_agent_can_discover_packaged_guidance_without_a_pa_prompt(dom
     guidance = status["agent_guidance"]
     assert guidance["instructions"]
     assert guidance["create_request_schema"]["required"] == ["mode", "request_id"]
-    assert guidance["create_request_schema"]["properties"]["mode"]["enum"] == ["hosted", "user_hosted"]
+    assert guidance["create_request_schema"]["properties"]["mode"]["enum"] == [
+        "hosted",
+        "user_hosted",
+    ]
     assert "hosted" in profiles["modes"]
     assert set(profiles["modes"]) <= {"hosted", "user_hosted"}
     assert all("playwright_enabled" in profile for profile in profiles["profiles"])
     # Published instructions must contain usable examples of the actual public contracts.
-    creation, objective = re.findall(r"```json\n(.*?)\n```", guidance["instructions"], re.S)
+    creation, objective, checkpoint = re.findall(
+        r"```json\n(.*?)\n```", guidance["instructions"], re.S
+    )
     assert CreateRequest.model_validate_json(creation).mode == "hosted"
     request = RunRequest.model_validate_json(objective)
     assert any(value.value == "" for value in request.values.values())
+    # The guide's additional checkpoint must compose with its published objective.
+    RunRequest.model_validate(
+        {
+            **request.model_dump(),
+            "checkpoints": [RunCheckpoint.model_validate_json(checkpoint)],
+        }
+    )
     compact = call("browser_session_status", browser_session_id=created["id"])
     assert "agent_guidance" not in compact
     assert compact["last_activity_at"] == created["last_activity_at"]
