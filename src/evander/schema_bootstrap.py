@@ -1710,7 +1710,7 @@ _QUERY_OUTPUT_SCHEMAS = {
         "metadata": {"type": "object"},
         "created_at": {"type": "string"},
         "expires_at": {"type": "string"},
-        "model": {"type": "string"},
+        "model": {"type": ["string", "null"]},
     },
     "query:website-session:resolve-profile": {
         "ready": {"type": "boolean"},

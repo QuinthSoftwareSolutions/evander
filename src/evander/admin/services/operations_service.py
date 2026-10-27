@@ -31,7 +31,7 @@ from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.events.models import TriggerEvent
 
-from evander.models import ToolName
+from evander.models import SessionManifest, ToolName
 
 _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID = "system.chat_assistant"
 
@@ -272,8 +272,14 @@ class OperationsAdminService:
     def update_session_policy(self, target: str, payload: dict[str, object]):
         return self._session_admin.update_session_policy(target, payload)
 
-    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]):
-        return self._session_admin.update_session_model_settings(target, settings)
+    def update_session_model_settings(
+        self, target: str, settings: Mapping[str, Any], *,
+        expected_session: SessionManifest | None = None,
+    ):
+        return self._session_admin.update_session_model_settings(
+            target, settings,
+            **({"expected_session": expected_session} if expected_session is not None else {}),
+        )
 
     def set_session_model(self, target: str, model: str):
         return self._session_admin.set_session_model(target, model)

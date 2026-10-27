@@ -1,5 +1,6 @@
 """Saved execution preferences must be inherited by every later dispatch channel."""
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,10 @@ from evander.fast_mode import resolve_fast_mode
 from evander.models import SessionManifest
 from evander.providers.builtin import register_providers
 from evander.queries.registry import QueryProviderFactory
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.schema_bootstrap import _QUERY_OUTPUT_SCHEMAS
 from evander.workflow.binding import resolve_workflow_bindings
+from jsonschema import validate
 
 
 def runtime(tmp_path: Path):
@@ -102,6 +106,27 @@ def test_setting_only_model_preserves_speed_and_can_clear_the_override(tmp_path)
     assert effect.execute(resolved_config={"settings": {"model": None}})["success"]
     assert admin.runtime.session_repository.get_session("assistant-a").model is None
     assert admin.vm_agent_admin.resolve_agent_model_for_session("assistant-a") == "gpt-6.1-sol"
+
+
+@pytest.mark.parametrize("model", [None, "gpt-6.1-terra", "custom-model-alias"])
+def test_speed_only_update_preserves_explicit_and_inherited_models(tmp_path, model):
+    admin, factory = runtime(tmp_path)
+    admin.operations_admin.write_directory_domain_config(
+        "root", "issue_setup", {"default_model": "gpt-6-astra"}
+    )
+    admin.session_admin.update_session_model_settings("assistant-a", {"model": model})
+    effect = factory.build(
+        definition(target="assistant-a", settings={"fast_mode": False}),
+        directory_path="root/team-a",
+    )
+    assert effect.execute()["success"]
+    context = admin.issue_git_admin.session_context_query(target="assistant-a")
+    assert context["model"] == model
+    validate(context["model"], _QUERY_OUTPUT_SCHEMAS["query:session-context"]["model"])
+    assert admin.runtime.session_repository.get_session("assistant-a").fast_mode is False
+    assert admin.vm_agent_admin.resolve_agent_model_for_session("assistant-a") == (
+        model if model is not None else "gpt-6-astra"
+    )
 
 
 def test_workflow_reads_and_dispatches_the_canonical_model_after_retiring_metadata(tmp_path):
@@ -223,6 +248,64 @@ def test_workflow_cannot_change_another_directorys_session(tmp_path, scope):
     with pytest.raises(ValueError, match="outside workflow directory scope"):
         effect.execute()
     assert admin.runtime.session_repository.get_session("assistant-a").model == "gpt-6-luna"
+
+
+@pytest.mark.parametrize("mutation", ["move", "replace"])
+@pytest.mark.parametrize("timing", ["before_service_lookup", "before_locked_update"])
+@pytest.mark.parametrize("kind", ["model-settings", "reasoning-effort"])
+def test_settings_update_rejects_stale_session_identity_and_directory(
+    tmp_path, monkeypatch, mutation, timing, kind
+):
+    admin, factory = runtime(tmp_path)
+    repository = admin.runtime.session_repository
+    other = JsonSessionManifestRepository(repository.path)
+    config = {"target": "assistant-a"}
+    if kind == "model-settings":
+        config["settings"] = {"model": "gpt-6.1-terra"}
+    else:
+        config["reasoning_effort"] = "high"
+    effect = factory.build(
+        WorkflowNodeEnvelope(
+            id="save",
+            display_name="Save settings",
+            type=f"effect:session:set-{kind}",
+            config=config,
+        ),
+        directory_path="root/team-a",
+    )
+
+    def change_target():
+        current = other.get_session("assistant-a")
+        changes = (
+            {"directory_path": "root/team-b"}
+            if mutation == "move"
+            else {"created_at": current.created_at + timedelta(seconds=1)}
+        )
+        other.upsert_session(current.model_copy(update=changes))
+
+    if timing == "before_service_lookup":
+        lookup = effect.runtime_context.session_lookup
+        read = lookup.read_all_sessions
+
+        def read_stale_snapshot():
+            snapshot = read()
+            change_target()
+            return snapshot
+
+        monkeypatch.setattr(lookup, "read_all_sessions", read_stale_snapshot)
+    else:
+        mutate = repository.mutate_session
+
+        def change_before_lock(session_id, updater):
+            change_target()
+            return mutate(session_id, updater)
+
+        monkeypatch.setattr(repository, "mutate_session", change_before_lock)
+    with pytest.raises(ValueError, match="replaced|validated directory"):
+        effect.execute()
+    saved = other.get_session("assistant-a")
+    assert saved.model == "gpt-6-luna"
+    assert saved.reasoning_effort == "low"
 
 
 @pytest.mark.parametrize(

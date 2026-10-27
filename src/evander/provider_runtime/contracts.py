@@ -5,7 +5,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from evander.models import SessionManifest
 
 
 class SecretResolver(Protocol):
@@ -121,7 +124,10 @@ class SessionMetadataUpdater(Protocol):
 
 
 class SessionModelSettingsUpdater(Protocol):
-    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]) -> Any: ...
+    def update_session_model_settings(
+        self, target: str, settings: Mapping[str, Any], *,
+        expected_session: SessionManifest | None = None,
+    ) -> Any: ...
 
 
 class SessionImageGenerationPolicyUpdater(Protocol):

@@ -5,6 +5,7 @@
 - Add a scoped workflow effect for saving real session model, reasoning and speed defaults, so preference changes apply to later browser-chat and other dispatches that omit prompt overrides.
 - Validate the complete settings update before saving, preserve unmentioned settings and grants, and keep in-flight turns unchanged. Document why updating model metadata alone does not change the execution default.
 - Make the session-context model the sole saved preference in workflow migration guidance, with targeted, atomic removal of retired metadata keys and regression coverage for query-to-dispatch inheritance.
+- Recheck the workflow's observed session identity and directory under the settings-update lock so concurrent moves or replacements cannot receive stale model or reasoning changes.
 
 ## 2026-10-27 - Wait for browser checkpoints with compact decision context (0.134.0)
 

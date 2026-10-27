@@ -1507,6 +1507,9 @@ session record under its lock. Unrelated metadata is preserved; updating and
 removing the same key in one operation is rejected. Migrate an old preference
 value to the session default before retiring its key when that value represents
 the user's selected model.
+Speed-only workflows should omit `settings.model`, including when the saved model
+is null and inherits its directory default. Model and reasoning effects verify
+their observed session identity and directory again under the update lock.
 
 Upgrade container workers and their CLI/runtime assets before enabling effort
 settings in the control plane. VM start/resume ships the current runner libraries

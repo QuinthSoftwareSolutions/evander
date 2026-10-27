@@ -488,11 +488,15 @@ class SessionAdminService:
         )
 
     def update_session_model_settings(
-        self, target: str, settings: Mapping[str, Any]
+        self, target: str, settings: Mapping[str, Any], *,
+        expected_session: SessionManifest | None = None,
     ) -> SessionActionResult:
-        session_id, _ = session_helpers.resolve_session_target(
+        session_id, original = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
+        expected = expected_session if expected_session is not None else original
+        if expected.session_id != session_id:
+            raise ValueError("Session identity changed before the model settings update")
         if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode", "cyber_access_program"}:
             raise ValueError("Provide model, reasoning_effort, fast_mode, and/or cyber_access_program")
         update: dict[str, Any] = {}
@@ -509,6 +513,13 @@ class SessionAdminService:
             update["cyber_access_program"] = normalize_cyber_access_program(settings["cyber_access_program"])
 
         def apply_settings(manifest: SessionManifest) -> SessionManifest:
+            if (
+                "created_at" in expected.model_fields_set
+                and manifest.created_at != expected.created_at
+            ):
+                raise ValueError("Session was replaced during model settings update")
+            if manifest.directory_path != expected.directory_path:
+                raise ValueError("Session moved outside the validated directory")
             updated = manifest.model_copy(update=update)
             resolver = getattr(self._deps.runtime, "provider_config", None)
             config = (
