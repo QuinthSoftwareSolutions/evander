@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-27 - Improve PR video demonstration guidance (0.138.1)
+
+- Make the managed demo-video skill authoritative for presentation: rehearse useful UI actions and visible results, cover related controls or workflow steps, and keep supporting cards concise while explaining material backend behavior.
+- Give narration more conversational pacing and practical emphasis through versioned writing guidance and generic host delivery instructions. Keep the existing speech model, voice and media helpers.
+- Shorten the generated workflow brief to request context and execution/publication boundaries, and document reviewed skill/configuration updates with human sample acceptance before wider rollout.
+
 ## 2026-10-27 - Execute guarded browser plans with durable recovery (0.138.0)
 
 - Retry read-only observations invalidated during navigation within the existing run and checkpoint deadlines, rechecking control and grants without replaying input or uncertain outcomes.

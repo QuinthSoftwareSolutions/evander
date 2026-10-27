@@ -1,6 +1,6 @@
 ---
 name: demo-video
-description: Produce a narrated explanation of a pinned PR after its demo build has been deployed, using browser recordings and explanatory cards. Also perform the requested media readiness check before deployment.
+description: Produce a narrated explanation of a pinned PR through rehearsed browser demonstrations and concise supporting cards after its build is deployed. Also perform the requested media readiness check before deployment.
 ---
 
 # Demo video
@@ -9,13 +9,23 @@ Explain the change to a colleague who knows the business: what changed, why it m
 and how to use it. Speak like a person. Avoid code names, internal plumbing and jargon
 unless needed to understand the feature. Explain unfamiliar terms as they arise.
 
-Browser footage supports the explanation. It does not limit its scope. Cover material
-backend behavior with a practical example, even when it has no visible UI. For a change
-combining calculations and form controls, explain the calculation's purpose and inputs,
-work through a small checked example, and show how the controls affect the result.
-A tour of the form alone is insufficient. Backend-only changes can use relevant browser
-views and simple cards. Distinguish observed results, explanations grounded in source/tests,
-and illustrative examples. Show before/after only when both sides have evidence.
+Build the story around a useful task in the application. When the change has usable UI,
+let the UI carry the explanation: show the choices, actions and visible outcome. Cover
+material UI changes in the scenario, including how related controls or workflow steps work
+together. Opening a form and reading its fields is insufficient.
+
+Explain material backend behavior and its practical purpose even when it has no visible UI.
+For a change combining calculations and controls, work through a small checked example and
+show how the controls affect the result. Narrate over relevant application footage when it
+helps connect the explanation to the user's task. Backend-only changes can use contextual
+browser views and concise supporting cards; do not invent UI activity to fill time.
+
+Use cards for a short calculation, comparison or relationship that the UI cannot show clearly.
+Focus each card on one idea with a few essential numbers or labels. Let the narration add
+meaning instead of reading a paragraph from the screen. Avoid long runs of static text;
+a new narration beat does not require a new card. Distinguish observed results, explanations
+grounded in source/tests, and illustrative examples. Show before/after only with evidence
+for both sides.
 
 Aim for two to three minutes; the maximum is five. Use English narration and readable
 optional captions. Keep captions out of the video picture. A separate `captions.srt` file
@@ -60,8 +70,16 @@ do not hand-write the receipt. A readiness request is not an instruction to reco
 
 Inspect the pinned PR description, diff, relevant implementation and available tests.
 Check the actual build revision too: a merge build can differ from the PR source commit.
-Refresh a read-only checkout if necessary, preserving local changes. Rehearse the useful
-scenario before recording. Verify worked-example arithmetic independently.
+Refresh a read-only checkout if necessary, preserving local changes. Plan a concrete viewer
+outcome, identify the actions and observable result that demonstrate the change, and rehearse
+the complete scenario with bounded synthetic data. Verify worked-example arithmetic independently.
+For example, a linked start/end workflow feature can show configuring both actions, connecting
+the returned reference, validating the workflow, and running it to inspect the resulting status
+or history when the environment and existing grants allow it.
+
+If part of the scenario cannot run, demonstrate the usable parts and state the specific gap.
+Keep the practical backend explanation and checked example. Saved settings and successful
+configuration validation are evidence of setup, not proof that the feature executed.
 
 Keep all media in a dedicated request directory outside application source. Name it from
 the immutable PR feedback identity; reuse that directory for recovery. Create `manifest.json`
@@ -103,7 +121,10 @@ scene with narration and evidence.
 An optional `hold_before` adds presentation time on the initial frame.
 Frame important controls and results fully in view.
 Scroll to reveal the actual result before verification; text in an off-screen element is
-insufficient evidence that the video shows it.
+insufficient evidence that the video shows it. Record deliberate actions with useful pauses
+so viewers can follow the input, choice and result. Keep related steps in a coherent sequence;
+do not substitute a long frozen settings screen for an available demonstration. Divide a
+sequence at meaningful action/result markers, keeping the narration connected to what is visible.
 
 The helper reuses completed recordings. An interrupted/failed action has an uncertain
 outcome and is not replayed automatically: inspect the app before deciding on a fresh scene.
@@ -111,8 +132,13 @@ This prevents recovery from silently repeating mutations.
 
 ## Narrate and assemble
 
-After recording, write narration that matches the actual footage and evidence. For each
-beat, call `demo-narration.synthesize` with only `text`, copy its WAV artifact into the
+After recording, write narration that matches the actual footage and evidence. Speak like
+an interested colleague giving a practical walkthrough: use concrete verbs, natural sentences
+and varied rhythm, with pauses that give the viewer time to follow. Explain why each important
+choice matters and what its result means. Avoid reciting slide titles, field labels or lists
+of implementation details. Keep the delivery engaged and grounded, without sales language.
+
+For each beat, call `demo-narration.synthesize` with only `text`, copy its WAV artifact into the
 workspace, and run `worker.py import-audio --manifest <manifest> --scene <id>
 --source <copied WAV>`. This binds the audio receipt to that exact text. Reuse successful
 audio for retries; changed text requires new audio.
@@ -124,10 +150,14 @@ is longer, and keeps browser actions at normal speed. It produces `explanation.m
 with no caption overlays, at most five minutes and 50 MiB. It also saves optional `captions.srt`
 in the workspace. It includes an AI-narration disclosure.
 
-Inspect representative frames and listen to the narration against the footage. Check
-that the feature's purpose and example are explained, controls and results are readable,
-and the optional captions follow the narration when enabled,
-and assertions are supported. Adjust and regenerate only affected beats. Run
+Review the demonstration's visual coverage as well as representative frames. For UI changes,
+check that viewers see the important actions, how related controls work together and their
+observable consequence. Check that the practical purpose and worked example are explained,
+controls and results are readable, cards are brief and necessary, and assertions are supported.
+Listen to the narration against the footage when audio-capable review is available; check
+conversational delivery, useful pauses and action/result alignment. Otherwise state that
+perceptual sound review remains pending. Check optional captions when enabled.
+Adjust and regenerate only affected beats. Run
 `worker.py verify --manifest <manifest> --toolchain current` before publication.
 
 ## Publish and recover

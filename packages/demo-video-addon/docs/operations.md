@@ -45,6 +45,31 @@ The bugfix fixture checks that editing a stored note leaves the saved version in
 showing unsaved changes. Review their MP4s, transcripts,
 frames and `review.json`; distinguish this proof from later provider/production acceptance.
 
+## Presentation guidance updates
+
+Keep presentation rules in the packaged `demo-video/SKILL.md`; the example workflow passes
+request/build/target context and refers to that skill. Review guidance changes in source before
+updating the managed copy. Keep application-specific preparation instructions outside this
+customer-neutral package.
+
+After source review and authorized CI/CD delivery, import the reviewed skill through the
+managed Skills surface. Let the workflow's skill-installation step refresh the session copy;
+an already imported skill does not change merely because its package source changed. Adapt
+an existing workflow brief through the normal fresh-read, validation and revision-gated save
+process so it does not duplicate or contradict the managed presentation rules.
+
+The generic narration-delivery wording is versioned in `examples/connectors.json`. Apply a
+reviewed wording change to the intended connector's `config.instructions` through supported
+configuration controls. Preserve the existing endpoint, credential reference, model, voice,
+speed, operation grants and approval rules; do not replace live configuration with the disabled
+example. The agent continues to supply narration text only.
+
+For the next separately authorized sample, check that material UI changes are actually used,
+related actions and visible outcomes are shown, backend meaning remains clear, and cards add
+necessary explanation without dominating an available UI demonstration. Watch and listen for
+conversational delivery and readable pacing. Automated media checks do not establish those
+qualities. Reuse the existing recording/rendering toolchain for these guidance changes.
+
 ## Prepare offline tools
 
 After source review, prepare a release artifact from trusted Linux tools compatible with the
