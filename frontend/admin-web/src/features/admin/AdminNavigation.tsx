@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 
 import {
   ADMIN_NAVIGATION_GROUPS,
+  TABS,
   type AdminNavigationGroup,
   type AdminTab,
   type AdminTabDefinition,
@@ -78,13 +79,12 @@ const COMPACT_GROUP_LABELS: Record<AdminNavigationGroup, string> = {
 const COLLAPSED_GROUPS_STORAGE_KEY = "admin-web:navigation:collapsed-groups";
 
 function groupForTab(tabs: ReadonlyArray<AdminTabDefinition>, tab: AdminTab): AdminNavigationGroup | undefined {
-  return tabs.find((item) => item.key === tab)?.group ?? (tab.startsWith("addon:") ? "extensions" : undefined);
+  return tabs.find((item) => item.key === tab)?.group
+    ?? TABS.find((item) => item.key === tab)?.group
+    ?? (tab.startsWith("addon:") ? "extensions" : undefined);
 }
 
-function initialCollapsedGroups(
-  tabs: ReadonlyArray<AdminTabDefinition>,
-  routeTab: AdminTab,
-): Set<AdminNavigationGroup> {
+function readCollapsedGroups(): Set<AdminNavigationGroup> | null {
   try {
     const stored = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
     if (stored !== null) {
@@ -96,8 +96,28 @@ function initialCollapsedGroups(
   } catch {
     // Storage can be unavailable or contain an invalid value; use the defaults.
   }
+  return null;
+}
+
+function isPageReload(): boolean {
+  try {
+    const navigation = window.performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    return navigation?.type === "reload";
+  } catch {
+    return false;
+  }
+}
+
+function initialCollapsedGroups(
+  tabs: ReadonlyArray<AdminTabDefinition>,
+  routeTab: AdminTab,
+  pageReload: boolean,
+): Set<AdminNavigationGroup> {
+  const stored = readCollapsedGroups();
+  const groups = stored ?? new Set<AdminNavigationGroup>(["extensions"]);
   const activeGroup = groupForTab(tabs, routeTab);
-  return new Set(activeGroup === "extensions" ? [] : ["extensions"]);
+  if (activeGroup && (!pageReload || stored === null)) groups.delete(activeGroup);
+  return groups;
 }
 
 type AdminNavigationProps = {
@@ -135,8 +155,10 @@ export function AdminNavigation({
   const [quickNavigatorOpen, setQuickNavigatorOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups(tabs, routeTab));
-  const previousRouteTabRef = useRef(routeTab);
+  const [pageReload] = useState(isPageReload);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups(tabs, routeTab, pageReload));
+  const previousRouteTabRef = useRef<AdminTab | null>(pageReload ? routeTab : null);
+  const storageOutOfSyncRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -146,33 +168,43 @@ export function AdminNavigation({
   );
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY, JSON.stringify([...collapsedGroups]));
-    } catch {
-      // Navigation remains usable when browser storage is unavailable.
-    }
-  }, [collapsedGroups]);
-
-  useEffect(() => {
     if (previousRouteTabRef.current === routeTab) return;
     previousRouteTabRef.current = routeTab;
     const group = groupForTab(tabs, routeTab);
-    if (!group) return;
-    setCollapsedGroups((current) => {
-      if (!current.has(group)) return current;
-      const next = new Set(current);
-      next.delete(group);
-      return next;
-    });
+    if (group) setGroupCollapsed(group, false);
   }, [routeTab, tabs]);
 
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (event.key !== COLLAPSED_GROUPS_STORAGE_KEY && event.key !== null) return;
+      if (storageOutOfSyncRef.current) return;
+      setCollapsedGroups(readCollapsedGroups() ?? new Set<AdminNavigationGroup>(["extensions"]));
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  function setGroupCollapsed(group: AdminNavigationGroup, shouldCollapse: boolean) {
+    const current = storageOutOfSyncRef.current ? collapsedGroups : readCollapsedGroups() ?? collapsedGroups;
+    if (current.has(group) === shouldCollapse) {
+      if (current !== collapsedGroups) setCollapsedGroups(current);
+      return;
+    }
+    const next = new Set(current);
+    if (shouldCollapse) next.add(group);
+    else next.delete(group);
+    setCollapsedGroups(next);
+    try {
+      window.localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY, JSON.stringify([...next]));
+      storageOutOfSyncRef.current = false;
+    } catch {
+      // Keep using in-memory choices until they can be saved successfully.
+      storageOutOfSyncRef.current = true;
+    }
+  }
+
   function toggleGroup(group: AdminNavigationGroup) {
-    setCollapsedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(group)) next.delete(group);
-      else next.add(group);
-      return next;
-    });
+    setGroupCollapsed(group, !collapsedGroups.has(group));
   }
 
   function openQuickNavigator() {
