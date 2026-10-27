@@ -51,6 +51,9 @@ class RunStore:
 
     def _end_run(self, db, row, reason, status="cancelled"):
         value = json.loads(row["payload"])
+        return self._settle_run(db, value, reason, status)
+
+    def _settle_run(self, db, value, reason, status):
         pending = db.execute(
             "SELECT id,action_metadata FROM commands WHERE run_id=? AND observing=0 AND state IN ('submitted','unknown')",
             (value["id"],),
@@ -162,6 +165,35 @@ class RunStore:
             )
             if request.completion is not None:
                 value["completion"] = {"status": "pending", "kind": request.completion.kind}
+            if request.plan is not None:
+                row = db.execute(
+                    "SELECT payload FROM private_sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                private = json.loads(row[0]) if row else {}
+                guard = private.get("batch_observation", {})
+                if (
+                    guard.get("id") != request.observation_id
+                    or guard.get("generation") != request.generation
+                    or guard.get("actor") != actor
+                    or not 0 <= self.now() - guard.get("observed_at", 0) <= 30
+                ):
+                    raise BrowserError(
+                        "Observe the current page before planning a batch",
+                        "observation_required", 409,
+                    )
+                if not guard.get("fingerprint"):
+                    raise BrowserError(
+                        "Plan mode requires a complete observation with stable page and document identities",
+                        "batch_identity_required", 409,
+                    )
+                value.update(
+                    mode="plan", plan_length=len(request.plan),
+                    observation_id=request.observation_id,
+                    observation_fingerprint=guard["fingerprint"],
+                )
+                private.pop("batch_observation")
+                db.execute("UPDATE private_sessions SET payload=? WHERE session_id=?",
+                           (json.dumps(private), session_id))
             db.execute(
                 "INSERT INTO browser_runs VALUES(?,?,?,?,?,?,?,?)",
                 (
@@ -210,7 +242,7 @@ class RunStore:
                 "SELECT * FROM browser_runs WHERE session_id=? AND id=?", (session_id, run_id)
             ).fetchone()
             value = json.loads(row["payload"])
-            if step:
+            if step and value["status"] == "running":
                 value["steps"].append(step)
                 value["step_count"] = len(value["steps"])
             if checkpoint and value["status"] == "running":
@@ -221,9 +253,9 @@ class RunStore:
                 value["completion"] = completion
             # A late return must not erase a cancellation or uncertainty receipt.
             if value["status"] == "running" and status:
-                value.update(status=status, reason=reason, finished_at=self.now())
                 if decision is not None:
                     value["decision"] = decision
+                return self._settle_run(db, value, reason, status)
             self._write_run(db, value)
             return value
 

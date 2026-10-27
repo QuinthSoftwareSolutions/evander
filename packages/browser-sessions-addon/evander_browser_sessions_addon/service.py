@@ -796,7 +796,7 @@ class Service:
         self.store.audit(session_id, actor, "screenshot_saved", {"artifact_id": record.artifact_id})
         return record.model_dump(mode="json")
 
-    def command(self, session_id, actor, command: BrowserCommand, *, agent=False, run_id=None):
+    def command(self, session_id, actor, command: BrowserCommand, *, agent=False, run_id=None, step_index=None):
         session = self.store.get(session_id)
         self.settings(session.directory)
         self.store.active(session)
@@ -810,10 +810,9 @@ class Service:
                     session.agent_session_id, session_id, "browser_session_authenticate"
                 )
         authorize_command(session, actor, command, agent=agent)
-        self.store.record_command(session_id, actor, command, run_id=run_id)
-        private = self.store.private(session_id)
-        peer = self.relay_peer(session)
+        self.store.record_command(session_id, actor, command, run_id=run_id, step_index=step_index)
         try:
+            peer = self.relay_peer(session)
             result = peer.call(
                 "POST",
                 "/internal/sessions/" + session_id + "/command",
@@ -822,16 +821,19 @@ class Service:
                 if command.deadline_at
                 else 35,
             )
-            self.store.finish_command(command.id, "completed")
             if agent and command.action == "observe" and result.get("observation_id"):
-                private = self.store.private(session_id)
-                private["playwright_observation"] = {
+                from .batch import observation_fingerprint
+
+                observation = {
                     "id": result["observation_id"],
                     "generation": command.generation,
                     "actor": actor,
                     "observed_at": self.now(),
+                    "fingerprint": observation_fingerprint(result),
                 }
-                self.store.set_private(session_id, private)
+                self.store.finish_command(command.id, "completed", observation=observation)
+            else:
+                self.store.finish_command(command.id, "completed")
             if not command.observing:
                 self.store.mutate(
                     session_id,
@@ -844,6 +846,9 @@ class Service:
             self.store.finish_command(
                 command.id, "not_applied" if exc.code == "stale_target" else "unknown"
             )
+            raise
+        except Exception:
+            self.store.finish_command(command.id, "unknown")
             raise
 
     def run(self, agent, session_id, request):

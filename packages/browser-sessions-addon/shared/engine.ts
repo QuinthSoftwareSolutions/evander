@@ -3,6 +3,7 @@ export type Send = (method: string, params?: Record<string, unknown>) => Promise
 export type State = { id: string; controller: string | null; control_generation: number;
   allowed_origins: string[]; expires_at: number };
 export class BrowserEngine {
+  private readonly pageId = crypto.randomUUID();
   private observation = "";
   private refs = new Map<string, number>();
   private epoch = 0;
@@ -104,7 +105,7 @@ export class BrowserEngine {
       const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
       await fence();
       this.observation = crypto.randomUUID();
-      return { observation_id: this.observation, page_epoch: String(this.epoch), url,
+      return { observation_id: this.observation, page_id: this.pageId, page_epoch: String(this.epoch), url,
         elements, text: tree.text ?? (nodes ?? []).filter((n: any)=>n.role?.value==="StaticText").map((n: any)=>n.name?.value ?? "").join(" ").slice(0,12000),
         title: String(tree.title ?? (nodes ?? []).find((n: any)=>n.role?.value==="RootWebArea")?.name?.value ?? "").slice(0,400),
         viewport:viewport ? {x:viewport.pageX ?? 0,y:viewport.pageY ?? 0} : undefined,

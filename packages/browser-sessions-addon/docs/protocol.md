@@ -113,3 +113,15 @@ input and uncertain outcomes are never replayed by this recovery.
 New objectives must explicitly choose a completion predicate or `null` for manual
 verification, or supply a stopping checkpoint. Older saved-run retries retain
 their original request identity and do not replay input.
+
+Owner-authored `RunRequest.plan` is a control-plane execution mode over these same
+commands. It binds to a consumed owner `observation_id`, accepts at most eight
+actions within five seconds, and bypasses the classification provider. Complete
+observations require nonempty `page_id`, `page_epoch` and `url`; each engine now
+has a random instance identity, while hosted controllers retain their shared-page
+identity. Old endpoints without these fields cannot authorize a plan. Initial
+observed mutable state and later target/document assumptions are fenced, and all
+targets/actions are validated before input. The command ledger records plan step
+indices; atomic command/progress writes and terminal retirement preserve unknown
+outcomes and prevent replay or late receipt rewrites after restart. No new endpoint
+method, scripting grant or automatic final-submission policy is introduced.

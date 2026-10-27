@@ -3968,6 +3968,7 @@ var BrowserEngine = class {
     this.state = state2;
     this.emit = emit;
   }
+  pageId = crypto.randomUUID();
   observation = "";
   refs = /* @__PURE__ */ new Map();
   epoch = 0;
@@ -4085,6 +4086,7 @@ var BrowserEngine = class {
       this.observation = crypto.randomUUID();
       return {
         observation_id: this.observation,
+        page_id: this.pageId,
         page_epoch: String(this.epoch),
         url,
         elements,

@@ -100,14 +100,16 @@ explain the limitation and ask the host to perform it or select an appropriate
 control mode. Fast execution requires advertised `endpoint_features.fast_execution`
 version 1; older endpoints can still use the existing direct tools.
 
-## Choose direct actions or fast execution
+## Choose direct actions, guarded plans or decision execution
 
 Use direct observe/act tools for a single known operation. When fast execution
 is enabled and supported, prefer `browser_session_run` for a short objective
 requiring several UI actions. Resolve domain choices and author all required
 text yourself first. The decision model chooses intermediate actions and inputs;
 it cannot compose instructions, invent missing data or generate text from a goal.
-Split large tasks into concrete objectives.
+Split large tasks into concrete objectives. When you already know a short sequence
+from the current observation, prefer the guarded `plan` mode described below.
+It executes your explicit actions without another model call per action.
 
 For every new objective, explicitly supply `request.completion` with the visible result that
 defines its stopping point. The controller checks this predicate on fresh full
@@ -182,6 +184,66 @@ Pass this request together with `browser_session_id`. Replace the example
 generation with the current session generation. This example verifies field
 replacement only; use a separate result predicate when checking application
 filtering or saving.
+
+## Batch actions already grounded in the current page
+
+Observe first, then supply that `observation_id` and an ordered `plan` of one to
+eight actions to `browser_session_run`. For example, after observing unique Search
+and Category fields:
+
+```json
+{
+  "request_id": "prepare-search",
+  "generation": 4,
+  "observation_id": "OBSERVATION_ID",
+  "goal": "Prepare Search and Category for review",
+  "values": {
+    "search": {"description": "Search field", "value": "Example"},
+    "category": {"description": "Category field", "value": "Materials"}
+  },
+  "plan": [
+    {"action": "fill", "target": {"role": "textbox", "name": "Search"}, "input": "search"},
+    {"action": "fill", "target": {"role": "textbox", "name": "Category"}, "input": "category"}
+  ],
+  "completion": {"kind": "value", "target": {"role": "textbox", "name": "Category"}, "input": "category"},
+  "timeout_seconds": 5
+}
+```
+
+Use actual observed refs or exact role/name targets, adding an exact surrounding
+`context` name when needed. Every target must be unique and already present.
+Actions are click, hover, fill, type, key or bounded scroll. Fill/type reference
+named `values`; key uses `key`, and scroll uses `delta_x`/`delta_y` (at most 2000
+each). Only page scrolling may omit a target. Plans allow no scripts, coordinates,
+navigation commands or invented targets. Keep navigation and newly revealed
+controls in separate plans. Prefer a preparation plan followed by your review and
+a separate submission when the task calls for a final commitment; the controller
+cannot determine which arbitrary application controls submit data.
+
+Plans require the directory fast-execution setting, grants and an endpoint with
+complete observations and page/document identities, but no classification provider
+or credential. Updated endpoints supply these identities; older endpoints without
+them must use direct tools or be updated. The owner observation must be at most
+30 seconds old with no intervening command. Its observed mutable state must still
+match before the first input. Every later input uses a fresh observation and stops
+if any observed control or page context changed unexpectedly. Only the touched
+target's expected transition is allowed: fill must equal its supplied literal,
+type must equal the previous value plus that literal, and checkbox/radio clicks
+must produce their deterministic checked state. Other changed values/states need
+an explicit satisfied value/state checkpoint for that target; incidental focus
+changes are ignored. Identity must remain stable. Ordered checkpoints can wait between actions; `stop_after` is unnecessary
+and rejected in plan mode. All explicit actions execute before completion is
+checked, even if the condition held initially. Total runtime is at most five
+seconds, further bounded by the directory cap; use short plans.
+
+Reuse the same `request_id` and identical arguments after a lost reply. It returns
+the durable receipt, including confirmed/unknown steps, without executing or
+resuming anything. A running receipt after restart retains its original lease
+until the deadline, then becomes interrupted or `outcome_unknown`. Inspect a fresh
+page before deciding on a new request, and never blindly replay a submission.
+Receipts retain metadata and hashes, not target labels or supplied values.
+
+## Checkpoints and intermediate evidence
 
 When an intermediate result must be observed before later input removes it,
 supply ordered `checkpoints`. Each has an `id`, an `after` action trigger and a

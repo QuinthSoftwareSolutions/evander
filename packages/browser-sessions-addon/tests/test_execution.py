@@ -95,6 +95,8 @@ def execution(request, domain, hosted):
                 state["value"] = command["text"]
                 if state["mode"] == "clipped_suffix":
                     state["value"] += "::app-formatted"
+            if command["action"] == "type":
+                state["value"] += command["text"]
             if command["action"] == "click":
                 state["saved"] = True
             return {"success": True}
@@ -1361,7 +1363,7 @@ def test_pre_completion_checkpoint_receipt_remains_idempotent(execution):
         }],
     )
     # The old serializer included nonempty checkpoints but had no completion field.
-    fingerprint = hashlib.sha256(payload.model_dump_json(exclude={"completion"}).encode()).hexdigest()
+    fingerprint = hashlib.sha256(payload.model_dump_json(exclude={"completion", "plan", "observation_id"}).encode()).hexdigest()
     receipt, claimed = e.service.store.claim_run(
         e.session.id, "agent:agent-a", payload, fingerprint, seconds=30, max_steps=20,
     )

@@ -7,6 +7,7 @@ import wave
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -217,6 +218,14 @@ async def perform_test_operation(request):
         result = await asyncio.to_thread(
             service.run, "agent-a", sid, RunRequest.model_validate(payload)
         )
+    elif action == "crash-batch":
+        assert payload["phase"] in {"before_send", "after_send", "after_commit"}
+        child = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "test/crash-batch.py", str(service.runtime_dir), sid, payload["phase"]],
+            input=json.dumps(payload["request"]), text=True, capture_output=True, timeout=8,
+        )
+        result = {"exit_code": child.returncode, "error": child.stderr[-1000:]}
     elif action == "control":
         result = await asyncio.to_thread(service.control, sid, "user:operator", payload["action"])
     elif action == "reply":

@@ -1,10 +1,13 @@
 # Changelog
 
-## 2026-10-27 - Recover browser observations and check explicit completion (0.136.0)
+## 2026-10-27 - Execute guarded browser plans with durable recovery (0.136.0)
 
 - Retry read-only observations invalidated during navigation within the existing run and checkpoint deadlines, rechecking control and grants without replaying input or uncertain outcomes.
 - Add a run-level completion condition checked on fresh full observations, including after the final budgeted action, so visible results return for verification without another model decision. Preserve ordered checkpoints, metadata-only evidence and older request receipts.
 - Require new browser objectives to choose a completion condition or explicit manual verification, publish matching tool guidance and examples, and keep older saved-run retries compatible.
+- Add owner-authored plans of up to eight observed actions within five seconds, bypassing per-action inference while preserving fresh document, target, mutable-state, grant and control checks. Validate all steps before input and require a recent consumed owner observation.
+- Persist command outcomes and indexed plan progress atomically. Identical retries only return durable receipts; restarts retain the original lease and never resume or replay input. Retire pending commands on settlement and preserve uncertainty against late replies.
+- Add stable engine observation identities and local regression coverage for concurrent retries, process death around dispatch/persistence, unexpected page changes and human takeover.
 
 ## 2026-10-27 - Explain PR changes with narrated demonstration videos (0.137.0)
 

@@ -89,6 +89,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
       ref:observed.elements.find(e=>e.role==="textbox").ref,text:"Steel"}));
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
     const run=await f.api(path+"/run",{request_id:"fast-hosted",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.ok(run.observation.text.includes("Fast item added"));
@@ -100,7 +101,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const after=(await observe()).image;
     assert.notEqual(after,before);
     await viewer.screenshot({path:"test-output/hosted-session.png",fullPage:true});
-    const waiting=f.api(path+"/run",{request_id:"wait-hosted",generation:state.control_generation,goal:"Wait until stopped"});
+    const waiting=f.api(path+"/run",{request_id:"wait-hosted",generation:state.control_generation,goal:"Wait until stopped",completion:null});
     await viewer.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
     const cancellation=viewer.waitForResponse(response=>response.url().endsWith("/cancel-run"));
     await viewer.getByRole("button",{name:"Stop current task",exact:true}).click();
@@ -161,6 +162,7 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
     assert.equal(await page.locator("#result").textContent(),"Copper alloy added");
     const run=await f.api(path+"/run",{request_id:"fast-extension",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.equal(await page.locator("#result").textContent(),"Fast item added");

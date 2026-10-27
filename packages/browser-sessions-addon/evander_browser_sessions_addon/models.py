@@ -322,6 +322,32 @@ ObservationCondition = Annotated[
     Field(discriminator="kind"),
 ]
 
+BrowserKey = Literal[
+    "Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowLeft",
+    "ArrowUp", "ArrowRight", "ArrowDown", "Space",
+]
+
+
+class PlannedAction(Contract):
+    action: Literal["click", "fill", "type", "key", "hover", "scroll"]
+    target: CheckpointTarget | None = None
+    input: str | None = Field(default=None, pattern=IDENTIFIER)
+    key: BrowserKey | None = None
+    delta_x: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
+    delta_y: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def operation(self):
+        if self.action != "scroll" and self.target is None:
+            raise ValueError("A planned action requires an observed target")
+        if (self.action in {"fill", "type"}) != (self.input is not None):
+            raise ValueError("Only fill/type actions require a supplied input ID")
+        if (self.action == "key") != (self.key is not None):
+            raise ValueError("Only a key action requires a key")
+        if self.action != "scroll" and (self.delta_x or self.delta_y):
+            raise ValueError("Only scroll actions accept deltas")
+        return self
+
 
 class RunCheckpoint(Contract):
     id: str = Field(pattern=IDENTIFIER)
@@ -375,6 +401,14 @@ class RunRequest(Contract):
         default=None,
         description="Required for new objectives: supply the visible result that ends this objective, such as a uniquely named editor control or saved-result alert. Checked on fresh full observations after all required checkpoints, without a model decision about done. Choose a condition that proves the requested result, not just an intermediate input. A match returns needs_verification; you must still verify the goal. Explicitly use null only when the result cannot be expressed by these predicates, or when using a final stop_after checkpoint.",
     )
+    observation_id: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        description="For plan mode, the current observation returned to you by this browser. The controller binds the plan to that observation's page and mutable state before issuing input.",
+    )
+    plan: list[PlannedAction] | None = Field(
+        default=None, min_length=1, max_length=8,
+        description="Optional ordered batch of up to eight actions already grounded in observation_id. Executes without a decision provider, within five seconds, using exact values and fresh target validation. Changed assumptions stop the batch. A retry returns its durable receipt and never resumes remaining actions. Keep navigation/newly revealed controls in separate plans.",
+    )
     max_steps: int | None = Field(
         default=None,
         ge=1,
@@ -396,6 +430,19 @@ class RunRequest(Contract):
 
     @model_validator(mode="after")
     def checkpoint_inputs(self):
+        if self.plan is not None:
+            if self.observation_id is None:
+                raise ValueError("Plan mode requires observation_id")
+            if self.timeout_seconds is not None and self.timeout_seconds > 5:
+                raise ValueError("Plan mode is limited to five seconds")
+            if self.max_steps is not None and self.max_steps < len(self.plan):
+                raise ValueError("The plan exceeds its step budget")
+            if any(c.stop_after for c in self.checkpoints):
+                raise ValueError("Plan mode stops after its plan; use completion instead of stop_after")
+            if any(a.input is not None and a.input not in self.values for a in self.plan):
+                raise ValueError("Planned input IDs must refer to request.values")
+        elif self.observation_id is not None:
+            raise ValueError("observation_id is only used with a plan")
         ids = [checkpoint.id for checkpoint in self.checkpoints]
         if len(ids) != len(set(ids)):
             raise ValueError("Checkpoint IDs must be unique")
