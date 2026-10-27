@@ -317,13 +317,16 @@ class CheckpointTrigger(Contract):
         return self
 
 
+ObservationCondition = Annotated[
+    ElementCondition | ValueCondition | StateCondition | TextCondition | CountCondition,
+    Field(discriminator="kind"),
+]
+
+
 class RunCheckpoint(Contract):
     id: str = Field(pattern=IDENTIFIER)
     after: CheckpointTrigger
-    condition: Annotated[
-        ElementCondition | ValueCondition | StateCondition | TextCondition | CountCondition,
-        Field(discriminator="kind"),
-    ]
+    condition: ObservationCondition
     timeout_seconds: float = Field(default=5, ge=0.1, le=15, allow_inf_nan=False)
     stop_after: bool = Field(
         default=False,
@@ -332,7 +335,19 @@ class RunCheckpoint(Contract):
     )
 
 
+def _explicit_completion_schema(schema):
+    # Keep the default for decoding older receipt requests, while advertising
+    # the explicit choice required before a new objective may acquire a lease.
+    required = schema.setdefault("required", [])
+    if "completion" not in required:
+        required.append("completion")
+
+
 class RunRequest(Contract):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True,
+        json_schema_extra=_explicit_completion_schema,
+    )
     request_id: str = Field(
         pattern=IDENTIFIER,
         description="Fresh identity for this objective. Reuse only with identical arguments to read its existing receipt, never to replay it.",
@@ -355,6 +370,10 @@ class RunRequest(Contract):
                 "clear": {"description": "Clear the search field after checking it", "value": ""},
             }
         ],
+    )
+    completion: ObservationCondition | None = Field(
+        default=None,
+        description="Required for new objectives: supply the visible result that ends this objective, such as a uniquely named editor control or saved-result alert. Checked on fresh full observations after all required checkpoints, without a model decision about done. Choose a condition that proves the requested result, not just an intermediate input. A match returns needs_verification; you must still verify the goal. Explicitly use null only when the result cannot be expressed by these predicates, or when using a final stop_after checkpoint.",
     )
     max_steps: int | None = Field(
         default=None,
@@ -382,6 +401,14 @@ class RunRequest(Contract):
             raise ValueError("Checkpoint IDs must be unique")
         if any(checkpoint.stop_after for checkpoint in self.checkpoints[:-1]):
             raise ValueError("Only the final checkpoint can request stop_after")
+        if self.completion is not None and any(c.stop_after for c in self.checkpoints):
+            raise ValueError("Use completion or a stop_after checkpoint, not both")
+        if (
+            self.completion is not None
+            and self.completion.kind == "value"
+            and self.completion.input not in self.values
+        ):
+            raise ValueError("Completion input IDs must refer to request.values")
         for checkpoint in self.checkpoints:
             for input_id in (
                 checkpoint.after.input,

@@ -141,7 +141,27 @@ Dropdowns use the existing click/key paths. Rich observations include current
 field state, surrounding row/form/dialog context and bounded page text. The
 human's stream and pointer continue; intermediate observations omit images.
 
-## Condition waits and checkpoint evidence
+## Completion conditions and checkpoint evidence
+
+Supply `request.completion` with the observable result of each bounded objective.
+It uses the same typed predicates as checkpoints, without an action trigger.
+For example, `{"kind":"present","target":{"role":"heading","name":"Example editor"}}`
+can identify a destination after navigation without depending on old element
+refs. The controller checks full fresh observations before deciding and after
+input, including the last budgeted action, and stops for owning-agent verification
+when the predicate holds. No separate model decision about `done` is needed.
+The condition may already hold initially, but cannot bypass required checkpoints.
+Choose a predicate that distinguishes the requested result from an intermediate
+state. Explicitly use `null` only when the result is not expressible or a final
+stopping checkpoint is used. A new request that omits both completion and a
+stopping checkpoint is rejected before observing or acquiring an automation
+lease. Requests for already-saved receipts retain their earlier retry identity.
+Model `done` cannot override an unsatisfied completion condition.
+
+The receipt's optional `completion` evidence contains only the condition kind,
+status, observation/page identities, time and matched counts/references. It does
+not persist predicate text, target names or literal values. Identical retries
+return that receipt without repeating input. Older requests remain compatible.
 
 An optional ordered `request.checkpoints` list binds observation predicates to
 completed actions. A checkpoint fires once after its matching action and blocks
@@ -181,6 +201,11 @@ ambiguity, timeout or loss of authority stops further input. A later checkpoint
 cannot fire before an earlier one, and `done` cannot bypass an unreached check.
 Ordinary `wait` without a triggered checkpoint keeps its existing model-guided
 behavior.
+
+Read-only observations invalidated by navigation (`stale_observation`) get up to
+three attempts with a short bounded delay and fresh authority/deadline checks.
+This applies inside checkpoint waits too. Other errors and uncertain input still
+yield without replay; repeated stale reads remain bounded by the run deadline.
 
 Set `stop_after: true` on the final checkpoint when it defines the end of this
 bounded objective. Once observed, the run returns `needs_verification` without

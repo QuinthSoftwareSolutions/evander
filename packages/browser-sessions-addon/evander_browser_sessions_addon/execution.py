@@ -130,14 +130,27 @@ class BrowserRun:
         actor = "agent:" + agent
         for tool in ("browser_session_observe", "browser_session_act"):
             service.bindings.parent(agent, tool)
-        # Preserve receipts created before optional checkpoints were introduced.
-        serialized = request.model_dump_json(
-            exclude={"checkpoints"} if not request.checkpoints else None
-        )
+        # New optional fields must not change the identity of an older retry.
+        omitted = set()
+        if not request.checkpoints:
+            omitted.add("checkpoints")
+        if request.completion is None:
+            omitted.add("completion")
+        serialized = request.model_dump_json(exclude=omitted)
         fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
         prior = self.store.previous_run(session_id, actor, request.request_id, fingerprint)
         if prior:
             return prior
+        if "completion" not in request.model_fields_set and not any(
+            c.stop_after for c in request.checkpoints
+        ):
+            raise BrowserError(
+                "Supply request.completion with the observable result of this objective, "
+                "or explicitly use null when manual verification is required. "
+                "No browser input has been issued.",
+                "completion_required",
+                400,
+            )
         fast = service.settings(session.directory)[1].fast_execution
         if not fast.enabled:
             raise BrowserError(
@@ -195,6 +208,7 @@ class BrowserRun:
         observation_current = False
         mutating = False
         decision = None
+        completion = None
         terminal, reason = "needs_pa", "Step budget exhausted"
         unchanged, previous = 0, None
         region = None
@@ -203,9 +217,14 @@ class BrowserRun:
         try:
             for _ in range(run["max_steps"]):
                 self.check(agent, session_id, run)
-                observation = pending_observation or self.observe(session_id, actor, run)
+                observation = pending_observation or self.observe(agent, session_id, actor, run)
                 pending_observation = None
                 observation_current = True
+                completion = self.completed(request, observation, satisfied)
+                if completion is not None:
+                    terminal = "needs_verification"
+                    reason = "Requested completion condition observed; the owning agent must verify the goal"
+                    break
                 page, aliases, targets, regions = decision_page(observation, region)
                 state_key = json.dumps(page, sort_keys=True)
                 unchanged = unchanged + 1 if state_key == previous else 0
@@ -359,6 +378,9 @@ class BrowserRun:
                     if action == "done" and len(satisfied) != len(request.checkpoints):
                         reason = "Required checkpoints were not reached; inspect the page before continuing"
                         break
+                    if action == "done" and request.completion is not None:
+                        reason = "Requested completion condition has not been observed; inspect the page before continuing"
+                        break
                     terminal = "needs_verification" if action == "done" else "needs_pa"
                     reason = (
                         "The owning agent must verify the resulting page"
@@ -466,6 +488,15 @@ class BrowserRun:
                     terminal = "needs_verification"
                     reason = "Requested completion checkpoint observed; the owning agent must verify the goal"
                     break
+                if request.completion is not None and len(satisfied) == len(request.checkpoints):
+                    observation = pending_observation or self.observe(agent, session_id, actor, run)
+                    pending_observation = observation
+                    observation_current = True
+                    completion = self.completed(request, observation, satisfied)
+                    if completion is not None:
+                        terminal = "needs_verification"
+                        reason = "Requested completion condition observed; the owning agent must verify the goal"
+                        break
             else:
                 reason = "Step budget exhausted"
         except AmbiguousDecision as exc:
@@ -493,12 +524,14 @@ class BrowserRun:
             if current_run["status"] == "running" and not mutating:
                 try:
                     self.check(agent, session_id, run)
-                    observation = self.observe(session_id, actor, run)
+                    if completion is None:
+                        observation = self.observe(agent, session_id, actor, run)
                     observation_current = True
                 except Exception:
                     pass
             result = self.store.update_run(
-                session_id, run_id, status=terminal, reason=reason, decision=decision
+                session_id, run_id, status=terminal, reason=reason, decision=decision,
+                completion=completion,
             )
         return {
             **result,
@@ -512,6 +545,22 @@ class BrowserRun:
             raise BrowserError("Run deadline elapsed", "run_deadline", 409)
         return remaining
 
+    def completed(self, request, observation, satisfied):
+        if request.completion is None or len(satisfied) != len(request.checkpoints):
+            return None
+        evidence = evaluate_checkpoint(request.completion, observation, request.values)
+        if evidence is None:
+            return None
+        return {
+            "status": "satisfied",
+            "kind": request.completion.kind,
+            "observed_at": self.service.now(),
+            "observation_id": observation["observation_id"],
+            "page_epoch": observation.get("page_epoch"),
+            "page_id": observation.get("page_id"),
+            **evidence,
+        }
+
     def wait_checkpoint(self, agent, session_id, actor, run, checkpoint, values):
         deadline = min(run["deadline_at"], self.service.now() + checkpoint.timeout_seconds)
         observations = 0
@@ -520,7 +569,7 @@ class BrowserRun:
             if self.service.now() >= deadline:
                 break
             try:
-                observation = self.observe(session_id, actor, {**run, "deadline_at": deadline})
+                observation = self.observe(agent, session_id, actor, {**run, "deadline_at": deadline})
             except BrowserError:
                 self.check(agent, session_id, run)
                 if self.service.now() >= deadline:
@@ -582,17 +631,31 @@ class BrowserRun:
         ):
             raise BrowserError("Browser control changed", "stale_control", 409)
 
-    def observe(self, session_id, actor, run):
-        return self.service.command(
-            session_id,
-            actor,
-            BrowserCommand(
-                id=uuid.uuid4().hex,
-                generation=run["generation"],
-                action="observe",
-                include_image=False,
-                deadline_at=run["deadline_at"],
-            ),
-            agent=True,
-            run_id=run["id"],
-        )
+    def observe(self, agent, session_id, actor, run):
+        # A navigation can invalidate a read while it is on the wire. Retry only
+        # that read, with fresh authority/deadline checks and a new command ID.
+        # Never apply this recovery to input or to an uncertain command outcome.
+        for attempt in range(3):
+            self.check(agent, session_id, run)
+            try:
+                observation = self.service.command(
+                    session_id,
+                    actor,
+                    BrowserCommand(
+                        id=uuid.uuid4().hex,
+                        generation=run["generation"],
+                        action="observe",
+                        include_image=False,
+                        deadline_at=run["deadline_at"],
+                    ),
+                    agent=True,
+                    run_id=run["id"],
+                )
+            except BrowserError as exc:
+                if exc.code != "stale_observation" or attempt == 2:
+                    raise
+                self.check(agent, session_id, run)
+                self.sleep(min(0.1, self.remaining(run)))
+                continue
+            self.check(agent, session_id, run)
+            return observation

@@ -109,6 +109,19 @@ text yourself first. The decision model chooses intermediate actions and inputs;
 it cannot compose instructions, invent missing data or generate text from a goal.
 Split large tasks into concrete objectives.
 
+For every new objective, explicitly supply `request.completion` with the visible result that
+defines its stopping point. The controller checks this predicate on fresh full
+observations and returns `needs_verification` as soon as it holds, without asking
+the decision model whether it is done. Use a unique role/name for a control on
+the resulting page when navigation changes element refs. Choose evidence of the
+actual result, such as the named editor or saved-result alert, rather than just
+a filled input. It may already hold on the first observation; required
+checkpoints must still be reached. Set this field to `null` only when the result
+cannot be expressed with the supported predicates, or when using a final
+`stop_after` checkpoint instead. Omission is rejected before a new run starts;
+old saved-run retries still return their receipts. A natural-language goal alone
+does not configure this check.
+
 Use normal field replacement for form edits. Request character typing or appending
 explicitly when the task needs those semantics, such as keyboard-event input.
 Non-editable dropdowns use activation and supported keys/options rather than text
@@ -141,18 +154,34 @@ Describe each value's intended field or purpose, and mark private literals
 {
   "request_id": "check-search-filter",
   "generation": 4,
-  "goal": "Filter the list with the supplied search text, check the matching rows, then clear the filter and stop",
+  "goal": "Set Search to the supplied filter, then clear Search and stop",
   "values": {
     "filter": {"description": "Text for the Search field", "value": "Example"},
-    "clear": {"description": "Clear the Search field after checking matches", "value": ""}
+    "clear": {"description": "Clear the Search field after entering the filter", "value": ""}
   },
+  "completion": {
+    "kind": "value",
+    "target": {"role": "textbox", "name": "Search"},
+    "input": "clear"
+  },
+  "checkpoints": [{
+    "id": "filter-entered",
+    "after": {"action": "fill", "input": "filter"},
+    "condition": {
+      "kind": "value",
+      "target": {"role": "textbox", "name": "Search"},
+      "input": "filter"
+    }
+  }],
   "max_steps": 8,
   "timeout_seconds": 20
 }
 ```
 
 Pass this request together with `browser_session_id`. Replace the example
-generation with the current session generation.
+generation with the current session generation. This example verifies field
+replacement only; use a separate result predicate when checking application
+filtering or saving.
 
 When an intermediate result must be observed before later input removes it,
 supply ordered `checkpoints`. Each has an `id`, an `after` action trigger and a
@@ -179,6 +208,15 @@ unreached or timed-out checkpoint requires inspection before continuing.
 When the final checkpoint defines this objective's stopping point, set its
 `stop_after: true` to return `needs_verification` immediately after it holds,
 without another model decision. You must still verify the full requested result.
+Use either this stopping checkpoint or `completion`, not both. A completion
+condition cannot bypass earlier required checkpoints.
+
+Navigation may invalidate a read-only observation while it is in flight. The
+controller retries that observation up to three attempts within the existing
+deadline, rechecking control and tool grants each time. This never retries input.
+If the run still returns `needs_pa`, inspect its reason and current state before
+continuing. Reuse a current returned observation instead of immediately making
+another identical observe call.
 
 Defaults are 20 steps or 30
 seconds, whichever comes first; directory caps can be raised to 40/60, and

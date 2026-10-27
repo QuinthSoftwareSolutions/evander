@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-27 - Recover browser observations and check explicit completion (0.136.0)
+
+- Retry read-only observations invalidated during navigation within the existing run and checkpoint deadlines, rechecking control and grants without replaying input or uncertain outcomes.
+- Add a run-level completion condition checked on fresh full observations, including after the final budgeted action, so visible results return for verification without another model decision. Preserve ordered checkpoints, metadata-only evidence and older request receipts.
+- Require new browser objectives to choose a completion condition or explicit manual verification, publish matching tool guidance and examples, and keep older saved-run retries compatible.
+
 ## 2026-10-27 - Explain PR changes with narrated demonstration videos (0.137.0)
 
 - Add the independently installed Demo Video add-on with host-owned Speech API narration, managed browser recording, isolated MP4 assembly with optional SRT captions, and media/publication recovery receipts.

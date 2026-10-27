@@ -102,3 +102,11 @@ only IDs, outcomes, observation/page identities, timestamps and bounded counts
 or target references; condition text, values and snapshots are not persisted.
 Cancellation and uncertain input stop the run without replay, including while a
 checkpoint is pending. Old receipts without checkpoints remain readable.
+
+An optional run-level completion predicate uses those same observation conditions
+without an action trigger. It is checked against fresh full observations only
+after required checkpoints, and retains metadata-only completion evidence before
+returning for owning-agent verification. It cannot be combined with a stopping
+checkpoint or overridden by a model `done` choice. Read-only stale observations
+may be retried up to three attempts with fresh control, grant and deadline checks;
+input and uncertain outcomes are never replayed by this recovery.

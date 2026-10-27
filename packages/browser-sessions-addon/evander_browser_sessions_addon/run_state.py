@@ -160,6 +160,8 @@ class RunStore:
                 step_count=0,
                 checkpoints=[],
             )
+            if request.completion is not None:
+                value["completion"] = {"status": "pending", "kind": request.completion.kind}
             db.execute(
                 "INSERT INTO browser_runs VALUES(?,?,?,?,?,?,?,?)",
                 (
@@ -201,6 +203,7 @@ class RunStore:
         reason="",
         decision=None,
         checkpoint=None,
+        completion=None,
     ):
         with self.connect(write=True) as db:
             row = db.execute(
@@ -214,6 +217,8 @@ class RunStore:
                 receipts = value.setdefault("checkpoints", [])
                 if not any(item["id"] == checkpoint["id"] for item in receipts):
                     receipts.append(checkpoint)
+            if completion is not None and value["status"] == "running":
+                value["completion"] = completion
             # A late return must not erase a cancellation or uncertainty receipt.
             if value["status"] == "running" and status:
                 value.update(status=status, reason=reason, finished_at=self.now())
