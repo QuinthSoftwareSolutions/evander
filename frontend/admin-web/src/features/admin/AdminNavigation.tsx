@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bot,
+  ChevronDown,
   Cpu,
   CreditCard,
   Eye,
@@ -28,6 +29,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 
 import {
   ADMIN_NAVIGATION_GROUPS,
+  TABS,
   type AdminNavigationGroup,
   type AdminTab,
   type AdminTabDefinition,
@@ -65,9 +67,63 @@ const GROUP_LABELS = Object.fromEntries(
   ADMIN_NAVIGATION_GROUPS.map((group) => [group.key, group.label]),
 ) as Record<AdminNavigationGroup, string>;
 
+const COMPACT_GROUP_LABELS: Record<AdminNavigationGroup, string> = {
+  overview: "Overview",
+  operations: "Ops",
+  automation: "Auto",
+  extensions: "Ext",
+  infrastructure: "Infra",
+  governance: "Gov",
+};
+
+const COLLAPSED_GROUPS_STORAGE_KEY = "admin-web:navigation:collapsed-groups";
+
+function groupForTab(tabs: ReadonlyArray<AdminTabDefinition>, tab: AdminTab): AdminNavigationGroup | undefined {
+  return tabs.find((item) => item.key === tab)?.group
+    ?? TABS.find((item) => item.key === tab)?.group
+    ?? (tab.startsWith("addon:") ? "extensions" : undefined);
+}
+
+function readCollapsedGroups(): Set<AdminNavigationGroup> | null {
+  try {
+    const stored = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
+    if (stored !== null) {
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+        return new Set(ADMIN_NAVIGATION_GROUPS.filter((group) => parsed.includes(group.key)).map((group) => group.key));
+      }
+    }
+  } catch {
+    // Storage can be unavailable or contain an invalid value; use the defaults.
+  }
+  return null;
+}
+
+function isPageReload(): boolean {
+  try {
+    const navigation = window.performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    return navigation?.type === "reload";
+  } catch {
+    return false;
+  }
+}
+
+function initialCollapsedGroups(
+  tabs: ReadonlyArray<AdminTabDefinition>,
+  routeTab: AdminTab,
+  pageReload: boolean,
+): Set<AdminNavigationGroup> {
+  const stored = readCollapsedGroups();
+  const groups = stored ?? new Set<AdminNavigationGroup>(["extensions"]);
+  const activeGroup = groupForTab(tabs, routeTab);
+  if (activeGroup && (!pageReload || stored === null)) groups.delete(activeGroup);
+  return groups;
+}
+
 type AdminNavigationProps = {
   tabs: ReadonlyArray<AdminTabDefinition>;
   activeTab: AdminTab;
+  routeTab: AdminTab;
   collapsed: boolean;
   disabled: boolean;
   onToggleCollapsed: () => void;
@@ -90,6 +146,7 @@ function tabMatchesQuery(tab: AdminTabDefinition, query: string): boolean {
 export function AdminNavigation({
   tabs,
   activeTab,
+  routeTab,
   collapsed,
   disabled,
   onToggleCollapsed,
@@ -98,6 +155,10 @@ export function AdminNavigation({
   const [quickNavigatorOpen, setQuickNavigatorOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [pageReload] = useState(isPageReload);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups(tabs, routeTab, pageReload));
+  const previousRouteTabRef = useRef<AdminTab | null>(pageReload ? routeTab : null);
+  const storageOutOfSyncRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -105,6 +166,46 @@ export function AdminNavigation({
     () => tabs.filter((tab) => tabMatchesQuery(tab, query)),
     [query, tabs],
   );
+
+  useEffect(() => {
+    if (previousRouteTabRef.current === routeTab) return;
+    previousRouteTabRef.current = routeTab;
+    const group = groupForTab(tabs, routeTab);
+    if (group) setGroupCollapsed(group, false);
+  }, [routeTab, tabs]);
+
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (event.key !== COLLAPSED_GROUPS_STORAGE_KEY && event.key !== null) return;
+      if (storageOutOfSyncRef.current) return;
+      setCollapsedGroups(readCollapsedGroups() ?? new Set<AdminNavigationGroup>(["extensions"]));
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  function setGroupCollapsed(group: AdminNavigationGroup, shouldCollapse: boolean) {
+    const current = storageOutOfSyncRef.current ? collapsedGroups : readCollapsedGroups() ?? collapsedGroups;
+    if (current.has(group) === shouldCollapse) {
+      if (current !== collapsedGroups) setCollapsedGroups(current);
+      return;
+    }
+    const next = new Set(current);
+    if (shouldCollapse) next.add(group);
+    else next.delete(group);
+    setCollapsedGroups(next);
+    try {
+      window.localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY, JSON.stringify([...next]));
+      storageOutOfSyncRef.current = false;
+    } catch {
+      // Keep using in-memory choices until they can be saved successfully.
+      storageOutOfSyncRef.current = true;
+    }
+  }
+
+  function toggleGroup(group: AdminNavigationGroup) {
+    setGroupCollapsed(group, !collapsedGroups.has(group));
+  }
 
   function openQuickNavigator() {
     previousFocusRef.current = document.activeElement instanceof HTMLElement
@@ -218,6 +319,7 @@ export function AdminNavigation({
           {ADMIN_NAVIGATION_GROUPS.map((group) => {
             const groupTabs = tabs.filter((tab) => tab.group === group.key);
             if (groupTabs.length === 0) return null;
+            const groupCollapsed = collapsedGroups.has(group.key);
             return (
               <section
                 className="admin-shell-nav-group"
@@ -225,9 +327,20 @@ export function AdminNavigation({
                 key={group.key}
               >
                 <h2 className="admin-shell-nav-group-label section-label" id={`admin-navigation-group-${group.key}`}>
-                  {group.label}
+                  <button
+                    type="button"
+                    className="admin-shell-nav-group-toggle"
+                    aria-label={group.label}
+                    aria-expanded={!groupCollapsed}
+                    aria-controls={`admin-navigation-group-items-${group.key}`}
+                    onClick={() => toggleGroup(group.key)}
+                  >
+                    <span className="admin-shell-nav-group-label-full">{group.label}</span>
+                    <span className="admin-shell-nav-group-label-compact" aria-hidden="true">{COMPACT_GROUP_LABELS[group.key]}</span>
+                    <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
                 </h2>
-                <div className="admin-shell-nav-group-items">
+                <div className="admin-shell-nav-group-items" id={`admin-navigation-group-items-${group.key}`} hidden={groupCollapsed}>
                   {groupTabs.map((tab) => {
                     const Icon = iconForTab(tab);
                     return (

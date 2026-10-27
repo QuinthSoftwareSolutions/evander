@@ -2260,6 +2260,7 @@ export default function AdminRoot() {
           <AdminNavigation
             tabs={visibleTabs}
             activeTab={renderedTab}
+            routeTab={selectedTab}
             collapsed={workflowSidebarCollapsed}
             disabled={authBusy}
             onToggleCollapsed={() => setWorkflowSidebarCollapsed((current) => !current)}

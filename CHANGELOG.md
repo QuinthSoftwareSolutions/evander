@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-27 - Collapse Admin Web navigation sections (0.136.0)
+
+- Let operators expand or collapse each navigation section, with Extensions initially collapsed and browser-local preferences preserved. Keep section controls available in compact and mobile navigation and reveal a section when navigating to one of its pages.
+
 ## 2026-10-27 - Persist session execution preferences across channels (0.135.0)
 
 - Add a scoped workflow effect for saving real session model, reasoning and speed defaults, so preference changes apply to later browser-chat and other dispatches that omit prompt overrides.

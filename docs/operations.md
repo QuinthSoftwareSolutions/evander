@@ -1153,6 +1153,11 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
 
 ## Admin Web Operator Console
 
+Use the section headings in the navigation to expand or collapse their pages. Extensions starts
+collapsed on a new browser unless an Extensions page is opened directly. Your choices are saved in
+that browser; navigating to a page in a collapsed section opens it. Section controls are also
+available in compact navigation and on smaller screens.
+
 Admin Web is the supported operator GUI. It uses the same host-side orchestration layer as the CLI
 and surfaces:
 

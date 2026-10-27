@@ -118,7 +118,53 @@
 [data-admin-design] .admin-shell-nav-group-label {
   color: var(--ui-muted);
   font-size: 10px;
-  margin: 10px 8px 4px;
+  margin: 6px 0 2px;
+  padding: 0;
+}
+[data-admin-design] .admin-shell-nav-group-toggle {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+[data-admin-design] .admin-shell-nav-group-toggle svg {
+  flex: 0 0 auto;
+}
+[data-admin-design] .admin-shell-nav-group-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+[data-admin-design] .admin-shell-nav-group-label-compact {
+  display: none;
+}
+[data-admin-design] .admin-shell-nav.collapsed {
+  padding-inline: 4px;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label-full {
+  display: none;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label-compact {
+  display: inline;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label {
+  margin: 4px 0;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-toggle {
+  flex-direction: column;
+  padding: 4px 0;
+  font-size: 9px;
+  white-space: nowrap;
+  text-align: center;
 }
 [data-admin-design] .admin-shell-nav-group-items {
   gap: 0;
@@ -163,6 +209,33 @@
 }
 [data-admin-design] .admin-shell-nav.collapsed .admin-shell-tab-label {
   font-size: 9px;
+}
+
+@media (max-width: 980px) {
+  [data-admin-design] .admin-shell-nav.collapsed {
+    padding-inline: 10px;
+  }
+  [data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label-full {
+    display: inline;
+  }
+  [data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label-compact {
+    display: none;
+  }
+  [data-admin-design] .admin-shell-nav-group-label,
+  [data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-label {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    margin: 0;
+  }
+  [data-admin-design] .admin-shell-nav-group-toggle,
+  [data-admin-design] .admin-shell-nav.collapsed .admin-shell-nav-group-toggle {
+    width: auto;
+    flex-direction: row;
+    padding: 4px 8px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
 }
 [data-admin-design] .admin-shell-main,
 [data-admin-design] .admin-shell.workflow-focus .admin-shell-main {

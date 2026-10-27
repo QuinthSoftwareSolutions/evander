@@ -25,6 +25,7 @@ function adminServer() {
 }
 
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
+const NAVIGATION_GROUPS_STORAGE_KEY = "admin-web:navigation:collapsed-groups";
 const PRIVILEGE_UNLOCKED_STORAGE_KEY = "admin-web:privileges-unlocked";
 const THEME_STORAGE_KEY = "admin-web:theme";
 
@@ -210,7 +211,7 @@ async function createAdminPage(t, options = {}) {
   const context = await browser.newContext(t);
   const page = await context.newPage();
 
-  await page.route("**/api/**", async (route) => {
+  await context.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const { pathname } = url;
 
@@ -700,7 +701,7 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
   await page.locator(".admin-shell").waitFor({ state: "visible" });
 
   assert.deepEqual(
-    await page.locator(".admin-shell-nav-group-label").allTextContents(),
+    await page.locator(".admin-shell-nav-group-label button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 23);
@@ -708,6 +709,185 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();
   await assert.doesNotReject(() => page.getByRole("tooltip").getByText("Active and historical execution targets.").waitFor({ state: "visible" }));
+});
+
+test("navigation sections toggle independently and remember choices across reloads", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const overview = nav.getByRole("button", { name: "Overview", exact: true });
+  const extensions = nav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await overview.getAttribute("aria-expanded"), "true");
+  assert.equal(await extensions.getAttribute("aria-expanded"), "false");
+  assert.equal(await nav.getByRole("button", { name: "Add-ons", exact: true }).count(), 0);
+
+  await extensions.focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await nav.getByRole("button", { name: "Add-ons", exact: true }).isVisible(), true);
+  await overview.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await overview.getAttribute("aria-expanded"), "false");
+  assert.equal(await nav.getByRole("button", { name: "Dashboard", exact: true }).count(), 0);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await overview.getAttribute("aria-expanded"), "false");
+  assert.equal(await nav.getByRole("button", { name: "Add-ons", exact: true }).isVisible(), true);
+  assert.equal(await nav.getByRole("button", { name: "Dashboard", exact: true }).count(), 0);
+});
+
+test("navigation reveals pages reached through search and remembers an explicit collapse", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    addons: [{
+      addon_id: "team-addon", display_name: "Team Add-on", tab_key: "addon:team-addon",
+      label: "Teams", short_label: "Teams", description: "Team-oriented add-on surface.",
+      api_base_path: "/api/addons/team-addon", ui_path: "/addons/team-addon/",
+    }],
+  });
+  await page.route("**/addons/team-addon/**", (route) => route.fulfill({
+    status: 200, contentType: "text/html", body: "<!doctype html><title>Team Add-on</title>",
+  }));
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const extensions = nav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "false");
+
+  await page.getByRole("button", { name: "Find page", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search pages" }).fill("Teams");
+  await page.getByRole("option", { name: /Teams/ }).click();
+  await page.waitForFunction(() => window.location.hash === "#addon:team-addon");
+  await page.waitForFunction(() => document.querySelector('[aria-controls="admin-navigation-group-items-extensions"]')?.getAttribute("aria-expanded") === "true");
+  assert.equal(await nav.getByRole("button", { name: "Teams", exact: true }).getAttribute("aria-current"), "page");
+
+  await extensions.click();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator('iframe[title="Teams"]').waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "false");
+});
+
+test("navigation defaults recover from invalid storage and direct links reveal the active section", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.addInitScript((key) => window.localStorage.setItem(key, "not-json"), NAVIGATION_GROUPS_STORAGE_KEY);
+  await page.goto(`http://127.0.0.1:${address.port}/#addons`, { waitUntil: "domcontentloaded" });
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const extensions = nav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await nav.getByRole("button", { name: "Add-ons", exact: true }).getAttribute("aria-current"), "page");
+});
+
+test("a direct link reveals its section while preserving other saved choices", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+  const firstNav = page.getByRole("navigation", { name: "Admin sections" });
+  const operations = firstNav.getByRole("button", { name: "Operations", exact: true });
+  await operations.waitFor({ state: "visible" });
+  await operations.click();
+  assert.equal(await firstNav.getByRole("button", { name: "Extensions", exact: true }).getAttribute("aria-expanded"), "false");
+
+  const linkedPage = await page.context().newPage();
+  await linkedPage.goto(`http://127.0.0.1:${address.port}/#addons`, { waitUntil: "domcontentloaded" });
+  const linkedNav = linkedPage.getByRole("navigation", { name: "Admin sections" });
+  const extensions = linkedNav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await linkedNav.getByRole("button", { name: "Add-ons", exact: true }).getAttribute("aria-current"), "page");
+  assert.equal(await linkedNav.getByRole("button", { name: "Operations", exact: true }).getAttribute("aria-expanded"), "false");
+});
+
+test("reloading a first-visit direct link keeps its section visible", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.goto(`http://127.0.0.1:${address.port}/#addons`, { waitUntil: "domcontentloaded" });
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const extensions = nav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await extensions.waitFor({ state: "visible" });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await nav.getByRole("button", { name: "Add-ons", exact: true }).getAttribute("aria-current"), "page");
+});
+
+test("following a direct link to a previously collapsed page reveals it again", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  const url = `http://127.0.0.1:${address.port}/#configuration`;
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const governance = nav.getByRole("button", { name: "Governance", exact: true });
+  await governance.waitFor({ state: "visible" });
+  await governance.click();
+  assert.equal(await governance.getAttribute("aria-expanded"), "false");
+
+  await page.goto("about:blank");
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await governance.waitFor({ state: "visible" });
+  assert.equal(await governance.getAttribute("aria-expanded"), "true");
+  assert.equal(await nav.getByRole("button", { name: "Configuration", exact: true }).getAttribute("aria-current"), "page");
+});
+
+test("opening the current page in a new tab reveals its collapsed section", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.goto(`http://127.0.0.1:${address.port}/#configuration`, { waitUntil: "domcontentloaded" });
+  const governance = page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Governance", exact: true });
+  await governance.waitFor({ state: "visible" });
+  await governance.click();
+
+  const [openedPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    page.evaluate(() => window.open(window.location.href, "_blank")),
+  ]);
+  const openedNav = openedPage.getByRole("navigation", { name: "Admin sections" });
+  const openedGovernance = openedNav.getByRole("button", { name: "Governance", exact: true });
+  await openedGovernance.waitFor({ state: "visible" });
+  assert.equal(await openedGovernance.getAttribute("aria-expanded"), "true");
+  assert.equal(await openedNav.getByRole("button", { name: "Configuration", exact: true }).getAttribute("aria-current"), "page");
+});
+
+test("section choices stay synchronized across browser tabs", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+  const secondPage = await page.context().newPage();
+  await secondPage.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+  const firstNav = page.getByRole("navigation", { name: "Admin sections" });
+  const secondNav = secondPage.getByRole("navigation", { name: "Admin sections" });
+  const firstExtensions = firstNav.getByRole("button", { name: "Extensions", exact: true });
+  const secondExtensions = secondNav.getByRole("button", { name: "Extensions", exact: true });
+  await firstExtensions.waitFor({ state: "visible" });
+  await secondExtensions.waitFor({ state: "visible" });
+
+  await firstExtensions.click();
+  await secondPage.waitForFunction(() => document.querySelector('[aria-controls="admin-navigation-group-items-extensions"]')?.getAttribute("aria-expanded") === "true");
+  await secondNav.getByRole("button", { name: "Operations", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-controls="admin-navigation-group-items-operations"]')?.getAttribute("aria-expanded") === "false");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await firstExtensions.waitFor({ state: "visible" });
+  assert.equal(await firstExtensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await firstNav.getByRole("button", { name: "Operations", exact: true }).getAttribute("aria-expanded"), "false");
+});
+
+test("section choices remain usable when saved preferences cannot be updated", { timeout: browserTestTimeout }, async (t) => {
+  const { address, page } = await createAdminPage(t);
+  await page.addInitScript((key) => {
+    window.localStorage.setItem(key, JSON.stringify(["extensions"]));
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === key) throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+      return originalSetItem.call(this, name, value);
+    };
+  }, NAVIGATION_GROUPS_STORAGE_KEY);
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, { waitUntil: "domcontentloaded" });
+  const nav = page.getByRole("navigation", { name: "Admin sections" });
+  const extensions = nav.getByRole("button", { name: "Extensions", exact: true });
+  await extensions.waitFor({ state: "visible" });
+  await extensions.click();
+  await nav.getByRole("button", { name: "Operations", exact: true }).click();
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await nav.getByRole("button", { name: "Operations", exact: true }).getAttribute("aria-expanded"), "false");
 });
 
 test("privacy page previews an exact scoped revision and exposes incomplete coverage", { timeout: browserTestTimeout }, async (t) => {
@@ -1169,7 +1349,13 @@ test("admin shell persisted collapsed navigation remains usable", { timeout: bro
 
   const navTabs = page.locator('nav[aria-label="Admin sections"] .admin-shell-tab');
   assert.ok((await navTabs.count()) > 3);
-  assert.equal(await page.locator(".admin-shell-nav-group-label:visible").count(), 0);
+  assert.equal(await page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Extensions", exact: true }).isVisible(), true);
+  const extensions = page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Extensions", exact: true });
+  assert.equal(await extensions.getAttribute("aria-expanded"), "false");
+  assert.equal(await extensions.evaluate((button) => button.scrollWidth <= button.clientWidth), true);
+  await extensions.click();
+  assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Add-ons", exact: true }).isVisible(), true);
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agents", exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Flow", exact: true }).waitFor({ state: "visible" }));
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small:visible').count(), 0);
@@ -1564,7 +1750,12 @@ test("admin shell keeps mobile section access and dashboard content in the first
       `expected mobile section buttons when stored collapse state is ${storedCollapseState ?? "unset"}`,
     );
     assert.equal(await page.locator(".admin-shell-nav-header:visible").count(), 0);
-    assert.equal(await page.locator(".admin-shell-nav-group-label:visible").count(), 0);
+    const extensions = page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Extensions", exact: true });
+    assert.equal(await extensions.isVisible(), true);
+    assert.equal(await extensions.getAttribute("aria-expanded"), "false");
+    await extensions.click();
+    assert.equal(await extensions.getAttribute("aria-expanded"), "true");
+    assert.equal(await page.getByRole("navigation", { name: "Admin sections" }).getByRole("button", { name: "Add-ons", exact: true }).isVisible(), true);
     assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small:visible').count(), 0);
 
     await assert.doesNotReject(() => page.getByRole("button", { name: "Find page", exact: true }).waitFor({ state: "visible" }));

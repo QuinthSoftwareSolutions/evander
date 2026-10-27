@@ -680,10 +680,6 @@ body {
   border-top: 1px solid rgba(42, 71, 66, 0.12);
 }
 
-.admin-shell-nav.collapsed .admin-shell-nav-group-label {
-  display: none;
-}
-
 .admin-shell-nav.collapsed .admin-shell-tab {
   min-height: 2.8rem;
   flex-direction: column;
@@ -2182,10 +2178,6 @@ select {
   .admin-shell-nav-group,
   .admin-shell-nav-group-items {
     display: contents;
-  }
-
-  .admin-shell-nav-group-label {
-    display: none;
   }
 
   .admin-shell-nav-find,
