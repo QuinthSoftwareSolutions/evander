@@ -464,9 +464,9 @@ def render(manifest_path: Path, toolchain: Path | None = None) -> dict:
             else:
                 command += [
                     "-ss",
-                    str(item["start"]),
+                    f"{item['start']:.6f}",
                     "-t",
-                    str(item["end"] - item["start"]),
+                    f"{item['end'] - item['start']:.6f}",
                     "-i",
                     item["clip"],
                 ]

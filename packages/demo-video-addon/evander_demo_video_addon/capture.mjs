@@ -12,6 +12,36 @@ async function save(file, value) {
   await rename(`${file}.tmp`, file);
 }
 
+async function startRecording(page, file) {
+  if (typeof page.screencast?.start !== "function") {
+    throw new Error("The seeded Playwright runtime must support page.screencast recording");
+  }
+  let firstFrame;
+  let ready;
+  const frameArrived = new Promise(resolve => { ready = resolve; });
+  await page.screencast.start({
+    path: file,
+    size: { width: 1280, height: 720 },
+    onFrame() {
+      if (firstFrame === undefined) {
+        firstFrame = performance.now();
+        ready(firstFrame);
+      }
+    },
+  });
+  let timer;
+  try {
+    return await Promise.race([
+      frameArrived,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Recording produced no first frame within 10 seconds")), 10000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function preflightCapture(chromium) {
   const helperPath = process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER;
   if (!helperPath) throw new Error("Missing the seeded Playwright launch helper");
@@ -25,14 +55,13 @@ export async function preflightCapture(chromium) {
   await mkdir(directory, { recursive: true });
   const browser = await helper.launchSeededChromium(chromium, { headless: true });
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, recordVideo: { dir: directory, size: { width: 1280, height: 720 } } });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     try {
       const page = await context.newPage();
       await page.setContent("<p>Recording preflight</p>");
-      const video = page.video();
-      await context.close();
       const file = path.join(directory, "recording-preflight.webm");
-      await video.saveAs(file);
+      await startRecording(page, file);
+      await page.screencast.stop();
       if ((await stat(file)).size < 100) throw new Error("The recording encoder produced no video");
       return { success: true, recording: file };
     } finally {
@@ -75,17 +104,17 @@ export async function createRecorder({ chromium, jobDirectory }) {
       try {
         context = await helper.createManagedWebsiteContext(browser, targetAlias, {
           viewport: { width: 1280, height: 720 },
-          recordVideo: { dir: directory, size: { width: 1280, height: 720 } },
         });
-        const epoch = performance.now();
         const page = await context.newPage();
+        await setup(page);
+        // Neither page creation nor encoder startup belongs to the recording clock.
+        const epoch = await startRecording(page, clipPath);
         const markers = [];
         const mark = label => {
           const seconds = (performance.now() - epoch) / 1000;
           markers.push({ label, seconds });
           return seconds;
         };
-        await setup(page);
         const start = mark("presentation-start");
         // Establish a readable starting frame before a fast click changes the page.
         // This is deliberate presentation time, not a wait for application readiness.
@@ -97,9 +126,8 @@ export async function createRecorder({ chromium, jobDirectory }) {
         // Keep a final frame for trimming/voiceover. This is presentation time, not a readiness wait.
         await page.waitForTimeout(750);
         const end = mark("end");
-        const video = page.video();
+        await page.screencast.stop();
         await context.close();
-        await video.saveAs(clipPath);
         const receipt = {
           state: "completed", target_alias: targetAlias, clip: `clips/${id}.webm`,
           trim_start: start, trim_end: end, result_seconds: result, markers,

@@ -29,6 +29,8 @@ The reviewed toolchain is `/home/agent/.evander/demo-video/current`. Run its sta
 Playwright runtime (`EVANDER_PLAYWRIGHT_RUNTIME`) and seeded launch helper. Set
 `PLAYWRIGHT_BROWSERS_PATH` to `current/playwright-cache` **before importing Playwright**;
 the seeded Chromium executable path remains the one already granted to this session.
+The runtime must support `page.screencast` recording with a first-frame callback; readiness
+checks this capability before deployment.
 No guest package downloads, browser downloads or direct speech-provider requests are needed.
 
 Use the supplied managed website target alias. Never enter, print or save credentials,
@@ -93,7 +95,7 @@ long explanation into beats. Cards accept a short title and at most seven short 
 
 For browser scenes, call `createRecorder({chromium, jobDirectory})`, then
 `recordScene({id, targetAlias, setup, act, verify})`. `setup(page)` navigates to the initial
-view, `act(page, mark)` performs the deliberate action, and `verify(page, mark)` asserts the
+view before recording begins, `act(page, mark)` performs the deliberate action, and `verify(page, mark)` asserts the
 visible result. Use `mark("meaningful-result")` for useful moments. Close the recorder in
 `finally`. It returns a relative `clip`, `trim_start`, `trim_end`, markers and a digest.
 Put those trim values, `clip`, `markers` and `result_seconds` into a `kind: "browser"`

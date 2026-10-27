@@ -77,6 +77,9 @@ necessary; format validation alone cannot establish that the explanation is usef
   a Playwright page; action/verification callbacks also receive `mark(label)`.
 
 The recorder stores a completed clip, trim boundaries, action/result markers and a digest.
+It finishes setup before recording and starts its clock on the first received video frame.
+The seeded Playwright runtime must support `page.screencast.start` with `path` and `onFrame`;
+the empty-page preflight checks this before deployment. A missing first frame times out after ten seconds.
 The managed context and seeded Chromium preserve the existing origin/proxy/authentication
 rules. No auth state is exported. Completion is awaited before saving the recording.
 

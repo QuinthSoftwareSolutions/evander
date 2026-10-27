@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import importlib.util
+from fractions import Fraction
 import json
+import math
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 from threading import Thread
+import wave
 
 import pytest
 
 from evander_demo_video_addon import worker
 
 
-def test_managed_browser_recordings_and_action_recovery(tmp_path):
+@pytest.mark.parametrize(
+    "startup_delay",
+    ["none", "page", "recorder"],
+    ids=["normal", "slow-page-creation", "slow-recorder-start"],
+)
+def test_managed_browser_recordings_and_action_recovery(tmp_path, startup_delay):
     """Catch regressions in actual managed-context recording and mutation replay protection."""
     project = Path(__file__).parents[1]
     module = os.environ.get(
@@ -34,20 +43,26 @@ def test_managed_browser_recordings_and_action_recovery(tmp_path):
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        launch_helper = project.parents[1] / "src/evander/assets/playwright-launch.mjs"
         env = {
             **os.environ,
             "DEMO_REVIEW_OUTPUT": str(tmp_path),
             "DEMO_FIXTURE_ORIGIN": server.origin,
             "DEMO_PLAYWRIGHT_MODULE": module,
             "DEMO_CAPTURE_HELPER": str(project / "evander_demo_video_addon/capture.mjs"),
-            "EVANDER_PLAYWRIGHT_LAUNCH_HELPER": str(
-                project.parents[1] / "src/evander/assets/playwright-launch.mjs"
-            ),
+            "EVANDER_PLAYWRIGHT_LAUNCH_HELPER": str(launch_helper),
             "HTTP_TARGET_RELAY_BASE_URL": server.origin + "/relay",
             "EVANDER_SESSION_ID": "review-42",
             "EVANDER_MCP_SESSION_TOKEN": "synthetic-proof",
             "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL": "",
         }
+        if startup_delay != "none":
+            env["DEMO_BASE_LAUNCH_HELPER"] = str(launch_helper)
+            env["DEMO_PAGE_CREATION_DELAY_MS"] = "750" if startup_delay == "page" else "0"
+            env["DEMO_RECORDING_START_DELAY_MS"] = "750" if startup_delay == "recorder" else "0"
+            env["EVANDER_PLAYWRIGHT_LAUNCH_HELPER"] = str(
+                project / "tests/fixtures/slow_page_launch.mjs"
+            )
         result = subprocess.run(
             [node, str(project / "tests/fixtures/capture_scenarios.mjs")],
             env=env,
@@ -63,10 +78,15 @@ def test_managed_browser_recordings_and_action_recovery(tmp_path):
                 path = tmp_path / name / receipt["clip"]
                 assert worker.digest(path) == receipt["sha256"]
                 assert receipt["trim_start"] < receipt["trim_end"]
-                assert any(
-                    stream["codec_type"] == "video"
-                    for stream in worker.probe(path, worker.tools())["streams"]
+                media = worker.probe(path, worker.tools())
+                video = next(
+                    stream for stream in media["streams"] if stream["codec_type"] == "video"
                 )
+                # Allow only the recorder's one-frame duration rounding, not time spent
+                # creating a page before its video exists.
+                frame_period = 1 / float(Fraction(video["r_frame_rate"]))
+                assert 0 <= receipt["trim_start"] < float(media["format"]["duration"])
+                assert receipt["trim_end"] <= float(media["format"]["duration"]) + frame_period
                 count += 1
         assert count == 6
         # The calculation result needs to be fully in the recorded viewport,
@@ -77,12 +97,57 @@ def test_managed_browser_recordings_and_action_recovery(tmp_path):
         # beginning after the action because the recording encoder had not received a frame.
         receipt = json.loads((tmp_path / "mixed/recorded.json").read_text())["exclude-breaks"]
         box = json.loads((tmp_path / "mixed/observations.json").read_text())["checkbox"]
+        manifest = tmp_path / "manifest.json"
+        worker.atomic_json(
+            manifest,
+            {
+                "schema_version": 1,
+                "request": {
+                    "repo": "sample-app",
+                    "pr_id": "42",
+                    "feedback_id": "capture-regression",
+                    "title": "Show the effect of planned breaks",
+                    "target": "demo1",
+                    "source_commit": "1" * 40,
+                    "build_commit": "2" * 40,
+                    "build_run_id": "123",
+                    "build_number": "capture-test",
+                },
+                "scenes": [
+                    {
+                        "id": "exclude-breaks",
+                        "kind": "browser",
+                        "title": "Count planned time",
+                        "narration": "The score now uses the time when production was planned.",
+                        "evidence": [
+                            {"kind": "observed", "reference": "Local calculation fixture"}
+                        ],
+                        "clip": "mixed/" + receipt["clip"],
+                        "trim_start": receipt["trim_start"],
+                        "trim_end": receipt["trim_end"],
+                    }
+                ],
+            },
+        )
+        audio = tmp_path / "speech.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setnchannels(1)
+            stream.setsampwidth(2)
+            stream.setframerate(24000)
+            stream.writeframes(
+                b"".join(
+                    struct.pack("<h", int(5000 * math.sin(i * 2 * math.pi * 440 / 24000)))
+                    for i in range(24000)
+                )
+            )
+        worker.import_audio(manifest, "exclude-breaks", audio)
+        rendered = worker.render(manifest)
         from PIL import Image
 
         counts = []
         for name, seconds in (
-            ("before", receipt["trim_start"] + 0.1),
-            ("after", receipt["trim_end"] - 0.15),
+            ("before", 0.1),
+            ("after", rendered["duration_seconds"] - 0.15),
         ):
             frame = tmp_path / (name + ".png")
             worker.run(
@@ -94,7 +159,7 @@ def test_managed_browser_recordings_and_action_recovery(tmp_path):
                     "-ss",
                     str(seconds),
                     "-i",
-                    str(tmp_path / "mixed" / receipt["clip"]),
+                    str(tmp_path / "explanation.mp4"),
                     "-frames:v",
                     "1",
                     str(frame),
