@@ -193,7 +193,8 @@ def test_worker_inventory_uses_one_batch_and_invalidates_after_actions(monkeypat
     first[0].active_state = "modified"
     assert service.list_background_workers()[0].active_state == "active"
     assert len(calls) == 1
-    assert len(calls[0]) == 9
+    assert len(calls[0]) == len(first)
+    assert set(calls[0]) == {worker.unit for worker in first}
     service.stop_background_worker("ado")
     service.list_background_workers()
     assert len(calls) == 2

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-27 - Restore complete test coverage (0.138.2)
+
+- Collect independent add-on tests from their source projects and avoid duplicate test-module imports in complete and focused runs.
+- Keep documentation checks scoped to tracked and non-ignored files, and update recovery, worker inventory, Ansible timing and Admin Web fixtures to reflect current behavior.
+
 ## 2026-10-27 - Improve PR video demonstration guidance (0.138.1)
 
 - Make the managed demo-video skill authoritative for presentation: rehearse useful UI actions and visible results, cover related controls or workflow steps, and keep supporting cards concise while explaining material backend behavior.

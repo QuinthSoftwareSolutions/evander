@@ -162,8 +162,12 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       assert.equal(endpoint.searchParams.get("directory_path"), "root/child");
       let data;
       if (endpoint.pathname.endsWith("/connections")) data = { connections: [connection] };
+      else if (endpoint.pathname.endsWith("/session-grants") && request.method() === "GET") {
+        data = { sessions: [], grants: [] };
+      }
       else if (endpoint.pathname.endsWith("/activity")) data = { operations: [operation], subscriptions: [] };
       else {
+        assert.equal(request.method(), "POST", `Unexpected Miro request: ${endpoint.pathname}`);
         writes.push({ path: endpoint.pathname, body: request.postDataJSON() });
         data = { operation };
       }
@@ -190,7 +194,7 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
         assert.equal(writes.at(-1).body.outcome, outcome);
       }
       assert.equal(writes[0].path, "/api/addons/miro-addon/connections/shared/operations/child-operation/reconcile");
-      for (const selector of ["#name", "#add-board", '#settings button[type="submit"]', "#connect", "#disconnect", "#health", "#boards button"]) {
+      for (const selector of ["#name", "#create-boards", '#settings button[type="submit"]', "#connect", "#disconnect", "#health"]) {
         assert.equal(await frame.locator(selector).isDisabled(), true, `${selector} stays restricted for inherited connections`);
       }
       assert.equal(await frame.locator("#new").isDisabled(), false);

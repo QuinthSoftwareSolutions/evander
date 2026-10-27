@@ -4801,11 +4801,14 @@ test("team add-on focused tabs submit retained create forms with revisions", { t
   await teamForm.locator('[name="operator_communication_target_id"]').fill("ops-channel");
   await teamForm.getByRole("button", { name: "Create team" }).click();
   await waitForStatusText(page, "Saved revision", requests);
+  await waitForRevision(page, 1);
+  await page.locator(`#team-people-page [data-team-record-group-id="${teamId}"]`).waitFor({ state: "visible" });
 
   await openProjects(page);
   await page.locator("[data-project-create-toggle]").click();
   const projectForm = page.locator("#create-project-from-projects-form");
   await projectForm.waitFor({ state: "visible" });
+  await waitForSelectOption(page, '#create-project-from-projects-form [name="team_id"]', teamId);
   await projectForm.locator('[name="team_id"]').selectOption(teamId);
   await waitForSelectOption(page, '#create-project-from-projects-form [name="lead_agent_id"]', managerId);
   await projectForm.locator('[name="name"]').fill("Project");
@@ -4815,10 +4818,7 @@ test("team add-on focused tabs submit retained create forms with revisions", { t
   await projectForm.locator('[name="managed_repo_id"]').fill("mr_0123456789abcdef0123");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
-  await waitForCondition(
-    () => requests.filter((request) => request.method !== "GET").length >= 2,
-    "expected project create request",
-  );
+  await waitForRevision(page, 2);
 
   await openTeams(page);
   const teamGroup = page.locator(`#team-people-page .team-record-group[data-team-record-group-id="${teamId}"]`);
@@ -4836,10 +4836,7 @@ test("team add-on focused tabs submit retained create forms with revisions", { t
   await inlineRoleForm.locator('[name="name"]').fill("Backend");
   await inlineRoleForm.locator('[name="max_concurrent"]').fill("2");
   await inlineRoleForm.getByRole("button", { name: "Create role" }).click();
-  await waitForCondition(
-    () => requests.filter((request) => request.method !== "GET").length >= 3,
-    "expected role create request",
-  );
+  await waitForRevision(page, 3);
 
   await teamGroup.locator('[data-team-record-tab="agent"]').click();
   await teamGroup.getByRole("button", { name: "Add agent" }).click();
@@ -4852,10 +4849,7 @@ test("team add-on focused tabs submit retained create forms with revisions", { t
   await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption(managerId);
   await inlineAgentForm.locator('[name="max_concurrent"]').fill("2");
   await inlineAgentForm.getByRole("button", { name: "Register agent" }).click();
-  await waitForCondition(
-    () => requests.filter((request) => request.method !== "GET").length >= 4,
-    "expected agent create request",
-  );
+  await waitForRevision(page, 4);
   await teamGroup.locator(`[data-agent-id="${backendId}"]`).waitFor({ state: "visible" });
 
   const mutationRequests = requests.filter((request) => request.method !== "GET");
