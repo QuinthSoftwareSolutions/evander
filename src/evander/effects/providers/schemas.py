@@ -1424,6 +1424,36 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
         return self
 
 
+class SessionSetModelSettingsEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:set-model-settings"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    settings: ConfigValue
+
+    @field_validator("settings")
+    @classmethod
+    def validate_settings(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        if (
+            not isinstance(value, Mapping)
+            or not value
+            or set(value) - {"model", "reasoning_effort", "fast_mode"}
+        ):
+            raise ValueError("settings must contain model, reasoning_effort, and/or fast_mode")
+        return value
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionSetModelSettingsEffectDefinition":
+        selectors = [
+            value for value in (self.target, self.session_id, self.vm_name) if value is not None
+        ]
+        if len(selectors) != 1 or not isinstance(selectors[0], str) or not selectors[0].strip():
+            raise ValueError("Provide exactly one non-empty target, session_id, or vm_name")
+        return self
+
+
 class SessionSetReasoningEffortEffectDefinition(EffectDefinition):
     type: Literal["effect:session:set-reasoning-effort"]
     target: ConfigValue | None = None

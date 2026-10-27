@@ -67,6 +67,15 @@ def test_session_reasoning_default_is_configurable_in_workflow_editor(catalog_pa
     assert {"target", "session_id", "vm_name"} <= fields.keys()
 
 
+def test_session_execution_defaults_are_configurable_in_workflow_editor(catalog_payload) -> None:
+    node = next(n for n in catalog_payload["nodes"] if n["type"] == "effect:session:set-model-settings")
+    fields = {f["key"]: f for f in node["fields"]}
+    assert fields["settings"]["required"] is True
+    assert fields["settings"]["bindable"] is True
+    assert fields["settings"]["kind"] == "json"
+    assert {"target", "session_id", "vm_name"} <= fields.keys()
+
+
 def test_workflow_catalog_descriptions(catalog_payload) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     event_validator = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:event:validate")

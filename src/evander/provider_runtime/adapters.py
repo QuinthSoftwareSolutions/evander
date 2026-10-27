@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from evander.models import SessionManifest
 
 from evander.provider_config import (
     EffectProviderConfig,
@@ -375,12 +378,16 @@ class AdminRuntimeProviderAdapter:
             enabled=enabled,
         )
 
-    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]) -> Any:
+    def update_session_model_settings(
+        self, target: str, settings: Mapping[str, Any], *,
+        expected_session: SessionManifest | None = None,
+    ) -> Any:
         return self._call_required(
             self._delegate_method("update_session_model_settings", self._operations_admin()),
             "update_session_model_settings",
             target,
             settings,
+            **({"expected_session": expected_session} if expected_session is not None else {}),
         )
 
     def promote_agent_branch(self, **kwargs: Any) -> Any:

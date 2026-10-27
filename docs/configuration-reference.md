@@ -1147,6 +1147,7 @@ Type-specific keys:
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `cyber_access_program`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
 | `effect:session:set-reasoning-effort` | exactly one of `target`, `session_id`, `vm_name`; `reasoning_effort` (native level or explicit null) | `outputs` |
+| `effect:session:set-model-settings` | exactly one of `target`, `session_id`, `vm_name`; `settings` with `model`, `reasoning_effort` and/or `fast_mode` | `outputs` |
 | `effect:website-session:ensure-profile` | `template_id`, `browser_origin`, `login_origin` | `directory_path`, `outputs` |
 | `effect:teams:update-message` (Teams/Graph add-on) | `session_id`, `channel_target`, `message_id`, `message` | `thread_id`, `expected_revision`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
@@ -1484,6 +1485,31 @@ the settings atomically.
 An omitted field remains unchanged and `"reasoning_effort": null` clears the
 default. An invalid model/effort pair leaves both stored fields unchanged. These
 updates retain the endpoint's directory ownership and privileged-unlock checks.
+
+Use `effect:session:set-model-settings` when a preference change must apply to
+future turns across all channels. Its `settings` object accepts `model`,
+`reasoning_effort` and `fast_mode`; omitted settings are preserved and explicit
+null clears an override. For example, `{"model": "gpt-6.1-terra"}` changes the
+actual model default used by browser-chat and other dispatches that omit a model.
+The effect enforces the workflow's directory scope and uses the same validation
+as the session administration API. It neither starts nor interrupts a turn.
+Updating descriptive metadata alone does not change execution defaults. A model
+preference workflow should persist these defaults before acknowledging its
+selection or dispatching the next task, and omit redundant prompt overrides
+when it intends to inherit the saved preference.
+
+Use `query:session-context.model` as the saved model preference; do not maintain a
+second model selection in metadata. When migrating an existing workflow, change
+its preference readers and writer together, and remove the retired top-level
+metadata key with `effect:session:reconcile-policy` and
+`policy.remove_metadata_keys`. This removes only the listed keys from the latest
+session record under its lock. Unrelated metadata is preserved; updating and
+removing the same key in one operation is rejected. Migrate an old preference
+value to the session default before retiring its key when that value represents
+the user's selected model.
+Speed-only workflows should omit `settings.model`, including when the saved model
+is null and inherits its directory default. Model and reasoning effects verify
+their observed session identity and directory again under the update lock.
 
 Upgrade container workers and their CLI/runtime assets before enabling effort
 settings in the control plane. VM start/resume ships the current runner libraries

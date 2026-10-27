@@ -1502,6 +1502,13 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "directory_path": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
     },
+    "effect:session:set-model-settings": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+    },
     "effect:session:renew-if-expired": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},
@@ -1703,7 +1710,7 @@ _QUERY_OUTPUT_SCHEMAS = {
         "metadata": {"type": "object"},
         "created_at": {"type": "string"},
         "expires_at": {"type": "string"},
-        "model": {"type": "string"},
+        "model": {"type": ["string", "null"]},
     },
     "query:website-session:resolve-profile": {
         "ready": {"type": "boolean"},

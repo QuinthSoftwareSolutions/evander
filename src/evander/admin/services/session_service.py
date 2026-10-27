@@ -351,6 +351,7 @@ class SessionAdminService:
             "allowed_tools", "allowed_script_names", "approval_required_tools",
             "approval_tool_settings", "tool_argument_policies", "connector_grants",
             "host_directory_grants", "metadata", "add_tools", "remove_tools",
+            "remove_metadata_keys",
         }
         unknown = set(policy) - allowed_fields
         if unknown:
@@ -382,6 +383,11 @@ class SessionAdminService:
             payload = dict(policy)
             additions = payload.pop("add_tools", [])
             removals = payload.pop("remove_tools", [])
+            removed_metadata_keys = payload.pop("remove_metadata_keys", [])
+            if not isinstance(removed_metadata_keys, list) or any(
+                not isinstance(key, str) or not key.strip() for key in removed_metadata_keys
+            ):
+                raise ValueError("remove_metadata_keys must be a list of non-empty keys")
             for name, values in (("add_tools", additions), ("remove_tools", removals)):
                 if not isinstance(values, list) or any(
                     not isinstance(value, str) or not value.strip() for value in values
@@ -410,12 +416,17 @@ class SessionAdminService:
                 required = [required]
             if isinstance(required, (list, tuple)):
                 payload["approval_required_tools"] = [tool_name_value(tool) for tool in required]
-            if "metadata" in payload:
-                if not isinstance(payload["metadata"], Mapping):
+            if "metadata" in payload or removed_metadata_keys:
+                metadata_patch = payload.get("metadata", {})
+                if not isinstance(metadata_patch, Mapping):
                     raise ValueError("metadata must be a JSON object")
+                if set(removed_metadata_keys).intersection(metadata_patch):
+                    raise ValueError("A metadata key cannot be updated and removed together")
                 payload["metadata"] = session_helpers.deep_merge_mapping(
-                    manifest.metadata, payload["metadata"]
+                    manifest.metadata, metadata_patch
                 )
+                for key in removed_metadata_keys:
+                    payload["metadata"].pop(key, None)
             update = self._prepare_session_policy_update(manifest, payload)
             if tools is not None:
                 update["allowed_tools"] = session_helpers.normalize_allowed_tools(tools)
@@ -477,11 +488,15 @@ class SessionAdminService:
         )
 
     def update_session_model_settings(
-        self, target: str, settings: Mapping[str, Any]
+        self, target: str, settings: Mapping[str, Any], *,
+        expected_session: SessionManifest | None = None,
     ) -> SessionActionResult:
-        session_id, manifest = session_helpers.resolve_session_target(
+        session_id, original = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
+        expected = expected_session if expected_session is not None else original
+        if expected.session_id != session_id:
+            raise ValueError("Session identity changed before the model settings update")
         if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode", "cyber_access_program"}:
             raise ValueError("Provide model, reasoning_effort, fast_mode, and/or cyber_access_program")
         update: dict[str, Any] = {}
@@ -496,17 +511,30 @@ class SessionAdminService:
             update["fast_mode"] = normalize_fast_mode(settings["fast_mode"])
         if "cyber_access_program" in settings:
             update["cyber_access_program"] = normalize_cyber_access_program(settings["cyber_access_program"])
-        updated = manifest.model_copy(update=update)
-        resolver = getattr(self._deps.runtime, "provider_config", None)
-        config = (
-            resolver.resolve_for_directory(updated.directory_path)
-            if resolver is not None
-            else self._deps.config
-        )
-        validate_session_reasoning_effort(updated, config)
-        validate_session_fast_mode(updated, config)
-        session_cyber_access_program(updated, config)
-        self._session_repository().upsert_session(updated)
+
+        def apply_settings(manifest: SessionManifest) -> SessionManifest:
+            expected_has_identity = "created_at" in expected.model_fields_set
+            current_has_identity = "created_at" in manifest.model_fields_set
+            if (
+                expected_has_identity != current_has_identity
+                or (expected_has_identity and manifest.created_at != expected.created_at)
+            ):
+                raise ValueError("Session was replaced during model settings update")
+            if manifest.directory_path != expected.directory_path:
+                raise ValueError("Session moved outside the validated directory")
+            updated = manifest.model_copy(update=update)
+            resolver = getattr(self._deps.runtime, "provider_config", None)
+            config = (
+                resolver.resolve_for_directory(updated.directory_path)
+                if resolver is not None
+                else self._deps.config
+            )
+            validate_session_reasoning_effort(updated, config)
+            validate_session_fast_mode(updated, config)
+            session_cyber_access_program(updated, config)
+            return updated
+
+        self._session_repository().mutate_session(session_id, apply_settings)
         return SessionActionResult(
             success=True,
             session_id=session_id,

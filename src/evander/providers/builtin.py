@@ -90,6 +90,9 @@ from evander.effects.providers.session_update_metadata import (
 from evander.effects.providers.session_set_reasoning_effort import (
     SessionSetReasoningEffortEffectProvider,
 )
+from evander.effects.providers.session_set_model_settings import (
+    SessionSetModelSettingsEffectProvider,
+)
 from evander.effects.providers.session_set_image_generation_enabled import (
     SessionSetImageGenerationEnabledEffectProvider,
 )
@@ -328,6 +331,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:set-reasoning-effort": SessionSetReasoningEffortEffectProvider,
+            "effect:session:set-model-settings": SessionSetModelSettingsEffectProvider,
             "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectProvider,
             "effect:session:set-image-generation-enabled": (
                 SessionSetImageGenerationEnabledEffectProvider

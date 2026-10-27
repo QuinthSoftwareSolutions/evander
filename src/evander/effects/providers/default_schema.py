@@ -59,6 +59,7 @@ from evander.effects.providers.schemas import (
     SessionReconcilePolicyEffectDefinition,
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     SessionSetImageGenerationEnabledEffectDefinition,
+    SessionSetModelSettingsEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     WebsiteSessionEnsureProfileEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
@@ -141,6 +142,7 @@ _EFFECT_MODEL_BY_TYPE = {
     ),
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
     "effect:session:reconcile-policy": SessionReconcilePolicyEffectDefinition,
+    "effect:session:set-model-settings": SessionSetModelSettingsEffectDefinition,
     "effect:website-session:ensure-profile": WebsiteSessionEnsureProfileEffectDefinition,
     "effect:session:set-image-generation-enabled": (
         SessionSetImageGenerationEnabledEffectDefinition

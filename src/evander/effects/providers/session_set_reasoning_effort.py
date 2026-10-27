@@ -41,7 +41,7 @@ class SessionSetReasoningEffortEffectProvider(EffectProviderBase):
             raise RuntimeError("Session lookup and model settings updater are required")
         session_id, session = resolve_session_target(selectors[0], dict(lookup()))
         scoped_effect_directory_path(context, session.directory_path)
-        result = update(session_id, {"reasoning_effort": effort})
+        result = update(session_id, {"reasoning_effort": effort}, expected_session=session)
         output = dict(result) if isinstance(result, Mapping) else result.model_dump(mode="json")
         if output.get("success") is True:
             output.update(reasoning_effort=effort, directory_path=session.directory_path)

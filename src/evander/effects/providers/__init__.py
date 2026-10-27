@@ -48,6 +48,7 @@ __all__ = [
     "SessionReconcilePolicyEffectProvider",
     "SessionSetImageGenerationEnabledEffectProvider",
     "SessionSetReasoningEffortEffectProvider",
+    "SessionSetModelSettingsEffectProvider",
     "EventScheduleEffectProvider",
     "VmCopyFilesEffectProvider",
     "VmCreateEffectProvider",
@@ -103,6 +104,7 @@ _EXPORT_MODULES = {
     "SessionRenewIfExpiredEffectProvider": ".session_renew_if_expired",
     "SessionReconcilePolicyEffectProvider": ".session_reconcile_policy",
     "SessionSetReasoningEffortEffectProvider": ".session_set_reasoning_effort",
+    "SessionSetModelSettingsEffectProvider": ".session_set_model_settings",
     "SessionSetImageGenerationEnabledEffectProvider": (
         ".session_set_image_generation_enabled"
     ),
