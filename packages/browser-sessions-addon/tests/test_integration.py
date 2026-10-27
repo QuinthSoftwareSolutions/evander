@@ -46,11 +46,15 @@ def test_all_declared_mcp_tools_register_with_typed_contracts(tmp_path):
         "generation",
         "goal",
         "values",
+        "completion",
         "max_steps",
         "timeout_seconds",
         "checkpoints",
+        "plan",
+        "observation_id",
     } <= schema.keys()
     assert all(schema[field].get("description") for field in schema)
+    assert "completion" in run.input_schema["$defs"]["RunRequest"]["required"]
     for example in schema["values"]["examples"]:
         request = RunRequest(
             request_id="schema-example", generation=0, goal="Check a filter", values=example
@@ -89,22 +93,34 @@ def test_any_owning_agent_can_discover_packaged_guidance_without_a_pa_prompt(dom
     assert set(profiles["modes"]) <= {"hosted", "user_hosted"}
     assert all("playwright_enabled" in profile for profile in profiles["profiles"])
     # Published instructions must contain usable examples of the actual public contracts.
-    creation, objective, checkpoint = re.findall(
+    examples = [json.loads(value) for value in re.findall(
         r"```json\n(.*?)\n```", guidance["instructions"], re.S
-    )
-    assert CreateRequest.model_validate_json(creation).mode == "hosted"
-    request = RunRequest.model_validate_json(objective)
+    )]
+    creation = next(value for value in examples if "mode" in value)
+    objective = next(value for value in examples if "goal" in value and "plan" not in value)
+    checkpoint = next(value for value in examples if "after" in value)
+    plan = next(value for value in examples if "plan" in value)
+    assert CreateRequest.model_validate(creation).mode == "hosted"
+    request = RunRequest.model_validate(objective)
     assert any(value.value == "" for value in request.values.values())
+    assert len(RunRequest.model_validate(plan).plan) == 2
     # The guide's additional checkpoint must compose with its published objective.
     RunRequest.model_validate(
         {
             **request.model_dump(),
-            "checkpoints": [RunCheckpoint.model_validate_json(checkpoint)],
+            "checkpoints": [RunCheckpoint.model_validate(checkpoint)],
         }
     )
     compact = call("browser_session_status", browser_session_id=created["id"])
     assert "agent_guidance" not in compact
     assert compact["last_activity_at"] == created["last_activity_at"]
+
+    with pytest.raises(ToolError, match="completion"):
+        call("browser_session_run", browser_session_id=created["id"], request={
+            "request_id": "missing-completion", "generation": created["control_generation"],
+            "goal": "Open the account editor",
+        })
+    assert not service.store.run_status(created["id"]).get("active_run")
 
     # Adding the guide must preserve ownership and tool-grant checks.
     monkeypatch.setattr(mcp, "_resolve_session_id_from_context", lambda *args, **kwargs: "agent-b")

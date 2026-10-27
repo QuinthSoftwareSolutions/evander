@@ -1,0 +1,37 @@
+function(kind, value, origin, deadline) {
+  const target = this;
+  const attached = () => location.origin === origin && target.isConnected && target.ownerDocument === document;
+  const current = () => typeof deadline === "number" && Number.isFinite(deadline) && Date.now()/1000 < deadline;
+  if (!current()) return {error:"run_deadline"};
+  if (!attached() || target.matches(":disabled")) return {error:"stale_target"};
+  let assign;
+  if (kind === "date") {
+    if (!(target instanceof HTMLInputElement) || target.type !== "date" || target.readOnly) return {error:"stale_target"};
+    if (typeof value !== "string" || value !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(value)) return {error:"invalid_date"};
+    const probe = document.createElement("input");
+    probe.type = "date";
+    for (const key of ["min","max","step"]) {
+      const attribute = target.getAttribute(key);
+      if (attribute !== null) probe.setAttribute(key, attribute);
+    }
+    const base = target.getAttribute("value");
+    if (base !== null) probe.defaultValue = base;
+    probe.value = value;
+    if (probe.value !== value || !probe.validity.valid) return {error:"invalid_date"};
+    assign = () => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(target,value);
+  } else if (kind === "select") {
+    if (!(target instanceof HTMLSelectElement) || target.multiple || target.size > 1 ||
+        typeof value !== "string" || !value || value.length > 200 || target.options.length > 100) return {error:"unsupported_target"};
+    const matches = Array.from(target.options).filter(option => !option.matches(":disabled") &&
+      option.label.replace(/\s+/g," ").trim() === value);
+    if (matches.length !== 1) return {error:"ambiguous_option"};
+    const index = matches[0].index;
+    assign = () => Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"selectedIndex").set.call(target,index);
+  } else return {error:"unsupported_target"};
+  if (!current()) return {error:"run_deadline"};
+  if (!attached() || target.matches(":disabled")) return {error:"outcome_unknown"};
+  assign();
+  target.dispatchEvent(new Event("input",{bubbles:true,composed:true}));
+  target.dispatchEvent(new Event("change",{bubbles:true}));
+  return {ok:true};
+}

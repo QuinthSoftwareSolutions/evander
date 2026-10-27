@@ -35,6 +35,8 @@ sealed class Browser : IAsyncDisposable
     double deadline = double.MaxValue;
     long generation = -1;
     long epoch;
+    readonly Dictionary<long, long> nativeWorlds = new();
+    readonly Dictionary<string, long> nativeObjects = new();
     int streamSize;
     const int MaxImageCharacters = 800000; // Base64 plus JSON must fit Chrome's 1 MB native-message limit.
     static readonly (int Width, int Height, int Quality)[] ImageSizes = [(1920, 1080, 65), (1280, 720, 50), (800, 450, 35), (400, 225, 25)];
@@ -83,12 +85,27 @@ sealed class Browser : IAsyncDisposable
         ["Page.screencastFrameAck"] = ["sessionId"], ["Page.stopScreencast"] = [],
         ["DOM.getBoxModel"] = ["backendNodeId"], ["DOM.focus"] = ["backendNodeId"],
         ["DOM.scrollIntoViewIfNeeded"] = ["backendNodeId"],
+        ["DOM.describeNode"] = ["backendNodeId"], ["DOM.resolveNode"] = ["backendNodeId", "executionContextId"],
+        ["Page.createIsolatedWorld"] = ["frameId", "worldName"],
+        ["Runtime.callFunctionOn"] = ["objectId", "functionDeclaration", "arguments", "returnByValue"],
+        ["Runtime.releaseObject"] = ["objectId"],
         ["Input.dispatchMouseEvent"] = ["type", "x", "y", "button", "clickCount", "deltaX", "deltaY"],
         ["Input.dispatchKeyEvent"] = ["type", "key", "code", "modifiers", "windowsVirtualKeyCode", "text", "unmodifiedText"],
         ["Input.insertText"] = ["text"], ["Page.navigate"] = ["url"], ["Page.reload"] = [],
         ["Page.handleJavaScriptDialog"] = ["accept"],
     };
-    static readonly HashSet<string> Inputs = ["DOM.focus", "DOM.scrollIntoViewIfNeeded", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText", "Page.navigate", "Page.reload", "Page.handleJavaScriptDialog"];
+    static readonly HashSet<string> Inputs = ["DOM.focus", "DOM.scrollIntoViewIfNeeded", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText", "Runtime.callFunctionOn", "Page.navigate", "Page.reload", "Page.handleJavaScriptDialog"];
+    static readonly string NativeValueFunction = ReadNativeValueFunction();
+    static string ReadNativeValueFunction()
+    {
+        using var stream = typeof(Browser).Assembly.GetManifestResourceStream("Evander.SetNativeValue")!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd().Replace("\r\n","\n");
+    }
+    bool NativeObject(string id, long document)
+    {
+        lock (authorityLock) return nativeObjects.TryGetValue(id,out var observed) && observed==document;
+    }
     public static string Origin(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0) throw new Denied("origin_denied");
@@ -158,11 +175,35 @@ sealed class Browser : IAsyncDisposable
     static JsonObject Accessibility(JsonObject tree)
     {
         static string? Role(JsonObject node) => node["role"]?["value"]?.GetValue<string>() switch { "LayoutTableRow" => "row", "LayoutTableCell" or "cell" or "rowheader" or "columnheader" => "gridcell", var value => value };
-        var roles = new HashSet<string> { "button", "link", "textbox", "combobox", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row" };
-        var stateNames = new HashSet<string> { "checked", "selected", "expanded", "disabled", "readonly", "focused", "editable", "required" };
+        var roles = new HashSet<string> { "button", "link", "textbox", "combobox", "Date", "spinbutton", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row" };
+        var stateNames = new HashSet<string> { "checked", "selected", "expanded", "disabled", "readonly", "focused", "editable", "required", "settable", "valuemin", "valuemax", "valuetext" };
         var all = tree["nodes"]!.AsArray().Select(n => n!.AsObject()).ToArray();
         var byId = all.Where(n => n["nodeId"] is not null).ToDictionary(n => n["nodeId"]!.GetValue<string>());
-        static string Text(JsonNode? value, int maximum) { var text = value?.GetValue<string>() ?? ""; return text[..Math.Min(text.Length,maximum)]; }
+        static string Text(JsonNode? value, int maximum) { var text = value is JsonValue scalar && scalar.TryGetValue<string>(out var label) ? label : value?.ToJsonString() ?? ""; return text[..Math.Min(text.Length,maximum)]; }
+        JsonNode Property(JsonNode property) => property["name"]?.GetValue<string>()=="valuetext" ?
+            new JsonObject { ["name"] = "valuetext", ["value"] = new JsonObject { ["value"] = Text(property["value"]?["value"],1000) } } : property.DeepClone();
+        JsonArray NativeChildren(JsonObject root, out bool incomplete)
+        {
+            var pending = new Queue<string>((root["childIds"]?.AsArray() ?? []).Select(id=>id!.GetValue<string>()));
+            var seen = new HashSet<string>(); var children = new JsonArray();
+            while (pending.Count>0 && children.Count<128)
+            {
+                var id = pending.Dequeue();
+                if (!seen.Add(id) || !byId.TryGetValue(id,out var child)) continue;
+                var properties = new JsonArray();
+                foreach (var property in child["properties"]?.AsArray() ?? [])
+                    if (stateNames.Contains(property?["name"]?.GetValue<string>() ?? "")) properties.Add(Property(property!));
+                children.Add(new JsonObject {
+                    ["nodeId"] = child["nodeId"]?.DeepClone(), ["parentId"] = child["parentId"]?.DeepClone(),
+                    ["childIds"] = child["childIds"]?.DeepClone(), ["ignored"] = child["ignored"]?.DeepClone(),
+                    ["backendDOMNodeId"] = child["backendDOMNodeId"]?.DeepClone(), ["role"] = child["role"]?.DeepClone(),
+                    ["name"] = new JsonObject { ["value"] = Text(child["name"]?["value"],400) },
+                    ["value"] = new JsonObject { ["value"] = Text(child["value"]?["value"],1000) }, ["properties"] = properties });
+                foreach (var next in child["childIds"]?.AsArray() ?? []) pending.Enqueue(next!.GetValue<string>());
+            }
+            incomplete = pending.Count>0;
+            return children;
+        }
         var nodes = new JsonArray(); int bytes = 0; bool truncated = false;
         foreach (var node in all)
         {
@@ -180,13 +221,26 @@ sealed class Browser : IAsyncDisposable
             }
             var properties = new JsonArray();
             foreach (var property in node["properties"]?.AsArray() ?? [])
-                if (stateNames.Contains(property?["name"]?.GetValue<string>() ?? "")) properties.Add(property!.DeepClone());
+                if (stateNames.Contains(property?["name"]?.GetValue<string>() ?? "")) properties.Add(Property(property!));
             var compact = new JsonObject { ["backendDOMNodeId"] = node["backendDOMNodeId"]!.DeepClone(),
+                ["nodeId"] = node["nodeId"]?.DeepClone(), ["parentId"] = node["parentId"]?.DeepClone(),
                 ["role"] = new JsonObject { ["value"] = role }, ["name"] = new JsonObject { ["value"] = Text(node["name"]?["value"],400) },
                 ["value"] = new JsonObject { ["value"] = Text(node["value"]?["value"],1000) }, ["properties"] = properties, ["evanderContext"] = context };
+            int nativeBytes = 0;
+            if (role is "Date" or "combobox")
+            {
+                var native = NativeChildren(node,out bool incomplete);
+                nativeBytes = JsonSerializer.SerializeToUtf8Bytes(native).Length;
+                if (nativeBytes<=100000)
+                {
+                    compact["childIds"] = node["childIds"]?.DeepClone();
+                    compact["evanderChildren"] = native; compact["evanderChildrenTruncated"] = incomplete;
+                }
+                else nativeBytes = 0; // Omit unsupported metadata, never imply complete option coverage.
+            }
             // Keep all 600 references within the native envelope even for labels
             // that JSON escapes heavily. Flag semantic truncation for the fast loop.
-            while (JsonSerializer.SerializeToUtf8Bytes(compact).Length>1100)
+            while (JsonSerializer.SerializeToUtf8Bytes(compact).Length>1200+nativeBytes)
             {
                 truncated=true;
                 if (context.Count>0) { context.RemoveAt(context.Count-1); continue; }
@@ -217,6 +271,29 @@ sealed class Browser : IAsyncDisposable
         long document = Interlocked.Read(ref epoch); bool input = Inputs.Contains(method);
         if (expectedEpoch != document && method != "Page.screencastFrameAck") throw new Denied("stale_observation");
         await Fence(generation, input, document);
+        lock (authorityLock)
+        {
+            foreach (var key in nativeWorlds.Where(item=>item.Value!=document).Select(item=>item.Key).ToArray()) nativeWorlds.Remove(key);
+            foreach (var key in nativeObjects.Where(item=>item.Value!=document).Select(item=>item.Key).ToArray()) nativeObjects.Remove(key);
+            if (method=="DOM.resolveNode" && (parameters["executionContextId"] is not JsonValue context || !context.TryGetValue<long>(out var contextId) || !nativeWorlds.ContainsKey(contextId) || nativeObjects.Count>=64)) throw new Denied("unsupported_action");
+            if (method=="Runtime.releaseObject" && (parameters["objectId"] is not JsonValue release || !release.TryGetValue<string>(out var releaseId) || !nativeObjects.ContainsKey(releaseId))) throw new Denied("unsupported_action");
+        }
+        if (method == "Page.createIsolatedWorld" &&
+            (parameters["frameId"]?.GetValue<string>() != mainFrame || parameters["worldName"]?.GetValue<string>() != "evander-native-controls")) throw new Denied("unsupported_action");
+        if (method == "Runtime.callFunctionOn")
+        {
+            var arguments = parameters["arguments"] as JsonArray;
+            if (parameters["functionDeclaration"]?.GetValue<string>() != NativeValueFunction || parameters["returnByValue"]?.GetValue<bool>() != true ||
+                parameters["objectId"] is not JsonValue objectId || !objectId.TryGetValue<string>(out var objectName) || objectName.Length>256 || !NativeObject(objectName,document) ||
+                arguments is null || arguments.Count!=4 || arguments.Any(a=>a is not JsonObject argument || argument.Count!=1 || !argument.ContainsKey("value")) ||
+                arguments[0]?["value"] is not JsonValue kind || !kind.TryGetValue<string>(out var controlKind) || controlKind is not ("date" or "select") ||
+                arguments[1]?["value"] is not JsonValue text || !text.TryGetValue<string>(out var valueText) ||
+                (controlKind=="date" ? valueText!="" && (!DateOnly.TryParseExact(valueText,"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out _) || valueText.Length!=10) : valueText.Length is <1 or >200) ||
+                arguments[2]?["value"] is not JsonValue origin || !origin.TryGetValue<string>(out var requestedOrigin) || requestedOrigin != state!.Origin || arguments[3]?["value"] is not JsonValue time || !time.TryGetValue<double>(out var deadline) ||
+                !double.IsFinite(deadline) || deadline>state!.Expires || deadline>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()/1000d+5 ||
+                commandDeadline is double cap && deadline>cap)
+                throw new Denied("unsupported_action");
+        }
         if (method == "Page.navigate" && Origin(parameters["url"]!.GetValue<string>()) != state!.Origin) throw new Denied("origin_denied");
         double captureWidth = 0, captureHeight = 0;
         if (method == "Page.startScreencast") parameters = StreamParameters(Volatile.Read(ref streamSize));
@@ -249,7 +326,26 @@ sealed class Browser : IAsyncDisposable
             parameters["quality"] = size.Quality;
             parameters["clip"]!["scale"] = Math.Min(1, Math.Min(size.Width / captureWidth, size.Height / captureHeight));
         }
+        lock (authorityLock)
+        {
+            if (method=="Page.createIsolatedWorld" && result["executionContextId"] is JsonValue context && context.TryGetValue<long>(out var contextId)) nativeWorlds[contextId]=document;
+            if (method=="DOM.resolveNode" && result["object"]?["objectId"] is JsonValue handle && handle.TryGetValue<string>(out var handleId)) nativeObjects[handleId]=document;
+            if (method=="Runtime.releaseObject") nativeObjects.Remove(parameters["objectId"]!.GetValue<string>());
+        }
         if (method == "Accessibility.getFullAXTree") return Accessibility(result);
+        if (method == "DOM.describeNode")
+        {
+            var node = result["node"]!; var source = node["attributes"]?.AsArray() ?? [];
+            var attributes = new JsonArray();
+            bool date = node["nodeName"]?.GetValue<string>()=="INPUT" && Enumerable.Range(0,source.Count/2).Any(i=>source[i*2]?.GetValue<string>()=="type" && source[i*2+1]?.GetValue<string>()=="date");
+            for (int i=0;i+1<source.Count;i+=2)
+            {
+                string name = source[i]!.GetValue<string>(), value = source[i+1]!.GetValue<string>();
+                if (name is "type" or "readonly" or "disabled" or "min" or "max" or "step" || date && name=="value")
+                { attributes.Add(name); attributes.Add(value.Length<=64?value:"unsupported"); }
+            }
+            return new JsonObject { ["node"] = new JsonObject { ["nodeName"] = node["nodeName"]!.DeepClone(), ["attributes"] = attributes } };
+        }
         if (method == "Page.getFrameTree") return new() { ["frameTree"] = new JsonObject { ["frame"] = result["frameTree"]!["frame"]!.DeepClone() } };
         return result;
     }

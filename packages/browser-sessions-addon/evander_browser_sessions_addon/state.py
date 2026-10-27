@@ -275,6 +275,7 @@ class Store(RunStore):
 
     def consume_playwright_observation(self, session_id, observation_id, generation, actor):
         with self.connect(write=True) as db:
+            self._command_access(db, session_id, actor, None)
             row = db.execute(
                 "SELECT payload FROM private_sessions WHERE session_id=?", (session_id,)
             ).fetchone()
@@ -290,6 +291,7 @@ class Store(RunStore):
                     "Observe the current page before connecting", "observation_required", 409
                 )
             payload.pop("playwright_observation")
+            payload.pop("batch_observation", None)
             db.execute(
                 "UPDATE private_sessions SET payload=? WHERE session_id=?",
                 (json.dumps(payload), session_id),
@@ -396,7 +398,7 @@ class Store(RunStore):
                 )
             return rows
 
-    def record_command(self, session_id, actor, command, *, run_id=None):
+    def record_command(self, session_id, actor, command, *, run_id=None, step_index=None):
         fingerprint = digest(command.model_dump_json())
         with self.connect(write=True) as db:
             self._command_access(db, session_id, actor, run_id)
@@ -420,27 +422,52 @@ class Store(RunStore):
                     fingerprint,
                     run_id,
                     int(command.observing),
-                    json.dumps(command.audit()),
+                    json.dumps({**command.audit(), **({"step_index": step_index} if step_index is not None else {})}),
                 ),
             )
+            row = db.execute("SELECT payload FROM private_sessions WHERE session_id=?", (session_id,)).fetchone()
+            if row:
+                private = json.loads(row[0])
+                private.pop("batch_observation", None)
+                db.execute("UPDATE private_sessions SET payload=? WHERE session_id=?",
+                           (json.dumps(private), session_id))
             self._audit(db, session_id, actor, "browser_action", command.audit())
 
-    def finish_command(self, command_id, state):
+    def finish_command(self, command_id, state, *, observation=None):
         with self.connect(write=True) as db:
+            command = db.execute("SELECT rowid AS sequence,* FROM commands WHERE id=?", (command_id,)).fetchone()
+            if not command:
+                return
+            self._recover_runs(db, command["session_id"])
+            command = db.execute("SELECT rowid AS sequence,* FROM commands WHERE id=?", (command_id,)).fetchone()
+            if command["state"] != "submitted":
+                return  # A late callback cannot rewrite a settled/cancelled receipt.
             db.execute("UPDATE commands SET state=? WHERE id=?", (state, command_id))
-            command = db.execute("SELECT * FROM commands WHERE id=?", (command_id,)).fetchone()
             if command and command["run_id"] and not command["observing"]:
                 row = db.execute(
                     "SELECT payload FROM browser_runs WHERE id=?", (command["run_id"],)
                 ).fetchone()
                 if row:
                     value = json.loads(row[0])
+                    if value["status"] != "running":
+                        db.execute("UPDATE commands SET state='unknown' WHERE id=?", (command_id,))
+                        return
                     step = {**json.loads(command["action_metadata"]), "outcome": state}
                     value["steps"] = [
                         s for s in value["steps"] if s.get("command_id") != command_id
                     ] + [step]
                     value["step_count"] = len(value["steps"])
                     self._write_run(db, value)
+            if observation is not None and state == "completed" and not db.execute(
+                "SELECT 1 FROM commands WHERE session_id=? AND rowid>? LIMIT 1",
+                (command["session_id"], command["sequence"]),
+            ).fetchone():
+                row = db.execute("SELECT payload FROM private_sessions WHERE session_id=?", (command["session_id"],)).fetchone()
+                private = json.loads(row[0]) if row else {}
+                private["playwright_observation"] = {k:v for k,v in observation.items() if k != "fingerprint"}
+                private["batch_observation"] = observation
+                db.execute("INSERT OR REPLACE INTO private_sessions VALUES(?,?)",
+                           (command["session_id"], json.dumps(private)))
 
     def prune(self):
         with self.connect(write=True) as db:

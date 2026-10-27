@@ -83,10 +83,10 @@ export function applicationDOM(method: string, params: any, origin: string): any
               getComputedStyle(node).visibility === "hidden" || getComputedStyle(node).display === "none") continue;
           const tag = node.tagName.toLowerCase();
           const role = node.getAttribute("role")?.split(/\s+/)[0] ||
-            (node instanceof HTMLInputElement ? ({checkbox:"checkbox",radio:"radio",button:"button",submit:"button",reset:"button",hidden:""}[node.type] ?? "textbox") :
+            (node instanceof HTMLInputElement ? ({date:"date",number:"spinbutton",checkbox:"checkbox",radio:"radio",button:"button",submit:"button",reset:"button",hidden:""}[node.type] ?? "textbox") :
               ({button:"button",a:node.hasAttribute("href") ? "link" : "",textarea:"textbox",select:"combobox",option:"option",
                 h1:"heading",h2:"heading",h3:"heading",h4:"heading",h5:"heading",h6:"heading",dialog:"dialog",tr:"row",td:"gridcell",th:"gridcell"} as Record<string,string>)[tag]);
-          if (!role || !["button","link","textbox","combobox","checkbox","radio","tab","menuitem","option","heading","dialog","alert","gridcell","row"].includes(role)) continue;
+          if (!role || !["button","link","textbox","combobox","date","spinbutton","checkbox","radio","tab","menuitem","option","heading","dialog","alert","gridcell","row"].includes(role)) continue;
           let id = state.ids.get(node);
           if (!id) { id = state.next++; state.ids.set(node, id); }
           state.nodes.set(id, new WeakRef(node));
@@ -145,7 +145,7 @@ export function applicationDOM(method: string, params: any, origin: string): any
       const accepted = target.dispatchEvent(new KeyboardEvent(down ? "keydown" : "keyup", options));
       if (!down || !accepted) return {};
       if (options.ctrlKey && params.key === "a") {
-        if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) { target.select(); state.replace = target; }
+        if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) { try { target.select(); } catch {} state.replace = target; }
         else if (target.isContentEditable) { const range = document.createRange(); range.selectNodeContents(target); getSelection()?.removeAllRanges(); getSelection()?.addRange(range); }
       } else if (params.text !== undefined) {
         const character = params.text.charCodeAt(0);

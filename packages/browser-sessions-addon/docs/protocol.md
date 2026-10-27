@@ -26,7 +26,9 @@ lane from frames. Viewers fetch messages and status updates through their existi
 authenticated cursor API, which remains the source of truth after reconnects or
 missed notifications. No client acknowledgement or message replay is implied.
 
-Broker and endpoint both check live state, origin, generation and controller. Actions are observe, navigate, click, hover, fill, type, selected keys, scroll, dialog, highlight and reload. There is no arbitrary evaluation, CDP passthrough, cookie export or filesystem API. Observation returns a screenshot and bounded accessibility references. Navigation invalidates references; control changes fence input between focus and typing.
+Broker and endpoint both check live state, origin, generation and controller. Actions are observe, navigate, click, hover, fill, type, native select, selected keys, scroll, dialog, highlight and reload. There is no arbitrary evaluation, CDP passthrough, cookie export or filesystem API. Observation returns a screenshot, bounded accessibility references and per-target `allowed_actions`. Native dates include canonical ISO values and range/step constraints; supported native dropdowns include at most 100 option labels. Navigation invalidates references; control changes fence input between focus and typing.
+
+Native date fill and select use one exact embedded function in a private isolated world. The helper permits only its exact source, date/select kind, bounded literal, current origin and a deadline within five seconds and the enclosing command/session expiry. It binds node handles to that world's current document, verifies native types and effective disabled/readonly state, and validates the complete value before assignment. Date range/step and unique enabled option checks run again inside the operation. One assignment emits synthetic input/change events; ordinary `type` and `key` retain their keyboard-event semantics. Read-only node metadata is filtered to native input constraints; this does not expose general runtime evaluation.
 
 The type action emits character keydown, keypress and keyup events for page-level keyboard listeners as well as focused fields. The fill action focuses and replaces a referenced field with direct text insertion. The key action supports Enter, Space and the bounded navigation/editing keys; Enter and Space include their text events. Every input event rechecks the control generation and approved origin.
 
@@ -102,3 +104,26 @@ only IDs, outcomes, observation/page identities, timestamps and bounded counts
 or target references; condition text, values and snapshots are not persisted.
 Cancellation and uncertain input stop the run without replay, including while a
 checkpoint is pending. Old receipts without checkpoints remain readable.
+
+An optional run-level completion predicate uses those same observation conditions
+without an action trigger. It is checked against fresh full observations only
+after required checkpoints, and retains metadata-only completion evidence before
+returning for owning-agent verification. It cannot be combined with a stopping
+checkpoint or overridden by a model `done` choice. Read-only stale observations
+may be retried up to three attempts with fresh control, grant and deadline checks;
+input and uncertain outcomes are never replayed by this recovery.
+New objectives must explicitly choose a completion predicate or `null` for manual
+verification, or supply a stopping checkpoint. Older saved-run retries retain
+their original request identity and do not replay input.
+
+Owner-authored `RunRequest.plan` is a control-plane execution mode over these same
+commands. It binds to a consumed owner `observation_id`, accepts at most eight
+actions within five seconds, and bypasses the classification provider. Complete
+observations require nonempty `page_id`, `page_epoch` and `url`; each engine now
+has a random instance identity, while hosted controllers retain their shared-page
+identity. Old endpoints without these fields cannot authorize a plan. Initial
+observed mutable state and later target/document assumptions are fenced, and all
+targets/actions are validated before input. The command ledger records plan step
+indices; atomic command/progress writes and terminal retirement preserve unknown
+outcomes and prevent replay or late receipt rewrites after restart. No new endpoint
+method, scripting grant or automatic final-submission policy is introduced.

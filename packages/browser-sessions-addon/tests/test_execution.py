@@ -95,6 +95,8 @@ def execution(request, domain, hosted):
                 state["value"] = command["text"]
                 if state["mode"] == "clipped_suffix":
                     state["value"] += "::app-formatted"
+            if command["action"] == "type":
+                state["value"] += command["text"]
             if command["action"] == "click":
                 state["saved"] = True
             return {"success": True}
@@ -247,6 +249,7 @@ def execution(request, domain, hosted):
             generation=hosted.control_generation,
             goal="Create an account named Example",
             values={"name": {"description": "Account name", "value": "Example"}},
+            completion=None,
         )
         payload.update(kwargs)
         return service.run("agent-a", hosted.id, RunRequest(**payload))
@@ -278,6 +281,19 @@ def test_multistep_adapters_literals_fresh_final_state_and_retry(execution):
     assert len(e.state["commands"]) == before
     with pytest.raises(BrowserError, match="identity conflict"):
         e.run(goal="Different objective")
+
+
+def test_new_objective_must_explicitly_choose_completion_before_observation(execution):
+    e = execution
+    request = RunRequest(
+        request_id="missing-completion", generation=e.session.control_generation,
+        goal="Create an account named Example",
+    )
+    with pytest.raises(BrowserError) as error:
+        e.service.run("agent-a", e.session.id, request)
+    assert error.value.code == "completion_required"
+    assert not e.state["commands"] and not e.state["provider_calls"]
+    assert not e.service.store.run_status(e.session.id).get("active_run")
 
 
 @pytest.mark.parametrize("status", ["running", "needs_verification"])
@@ -1266,6 +1282,188 @@ def test_explicit_completion_checkpoint_stops_without_a_model_done_decision(exec
     assert e.state["value"] == "Example" and not e.state["saved"]
     assert len(e.state["provider_calls"]) == 1
     assert [step["action"] for step in result["steps"]] == ["fill"]
+
+
+def test_run_completion_verifies_saved_result_on_last_action_without_done_decision(execution):
+    e = execution
+    kwargs = {
+        "max_steps": 2,
+        "completion": {"kind": "present", "target": {"role": "alert", "name": "Account saved"}},
+    }
+    result = e.run(**kwargs)
+    assert e.state["value"] == "Example" and e.state["saved"]
+    assert result["status"] == "needs_verification" and result["observation_current"]
+    assert [step["action"] for step in result["steps"]] == ["fill", "click"]
+    assert len(e.state["provider_calls"]) == 2  # No third, potentially ambiguous done choice.
+    assert result["completion"]["status"] == "satisfied"
+    assert result["completion"]["observation_id"] == result["observation"]["observation_id"]
+    assert "Account saved" not in json.dumps(result["completion"])
+    commands = len(e.state["commands"])
+    assert e.run(**kwargs)["completion"] == result["completion"]
+    assert len(e.state["commands"]) == commands
+    with pytest.raises(BrowserError, match="identity conflict"):
+        e.run(**{**kwargs, "completion": {"kind": "text", "text": "A different result"}})
+
+
+def test_run_completion_cannot_skip_required_intermediate_action(execution):
+    e = execution
+    result = e.run(
+        goal="Set Name, verify its value and stop",
+        completion={"kind": "present", "target": {"role": "textbox", "name": "Name"}},
+        checkpoints=[{
+            "id": "name-set",
+            "after": {"action": "fill", "input": "name"},
+            "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+        }],
+    )
+    assert result["status"] == "needs_verification"
+    assert e.state["value"] == "Example" and not e.state["saved"]
+    assert [s["action"] for s in result["steps"]] == ["fill"]
+    assert result["checkpoints"][0]["status"] == "satisfied"
+
+
+def test_already_observed_completion_needs_no_input_or_decision(execution):
+    e = execution
+    e.state.update(value="Example", saved=True)
+    result = e.run(
+        completion={"kind": "present", "target": {"role": "alert", "name": "Account saved"}},
+    )
+    assert result["status"] == "needs_verification" and result["observation_current"]
+    assert not result["steps"] and not e.state["provider_calls"]
+
+
+def test_completion_value_evidence_never_persists_private_literal(execution):
+    e = execution
+    secret = "private-completion-value"
+    result = e.run(
+        goal="Set Name to the supplied private value and stop",
+        values={"name": {"description": "Name", "value": secret, "sensitive": True}},
+        completion={"kind": "value", "target": {"role": "textbox", "name": "Name"}, "input": "name"},
+    )
+    assert result["status"] == "needs_verification"
+    assert e.state["value"] == secret and not e.state["saved"]
+    assert secret not in json.dumps(result)
+    assert secret not in json.dumps(e.state["provider_calls"])
+    with e.service.store.connect() as db:
+        stored = db.execute("SELECT payload FROM browser_runs WHERE id=?", (result["id"],)).fetchone()[0]
+    assert secret not in stored and '"completion"' in stored
+
+
+def test_pre_completion_checkpoint_receipt_remains_idempotent(execution):
+    import hashlib
+
+    e = execution
+    payload = RunRequest(
+        request_id="checkpoint-era", generation=e.session.control_generation,
+        goal="Set Name and verify it",
+        values={"name": {"description": "Name", "value": "Example"}},
+        checkpoints=[{
+            "id": "set", "after": {"action": "fill", "input": "name"},
+            "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+        }],
+    )
+    # The old serializer included nonempty checkpoints but had no completion field.
+    fingerprint = hashlib.sha256(payload.model_dump_json(exclude={"completion", "plan", "observation_id"}).encode()).hexdigest()
+    receipt, claimed = e.service.store.claim_run(
+        e.session.id, "agent:agent-a", payload, fingerprint, seconds=30, max_steps=20,
+    )
+    assert claimed
+    assert e.service.run("agent-a", e.session.id, payload) == receipt
+    assert not e.state["commands"] and not e.state["provider_calls"]
+
+
+def test_model_done_cannot_override_unsatisfied_completion(execution):
+    e = execution
+    e.state.update(value="Example", saved=True)
+    result = e.run(completion={"kind": "text", "text": "The requested result is absent"})
+    assert result["status"] == "needs_pa" and "condition has not been observed" in result["reason"]
+    assert result["completion"] == {"status": "pending", "kind": "text"}
+    assert not result["steps"]
+
+
+@pytest.mark.parametrize("invalid", ["ambiguous", "truncated", "unknown"])
+def test_completion_does_not_establish_success_from_invalid_or_uncertain_state(execution, invalid):
+    e = execution
+    if invalid == "unknown":
+        e.state["mode"] = "unknown"
+    else:
+        def invalidate(observation):
+            if not e.state["saved"]:
+                return
+            if invalid == "truncated":
+                observation["truncated"] = True
+            else:
+                observation["elements"].append({"ref": "duplicate", "role": "alert", "name": "Account saved"})
+        e.state["observation_hook"] = invalidate
+    result = e.run(completion={"kind": "present", "target": {"role": "alert", "name": "Account saved"}})
+    assert result["status"] == ("outcome_unknown" if invalid == "unknown" else "needs_pa")
+    assert result["completion"] == {"status": "pending", "kind": "present"}
+    inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
+    assert [c["action"] for c in inputs] == (["fill"] if invalid == "unknown" else ["fill", "click"])
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_navigation_stale_read_recovers_inside_run_without_replaying_input(execution, checkpoint):
+    e = execution
+    stale = []
+
+    def navigating(observation):
+        if (e.state["value"] if checkpoint else e.state["saved"]) and not stale:
+            stale.append(observation["observation_id"])
+            e.state.update(page_epoch="2", ref_prefix="new-node-")
+            raise BrowserError("Navigation invalidated the read", "stale_observation", 409)
+
+    e.state["observation_hook"] = navigating
+    if checkpoint:
+        kwargs = {"checkpoints": [{
+            "id": "name-set",
+            "after": {"action": "fill", "input": "name"},
+            "condition": {"kind": "value", "target": {"role": "textbox", "name": "Name"}, "input": "name"},
+            "stop_after": True,
+        }]}
+    else:
+        kwargs = {"completion": {"kind": "present", "target": {"role": "alert", "name": "Account saved"}}}
+    result = e.run(**kwargs)
+    assert result["status"] == "needs_verification" and result["observation_current"]
+    assert len(stale) == 1 and result["observation"]["page_epoch"] == "2"
+    inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
+    assert [c["action"] for c in inputs] == (["fill"] if checkpoint else ["fill", "click"])
+    assert len(e.state["provider_calls"]) == (1 if checkpoint else 2)
+
+
+@pytest.mark.parametrize("revoked", ["control", "grant", "deadline"])
+def test_stale_observation_retry_rechecks_authority_and_deadline(execution, revoked):
+    e = execution
+
+    def changed(observation):
+        if revoked == "control":
+            e.service.control(e.session.id, "user:operator", "claim")
+        elif revoked == "grant":
+            e.bindings.denied.add("agent-a")
+        else:
+            clock = e.service.now
+            e.service.now = lambda: clock() + 61
+        raise BrowserError("Navigation invalidated the read", "stale_observation", 409)
+
+    e.state["observation_hook"] = changed
+    result = e.run(completion={"kind": "present", "target": {"role": "alert", "name": "Account saved"}})
+    assert result["status"] != "needs_verification"
+    assert len(e.state["commands"]) == 1
+    assert not e.state["provider_calls"] and not e.state["value"]
+
+
+def test_persistent_stale_reads_are_bounded_and_do_not_dispatch_input(execution):
+    e = execution
+
+    def stale(observation):
+        raise BrowserError("Navigation invalidated the read", "stale_observation", 409)
+
+    e.state["observation_hook"] = stale
+    result = e.run()
+    assert result["status"] == "needs_pa" and "stale_observation" in result["reason"]
+    assert len(e.state["commands"]) <= 6  # Three attempts plus bounded final inspection.
+    assert not result["observation_current"] and not e.state["provider_calls"]
+    assert not e.state["value"] and not e.state["saved"]
 
 
 def test_checkpoint_order_cannot_be_skipped_by_input_or_completion(execution):

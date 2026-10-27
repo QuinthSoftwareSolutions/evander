@@ -1,8 +1,9 @@
 # Short browser objectives
 
 Any authorized owning agent can use `browser_session_run` for a short multi-step
-objective in its existing shared browser. Jev or OpenAI Decisions selects
-intermediate actions from current controls and application-built arguments. The
+objective in its existing shared browser. A guarded `plan` executes actions already
+chosen by the owner without a decision provider. Without a plan, Jev or OpenAI
+Decisions selects intermediate actions from current controls and application-built arguments. The
 owning agent keeps the task and conversation, supplies exact text values, and
 verifies the final result. No
 application-specific prepared workflow or extra support agent is required.
@@ -20,7 +21,7 @@ Connections advertise `fast_execution: 1`; old endpoints keep their direct
 tools and return `endpoint_upgrade_required` for a run.
 
 In the directory's Browser Sessions settings, enable **Faster browser actions**.
-Configure and enable the directory's classification provider (Jev or OpenAI
+For objectives without a plan, configure and enable the directory's classification provider (Jev or OpenAI
 Decisions) through the existing provider settings and host-owned credential.
 The loop inherits that provider and its model. It never changes provider on failure.
 Existing dispatch privacy policy still applies before each provider request.
@@ -127,21 +128,51 @@ Example arguments for `browser_session_run`:
     "generation": 4,
     "goal": "Create an account using the supplied account name, then stop for verification",
     "values": {"name": {"description": "New account name", "value": "Example"}},
+    "completion": {"kind": "present", "target": {"role": "alert", "name": "Account saved"}},
     "max_steps": 12,
     "timeout_seconds": 20
   }
 }
 ```
 
-The model can choose click, hover, fill, character typing, bounded keyboard
+The model can choose click, hover, fill, native option selection, character typing, bounded keyboard
 navigation, scrolling, region inspection, waiting, done or help. It cannot generate text, scripts,
 selectors, coordinates, URLs or new values. Missing data, unsupported surfaces,
 truncation, ambiguous decisions and repeated lack of progress return to the owning agent.
-Dropdowns use the existing click/key paths. Rich observations include current
+Native dropdowns with complete bounded options advertise `select`; other dropdowns
+use click/key paths. Native dates advertise ISO `fill` only after verifying the
+input type, readonly status and full range/step constraints. Numbers support fill.
+These operations are shared by direct tools, plans and decision execution.
+Date fill and native select use a fixed controller-owned operation in an isolated
+world, applying one complete value followed by synthetic input/change events.
+They do not provide arbitrary scripts or trusted keyboard-event semantics.
+Unsupported/older endpoints retain their existing direct controls without these
+affordances. Rich observations include current
 field state, surrounding row/form/dialog context and bounded page text. The
 human's stream and pointer continue; intermediate observations omit images.
 
-## Condition waits and checkpoint evidence
+## Completion conditions and checkpoint evidence
+
+Supply `request.completion` with the observable result of each bounded objective.
+It uses the same typed predicates as checkpoints, without an action trigger.
+For example, `{"kind":"present","target":{"role":"heading","name":"Example editor"}}`
+can identify a destination after navigation without depending on old element
+refs. The controller checks full fresh observations before deciding and after
+input, including the last budgeted action, and stops for owning-agent verification
+when the predicate holds. No separate model decision about `done` is needed.
+The condition may already hold initially, but cannot bypass required checkpoints.
+In plan mode it also cannot skip any explicit planned action.
+Choose a predicate that distinguishes the requested result from an intermediate
+state. Explicitly use `null` only when the result is not expressible or a final
+stopping checkpoint is used. A new request that omits both completion and a
+stopping checkpoint is rejected before observing or acquiring an automation
+lease. Requests for already-saved receipts retain their earlier retry identity.
+Model `done` cannot override an unsatisfied completion condition.
+
+The receipt's optional `completion` evidence contains only the condition kind,
+status, observation/page identities, time and matched counts/references. It does
+not persist predicate text, target names or literal values. Identical retries
+return that receipt without repeating input. Older saved-run retries remain compatible.
 
 An optional ordered `request.checkpoints` list binds observation predicates to
 completed actions. A checkpoint fires once after its matching action and blocks
@@ -182,6 +213,11 @@ cannot fire before an earlier one, and `done` cannot bypass an unreached check.
 Ordinary `wait` without a triggered checkpoint keeps its existing model-guided
 behavior.
 
+Read-only observations invalidated by navigation (`stale_observation`) get up to
+three attempts with a short bounded delay and fresh authority/deadline checks.
+This applies inside checkpoint waits too. Other errors and uncertain input still
+yield without replay; repeated stale reads remain bounded by the run deadline.
+
 Set `stop_after: true` on the final checkpoint when it defines the end of this
 bounded objective. Once observed, the run returns `needs_verification` without
 another model decision about `done`. It cannot bypass any earlier checkpoint and
@@ -203,6 +239,47 @@ role; inspect and decide the next step. Never blindly repeat a submission after
 `outcome_unknown`.
 
 ## Stop, retries and recovery
+
+### Guarded owner-authored plans
+
+Use `request.plan` for one to eight known actions grounded in the owner's latest
+`request.observation_id`. See the complete [plan example and usage guidance](../evander_browser_sessions_addon/agent-guide.md#batch-actions-already-grounded-in-the-current-page).
+Plans execute through the existing run/command path with a maximum five-second
+lease, directory caps, current grants and endpoint capability checks. They bypass
+classification configuration, credentials and inference. All targets must exist
+and resolve uniquely before any input; fill/type/select use named `values` keys, keys are an
+enumerated set, and scrolling is bounded. There is no scripting or navigation API.
+
+Observation completion atomically records a digest of bounded observed semantic
+state with its actor, generation and time. The claim consumes that grounding
+record atomically with the run lease. An intervening command, expired observation,
+incomplete snapshot or missing page identity prevents a new plan. A fresh initial
+observation must match the owner's digest; subsequent observations fence document,
+URL, target identity and all observed controls/context. Exact fill/append outcomes,
+deterministic click transitions and explicit satisfied value/state checkpoints
+can update only the touched target's expected state. Unexpected changes return
+for owner inspection. These checks describe observable state, not hidden app data.
+Current endpoints include an engine-instance page identity; hosted controllers
+use their existing shared-page identity. Older endpoints without `page_id` or
+`page_epoch` return `batch_identity_required` and keep direct-tool access.
+
+Plans support ordered checkpoints within the same total deadline, but reject
+`stop_after`. Completion is checked after all planned actions and checkpoints.
+The controller cannot infer generic application submission boundaries; the owner
+must explicitly choose any submit action and verify it. Prefer separate preparation
+and final commitment when review is required.
+
+Input is written to the command ledger before dispatch. Command completion and
+per-step receipt metadata commit together. A crash between submission and durable
+completion yields an unknown input outcome even if the input was never sent.
+Terminal settlement retires submitted commands atomically, preserves confirmed
+progress and prevents late callbacks from rewriting settled receipts. After process
+restart, identical retries only read the receipt; the existing lease remains until
+its original deadline. No process takes over or resumes the plan. Request IDs
+with changed arguments conflict. New request IDs require fresh owner observation
+and explicit decisions about any already-applied input.
+
+### Shared lease behavior
 
 One automation lease covers the run's observations and actions. Competing agent
 commands are rejected while it is running. Status, chat, streaming and human

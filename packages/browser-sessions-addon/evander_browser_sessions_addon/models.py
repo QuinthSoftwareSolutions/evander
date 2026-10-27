@@ -38,6 +38,8 @@ ObservationRole = Literal[
     "link",
     "textbox",
     "combobox",
+    "date",
+    "spinbutton",
     "checkbox",
     "radio",
     "tab",
@@ -300,16 +302,16 @@ class CountCondition(Contract):
 
 
 class CheckpointTrigger(Contract):
-    action: Literal["click", "fill", "type", "key"]
+    action: Literal["click", "fill", "type", "select", "key"]
     ref: str | None = Field(default=None, min_length=1, max_length=128)
     input: str | None = Field(default=None, pattern=IDENTIFIER)
     key: str | None = Field(default=None, min_length=1, max_length=40)
 
     @model_validator(mode="after")
     def constrained(self):
-        if self.action in {"fill", "type"}:
+        if self.action in {"fill", "type", "select"}:
             if self.input is None:
-                raise ValueError("A fill/type checkpoint trigger requires a supplied input ID")
+                raise ValueError("A fill/type/select checkpoint trigger requires a supplied input ID")
         elif self.ref is None or self.input is not None:
             raise ValueError("A click/key checkpoint trigger requires a ref and no input ID")
         if (self.action == "key") != (self.key is not None):
@@ -317,13 +319,73 @@ class CheckpointTrigger(Contract):
         return self
 
 
+ObservationCondition = Annotated[
+    ElementCondition | ValueCondition | StateCondition | TextCondition | CountCondition,
+    Field(discriminator="kind"),
+]
+
+BrowserKey = Literal[
+    "Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowLeft",
+    "ArrowUp", "ArrowRight", "ArrowDown", "Space",
+]
+
+
+class PlannedAction(Contract):
+    action: Literal["click", "fill", "type", "select", "key", "hover", "scroll"] = Field(
+        description="Choose an action listed in the target's observed allowed_actions. Fill replaces text/numbers or an ISO date; select chooses an exact observed native option label."
+    )
+    target: CheckpointTarget | None = Field(default=None,
+        description="Observed ref or unique exact role/name/context. Required for every action, including key, except page scrolling.")
+    input: str | None = Field(default=None, pattern=IDENTIFIER,
+        description="For fill/type/select: the KEY of request.values, never the literal text. For values={name:{description:...,value:'Example'}}, use input='name'.")
+    key: BrowserKey | None = Field(default=None, description="For key actions only, one supported key. The target is still required.")
+    delta_x: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
+    delta_y: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def operation(self):
+        if self.action != "scroll" and self.target is None:
+            raise ValueError("A planned action requires an observed target")
+        if (self.action in {"fill", "type", "select"}) != (self.input is not None):
+            raise ValueError("Only fill/type/select actions require a supplied input ID")
+        if (self.action == "key") != (self.key is not None):
+            raise ValueError("Only a key action requires a key")
+        if self.action != "scroll" and (self.delta_x or self.delta_y):
+            raise ValueError("Only scroll actions accept deltas")
+        return self
+
+
+class PlannedInput(PlannedAction):
+    action: Literal["fill", "type", "select"]
+    target: CheckpointTarget
+    input: str = Field(pattern=IDENTIFIER, description="The key of request.values, not the literal text. Example: input='name' uses values.name.value.")
+
+
+class PlannedKey(PlannedAction):
+    action: Literal["key"]
+    target: CheckpointTarget
+    key: BrowserKey
+
+
+class PlannedTarget(PlannedAction):
+    action: Literal["click", "hover"]
+    target: CheckpointTarget
+
+
+class PlannedScroll(PlannedAction):
+    action: Literal["scroll"]
+
+
+ObservedAction = Annotated[
+    PlannedInput | PlannedKey | PlannedTarget | PlannedScroll,
+    Field(discriminator="action"),
+]
+
+
 class RunCheckpoint(Contract):
     id: str = Field(pattern=IDENTIFIER)
     after: CheckpointTrigger
-    condition: Annotated[
-        ElementCondition | ValueCondition | StateCondition | TextCondition | CountCondition,
-        Field(discriminator="kind"),
-    ]
+    condition: ObservationCondition
     timeout_seconds: float = Field(default=5, ge=0.1, le=15, allow_inf_nan=False)
     stop_after: bool = Field(
         default=False,
@@ -332,7 +394,19 @@ class RunCheckpoint(Contract):
     )
 
 
+def _explicit_completion_schema(schema):
+    # Keep the default for decoding older receipt requests, while advertising
+    # the explicit choice required before a new objective may acquire a lease.
+    required = schema.setdefault("required", [])
+    if "completion" not in required:
+        required.append("completion")
+
+
 class RunRequest(Contract):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True,
+        json_schema_extra=_explicit_completion_schema,
+    )
     request_id: str = Field(
         pattern=IDENTIFIER,
         description="Fresh identity for this objective. Reuse only with identical arguments to read its existing receipt, never to replay it.",
@@ -348,13 +422,25 @@ class RunRequest(Contract):
     values: dict[str, RunValue] = Field(
         default_factory=dict,
         max_length=200,
-        description="Named exact inputs for every fill/type action. Text in the goal alone is not available for entry. Include text you authored beforehand and an empty-string input if a field must be cleared. Omit only for objectives needing no text entry.",
+        description="Named exact inputs for every fill/type/select action. Plan input fields reference these keys, never literal text. Text in the goal alone is not available for entry. Include text you authored beforehand and an empty-string input if a field must be cleared. Omit only for objectives needing no text entry or option selection.",
         examples=[
             {
                 "filter": {"description": "Search filter text", "value": "Example"},
                 "clear": {"description": "Clear the search field after checking it", "value": ""},
             }
         ],
+    )
+    completion: ObservationCondition | None = Field(
+        default=None,
+        description="Required for new objectives: supply the visible result that ends this objective, such as a uniquely named editor control or saved-result alert. Checked on fresh full observations after all required checkpoints, without a model decision about done. Choose a condition that proves the requested result, not just an intermediate input. A match returns needs_verification; you must still verify the goal. Explicitly use null only when the result cannot be expressed by these predicates, or when using a final stop_after checkpoint.",
+    )
+    observation_id: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        description="For plan mode, the current observation returned to you by this browser. The controller binds the plan to that observation's page and mutable state before issuing input.",
+    )
+    plan: list[ObservedAction] | None = Field(
+        default=None, min_length=1, max_length=8,
+        description="Optional ordered batch of up to eight actions already grounded in observation_id. Executes without a decision provider, within five seconds, using exact values and fresh target validation. Changed assumptions stop the batch. A retry returns its durable receipt and never resumes remaining actions. Keep navigation/newly revealed controls in separate plans.",
     )
     max_steps: int | None = Field(
         default=None,
@@ -377,11 +463,32 @@ class RunRequest(Contract):
 
     @model_validator(mode="after")
     def checkpoint_inputs(self):
+        if self.plan is not None:
+            if self.observation_id is None:
+                raise ValueError("Plan mode requires observation_id")
+            if self.timeout_seconds is not None and self.timeout_seconds > 5:
+                raise ValueError("Plan mode is limited to five seconds")
+            if self.max_steps is not None and self.max_steps < len(self.plan):
+                raise ValueError("The plan exceeds its step budget")
+            if any(c.stop_after for c in self.checkpoints):
+                raise ValueError("Plan mode stops after its plan; use completion instead of stop_after")
+            if any(a.input is not None and a.input not in self.values for a in self.plan):
+                raise ValueError("Planned input IDs must refer to request.values")
+        elif self.observation_id is not None:
+            raise ValueError("observation_id is only used with a plan")
         ids = [checkpoint.id for checkpoint in self.checkpoints]
         if len(ids) != len(set(ids)):
             raise ValueError("Checkpoint IDs must be unique")
         if any(checkpoint.stop_after for checkpoint in self.checkpoints[:-1]):
             raise ValueError("Only the final checkpoint can request stop_after")
+        if self.completion is not None and any(c.stop_after for c in self.checkpoints):
+            raise ValueError("Use completion or a stop_after checkpoint, not both")
+        if (
+            self.completion is not None
+            and self.completion.kind == "value"
+            and self.completion.input not in self.values
+        ):
+            raise ValueError("Completion input IDs must refer to request.values")
         for checkpoint in self.checkpoints:
             for input_id in (
                 checkpoint.after.input,
@@ -518,6 +625,7 @@ class BrowserCommand(Contract):
         "hover",
         "fill",
         "type",
+        "select",
         "key",
         "scroll",
         "dialog",

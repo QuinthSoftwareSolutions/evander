@@ -24,6 +24,23 @@ def request(condition, *, literal="  Exact value  ", **kwargs):
     )
 
 
+def test_completion_schema_and_input_validation():
+    payload = {"request_id": "finish", "generation": 1, "goal": "Set Name"}
+    assert RunRequest(**payload).completion is None
+    assert "completion" in RunRequest.model_json_schema()["required"]
+    with pytest.raises(ValidationError, match="Completion input IDs"):
+        RunRequest(**payload, completion={"kind": "value", "target": {"ref": "name"}, "input": "missing"})
+    with pytest.raises(ValidationError, match="stop_after"):
+        RunRequest(
+            **payload,
+            completion={"kind": "text", "text": "Saved"},
+            checkpoints=[{
+                "id": "saved", "after": {"action": "click", "ref": "save"},
+                "condition": {"kind": "text", "text": "Saved"}, "stop_after": True,
+            }],
+        )
+
+
 @pytest.mark.parametrize(
     "condition,element,expected",
     [

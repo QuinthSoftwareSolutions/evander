@@ -1,12 +1,18 @@
 """Generic control affordances for the bounded decision questions."""
 
 import json
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
+from .models import BrowserError
 
 TARGET_ROLES = {
     "button",
     "link",
     "textbox",
     "combobox",
+    "date",
+    "spinbutton",
     "checkbox",
     "radio",
     "tab",
@@ -24,10 +30,11 @@ ACTION_DESCRIPTIONS = {
     ),
     "hover": "Move the pointer over a control only when the goal needs its hover behavior.",
     "fill": (
-        "Replace a writable text field with an exact supplied literal. This is the normal "
+        "Replace writable text, a numeric spinbutton or a native date with an exact supplied literal. Dates use YYYY-MM-DD or an empty string to clear. This is the normal "
         "choice for setting a field value, including an empty string to clear it. "
         "Use it for the next unfinished field before submitting; never fill a non-editable combobox."
     ),
+    "select": "Choose an exact label from a native combobox's observed options in one operation. Use a supplied input with that option label; do not use fill/type on a non-editable dropdown.",
     "type": (
         "Append an exact supplied literal as character key events only when the goal "
         "specifically requires typing events or appending rather than replacement. "
@@ -52,7 +59,8 @@ ACTION_DESCRIPTIONS = {
 }
 ACTION_TARGET_INSTRUCTIONS = (
     " Action and target must describe the same immediate operation. Setting a text field "
-    "value normally means fill, not type or key. For a non-editable combobox use click "
+    "value normally means fill, not type or key. For a non-editable combobox use "
+    "select when advertised to choose an exact observed option label. Otherwise use click "
     "to open it, then supported keys/options; fill/type cannot operate it."
 )
 
@@ -64,10 +72,36 @@ def target_actions(element, *, has_values):
     actions = ["click", "hover", "key", "scroll"]
     editable = element.get("role") == "textbox" or (
         element.get("role") == "combobox" and element.get("editable") not in (None, False, "false")
-    )
+    ) or (element.get("role") == "spinbutton" and element.get("editable") not in (None, False, "false"))
     if has_values and editable and element.get("readonly") not in (True, "true"):
         actions.extend(("fill", "type"))
+    if has_values and element.get("readonly") not in (True, "true"):
+        if element.get("native_control") == "date" and element.get("native_input_verified") is True and element.get("value_format") == "YYYY-MM-DD":
+            actions.append("fill")
+        if element.get("native_control") == "select" and element.get("options") and element.get("expanded") not in (True,"true"):
+            actions.append("select")
     return actions
+
+
+def validate_input(element, action, value):
+    if action == "fill" and element.get("native_control") == "date" and value:
+        try:
+            parsed = date.fromisoformat(value)
+            if parsed.isoformat() != value or element.get("min") and value < element["min"] or element.get("max") and value > element["max"]:
+                raise ValueError
+            if element.get("step") != "any":
+                step = Decimal(element.get("step") or "1")
+                if not step.is_finite() or step <= 0:
+                    step = Decimal(1)
+                base = date.fromisoformat(element.get("step_base") or element.get("min") or "1970-01-01")
+                if Decimal((parsed-base).days) % step:
+                    raise ValueError
+        except (ValueError, InvalidOperation):
+            raise BrowserError("Date inputs require YYYY-MM-DD or an empty value", "batch_invalid_date", 409) from None
+    if action == "select":
+        options = [o["name"] for o in element.get("options", []) if not o.get("disabled")]
+        if not value or len(value)>200 or options.count(value)!=1:
+            raise BrowserError("The option label is unavailable or ambiguous", "batch_option_unavailable", 409)
 
 
 def action_options(targets, values):

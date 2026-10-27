@@ -105,7 +105,9 @@ for capability checks, receipt recovery and Teams workflow activation.
 
 The optional tools `browser_session_run` and
 `browser_session_cancel_run` let the owning agent choose short multi-step objectives, supply
-exact input values and verify the result; the directory's Jev or OpenAI
-Decisions provider selects intermediate typed actions in the existing shared
-browser. This is disabled by default. See [setup, agent guidance, limits and
+exact input values and verify the result. An owner-authored guarded `plan` batches
+up to eight observed actions without intermediate model calls, with durable
+receipts and no replay after retries or restarts. Objectives without a plan use
+the directory's Jev or OpenAI Decisions provider for intermediate typed actions.
+This is disabled by default. See [setup, agent guidance, limits and
 benchmarks](docs/fast-execution.md).

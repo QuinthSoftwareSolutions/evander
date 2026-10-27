@@ -89,6 +89,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
       ref:observed.elements.find(e=>e.role==="textbox").ref,text:"Steel"}));
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
     const run=await f.api(path+"/run",{request_id:"fast-hosted",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.ok(run.observation.text.includes("Fast item added"));
@@ -100,7 +101,7 @@ test("hosted controller shares its authenticated browser, streams frames and ref
     const after=(await observe()).image;
     assert.notEqual(after,before);
     await viewer.screenshot({path:"test-output/hosted-session.png",fullPage:true});
-    const waiting=f.api(path+"/run",{request_id:"wait-hosted",generation:state.control_generation,goal:"Wait until stopped"});
+    const waiting=f.api(path+"/run",{request_id:"wait-hosted",generation:state.control_generation,goal:"Wait until stopped",completion:null});
     await viewer.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
     const cancellation=viewer.waitForResponse(response=>response.url().endsWith("/cancel-run"));
     await viewer.getByRole("button",{name:"Stop current task",exact:true}).click();
@@ -161,6 +162,7 @@ test("unpacked Chrome extension shares one existing tab, requires local grant, a
     await f.api(path+"/command",command(state,"click",{observation_id:observed.observation_id,ref:button.ref}));
     assert.equal(await page.locator("#result").textContent(),"Copper alloy added");
     const run=await f.api(path+"/run",{request_id:"fast-extension",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.equal(await page.locator("#result").textContent(),"Fast item added");
@@ -607,6 +609,10 @@ async function nativeSidebar(host) {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? "Native sidebar evaluation failed");
     return result.result.value;
   };
+  // A headless side-panel target can be attached before Chrome makes it visible.
+  // Activate the real WebContents before sending input or requesting its microphone.
+  await send("Page.bringToFront");
+  await until(async () => await evaluate(() => document.visibilityState === "visible"), "native sidebar visibility");
   const down = async selector => {
     const point = await until(async () => evaluate(selector => {
       const target = document.querySelector(selector);
@@ -664,6 +670,7 @@ test("native Chrome side panel captures speech and plays replies alongside the s
       row => row.body === "Move the button to the left."), "native sidebar transcription");
     await f.api("/test/" + host.setup.session.id + "/reply", { message_id: question.id, body: "Updated from the sidebar." });
     await until(async () => await sidebar.evaluate(() => window.__voicePlayCount > 0), "native sidebar spoken reply");
+    await until(async () => await sidebar.evaluate(() => document.querySelector("[data-voice-stop]").disabled), "native sidebar reply completed");
     assert.equal(context.pages().length, pages, "The real side panel must not create another tab");
     assert.equal((await f.api("/test/" + host.setup.session.id + "/state")).controller, null);
     await sidebar.click("#disconnect");
@@ -855,10 +862,11 @@ test("fast run works with other extensions and sidebar Stop interrupts a waiting
     let state=await f.api(host.path+"/state");
     assert.equal(state.endpoint_features.fast_execution,1);
     const run=await f.api(host.path+"/run",{request_id:"fast-compatible",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
-    const waiting=f.api(host.path+"/run",{request_id:"wait-compatible",generation:state.control_generation,goal:"Wait until stopped"});
+    const waiting=f.api(host.path+"/run",{request_id:"wait-compatible",generation:state.control_generation,goal:"Wait until stopped",completion:null});
     await host.panel.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
     await host.panel.getByRole("button",{name:"Stop current task",exact:true}).click();
     assert.equal((await waiting).status,"cancelled");
