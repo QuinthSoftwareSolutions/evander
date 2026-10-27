@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-27 - Execute guarded browser plans with durable recovery (0.136.0)
+## 2026-10-27 - Execute guarded browser plans with durable recovery (0.138.0)
 
 - Retry read-only observations invalidated during navigation within the existing run and checkpoint deadlines, rechecking control and grants without replaying input or uncertain outcomes.
 - Add a run-level completion condition checked on fresh full observations, including after the final budgeted action, so visible results return for verification without another model decision. Preserve ordered checkpoints, metadata-only evidence and older request receipts.

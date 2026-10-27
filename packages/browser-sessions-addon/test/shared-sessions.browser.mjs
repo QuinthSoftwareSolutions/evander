@@ -857,10 +857,11 @@ test("fast run works with other extensions and sidebar Stop interrupts a waiting
     let state=await f.api(host.path+"/state");
     assert.equal(state.endpoint_features.fast_execution,1);
     const run=await f.api(host.path+"/run",{request_id:"fast-compatible",generation:state.control_generation,
+      completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
-    const waiting=f.api(host.path+"/run",{request_id:"wait-compatible",generation:state.control_generation,goal:"Wait until stopped"});
+    const waiting=f.api(host.path+"/run",{request_id:"wait-compatible",generation:state.control_generation,goal:"Wait until stopped",completion:null});
     await host.panel.getByRole("button",{name:"Stop current task",exact:true}).waitFor({timeout:5000});
     await host.panel.getByRole("button",{name:"Stop current task",exact:true}).click();
     assert.equal((await waiting).status,"cancelled");
