@@ -1498,6 +1498,16 @@ preference workflow should persist these defaults before acknowledging its
 selection or dispatching the next task, and omit redundant prompt overrides
 when it intends to inherit the saved preference.
 
+Use `query:session-context.model` as the saved model preference; do not maintain a
+second model selection in metadata. When migrating an existing workflow, change
+its preference readers and writer together, and remove the retired top-level
+metadata key with `effect:session:reconcile-policy` and
+`policy.remove_metadata_keys`. This removes only the listed keys from the latest
+session record under its lock. Unrelated metadata is preserved; updating and
+removing the same key in one operation is rejected. Migrate an old preference
+value to the session default before retiring its key when that value represents
+the user's selected model.
+
 Upgrade container workers and their CLI/runtime assets before enabling effort
 settings in the control plane. VM start/resume ships the current runner libraries
 with each dispatch; keep guest CLIs current enough to support their native effort

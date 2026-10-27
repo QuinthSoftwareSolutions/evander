@@ -351,6 +351,7 @@ class SessionAdminService:
             "allowed_tools", "allowed_script_names", "approval_required_tools",
             "approval_tool_settings", "tool_argument_policies", "connector_grants",
             "host_directory_grants", "metadata", "add_tools", "remove_tools",
+            "remove_metadata_keys",
         }
         unknown = set(policy) - allowed_fields
         if unknown:
@@ -382,6 +383,11 @@ class SessionAdminService:
             payload = dict(policy)
             additions = payload.pop("add_tools", [])
             removals = payload.pop("remove_tools", [])
+            removed_metadata_keys = payload.pop("remove_metadata_keys", [])
+            if not isinstance(removed_metadata_keys, list) or any(
+                not isinstance(key, str) or not key.strip() for key in removed_metadata_keys
+            ):
+                raise ValueError("remove_metadata_keys must be a list of non-empty keys")
             for name, values in (("add_tools", additions), ("remove_tools", removals)):
                 if not isinstance(values, list) or any(
                     not isinstance(value, str) or not value.strip() for value in values
@@ -410,12 +416,17 @@ class SessionAdminService:
                 required = [required]
             if isinstance(required, (list, tuple)):
                 payload["approval_required_tools"] = [tool_name_value(tool) for tool in required]
-            if "metadata" in payload:
-                if not isinstance(payload["metadata"], Mapping):
+            if "metadata" in payload or removed_metadata_keys:
+                metadata_patch = payload.get("metadata", {})
+                if not isinstance(metadata_patch, Mapping):
                     raise ValueError("metadata must be a JSON object")
+                if set(removed_metadata_keys).intersection(metadata_patch):
+                    raise ValueError("A metadata key cannot be updated and removed together")
                 payload["metadata"] = session_helpers.deep_merge_mapping(
-                    manifest.metadata, payload["metadata"]
+                    manifest.metadata, metadata_patch
                 )
+                for key in removed_metadata_keys:
+                    payload["metadata"].pop(key, None)
             update = self._prepare_session_policy_update(manifest, payload)
             if tools is not None:
                 update["allowed_tools"] = session_helpers.normalize_allowed_tools(tools)

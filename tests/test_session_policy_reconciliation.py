@@ -128,6 +128,53 @@ def test_atomic_reconciliation_preserves_concurrent_conversation_updates(setup, 
     assert repository.get_session("assistant-one").metadata["agent_thread_id"] == "conversation-two"
 
 
+def test_retired_metadata_removal_preserves_concurrent_metadata_and_is_idempotent(
+    setup, monkeypatch
+):
+    service, repository, _, other = setup
+    repository.mutate_session("assistant-one", lambda current: current.model_copy(
+        update={"metadata": {**current.metadata, "retired_preference": "old-model"}}
+    ))
+    mutate = repository.mutate_session
+    other_process = JsonSessionManifestRepository(repository.path)
+
+    def with_concurrent_change(session_id, updater):
+        other_process.mutate_session(session_id, lambda current: current.model_copy(
+            update={"metadata": {**current.metadata, "agent_thread_id": "conversation-two"}}
+        ))
+        return mutate(session_id, updater)
+
+    monkeypatch.setattr(repository, "mutate_session", with_concurrent_change)
+    result = service.reconcile_session_policy(
+        "assistant-one", {"remove_metadata_keys": ["retired_preference"]},
+        directory_path="root/team",
+    )
+    saved = repository.get_session("assistant-one")
+    assert result["changed_fields"] == ["metadata"]
+    assert "retired_preference" not in saved.metadata
+    assert saved.metadata["agent_thread_id"] == "conversation-two"
+    assert saved.model == "model-one"
+    assert repository.get_session("assistant-two") == other
+    assert service.reconcile_session_policy(
+        "assistant-one", {"remove_metadata_keys": ["retired_preference"]},
+        directory_path="root/team",
+    )["changed"] is False
+
+
+@pytest.mark.parametrize("policy", [
+    {"remove_metadata_keys": "retired"},
+    {"remove_metadata_keys": [None]},
+    {"remove_metadata_keys": [" "]},
+    {"remove_metadata_keys": ["retired"], "metadata": {"retired": "new"}},
+])
+def test_invalid_metadata_removal_does_not_mutate_the_session(setup, policy):
+    service, repository, _, _ = setup
+    before = repository.path.read_bytes()
+    with pytest.raises(ValueError):
+        service.reconcile_session_policy("assistant-one", policy, directory_path="root/team")
+    assert repository.path.read_bytes() == before
+
+
 def test_atomic_reconciliation_rejects_a_recreated_session(setup, monkeypatch):
     service, repository, _, _ = setup
     original = repository.mutate_session

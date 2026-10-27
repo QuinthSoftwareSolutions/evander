@@ -12,6 +12,9 @@ from evander.events.models import WorkflowNodeEnvelope
 from evander.events.provider_models import SessionSetModelSettingsEffectDefinition
 from evander.fast_mode import resolve_fast_mode
 from evander.models import SessionManifest
+from evander.providers.builtin import register_providers
+from evander.queries.registry import QueryProviderFactory
+from evander.workflow.binding import resolve_workflow_bindings
 
 
 def runtime(tmp_path: Path):
@@ -45,6 +48,21 @@ def definition(**fields):
             **fields,
         }
     )
+
+
+def test_plugin_registration_exposes_the_model_settings_contract():
+    resolver = register_providers()["node_definition_resolvers"][
+        "effect:session:set-model-settings"
+    ]
+    with pytest.raises(ValidationError, match="settings"):
+        resolver(
+            WorkflowNodeEnvelope(
+                id="save",
+                display_name="Save model",
+                type="effect:session:set-model-settings",
+                config={"target": "assistant-a", "settings": {"allowed_tools": []}},
+            )
+        )
 
 
 def test_saved_model_and_speed_are_inherited_without_prompt_overrides(tmp_path):
@@ -84,6 +102,54 @@ def test_setting_only_model_preserves_speed_and_can_clear_the_override(tmp_path)
     assert effect.execute(resolved_config={"settings": {"model": None}})["success"]
     assert admin.runtime.session_repository.get_session("assistant-a").model is None
     assert admin.vm_agent_admin.resolve_agent_model_for_session("assistant-a") == "gpt-6.1-sol"
+
+
+def test_workflow_reads_and_dispatches_the_canonical_model_after_retiring_metadata(tmp_path):
+    admin, effects = runtime(tmp_path)
+    admin.issue_git_admin.session_update_metadata(
+        target="assistant-a", metadata={"old_model_preference": "gpt-6-luna"}
+    )
+    effects.build(
+        definition(target="assistant-a", settings={"model": "gpt-6.1-terra"}),
+        directory_path="root/team-a",
+    ).execute()
+    queries = QueryProviderFactory(admin.runtime.provider_config, admin_service=admin)
+    query = queries.build(
+        WorkflowNodeEnvelope(
+            id="session",
+            display_name="Read session",
+            type="query:session-context",
+            config={"target": "assistant-a"},
+        ),
+        directory_path="root/team-a",
+    )
+    context = query.execute()
+    assert context["model"] == "gpt-6.1-terra"
+    assert context["metadata"]["old_model_preference"] == "gpt-6-luna"
+    effects.build(
+        WorkflowNodeEnvelope(
+            id="retire-preference",
+            display_name="Retire old preference",
+            type="effect:session:reconcile-policy",
+            config={
+                "session_id": "assistant-a",
+                "policy": {"remove_metadata_keys": ["old_model_preference"]},
+            },
+        ),
+        directory_path="root/team-a",
+    ).execute()
+    # A subsequent operator model change is immediately visible to the workflow
+    # and ordinary dispatch, without maintaining a second preference field.
+    admin.session_admin.set_session_model("assistant-a", "gpt-6.1-sol")
+    context = query.execute()
+    resolved = resolve_workflow_bindings(
+        {"current_model": "${{session.model}}"},
+        {"session": context},
+        {"session": {"model"}},
+    ).resolved_config
+    assert resolved["current_model"] == "gpt-6.1-sol"
+    assert admin.vm_agent_admin.resolve_agent_model_for_session("assistant-a") == "gpt-6.1-sol"
+    assert context["metadata"] == {"keep": "unchanged"}
 
 
 @pytest.mark.parametrize("delete_session", [False, True])

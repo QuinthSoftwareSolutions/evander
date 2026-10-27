@@ -4325,7 +4325,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("directory_path", "Directory", "string", bindable=True),
             _field(
                 "policy", "Managed policy fields", "json", required=True, bindable=True,
-                description="Use add_tools/remove_tools for durable incremental grants across runs; allowed_tools replaces the list.",
+                description=(
+                    "Use add_tools/remove_tools for durable incremental grants across runs; "
+                    "allowed_tools replaces the list. remove_metadata_keys retires named "
+                    "top-level metadata keys without replacing unrelated metadata."
+                ),
             ),
         ],
     ),
