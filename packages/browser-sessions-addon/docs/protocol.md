@@ -88,3 +88,17 @@ an active lease. Native commands carry deadlines outside CDP parameters; the
 helper checks them immediately before dispatch. This adds no CDP methods or
 arbitrary execution permissions. Helper observations remain below native-message
 limits and report truncation rather than silently omitting targets.
+
+Decision projections deduplicate controls/context and reveal overflow targets
+through bounded `inspect` regions. They never replace the endpoint observation
+used for command validation. The full decision payload is limited to 64 KiB;
+observations marked truncated still yield without model decisions or input.
+
+Optional ordered run checkpoints associate completed actions with typed
+observation predicates. Their waits reuse the same automation lease, authority
+checks and overall deadline, with a separate bounded condition deadline. They
+add no endpoint methods or browser scripting. Durable checkpoint receipts retain
+only IDs, outcomes, observation/page identities, timestamps and bounded counts
+or target references; condition text, values and snapshots are not persisted.
+Cancellation and uncertain input stop the run without replay, including while a
+checkpoint is pending. Old receipts without checkpoints remain readable.

@@ -117,6 +117,9 @@ state; these rules apply without application-specific workflows.
 Operation, target and literal-input choices are batched in one provider request.
 Only choices needed for the selected operation must meet the probability
 threshold. A readiness result still requires your independent verification.
+On large pages the loop exposes omitted controls as inspectable regions. It
+keeps the complete observation for command validation; an omitted control is
+not evidence of absence.
 An implicit keyboard target is accepted only when exactly one current control is
 observed as focused. The resulting command still references and revalidates that
 control before input.
@@ -149,7 +152,35 @@ Describe each value's intended field or purpose, and mark private literals
 ```
 
 Pass this request together with `browser_session_id`. Replace the example
-generation with the current session generation. Defaults are 20 steps or 30
+generation with the current session generation.
+
+When an intermediate result must be observed before later input removes it,
+supply ordered `checkpoints`. Each has an `id`, an `after` action trigger and a
+`condition`. For example, after filling a known field, require its exact value:
+
+```json
+{
+  "id": "filter-entered",
+  "after": {"action": "fill", "ref": "node-123", "input": "filter"},
+  "condition": {"kind": "value", "target": {"ref": "node-123"}, "input": "filter"}
+}
+```
+
+Replace references with observed ones. Add a separate checkpoint for the actual
+application result when needed; field entry alone does not prove filtering or
+submission completed. Predicates support element presence/absence, exact supplied
+values, checked/expanded/disabled state, positive page text and raw element counts.
+Role/name/context matches must be unique except for count/absence conditions.
+Counts include header rows. Incomplete observations cannot prove checkpoints.
+The controller waits without further model decisions and blocks subsequent input
+until the predicate holds or its deadline expires. It records metadata-only
+evidence in `checkpoints`; inspect that evidence alongside the final page. An
+unreached or timed-out checkpoint requires inspection before continuing.
+When the final checkpoint defines this objective's stopping point, set its
+`stop_after: true` to return `needs_verification` immediately after it holds,
+without another model decision. You must still verify the full requested result.
+
+Defaults are 20 steps or 30
 seconds, whichever comes first; directory caps can be raised to 40/60, and
 callers can request lower limits. Do not request a larger timeout to hide an
 ambiguous objective. While a run is active, other agent observations/actions are

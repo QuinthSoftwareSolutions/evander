@@ -1,5 +1,21 @@
 """Generic control affordances for the bounded decision questions."""
 
+import json
+
+TARGET_ROLES = {
+    "button",
+    "link",
+    "textbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "tab",
+    "menuitem",
+    "option",
+    "row",
+    "gridcell",
+}
+
 ACTION_DESCRIPTIONS = {
     "click": (
         "Activate a button, link, checkbox, radio, tab or menu item, or open a closed "
@@ -32,6 +48,7 @@ ACTION_DESCRIPTIONS = {
         "The next necessary operation cannot be chosen safely from current controls and "
         "exact supplied inputs, or requires information/unsupported UI. Return to the owning agent."
     ),
+    "inspect": "Reveal a listed region's controls before choosing an action there. This does not send browser input.",
 }
 ACTION_TARGET_INSTRUCTIONS = (
     " Action and target must describe the same immediate operation. Setting a text field "
@@ -77,16 +94,79 @@ def semantic_page(observation):
     return page
 
 
-def decision_page(observation):
-    """Bind model-local aliases back to the original endpoint references."""
+def eligible_targets(observation):
+    return [
+        item
+        for item in observation.get("elements", [])
+        if item.get("role") in TARGET_ROLES and item.get("disabled") not in (True, "true")
+    ]
+
+
+def decision_page(observation, region=None):
+    """Project bounded choices; the original observation remains authoritative.
+
+    Keep ordinary controls in view and expose large data regions explicitly.
+    Inspecting a region reveals its original targets rather than silently
+    discarding rows/cells or making hundreds of targets compete at once.
+    """
     page = semantic_page(observation)
     aliases = {
         item["ref"]: "t" + str(index)
         for index, item in enumerate(page.get("elements", []))
         if isinstance(item, dict) and isinstance(item.get("ref"), str)
     }
-    page["elements"] = [
-        {**item, "ref": aliases[item["ref"]]} if item.get("ref") in aliases else item
-        for item in page.get("elements", [])
-    ]
-    return page, aliases
+    eligible = eligible_targets(observation)
+    ordinary = [item for item in eligible if item["role"] not in {"row", "gridcell"}]
+    data = [item for item in eligible if item["role"] in {"row", "gridcell"}]
+    # Small pages retain all targets and their original order.
+    if len(eligible) <= 100:
+        primary, overflow = eligible, []
+    else:
+        primary, overflow = ordinary[:100], ordinary[100:] + data
+    regions = {
+        "_region" + str(index // 50): overflow[index : index + 50]
+        for index in range(0, len(overflow), 50)
+    }
+    targets = primary + regions.get(region, [])
+    visible = {item["ref"] for item in targets}
+    eligible_refs = {item["ref"] for item in eligible}
+    # Non-target headings, alerts and disabled controls remain useful evidence.
+    visible.update(
+        item["ref"] for item in page.get("elements", []) if item["ref"] not in eligible_refs
+    )
+    contexts, context_ids = {}, {}
+    elements = []
+    for item in page.get("elements", []):
+        if item.get("ref") not in visible:
+            continue
+        projected = {**item, "ref": aliases[item["ref"]]}
+        projected.pop("fingerprint", None)
+        if "context" in item:
+            projected["context"] = []
+            for context in item["context"]:
+                signature = json.dumps(context, sort_keys=True)
+                if signature not in context_ids:
+                    key = "c" + str(len(context_ids))
+                    context_ids[signature] = key
+                    contexts[key] = context
+                projected["context"].append(context_ids[signature])
+        elements.append(projected)
+    page["elements"] = elements
+    if contexts:
+        page["contexts"] = contexts
+    if regions:
+        page["regions"] = {
+            key: {
+                "targets": len(items),
+                "roles": sorted({item["role"] for item in items}),
+                "preview": [item.get("name", "") for item in items[:3]],
+            }
+            for key, items in regions.items()
+        }
+        page["projection"] = {
+            "total_targets": len(eligible),
+            "visible_targets": len(targets),
+            "selected_region": region if region in regions else None,
+            "omitted_targets": len(eligible) - len(targets),
+        }
+    return page, aliases, targets, regions

@@ -158,6 +158,7 @@ class RunStore:
                 max_steps=max_steps,
                 steps=[],
                 step_count=0,
+                checkpoints=[],
             )
             db.execute(
                 "INSERT INTO browser_runs VALUES(?,?,?,?,?,?,?,?)",
@@ -190,7 +191,17 @@ class RunStore:
         with self.connect(write=True) as db:
             self._command_access(db, session_id, actor, run_id)
 
-    def update_run(self, session_id, run_id, *, step=None, status=None, reason="", decision=None):
+    def update_run(
+        self,
+        session_id,
+        run_id,
+        *,
+        step=None,
+        status=None,
+        reason="",
+        decision=None,
+        checkpoint=None,
+    ):
         with self.connect(write=True) as db:
             row = db.execute(
                 "SELECT * FROM browser_runs WHERE session_id=? AND id=?", (session_id, run_id)
@@ -199,6 +210,10 @@ class RunStore:
             if step:
                 value["steps"].append(step)
                 value["step_count"] = len(value["steps"])
+            if checkpoint and value["status"] == "running":
+                receipts = value.setdefault("checkpoints", [])
+                if not any(item["id"] == checkpoint["id"] for item in receipts):
+                    receipts.append(checkpoint)
             # A late return must not erase a cancellation or uncertainty receipt.
             if value["status"] == "running" and status:
                 value.update(status=status, reason=reason, finished_at=self.now())

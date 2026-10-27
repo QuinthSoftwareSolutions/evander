@@ -47,7 +47,7 @@ def execution(request, domain, hosted):
             if command["action"] == "observe":
                 if state.get("receipt_churn"):
                     state["page_id"] = "incidental-identity-" + str(len(state["commands"]))
-                return {
+                observation = {
                     "observation_id": state["observation_prefix"] + str(len(state["commands"])),
                     "page_epoch": state["page_epoch"],
                     "page_id": state["page_id"],
@@ -65,7 +65,7 @@ def execution(request, domain, hosted):
                             "role": "textbox",
                             "name": "Name",
                             "value": state["value"][:1000]
-                            if state["mode"] == "clipped"
+                            if state["mode"] in {"clipped", "clipped_suffix"}
                             else state["value"],
                             "context": [{"role": "form", "name": "Create account"}],
                             **state["element_overrides"].get("node-1", {}),
@@ -86,10 +86,15 @@ def execution(request, domain, hosted):
                     + state.get("extra_elements", []),
                     "truncated": state["mode"] == "truncated",
                 }
+                if state.get("observation_hook"):
+                    state["observation_hook"](observation)
+                return observation
             if state["mode"] == "unknown":
                 raise BrowserError("Lost command response", "outcome_unknown", 409)
             if command["action"] == "fill":
                 state["value"] = command["text"]
+                if state["mode"] == "clipped_suffix":
+                    state["value"] += "::app-formatted"
             if command["action"] == "click":
                 state["saved"] = True
             return {"success": True}
@@ -133,18 +138,16 @@ def execution(request, domain, hosted):
             selected["action"] = "wait"
         selected.update(state["choices"])
         incoming = body.get("state") or json.loads(body["input"])
+        # Resolve the fake model's intended control from visible semantic evidence.
+        # Projection may omit targets; never replace an omitted target with another control.
+        expected_names = {"node-1": "Name", "node-2": "Save"}
+        expected_names.update({e["ref"]: e.get("name") for e in state.get("extra_elements", [])})
         symbolic_targets = {
-            "node-1": incoming["page"]["elements"][0]["ref"],
-            "node-2": incoming["page"]["elements"][1]["ref"],
+            original: observed["ref"]
+            for original, name in expected_names.items()
+            for observed in incoming["page"]["elements"]
+            if observed.get("name") == name
         }
-        symbolic_targets.update(
-            {
-                element["ref"]: observed["ref"]
-                for element, observed in zip(
-                    state.get("extra_elements", []), incoming["page"]["elements"][3:]
-                )
-            }
-        )
         selected["target"] = symbolic_targets.get(selected["target"], selected["target"])
         if provider == "jev":
             supplied = {k: v["criteria"] for k, v in body["questions"].items()}
@@ -277,25 +280,128 @@ def test_multistep_adapters_literals_fresh_final_state_and_retry(execution):
         e.run(goal="Different objective")
 
 
-@pytest.mark.parametrize("extra_count", [198, 199])
-def test_candidate_limit_preserves_the_last_control_or_yields_without_truncation(
-    execution, extra_count
-):
+@pytest.mark.parametrize("status", ["running", "needs_verification"])
+def test_pre_upgrade_run_receipts_remain_idempotent_without_replay(execution, status):
+    import hashlib
+
+    e = execution
+    # This is the pre-checkpoint wire contract, including its serialized defaults.
+    legacy = {
+        "request_id": "before-upgrade",
+        "generation": e.session.control_generation,
+        "goal": "Create an account named Example",
+        "values": {"name": {"description": "Account name", "value": "Example", "sensitive": False}},
+        "max_steps": None,
+        "timeout_seconds": None,
+    }
+    fingerprint = hashlib.sha256(json.dumps(legacy, separators=(",", ":")).encode()).hexdigest()
+    prior, claimed = e.service.store.claim_run(
+        e.session.id,
+        "agent:agent-a",
+        RunRequest(**legacy),
+        fingerprint,
+        seconds=30,
+        max_steps=20,
+    )
+    assert claimed
+    if status != "running":
+        prior = e.service.store.update_run(e.session.id, prior["id"], status=status)
+    assert e.run(**legacy) == prior
+    assert e.run(**legacy, checkpoints=[]) == prior
+    assert not e.state["commands"] and not e.state["provider_calls"]
+    # Adding checks changes the objective; it must not turn a retry into another run.
+    with pytest.raises(BrowserError) as error:
+        e.run(
+            **legacy,
+            checkpoints=[
+                {
+                    "id": "new-check",
+                    "after": {"action": "fill", "input": "name"},
+                    "condition": {"kind": "present", "target": {"ref": "node-1"}},
+                }
+            ],
+        )
+    assert error.value.code == "request_conflict"
+
+
+@pytest.mark.parametrize("kind", ["absent", "count"])
+@pytest.mark.parametrize("role", ["progressbar", "slider", "form", "cell"])
+def test_unobservable_checkpoint_roles_are_rejected_before_input(execution, role, kind):
+    e = execution
+    condition = {"kind": kind, "target": {"role": role}}
+    if kind == "count":
+        condition["maximum"] = 0
+    with pytest.raises(ValidationError):
+        e.run(
+            checkpoints=[
+                {
+                    "id": "loading-finished",
+                    "after": {"action": "fill", "input": "name"},
+                    "condition": condition,
+                    "stop_after": True,
+                }
+            ]
+        )
+    assert not e.state["commands"] and not e.state["provider_calls"]
+
+
+@pytest.mark.parametrize("visible_focused", [False, True])
+def test_implicit_keyboard_target_accounts_for_focus_in_omitted_regions(execution, visible_focused):
+    e = execution
+    e.state["element_overrides"] = {"node-1": {"focused": visible_focused}}
+    e.state["extra_elements"] = [
+        {"ref": "button-" + str(i), "role": "button", "name": "Control " + str(i)}
+        for i in range(98)
+    ] + [{"ref": "active-cell", "role": "gridcell", "name": "Active cell", "focused": True}]
+    e.state["choices"] = {"action": "key", "target": "_none", "key": "Enter"}
+    result = e.run(goal="Press Enter on the uniquely focused control", values={}, max_steps=1)
+    wire = e.state["provider_calls"][0]
+    state = wire.get("state") or json.loads(wire["input"])
+    assert not any(element["name"] == "Active cell" for element in state["page"]["elements"])
+    commands = [command for command in e.state["commands"] if command["action"] != "observe"]
+    if visible_focused:
+        assert not commands and "No suitable current target" in result["reason"]
+    else:
+        assert len(commands) == 1
+        assert commands[0]["ref"] == "active-cell" and commands[0]["text"] == "Enter"
+        assert commands[0]["revalidate"] is True
+
+
+@pytest.mark.parametrize("extra_count", [198, 399])
+def test_large_page_exposes_last_control_through_inspection_without_input(execution, extra_count):
     e = execution
     e.state["extra_elements"] = [
         {"ref": "button-" + str(i), "role": "button", "name": "Control " + str(i)}
         for i in range(extra_count)
     ]
-    e.state["choices"] = {"action": "click", "target": "button-" + str(extra_count - 1)}
-    result = e.run(goal="Click the last control", values={}, max_steps=1)
+    from evander_browser_sessions_addon.choices import decision_page
+
+    region = "_region" + str((extra_count + 1 - 100) // 50)
+
+    def choose():
+        e.state["choices"] = (
+            {"action": "inspect", "target": region}
+            if len(e.state["provider_calls"]) == 1
+            else {"action": "click", "target": "button-" + str(extra_count - 1)}
+        )
+
+    e.state["after_decision"] = choose
+    result = e.run(goal="Click the last control", values={}, max_steps=2)
     inputs = [c for c in e.state["commands"] if c["action"] != "observe"]
-    if extra_count == 198:  # The fixture contributes two other eligible controls.
-        assert len(inputs) == 1 and inputs[0]["ref"] == "button-197"
-        assert len(e.state["provider_calls"]) == 1
-    else:
-        assert not inputs and not e.state["provider_calls"]
-        assert result["status"] == "needs_pa"
-        assert "truncated" in result["reason"]
+    assert len(inputs) == 1 and inputs[0]["ref"] == "button-" + str(extra_count - 1)
+    assert [step["action"] for step in result["steps"]] == ["inspect", "click"]
+    states = [body.get("state") or json.loads(body["input"]) for body in e.state["provider_calls"]]
+    assert states[0]["page"]["projection"]["omitted_targets"] > 0
+    assert states[1]["page"]["projection"]["selected_region"] == region
+    assert any(
+        item["name"] == "Control " + str(extra_count - 1) for item in states[1]["page"]["elements"]
+    )
+    # The underlying observation and its references are not pruned.
+    assert len(result["observation"]["elements"]) == extra_count + 3
+    assert (
+        sum(len(group) for group in decision_page(result["observation"])[3].values())
+        == extra_count - 98
+    )
 
 
 def test_unused_target_confidence_does_not_block_readiness_for_pa_verification(execution):
@@ -995,3 +1101,233 @@ def test_real_relay_stale_target_yields_without_uncertain_mutation(execution, mo
         )
     assert e.run()["id"] == result["id"]
     assert len(attempts) == 1
+
+
+def test_checkpoint_wait_preserves_intermediate_evidence_before_next_input(execution):
+    e = execution
+    polls = []
+
+    def delayed_table(observation):
+        rows = [{"ref": "header", "role": "row", "name": "Column titles"}]
+        if e.state["value"] and not e.state["saved"]:
+            polls.append(len(e.state["provider_calls"]))
+            if len(polls) >= 3:
+                rows += [{"ref": "result", "role": "row", "name": "Loaded result"}]
+        observation["elements"] += rows
+
+    e.state["observation_hook"] = delayed_table
+    kwargs = {
+        "checkpoints": [
+            {
+                "id": "results-loaded",
+                "after": {"action": "fill", "input": "name", "ref": "node-1"},
+                "condition": {"kind": "count", "target": {"role": "row"}, "minimum": 2},
+            }
+        ]
+    }
+    result = e.run(**kwargs)
+    assert result["status"] == "needs_verification"
+    assert polls == [1, 1, 1]  # No model requests while the table is loading.
+    (receipt,) = result["checkpoints"]
+    assert receipt["status"] == "satisfied" and receipt["matched_count"] == 2
+    assert receipt["observations"] == 3
+    assert receipt["observation_id"] != result["observation"]["observation_id"]
+    commands = [c["action"] for c in e.state["commands"]]
+    assert commands[commands.index("fill") + 1 : commands.index("click")] == ["observe"] * 3
+    checks = e.state["commands"][commands.index("fill") + 1 : commands.index("click")]
+    assert all(command["deadline_at"] < result["deadline_at"] for command in checks)
+    # Evidence survives a retry even after the intermediate result has disappeared.
+    assert e.run(**kwargs)["checkpoints"] == result["checkpoints"]
+    assert "Loaded result" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("bounds", [{"minimum": 2}, {"maximum": 0}])
+def test_checkpoint_timeout_and_header_rows_cannot_authorize_next_input(execution, bounds):
+    e = execution
+    e.state["extra_elements"] = [{"ref": "header", "role": "row", "name": "Column titles"}]
+    result = e.run(
+        checkpoints=[
+            {
+                "id": "data-required",
+                "after": {"action": "fill", "input": "name"},
+                "condition": {"kind": "count", "target": {"role": "row"}, **bounds},
+                "timeout_seconds": 0.1,
+            }
+        ]
+    )
+    assert result["status"] == "needs_pa" and "checkpoint_timeout" in result["reason"]
+    assert [step["action"] for step in result["steps"]] == ["fill"]
+    assert result["checkpoints"][0]["status"] == "timed_out"
+    assert len(e.state["provider_calls"]) == 1
+    assert not e.state["saved"]
+
+
+@pytest.mark.parametrize("mode", ["truncated", "ambiguous", "cancelled", "unknown"])
+def test_checkpoint_invalidation_stops_before_later_input(execution, mode):
+    e = execution
+
+    def changed(observation):
+        if not e.state["value"]:
+            return
+        if mode == "truncated":
+            observation["truncated"] = True
+        elif mode == "ambiguous":
+            observation["elements"].append(
+                {
+                    "ref": "duplicate",
+                    "role": "textbox",
+                    "name": "Name",
+                    "value": "Example",
+                }
+            )
+        elif mode == "cancelled":
+            e.service.control(e.session.id, "user:operator", "claim")
+
+    if mode == "unknown":
+        e.state["mode"] = "unknown"
+    e.state["observation_hook"] = changed
+    result = e.run(
+        checkpoints=[
+            {
+                "id": "field-set",
+                "after": {"action": "fill", "input": "name"},
+                "condition": {
+                    "kind": "value",
+                    "target": {"role": "textbox", "name": "Name"},
+                    "input": "name",
+                },
+            }
+        ]
+    )
+    assert result["status"] == {"cancelled": "cancelled", "unknown": "outcome_unknown"}.get(
+        mode, "needs_pa"
+    )
+    assert not result["checkpoints"]
+    assert not e.state["saved"]
+    assert len(e.state["provider_calls"]) == 1
+
+
+def test_checkpoint_values_are_private_and_clipped_values_are_not_evidence(execution):
+    e = execution
+    private = "private-" + "X" * 1200
+    e.state["mode"] = "clipped"
+    result = e.run(
+        values={"name": {"description": "Private name", "value": private, "sensitive": True}},
+        checkpoints=[
+            {
+                "id": "field-set",
+                "after": {"action": "fill", "input": "name"},
+                "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+                "timeout_seconds": 0.1,
+            }
+        ],
+    )
+    assert "checkpoint_timeout" in result["reason"]
+    assert private[:100] not in json.dumps(result)
+    assert private[:100] not in json.dumps(e.state["provider_calls"])
+
+
+def test_clipped_field_prefix_cannot_release_the_next_action(execution):
+    e = execution
+    e.state["mode"] = "clipped_suffix"
+    result = e.run(
+        values={"name": {"description": "Name", "value": "V" * 1000}},
+        checkpoints=[
+            {
+                "id": "exact-name",
+                "after": {"action": "fill", "input": "name"},
+                "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+                "timeout_seconds": 0.1,
+            }
+        ],
+    )
+    assert e.state["value"].endswith("::app-formatted") and len(e.state["value"]) > 1000
+    assert result["status"] == "needs_pa" and "checkpoint_timeout" in result["reason"]
+    assert [step["action"] for step in result["steps"]] == ["fill"]
+    assert not e.state["saved"] and len(e.state["provider_calls"]) == 1
+
+
+def test_explicit_completion_checkpoint_stops_without_a_model_done_decision(execution):
+    e = execution
+    result = e.run(
+        goal="Set Name to the supplied name and stop for verification",
+        max_steps=1,
+        checkpoints=[
+            {
+                "id": "name-set",
+                "after": {"action": "fill", "input": "name"},
+                "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+                "stop_after": True,
+            }
+        ],
+    )
+    assert result["status"] == "needs_verification" and result["observation_current"]
+    assert result["checkpoints"][0]["stop_after"] is True
+    assert e.state["value"] == "Example" and not e.state["saved"]
+    assert len(e.state["provider_calls"]) == 1
+    assert [step["action"] for step in result["steps"]] == ["fill"]
+
+
+def test_checkpoint_order_cannot_be_skipped_by_input_or_completion(execution):
+    e = execution
+    checkpoints = [
+        {
+            "id": "first",
+            "after": {"action": "click", "ref": "node-2"},
+            "condition": {"kind": "present", "target": {"ref": "node-1"}},
+        },
+        {
+            "id": "second",
+            "after": {"action": "fill", "input": "name"},
+            "condition": {"kind": "present", "target": {"ref": "node-1"}},
+        },
+    ]
+    result = e.run(checkpoints=checkpoints)
+    assert "skip" in result["reason"] and not result["steps"]
+    assert not e.state["value"]
+    e.state.update(value="Example", saved=True)
+    result = e.run(request_id="already-looking-done", checkpoints=checkpoints)
+    assert result["status"] == "needs_pa" and "not reached" in result["reason"]
+    assert not result["checkpoints"]
+
+
+def test_projection_deduplicates_controls_and_contexts_without_mutating_observation(execution):
+    from copy import deepcopy
+    from evander_browser_sessions_addon.choices import decision_page
+
+    e = execution
+    context = [{"role": "row", "name": "Account A", "text": "Account A Owner Region " * 15}]
+    e.state["extra_elements"] = [
+        {"ref": "cell-" + str(i), "role": "gridcell", "name": "Cell " + str(i), "context": context}
+        for i in range(399)
+    ]
+    result = e.run(max_steps=1)
+    observation = result["observation"]
+    original = deepcopy(observation)
+    page, aliases, targets, regions = decision_page(observation, "_region0")
+    assert observation == original
+    assert len(targets) <= 150 and len(regions) == 8
+    assert len(page["contexts"]) == 2
+    assert set(aliases.values()) >= {element["ref"] for element in page["elements"]}
+    assert all(
+        isinstance(key, str) for element in page["elements"] for key in element.get("context", [])
+    )
+    wire = e.state["provider_calls"][0]
+    questions = wire["questions"]
+    criteria = (
+        questions["target"]["criteria"]
+        if isinstance(questions, dict)
+        else next(q["choices"] for q in questions if q["name"] == "target")
+    )
+    assert "Account A" not in json.dumps(criteria)
+    assert len(json.dumps(page)) < len(json.dumps(observation)) / 3
+
+
+def test_oversize_context_yields_before_provider_or_input(execution):
+    e = execution
+    e.state["extra_elements"] = [
+        {"ref": "heading-" + str(i), "role": "heading", "name": "X" * 400} for i in range(200)
+    ]
+    result = e.run()
+    assert result["status"] == "needs_pa" and "payload" in result["reason"]
+    assert not result["steps"] and not e.state["provider_calls"]
