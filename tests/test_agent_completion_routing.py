@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -82,6 +83,7 @@ def make_worker(tmp_path):
 
     yield create
     for worker in workers:
+        worker.close()
         worker._executor.shutdown(wait=True)
 
 
@@ -270,6 +272,20 @@ def test_reconciled_completion_is_durable_before_prompt_finalization(
             classmethod(lambda cls, **kwargs: container),
         )
 
+    wake = Event()
+    monkeypatch.setattr(worker._wake_notifier, "notify", wake.set)
+
+    def reconcile_until_complete():
+        # Container RPCs now run in the background and may require several
+        # wake-and-resume cycles before finalization reaches the durable store.
+        for _ in range(20):
+            result = AgentPromptEffectProvider.reconcile_waiting(worker=worker)
+            if result:
+                return result
+            assert wake.wait(2), "container reconciliation did not wake"
+            wake.clear()
+        pytest.fail("container reconciliation did not complete")
+
     # Simulate a crash after the completion was queued but before the waiting
     # execution's final state was stored. A restart must still deliver the trigger.
     def fail_finalization(record):
@@ -278,10 +294,10 @@ def test_reconciled_completion_is_durable_before_prompt_finalization(
     with monkeypatch.context() as patch:
         patch.setattr(worker.execution_store, "put", fail_finalization)
         with pytest.raises(OSError, match="crash"):
-            AgentPromptEffectProvider.reconcile_waiting(worker=worker)
+            reconcile_until_complete()
     assert len(worker.event_queue.list_pending(trigger_id="__await-agent-completion__")) == 1
     assert worker.execution_store.read_all()["prompt-execution"].status == "waiting"
-    assert AgentPromptEffectProvider.reconcile_waiting(worker=worker) == 1
+    assert reconcile_until_complete() == 1
     # Reconciliation and the monitor must share one durable dispatch identity.
     assert len(worker.event_queue.list_pending(trigger_id="__await-agent-completion__")) == 1
     restarted, _ = make_worker()

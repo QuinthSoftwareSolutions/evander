@@ -4,32 +4,28 @@ import html
 import os
 from pathlib import Path
 import re
+import subprocess
 from urllib.parse import unquote
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_DIRS = {
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "node_modules",
-    "runtime",
-}
 LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 HTML_LINK_RE = re.compile(r"(?:href|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 EXPLICIT_ID_RE = re.compile(r"\bid=[\"']([^\"']+)[\"']", re.IGNORECASE)
 
 
-def _markdown_files() -> list[Path]:
-    files: list[Path] = []
-    for directory, names, filenames in os.walk(ROOT):
-        names[:] = [name for name in names if name not in EXCLUDED_DIRS]
-        base = Path(directory)
-        files.extend(base / name for name in filenames if name.lower().endswith(".md"))
-    return sorted(files)
+def _markdown_files(root: Path = ROOT) -> list[Path]:
+    # Include tracked documents and new non-ignored files, but not operator
+    # worktrees, generated state, or other ignored content below the checkout.
+    output = subprocess.check_output(
+        [
+            "git", "-C", str(root), "ls-files", "--cached", "--others",
+            "--exclude-standard", "-z", "--", "*.[mM][dD]",
+        ]
+    )
+    paths = {root / os.fsdecode(name) for name in output.split(b"\0") if name}
+    return sorted(path for path in paths if path.exists() or path.is_symlink())
 
 
 def _without_fenced_code(text: str) -> str:
@@ -80,7 +76,11 @@ def _local_markdown_link_failures(sources: list[Path], root: Path) -> list[str]:
     anchor_cache: dict[Path, set[str]] = {}
     ignored_schemes = ("http://", "https://", "mailto:", "tel:", "data:", "javascript:")
     for source in sources:
-        text = _without_fenced_code(source.read_text(encoding="utf-8"))
+        try:
+            text = _without_fenced_code(source.read_text(encoding="utf-8"))
+        except OSError as exc:
+            failures.append(f"{source.relative_to(root)}: cannot read ({type(exc).__name__})")
+            continue
         destinations = [_link_destination(value) for value in LINK_RE.findall(text)]
         destinations.extend(HTML_LINK_RE.findall(text))
         for raw in destinations:
@@ -112,6 +112,21 @@ def _local_markdown_link_failures(sources: list[Path], root: Path) -> list[str]:
 def test_local_markdown_links_and_anchors_resolve() -> None:
     failures = _local_markdown_link_failures(_markdown_files(), ROOT)
     assert not failures, "\n" + "\n".join(failures)
+
+
+def test_markdown_inventory_respects_git_ignores_and_includes_new_documents(tmp_path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+    tracked = tmp_path / "tracked.md"
+    tracked.write_text("# Tracked\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.md"], check=True)
+    new = tmp_path / "new.MD"
+    new.write_text("# New\n", encoding="utf-8")
+    ignored = tmp_path / ".worktrees"
+    ignored.mkdir()
+    (ignored / "broken.md").symlink_to("missing.md")
+
+    assert _markdown_files(tmp_path) == [new, tracked]
 
 
 def test_link_checker_parses_repeated_target_once_without_losing_missing_anchor(

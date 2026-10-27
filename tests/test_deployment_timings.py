@@ -34,7 +34,15 @@ def test_timings_preserve_playbook_outcome_and_redact_private_results(
                 },
                 {
                     "name": "Private task",
-                    "ansible.builtin.debug": {"msg": "private-value-not-for-timing-artifacts"},
+                    # Ansible 2.20 includes a failed debug task's message in its
+                    # own error heading even with no_log. Use command stdout to
+                    # exercise a secret-bearing result without that core leak.
+                    "ansible.builtin.command": {
+                        "argv": ["/bin/sh", "-c", 'printf %s "$EVANDER_TIMINGS_TEST_SECRET"']
+                    },
+                    "environment": {
+                        "EVANDER_TIMINGS_TEST_SECRET": "{{ lookup('env', 'EVANDER_TIMINGS_TEST_SECRET') }}"
+                    },
                     "no_log": True,
                     "failed_when": fail,
                 },
@@ -71,6 +79,7 @@ def test_timings_preserve_playbook_outcome_and_redact_private_results(
             "ANSIBLE_CALLBACK_PLUGINS": str(ROOT / "ansible/callback_plugins"),
             "ANSIBLE_CALLBACKS_ENABLED": "deployment_timings",
             "EVANDER_DEPLOYMENT_TIMINGS_FILE": str(report_path),
+            "EVANDER_TIMINGS_TEST_SECRET": "private-value-not-for-timing-artifacts",
         },
         capture_output=True,
         text=True,
