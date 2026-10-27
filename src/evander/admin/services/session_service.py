@@ -513,9 +513,11 @@ class SessionAdminService:
             update["cyber_access_program"] = normalize_cyber_access_program(settings["cyber_access_program"])
 
         def apply_settings(manifest: SessionManifest) -> SessionManifest:
+            expected_has_identity = "created_at" in expected.model_fields_set
+            current_has_identity = "created_at" in manifest.model_fields_set
             if (
-                "created_at" in expected.model_fields_set
-                and manifest.created_at != expected.created_at
+                expected_has_identity != current_has_identity
+                or (expected_has_identity and manifest.created_at != expected.created_at)
             ):
                 raise ValueError("Session was replaced during model settings update")
             if manifest.directory_path != expected.directory_path:

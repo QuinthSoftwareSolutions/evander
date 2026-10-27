@@ -1,6 +1,7 @@
 """Saved execution preferences must be inherited by every later dispatch channel."""
 
 from datetime import timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -253,11 +254,16 @@ def test_workflow_cannot_change_another_directorys_session(tmp_path, scope):
 @pytest.mark.parametrize("mutation", ["move", "replace"])
 @pytest.mark.parametrize("timing", ["before_service_lookup", "before_locked_update"])
 @pytest.mark.parametrize("kind", ["model-settings", "reasoning-effort"])
+@pytest.mark.parametrize("legacy", [False, True])
 def test_settings_update_rejects_stale_session_identity_and_directory(
-    tmp_path, monkeypatch, mutation, timing, kind
+    tmp_path, monkeypatch, mutation, timing, kind, legacy
 ):
     admin, factory = runtime(tmp_path)
     repository = admin.runtime.session_repository
+    if legacy:
+        payload = json.loads(repository.path.read_text())
+        del payload["assistant-a"]["created_at"]
+        repository.path.write_text(json.dumps(payload))
     other = JsonSessionManifestRepository(repository.path)
     config = {"target": "assistant-a"}
     if kind == "model-settings":
@@ -306,6 +312,22 @@ def test_settings_update_rejects_stale_session_identity_and_directory(
     saved = other.get_session("assistant-a")
     assert saved.model == "gpt-6-luna"
     assert saved.reasoning_effort == "low"
+
+
+def test_model_settings_can_upgrade_an_unchanged_legacy_manifest(tmp_path):
+    admin, factory = runtime(tmp_path)
+    repository = admin.runtime.session_repository
+    payload = json.loads(repository.path.read_text())
+    del payload["assistant-a"]["created_at"]
+    repository.path.write_text(json.dumps(payload))
+    effect = factory.build(
+        definition(target="assistant-a", settings={"model": "gpt-6.1-terra"}),
+        directory_path="root/team-a",
+    )
+    assert effect.execute()["success"]
+    updated = repository.get_session("assistant-a")
+    assert updated.model == "gpt-6.1-terra"
+    assert "created_at" in updated.model_fields_set
 
 
 @pytest.mark.parametrize(
