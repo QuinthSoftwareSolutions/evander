@@ -18,6 +18,7 @@ from .choices import (
     decision_page,
     eligible_targets,
     target_actions,
+    validate_input,
 )
 from .checkpoints import evaluate as evaluate_checkpoint, triggered
 from .models import BrowserCommand, BrowserError, BrowserKey
@@ -38,11 +39,12 @@ INSTRUCTIONS = (
 TARGET_INSTRUCTIONS = (
     "Choose the target of the single next unfinished action, before any later actions in the goal. "
     "Infer the same immediate action as the action question, using current field values and completed actions. "
-    "For fill/type, choose the editable field needing the next supplied value; "
+    "For fill/type/select, choose the field needing the next supplied value; "
     "do not refill an already-correct field merely because it is focused. "
     "Follow requested order rather than selecting the goal's final submission control "
     "while an earlier requested input is still unfinished. "
-    "To open a closed combobox, target the combobox rather than an option in its collapsed list. "
+    "Prefer advertised select for an exact observed native option label, and fill for ISO dates and numbers. "
+    "Otherwise, to open a closed combobox, target the combobox rather than an option in its collapsed list. "
     "For dropdown keyboard navigation, target the combobox rather than an option or a later Apply button. "
     "For a key sent to the uniquely focused control, choose that control or _none. "
     "Choose _none when no target is needed or none is suitable, and _page for main-page scrolling. "
@@ -72,7 +74,7 @@ def redact(value, secrets):
         return value
     if isinstance(value, dict):
         return {
-            key: redact(item, secrets)
+            key: "[redacted]" if key in {"date_parts", "step_base"} and secrets else redact(item, secrets)
             for key, item in value.items()
             if key not in {"image", "fingerprint"}
         }
@@ -300,7 +302,7 @@ class BrowserRun:
                     ),
                     "target": question(TARGET_INSTRUCTIONS, criteria),
                     "input": question(
-                        "Which supplied input should the next fill/type action use?",
+                        "Which supplied input should the next fill/type/select action use?",
                         {
                             "_none": "No appropriate supplied value",
                             **{k: v.description for k, v in values.items()},
@@ -424,7 +426,7 @@ class BrowserRun:
                     break
                 options = {"ref": element["ref"]} if element else {}
                 input_id, key = None, None
-                if action in {"fill", "type"}:
+                if action in {"fill", "type", "select"}:
                     input_id = choice("input")
                     if input_id not in values:
                         reason = (
@@ -434,6 +436,7 @@ class BrowserRun:
                         )
                         break
                     options["text"] = values[input_id].value
+                    validate_input(element, action, options["text"])
                     input_id = value_ids[input_id]
                 elif action == "key":
                     key = choice("key")

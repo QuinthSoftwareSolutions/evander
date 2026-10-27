@@ -10,4 +10,7 @@
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <DebugType>none</DebugType>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../shared/set-native-value.js.txt" LogicalName="Evander.SetNativeValue" />
+  </ItemGroup>
 </Project>

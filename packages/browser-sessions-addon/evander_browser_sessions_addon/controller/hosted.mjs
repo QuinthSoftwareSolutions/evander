@@ -3908,24 +3908,119 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   } };
 }
 
+// shared/native-controls.ts
+var optionLabel = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+function nativeControls(nodes) {
+  const all = [...nodes, ...nodes.flatMap((node) => node.evanderChildren ?? [])];
+  const byId = new Map(all.filter((n) => n.nodeId).map((n) => [String(n.nodeId), n]));
+  const result = /* @__PURE__ */ new Map();
+  for (const node of nodes) {
+    if (node.evanderChildrenTruncated || !node.backendDOMNodeId || !["Date", "combobox"].includes(node.role?.value)) continue;
+    const descendants = [], seen = /* @__PURE__ */ new Set(), pending = [...node.childIds ?? []].reverse();
+    while (pending.length && seen.size < 2048) {
+      const id = String(pending.pop());
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const child = byId.get(id);
+      if (child) {
+        descendants.push(child);
+        pending.push(...[...child.childIds ?? []].reverse());
+      }
+    }
+    if (pending.length) continue;
+    const property = (n, key) => n.properties?.find((p) => p.name === key)?.value?.value;
+    if (node.role.value === "Date") {
+      const parts = [];
+      for (const child of descendants.filter((c) => c.role?.value === "spinbutton")) {
+        const min = property(child, "valuemin"), max = property(child, "valuemax");
+        const kind = max === 12 ? "month" : max === 31 ? "day" : max > 31 ? "year" : null;
+        const value = Number(child.value?.value ?? 0), backend = child.backendDOMNodeId;
+        if (kind && Number.isSafeInteger(backend) && backend > 0 && Number.isInteger(value) && Number.isFinite(min) && Number.isFinite(max)) parts.push({ kind, backend, value, min, max });
+      }
+      if (parts.length === 3 && new Set(parts.map((p) => p.kind)).size === 3)
+        result.set(node.backendDOMNodeId, {
+          kind: "date",
+          parts,
+          verified: !!node.evanderInput,
+          readonly: !!node.evanderInput?.readonly,
+          min: node.evanderInput?.min,
+          max: node.evanderInput?.max,
+          step: node.evanderInput?.step,
+          stepBase: node.evanderInput?.stepBase
+        });
+    } else if (descendants.some((c) => c.role?.value === "MenuListPopup")) {
+      const options = descendants.filter((c) => !c.ignored && c.role?.value === "option").map((c) => ({
+        name: optionLabel(c.name?.value),
+        disabled: property(c, "disabled") === true,
+        backend: c.backendDOMNodeId
+      }));
+      if (options.length && options.length <= 100 && options.every((o) => o.name.length <= 200 && Number.isSafeInteger(o.backend)))
+        result.set(node.backendDOMNodeId, { kind: "select", options });
+    }
+  }
+  return result;
+}
+function dateValue(parts) {
+  const value = Object.fromEntries(parts.map((p) => [p.kind, p.value]));
+  const candidate = String(value.year).padStart(4, "0") + "-" + String(value.month).padStart(2, "0") + "-" + String(value.day).padStart(2, "0");
+  return validDate(candidate) ? candidate : "";
+}
+function validDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+function nativeIdentity(control, afterDateAssignment = false) {
+  return JSON.stringify(control?.kind === "date" ? { ...control, parts: control.parts.map(({ value, backend, ...identity }) => afterDateAssignment ? identity : { ...identity, backend }) } : control);
+}
+function selectOption(control, text) {
+  if (control.kind !== "select" || !text || text.length > 200) throw new Error("unsupported_target");
+  const matches = control.options.filter((o) => !o.disabled && o.name === text);
+  if (matches.length !== 1) throw new Error("ambiguous_option");
+  return matches[0];
+}
+
 // shared/observation.ts
-var roles = /* @__PURE__ */ new Set(["button", "link", "textbox", "combobox", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row"]);
-var roleOf = (node) => ({ LayoutTableRow: "row", LayoutTableCell: "gridcell", cell: "gridcell", rowheader: "gridcell", columnheader: "gridcell" })[node.role?.value] ?? node.role?.value;
+var roles = /* @__PURE__ */ new Set(["button", "link", "textbox", "combobox", "date", "spinbutton", "checkbox", "radio", "tab", "menuitem", "option", "heading", "dialog", "alert", "gridcell", "row"]);
+var roleOf = (node) => ({ Date: "date", LayoutTableRow: "row", LayoutTableCell: "gridcell", cell: "gridcell", rowheader: "gridcell", columnheader: "gridcell" })[node.role?.value] ?? node.role?.value;
 var states = ["checked", "selected", "expanded", "disabled", "readonly", "focused", "editable", "required"];
 function accessibleElements(nodes) {
-  const byId = new Map(nodes.map((node) => [String(node.nodeId), node]));
+  const byId = new Map([...nodes, ...nodes.flatMap((node) => node.evanderChildren ?? [])].map((node) => [String(node.nodeId), node]));
+  const native = nativeControls(nodes);
+  const owned = (node) => {
+    const seen = /* @__PURE__ */ new Set();
+    let parent = node;
+    while (parent?.parentId && !seen.has(parent.parentId)) {
+      seen.add(parent.parentId);
+      parent = byId.get(String(parent.parentId));
+      if (parent && native.has(parent.backendDOMNodeId)) return true;
+    }
+    return false;
+  };
   const elements = [];
   const signature = (node) => {
     const properties = Object.fromEntries((node.properties ?? []).filter((p) => states.includes(p.name)).map((p) => [p.name, p.value?.value]));
+    const control = native.get(node.backendDOMNodeId);
+    const value = properties.editable && roleOf(node) === "spinbutton" ? node.properties?.find((p) => p.name === "valuetext")?.value?.value ?? node.value?.value : node.value?.value;
+    const extra = control?.kind === "date" ? {
+      native_control: "date",
+      native_input_verified: control.verified,
+      ...control.verified ? { readonly: control.readonly, min: control.min, max: control.max, step: control.step, step_base: control.stepBase } : {},
+      value_format: "YYYY-MM-DD",
+      date_parts: Object.fromEntries(control.parts.map((p) => [p.kind, p.value]))
+    } : control?.kind === "select" ? { native_control: "select", options: control.options.map((o) => ({ name: o.name, disabled: o.disabled })) } : {};
     return {
       role: roleOf(node),
       name: String(node.name?.value ?? "").slice(0, 400),
-      value: String(node.value?.value ?? "").slice(0, 1e3),
-      ...properties
+      value: control?.kind === "date" ? dateValue(control.parts) : control?.kind === "select" ? optionLabel(value) : String(value ?? "").slice(0, 1e3),
+      ...properties,
+      ...node.properties?.some((p) => p.name === "settable" && p.value?.value === false) ? { readonly: true } : {},
+      ...extra
     };
   };
   for (const node of nodes) {
-    if (node.ignored || !node.backendDOMNodeId || !roles.has(roleOf(node))) continue;
+    if (node.ignored || !node.backendDOMNodeId || !roles.has(roleOf(node)) || owned(node)) continue;
     const context2 = node.evanderContext ?? [];
     let parent = node, depth = 0;
     while (!node.evanderContext && parent && depth++ < 16) {
@@ -3940,7 +4035,7 @@ function accessibleElements(nodes) {
     elements.push({ ref: "node-" + node.backendDOMNodeId, ...data });
     if (elements.length === 600) break;
   }
-  return { elements, truncated: nodes.filter((n) => !n.ignored && n.backendDOMNodeId && roles.has(roleOf(n))).length > 600 };
+  return { elements, truncated: nodes.filter((n) => !n.ignored && n.backendDOMNodeId && roles.has(roleOf(n)) && !owned(n)).length > 600 };
 }
 function targetSignature(value) {
   if (!value) return "";
@@ -3948,7 +4043,7 @@ function targetSignature(value) {
   return JSON.stringify(semantic);
 }
 function pageSignature(elements) {
-  return JSON.stringify(elements.filter((item) => ["textbox", "combobox", "checkbox", "radio", "heading", "dialog", "alert"].includes(item.role)).map((item) => ({
+  return JSON.stringify(elements.filter((item) => ["textbox", "combobox", "date", "spinbutton", "checkbox", "radio", "heading", "dialog", "alert"].includes(item.role)).map((item) => ({
     ref: item.ref,
     role: item.role,
     name: item.name,
@@ -3957,9 +4052,13 @@ function pageSignature(elements) {
     selected: item.selected,
     expanded: item.expanded,
     disabled: item.disabled,
-    readonly: item.readonly
+    readonly: item.readonly,
+    date_parts: item.date_parts
   })));
 }
+
+// shared/set-native-value.js.txt
+var set_native_value_js_default = 'function(kind, value, origin, deadline) {\n  const target = this;\n  const attached = () => location.origin === origin && target.isConnected && target.ownerDocument === document;\n  const current = () => typeof deadline === "number" && Number.isFinite(deadline) && Date.now()/1000 < deadline;\n  if (!current()) return {error:"run_deadline"};\n  if (!attached() || target.matches(":disabled")) return {error:"stale_target"};\n  let assign;\n  if (kind === "date") {\n    if (!(target instanceof HTMLInputElement) || target.type !== "date" || target.readOnly) return {error:"stale_target"};\n    if (typeof value !== "string" || value !== "" && !/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) return {error:"invalid_date"};\n    const probe = document.createElement("input");\n    probe.type = "date";\n    for (const key of ["min","max","step"]) {\n      const attribute = target.getAttribute(key);\n      if (attribute !== null) probe.setAttribute(key, attribute);\n    }\n    const base = target.getAttribute("value");\n    if (base !== null) probe.defaultValue = base;\n    probe.value = value;\n    if (probe.value !== value || !probe.validity.valid) return {error:"invalid_date"};\n    assign = () => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(target,value);\n  } else if (kind === "select") {\n    if (!(target instanceof HTMLSelectElement) || target.multiple || target.size > 1 ||\n        typeof value !== "string" || !value || value.length > 200 || target.options.length > 100) return {error:"unsupported_target"};\n    const matches = Array.from(target.options).filter(option => !option.matches(":disabled") &&\n      option.label.replace(/\\s+/g," ").trim() === value);\n    if (matches.length !== 1) return {error:"ambiguous_option"};\n    const index = matches[0].index;\n    assign = () => Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"selectedIndex").set.call(target,index);\n  } else return {error:"unsupported_target"};\n  if (!current()) return {error:"run_deadline"};\n  if (!attached() || target.matches(":disabled")) return {error:"outcome_unknown"};\n  assign();\n  target.dispatchEvent(new Event("input",{bubbles:true,composed:true}));\n  target.dispatchEvent(new Event("change",{bubbles:true}));\n  return {ok:true};\n}\n';
 
 // shared/engine.ts
 var BrowserEngine = class {
@@ -3974,6 +4073,7 @@ var BrowserEngine = class {
   epoch = 0;
   signatures = /* @__PURE__ */ new Map();
   pageContext = "";
+  native = /* @__PURE__ */ new Map();
   update(state2) {
     if (state2.id === this.state.id && state2.control_generation >= this.state.control_generation) this.state = state2;
   }
@@ -3981,10 +4081,34 @@ var BrowserEngine = class {
     this.epoch += 1;
     this.observation = "";
     this.refs.clear();
+    this.native.clear();
   }
   async location() {
     const tree = await this.send("Page.getFrameTree");
     return tree.frameTree.frame.url;
+  }
+  async tree() {
+    const tree = await this.send("Accessibility.getFullAXTree");
+    for (const node of tree.nodes ?? []) {
+      if (node.role?.value !== "Date" || !node.backendDOMNodeId) continue;
+      try {
+        const { node: element } = await this.send("DOM.describeNode", { backendNodeId: node.backendDOMNodeId });
+        const attributes = /* @__PURE__ */ new Map();
+        for (let i = 0; i < (element.attributes?.length ?? 0); i += 2) attributes.set(element.attributes[i], element.attributes[i + 1]);
+        if (element.nodeName !== "INPUT" || attributes.get("type") !== "date") continue;
+        const min = attributes.get("min"), max = attributes.get("max"), step = attributes.get("step"), base = attributes.get("value");
+        if (min && !validDate(min) || max && !validDate(max) || (step?.length ?? 0) > 32) continue;
+        node.evanderInput = {
+          readonly: attributes.has("readonly"),
+          min: min || void 0,
+          max: max || void 0,
+          step: step?.toLowerCase() === "any" ? "any" : step && Number.isFinite(Number(step)) && Number(step) > 0 ? step : "1",
+          stepBase: min || base && validDate(base) && base || "1970-01-01"
+        };
+      } catch {
+      }
+    }
+    return tree;
   }
   guard(command, actor, epoch) {
     if (command.deadline_at && Date.now() / 1e3 >= command.deadline_at) throw new Error("run_deadline");
@@ -4004,13 +4128,17 @@ var BrowserEngine = class {
       return current;
     };
     let edited = false, mousePressed = false, inputStarted = false;
+    const control = this.native.get(this.refs.get(command.ref) ?? -1);
+    const nativeOperation = command.action === "select" || command.action === "fill" && control?.kind === "date";
     const validateTarget = async () => {
-      if (!command.revalidate || !command.ref) return;
-      const { nodes } = await this.send("Accessibility.getFullAXTree");
+      if (!(command.revalidate || nativeOperation) || !command.ref) return;
+      const { nodes } = await this.tree();
       const elements = accessibleElements(nodes ?? []).elements;
       const fresh = elements.find((item) => item.ref === command.ref);
       const saved = this.signatures.get(command.ref);
-      if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (!fresh || fresh.disabled || nativeOperation && fresh.readonly || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (nativeOperation && nativeIdentity(nativeControls(nodes).get(this.refs.get(command.ref))) !== nativeIdentity(control))
+        throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
       const context2 = mousePressed ? elements.map((item) => item.ref === command.ref ? {
         ...item,
@@ -4020,7 +4148,7 @@ var BrowserEngine = class {
         expanded: before.expanded
       } : item) : elements;
       if (!edited && pageSignature(context2) !== this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
-      if (edited || mousePressed) for (const key of ["value", "checked", "selected", "expanded"]) {
+      if (edited || mousePressed) for (const key of ["value", "checked", "selected", "expanded", "date_parts"]) {
         delete before[key];
         delete after[key];
       }
@@ -4054,8 +4182,9 @@ var BrowserEngine = class {
     const url = await fence();
     if (command.action === "observe") {
       const before = this.epoch;
-      const tree = await this.send("Accessibility.getFullAXTree");
+      const tree = await this.tree();
       const nodes = tree.nodes;
+      this.native = nativeControls(nodes ?? []);
       this.refs.clear();
       this.signatures.clear();
       const { elements, truncated } = accessibleElements(nodes ?? []);
@@ -4136,6 +4265,45 @@ var BrowserEngine = class {
         this.guard(command, actor);
         await input("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
         await input("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+      }
+    } else if (nativeOperation) {
+      const text = command.text ?? "";
+      if (!control || command.action === "select" && control.kind !== "select") throw new Error("unsupported_target");
+      if (control.kind === "date") {
+        if (!control.verified || control.readonly) throw new Error("unsupported_target");
+        if (text && (!validDate(text) || control.min && text < control.min || control.max && text > control.max)) throw new Error("invalid_date");
+      } else {
+        selectOption(control, text);
+        if (JSON.parse(this.signatures.get(command.ref) ?? "{}").expanded === true) throw new Error("unsupported_target");
+      }
+      const { frameTree } = await this.send("Page.getFrameTree");
+      const { executionContextId } = await this.send("Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "evander-native-controls" });
+      await fence();
+      const { object } = await this.send("DOM.resolveNode", { backendNodeId: this.refs.get(command.ref), executionContextId });
+      if (!object?.objectId) throw new Error("stale_target");
+      try {
+        const result = await input("Runtime.callFunctionOn", {
+          objectId: object.objectId,
+          functionDeclaration: set_native_value_js_default.replace(/\r\n/g, "\n"),
+          arguments: [{ value: control.kind }, { value: text }, { value: new URL(url).origin }, { value: Math.min(command.deadline_at ?? Infinity, Date.now() / 1e3 + 5, this.state.expires_at) }],
+          returnByValue: true
+        });
+        if (result.exceptionDetails) throw new Error("outcome_unknown");
+        if (result.result?.value?.error) throw new Error(result.result.value.error);
+        if (!result.result?.value?.ok) throw new Error("outcome_unknown");
+      } finally {
+        await this.send("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {
+        });
+      }
+      const tree = await this.tree();
+      const fresh = nativeControls(tree.nodes ?? []).get(this.refs.get(command.ref));
+      await fence();
+      if (nativeIdentity(fresh, true) !== nativeIdentity(control, true)) throw new Error("outcome_unknown");
+      if (fresh?.kind === "date") {
+        if (dateValue(fresh.parts) !== text || !text && fresh.parts.some((p) => p.value !== 0)) throw new Error("outcome_unknown");
+      } else {
+        const element = accessibleElements(tree.nodes ?? []).elements.find((e) => e.ref === command.ref);
+        if (!element || element.value !== text || element.expanded === true) throw new Error("outcome_unknown");
       }
     } else if (command.action === "fill") {
       const backendNodeId = this.refs.get(command.ref);

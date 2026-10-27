@@ -834,6 +834,11 @@ class Service:
                 self.store.finish_command(command.id, "completed", observation=observation)
             else:
                 self.store.finish_command(command.id, "completed")
+            if agent and command.action == "observe":
+                from .choices import target_actions
+
+                for element in result.get("elements", []):
+                    element["allowed_actions"] = target_actions(element, has_values=True)
             if not command.observing:
                 self.store.mutate(
                     session_id,

@@ -38,6 +38,8 @@ ObservationRole = Literal[
     "link",
     "textbox",
     "combobox",
+    "date",
+    "spinbutton",
     "checkbox",
     "radio",
     "tab",
@@ -300,16 +302,16 @@ class CountCondition(Contract):
 
 
 class CheckpointTrigger(Contract):
-    action: Literal["click", "fill", "type", "key"]
+    action: Literal["click", "fill", "type", "select", "key"]
     ref: str | None = Field(default=None, min_length=1, max_length=128)
     input: str | None = Field(default=None, pattern=IDENTIFIER)
     key: str | None = Field(default=None, min_length=1, max_length=40)
 
     @model_validator(mode="after")
     def constrained(self):
-        if self.action in {"fill", "type"}:
+        if self.action in {"fill", "type", "select"}:
             if self.input is None:
-                raise ValueError("A fill/type checkpoint trigger requires a supplied input ID")
+                raise ValueError("A fill/type/select checkpoint trigger requires a supplied input ID")
         elif self.ref is None or self.input is not None:
             raise ValueError("A click/key checkpoint trigger requires a ref and no input ID")
         if (self.action == "key") != (self.key is not None):
@@ -329,10 +331,14 @@ BrowserKey = Literal[
 
 
 class PlannedAction(Contract):
-    action: Literal["click", "fill", "type", "key", "hover", "scroll"]
-    target: CheckpointTarget | None = None
-    input: str | None = Field(default=None, pattern=IDENTIFIER)
-    key: BrowserKey | None = None
+    action: Literal["click", "fill", "type", "select", "key", "hover", "scroll"] = Field(
+        description="Choose an action listed in the target's observed allowed_actions. Fill replaces text/numbers or an ISO date; select chooses an exact observed native option label."
+    )
+    target: CheckpointTarget | None = Field(default=None,
+        description="Observed ref or unique exact role/name/context. Required for every action, including key, except page scrolling.")
+    input: str | None = Field(default=None, pattern=IDENTIFIER,
+        description="For fill/type/select: the KEY of request.values, never the literal text. For values={name:{description:...,value:'Example'}}, use input='name'.")
+    key: BrowserKey | None = Field(default=None, description="For key actions only, one supported key. The target is still required.")
     delta_x: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
     delta_y: float = Field(default=0, ge=-2000, le=2000, allow_inf_nan=False)
 
@@ -340,13 +346,40 @@ class PlannedAction(Contract):
     def operation(self):
         if self.action != "scroll" and self.target is None:
             raise ValueError("A planned action requires an observed target")
-        if (self.action in {"fill", "type"}) != (self.input is not None):
-            raise ValueError("Only fill/type actions require a supplied input ID")
+        if (self.action in {"fill", "type", "select"}) != (self.input is not None):
+            raise ValueError("Only fill/type/select actions require a supplied input ID")
         if (self.action == "key") != (self.key is not None):
             raise ValueError("Only a key action requires a key")
         if self.action != "scroll" and (self.delta_x or self.delta_y):
             raise ValueError("Only scroll actions accept deltas")
         return self
+
+
+class PlannedInput(PlannedAction):
+    action: Literal["fill", "type", "select"]
+    target: CheckpointTarget
+    input: str = Field(pattern=IDENTIFIER, description="The key of request.values, not the literal text. Example: input='name' uses values.name.value.")
+
+
+class PlannedKey(PlannedAction):
+    action: Literal["key"]
+    target: CheckpointTarget
+    key: BrowserKey
+
+
+class PlannedTarget(PlannedAction):
+    action: Literal["click", "hover"]
+    target: CheckpointTarget
+
+
+class PlannedScroll(PlannedAction):
+    action: Literal["scroll"]
+
+
+ObservedAction = Annotated[
+    PlannedInput | PlannedKey | PlannedTarget | PlannedScroll,
+    Field(discriminator="action"),
+]
 
 
 class RunCheckpoint(Contract):
@@ -389,7 +422,7 @@ class RunRequest(Contract):
     values: dict[str, RunValue] = Field(
         default_factory=dict,
         max_length=200,
-        description="Named exact inputs for every fill/type action. Text in the goal alone is not available for entry. Include text you authored beforehand and an empty-string input if a field must be cleared. Omit only for objectives needing no text entry.",
+        description="Named exact inputs for every fill/type/select action. Plan input fields reference these keys, never literal text. Text in the goal alone is not available for entry. Include text you authored beforehand and an empty-string input if a field must be cleared. Omit only for objectives needing no text entry or option selection.",
         examples=[
             {
                 "filter": {"description": "Search filter text", "value": "Example"},
@@ -405,7 +438,7 @@ class RunRequest(Contract):
         default=None, min_length=1, max_length=128,
         description="For plan mode, the current observation returned to you by this browser. The controller binds the plan to that observation's page and mutable state before issuing input.",
     )
-    plan: list[PlannedAction] | None = Field(
+    plan: list[ObservedAction] | None = Field(
         default=None, min_length=1, max_length=8,
         description="Optional ordered batch of up to eight actions already grounded in observation_id. Executes without a decision provider, within five seconds, using exact values and fresh target validation. Changed assumptions stop the batch. A retry returns its durable receipt and never resumes remaining actions. Keep navigation/newly revealed controls in separate plans.",
     )
@@ -592,6 +625,7 @@ class BrowserCommand(Contract):
         "hover",
         "fill",
         "type",
+        "select",
         "key",
         "scroll",
         "dialog",

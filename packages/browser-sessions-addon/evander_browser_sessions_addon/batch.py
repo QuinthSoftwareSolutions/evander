@@ -8,13 +8,16 @@ import uuid
 from urllib.parse import quote, quote_plus
 
 from .checkpoints import matches, triggered
-from .choices import target_actions
+from .choices import target_actions, validate_input
 from .execution import BrowserRun, redact
 from .models import BrowserCommand, BrowserError
 
 STATE_KEYS = (
     "role", "name", "value", "checked", "selected", "expanded", "disabled",
     "readonly", "editable", "required", "context",
+    "native_control", "value_format", "date_parts", "options",
+    "native_input_verified", "min", "max", "step",
+    "step_base",
 )
 
 
@@ -64,13 +67,15 @@ def resolve(observation, target):
 def confirmed_change(action, before, after, values, checkpoints):
     """Allow only predictable input effects, or an explicit satisfied state check."""
     expected = dict(before)
-    if action.action in {"fill", "type"}:
+    if action.action in {"fill", "type", "select"}:
         value = values[action.input].value
         if action.action == "type":
             if not isinstance(before.get("value"), str):
                 raise BrowserError("Typing needs an observable starting value", "batch_state_changed", 409)
             value = before["value"] + value
         expected["value"] = value
+        if action.action == "fill" and before.get("native_control") == "date":
+            expected["date_parts"] = dict(zip(("year","month","day"),map(int,value.split("-")))) if value else {"year":0,"month":0,"day":0}
     elif action.action == "click":
         for key in ("checked", "expanded", "selected"):
             previous = before.get(key)
@@ -87,7 +92,7 @@ def confirmed_change(action, before, after, values, checkpoints):
         if condition.kind in {"value", "checked", "expanded", "disabled"} and matches(after, condition.target):
             if condition.kind == "value":
                 # A fill/type may not silently substitute a different supplied literal.
-                if action.action not in {"fill", "type"}:
+                if action.action not in {"fill", "type", "select"}:
                     expected["value"] = values[condition.input].value
             else:
                 state = after.get(condition.kind)
@@ -205,6 +210,8 @@ class BrowserBatch(BrowserRun):
     def validate_action(action, element, values):
         if element is not None and action.action not in target_actions(element, has_values=bool(values)):
             raise BrowserError("Planned action is unavailable for its target", "batch_action_unavailable", 409)
+        if action.input is not None:
+            validate_input(element, action.action, values[action.input].value)
 
     @staticmethod
     def checkpoint_schedule(request, initial):

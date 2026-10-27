@@ -76,10 +76,25 @@ test("native helper controls the selected tab with trusted input while another e
       ref: observed.elements.find(value => value.role === "button").ref }));
     assert.equal(await host.application.locator("#result").textContent(), "Copper alloy added");
     assert.equal((await f.api(host.path+"/state")).endpoint_features.fast_execution,1);
-    const run=await f.api(host.path+"/run",{request_id:"fast-helper",generation:state.control_generation,
+    const run=await f.api(host.path+"/run",{request_id:"fast-helper",generation:state.control_generation,completion:{kind:"text",text:"Fast item added"},
       goal:"Add the supplied item",values:{name:{description:"Item name",value:"Fast item"}}});
     assert.equal(run.status,"needs_verification",run.reason);
     assert.equal(await host.application.locator("#result").textContent(),"Fast item added");
+    await host.application.evaluate(()=>{
+      const fieldset=document.createElement("fieldset");
+      fieldset.innerHTML='<label>Schedule<input id="schedule" type="date"></label><label>Region<select id="region"><option>North</option><option>South</option></select></label>';
+      document.body.append(fieldset);
+    });
+    let native=await f.api(host.path+"/command",command(state,"observe",{include_image:false}));
+    const date=native.elements.find(e=>e.role==="date");
+    assert.ok(date.allowed_actions.includes("fill"));
+    await f.api(host.path+"/command",command(state,"fill",{observation_id:native.observation_id,ref:date.ref,text:"2027-03-18",revalidate:true}));
+    assert.equal(await host.application.locator("#schedule").inputValue(),"2027-03-18");
+    native=await f.api(host.path+"/command",command(state,"observe",{include_image:false}));
+    const region=native.elements.find(e=>e.role==="combobox");
+    assert.ok(region.allowed_actions.includes("select"));
+    await f.api(host.path+"/command",command(state,"select",{observation_id:native.observation_id,ref:region.ref,text:"South",revalidate:true}));
+    assert.equal(await host.application.locator("#region").inputValue(),"South");
     assert.deepEqual(await host.application.evaluate(() => [...new Set(window.trustedKeys)]), [true]);
     assert.equal(await host.application.locator("#protected").count(), 1);
     await host.application.evaluate(() => { document.body.style.minHeight = "3000px";
@@ -154,6 +169,27 @@ test("helper independently rejects ungranted input, arbitrary CDP, stale generat
     assert.equal((await invoke("Runtime.evaluate", { expression: "document.cookie" })).error, "unsupported_action");
     state.control_generation = 1; state.controller = "agent:agent-a";
     assert.equal((await wire.request({ kind: "state", state })).ok, true);
+    const frame=(await invoke("Page.getFrameTree")).result.frameTree.frame;
+    assert.equal((await invoke("Page.createIsolatedWorld",{frameId:frame.id,worldName:"arbitrary"})).error,"unsupported_action");
+    const world=(await invoke("Page.createIsolatedWorld",{frameId:frame.id,worldName:"evander-native-controls"})).result.executionContextId;
+    const tree=(await invoke("Accessibility.getFullAXTree")).result;
+    const backend=tree.nodes.find(n=>n.role?.value==="textbox").backendDOMNodeId;
+    assert.equal((await invoke("DOM.resolveNode",{backendNodeId:backend,executionContextId:0})).error,"unsupported_action");
+    const object=(await invoke("DOM.resolveNode",{backendNodeId:backend,executionContextId:world})).result.object.objectId;
+    const fixed=await readFile("shared/set-native-value.js.txt","utf8");
+    const setter={objectId:object,functionDeclaration:fixed,arguments:[{value:"date"},{value:"2027-03-18"},{value:f.base},{value:Date.now()/1000+4}],returnByValue:true};
+    for(const patch of [
+      {functionDeclaration:"function(){return document.cookie}"},
+      {objectId:"unbound-object"},
+      {arguments:[{value:"textbox"},...setter.arguments.slice(1)]},
+      {arguments:[...setter.arguments.slice(0,2),{value:"https://unapproved.example"},setter.arguments[3]]},
+      {arguments:[...setter.arguments.slice(0,3),{value:Date.now()/1000+60}]},
+      {arguments:[{objectId:object},...setter.arguments.slice(1)]},
+      {returnByValue:false},
+    ]) assert.equal((await invoke("Runtime.callFunctionOn",{...setter,...patch})).error,"unsupported_action");
+    assert.equal((await invoke("Runtime.callFunctionOn",setter)).result.result.value.error,"stale_target","Fixed operation refuses a non-date input without editing it");
+    assert.equal((await invoke("Runtime.releaseObject",{objectId:object})).ok,true);
+    assert.equal((await invoke("Runtime.callFunctionOn",setter)).error,"unsupported_action");
     assert.equal((await invoke("Input.insertText", { text: "blocked" }, 0)).error, "stale_control");
     assert.equal((await invoke("Page.navigate", { url: "https://unapproved.example/" })).error, "origin_denied");
     assert.equal(host.application.url(), f.base + "/application");

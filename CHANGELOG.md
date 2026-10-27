@@ -8,6 +8,7 @@
 - Add owner-authored plans of up to eight observed actions within five seconds, bypassing per-action inference while preserving fresh document, target, mutable-state, grant and control checks. Validate all steps before input and require a recent consumed owner observation.
 - Persist command outcomes and indexed plan progress atomically. Identical retries only return durable receipts; restarts retain the original lease and never resume or replay input. Retire pending commands on settlement and preserve uncertainty against late replies.
 - Add stable engine observation identities and local regression coverage for concurrent retries, process death around dispatch/persistence, unexpected page changes and human takeover.
+- Publish per-target supported actions and action-specific plan schemas. Add bounded native date, number and exact-option form operations, with complete-value validation, isolated fixed-function dispatch, range/step checks and durable retry coverage; retain keyboard tools for trusted event input.
 
 ## 2026-10-27 - Explain PR changes with narrated demonstration videos (0.137.0)
 

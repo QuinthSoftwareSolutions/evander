@@ -1,4 +1,6 @@
 import { accessibleElements, targetSignature, pageSignature } from "./observation.js";
+import {nativeControls, nativeIdentity, dateValue, selectOption, validDate, type NativeControl} from "./native-controls.js";
+import setNativeValueFunction from "./set-native-value.js.txt";
 export type Send = (method: string, params?: Record<string, unknown>) => Promise<any>;
 export type State = { id: string; controller: string | null; control_generation: number;
   allowed_origins: string[]; expires_at: number };
@@ -9,14 +11,33 @@ export class BrowserEngine {
   private epoch = 0;
   private signatures = new Map<string, string>();
   private pageContext = "";
+  private native = new Map<number, NativeControl>();
   constructor(private send: Send, private state: State, private emit: (event: any) => void) {}
   update(state: State) {
     if (state.id === this.state.id && state.control_generation >= this.state.control_generation) this.state = state;
   }
-  navigate() { this.epoch += 1; this.observation = ""; this.refs.clear(); }
+  navigate() { this.epoch += 1; this.observation = ""; this.refs.clear(); this.native.clear(); }
   private async location() {
     const tree = await this.send("Page.getFrameTree");
     return tree.frameTree.frame.url as string;
+  }
+  private async tree() {
+    const tree=await this.send("Accessibility.getFullAXTree");
+    for (const node of tree.nodes ?? []) {
+      if (node.role?.value!=="Date" || !node.backendDOMNodeId) continue;
+      try {
+        const {node:element}=await this.send("DOM.describeNode",{backendNodeId:node.backendDOMNodeId});
+        const attributes=new Map<string,string>();
+        for (let i=0;i<(element.attributes?.length ?? 0);i+=2) attributes.set(element.attributes[i],element.attributes[i+1]);
+        if (element.nodeName!=="INPUT" || attributes.get("type")!=="date") continue;
+        const min=attributes.get("min"),max=attributes.get("max"),step=attributes.get("step"),base=attributes.get("value");
+        if (min && !validDate(min) || max && !validDate(max) || (step?.length ?? 0)>32) continue;
+        node.evanderInput={readonly:attributes.has("readonly"),min:min||undefined,max:max||undefined,
+          step:step?.toLowerCase()==="any"?"any":step&&Number.isFinite(Number(step))&&Number(step)>0?step:"1",
+          stepBase:min||base&&validDate(base)&&base||"1970-01-01"};
+      } catch { /* Unsupported endpoints retain observation, without advertising date fill. */ }
+    }
+    return tree;
   }
   private guard(command: any, actor: string, epoch?: number) {
     if (command.deadline_at && Date.now()/1000 >= command.deadline_at) throw new Error("run_deadline");
@@ -38,13 +59,17 @@ export class BrowserEngine {
       return current;
     };
     let edited = false, mousePressed = false, inputStarted = false;
+    const control = this.native.get(this.refs.get(command.ref) ?? -1);
+    const nativeOperation = command.action==="select" || command.action==="fill" && control?.kind==="date";
     const validateTarget = async () => {
-      if (!command.revalidate || !command.ref) return;
-      const {nodes} = await this.send("Accessibility.getFullAXTree");
+      if (!(command.revalidate || nativeOperation) || !command.ref) return;
+      const {nodes} = await this.tree();
       const elements = accessibleElements(nodes ?? []).elements;
       const fresh = elements.find(item => item.ref===command.ref);
       const saved = this.signatures.get(command.ref);
-      if (!fresh || fresh.disabled || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (!fresh || fresh.disabled || nativeOperation && fresh.readonly || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (nativeOperation && nativeIdentity(nativeControls(nodes).get(this.refs.get(command.ref)!))!==nativeIdentity(control))
+        throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
       // Mouse-down can expand/select its own control before mouse-up. Keep
       // every other form control fenced while allowing that one transition.
@@ -53,7 +78,7 @@ export class BrowserEngine {
       } : item) : elements;
       if (!edited && pageSignature(context)!==this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
       // Key-down/text can change a field's mutable state as part of this command.
-      if (edited || mousePressed) for (const key of ["value","checked","selected","expanded"]) { delete before[key]; delete after[key]; }
+      if (edited || mousePressed) for (const key of ["value","checked","selected","expanded","date_parts"]) { delete before[key]; delete after[key]; }
       if (JSON.stringify(before)!==JSON.stringify(after)) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
     };
     const input = async (method: string, params: Record<string, unknown> = {}) => {
@@ -78,8 +103,9 @@ export class BrowserEngine {
     const url = await fence();
     if (command.action === "observe") {
       const before = this.epoch;
-      const tree = await this.send("Accessibility.getFullAXTree");
+      const tree = await this.tree();
       const nodes = tree.nodes;
+      this.native=nativeControls(nodes ?? []);
       this.refs.clear();
       this.signatures.clear();
       const {elements,truncated} = accessibleElements(nodes ?? []);
@@ -149,6 +175,40 @@ export class BrowserEngine {
         this.guard(command, actor);
         await input("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
         await input("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+      }
+    } else if (nativeOperation) {
+      const text=command.text ?? "";
+      if (!control || command.action==="select" && control.kind!=="select") throw new Error("unsupported_target");
+      if (control.kind==="date") {
+        if (!control.verified || control.readonly) throw new Error("unsupported_target");
+        if (text && (!validDate(text) || control.min && text<control.min || control.max && text>control.max)) throw new Error("invalid_date");
+      } else {
+        selectOption(control,text);
+        if (JSON.parse(this.signatures.get(command.ref) ?? "{}").expanded===true) throw new Error("unsupported_target");
+      }
+      const {frameTree}=await this.send("Page.getFrameTree");
+      const {executionContextId}=await this.send("Page.createIsolatedWorld",{frameId:frameTree.frame.id,worldName:"evander-native-controls"});
+      await fence();
+      const {object}=await this.send("DOM.resolveNode",{backendNodeId:this.refs.get(command.ref),executionContextId});
+      if (!object?.objectId) throw new Error("stale_target");
+      try {
+        const result=await input("Runtime.callFunctionOn",{objectId:object.objectId,functionDeclaration:setNativeValueFunction.replace(/\r\n/g,"\n"),
+          arguments:[{value:control.kind},{value:text},{value:new URL(url).origin},{value:Math.min(command.deadline_at ?? Infinity,Date.now()/1000+5,this.state.expires_at)}],returnByValue:true});
+        if (result.exceptionDetails) throw new Error("outcome_unknown");
+        if (result.result?.value?.error) throw new Error(result.result.value.error);
+        if (!result.result?.value?.ok) throw new Error("outcome_unknown");
+      } finally {
+        await this.send("Runtime.releaseObject",{objectId:object.objectId}).catch(()=>{});
+      }
+      const tree=await this.tree();
+      const fresh=nativeControls(tree.nodes ?? []).get(this.refs.get(command.ref)!);
+      await fence();
+      if (nativeIdentity(fresh,true)!==nativeIdentity(control,true)) throw new Error("outcome_unknown");
+      if (fresh?.kind==="date") {
+        if (dateValue(fresh.parts)!==text || !text && fresh.parts.some(p=>p.value!==0)) throw new Error("outcome_unknown");
+      } else {
+        const element=accessibleElements(tree.nodes ?? []).elements.find(e=>e.ref===command.ref);
+        if (!element || element.value!==text || element.expanded===true) throw new Error("outcome_unknown");
       }
     } else if (command.action === "fill") {
       const backendNodeId = this.refs.get(command.ref);

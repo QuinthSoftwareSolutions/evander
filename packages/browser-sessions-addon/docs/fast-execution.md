@@ -135,11 +135,19 @@ Example arguments for `browser_session_run`:
 }
 ```
 
-The model can choose click, hover, fill, character typing, bounded keyboard
+The model can choose click, hover, fill, native option selection, character typing, bounded keyboard
 navigation, scrolling, region inspection, waiting, done or help. It cannot generate text, scripts,
 selectors, coordinates, URLs or new values. Missing data, unsupported surfaces,
 truncation, ambiguous decisions and repeated lack of progress return to the owning agent.
-Dropdowns use the existing click/key paths. Rich observations include current
+Native dropdowns with complete bounded options advertise `select`; other dropdowns
+use click/key paths. Native dates advertise ISO `fill` only after verifying the
+input type, readonly status and full range/step constraints. Numbers support fill.
+These operations are shared by direct tools, plans and decision execution.
+Date fill and native select use a fixed controller-owned operation in an isolated
+world, applying one complete value followed by synthetic input/change events.
+They do not provide arbitrary scripts or trusted keyboard-event semantics.
+Unsupported/older endpoints retain their existing direct controls without these
+affordances. Rich observations include current
 field state, surrounding row/form/dialog context and bounded page text. The
 human's stream and pointer continue; intermediate observations omit images.
 
@@ -239,7 +247,7 @@ Use `request.plan` for one to eight known actions grounded in the owner's latest
 Plans execute through the existing run/command path with a maximum five-second
 lease, directory caps, current grants and endpoint capability checks. They bypass
 classification configuration, credentials and inference. All targets must exist
-and resolve uniquely before any input; fill/type use named `values`, keys are an
+and resolve uniquely before any input; fill/type/select use named `values` keys, keys are an
 enumerated set, and scrolling is bounded. There is no scripting or navigation API.
 
 Observation completion atomically records a digest of bounded observed semantic

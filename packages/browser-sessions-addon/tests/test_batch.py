@@ -458,3 +458,108 @@ def test_process_death_never_resumes_remaining_actions(batch, tmp_path, phase):
 def test_plan_contract_rejects_invalid_or_unbounded_requests(batch, patch):
     with pytest.raises(ValidationError):
         batch.request(**patch)
+
+
+def test_observation_exposes_supported_operations_for_native_and_readonly_controls(batch):
+    e = batch
+    e.state["extra_elements"] = [
+        {"ref":"date","role":"date","name":"Schedule","native_control":"date","native_input_verified":True,"value_format":"YYYY-MM-DD","value":"","date_parts":{"year":0,"month":0,"day":0}},
+        {"ref":"number","role":"spinbutton","name":"Quantity","editable":"plaintext","value":"2"},
+        {"ref":"choice","role":"combobox","name":"Region","native_control":"select","options":[{"name":"North","disabled":False}]},
+        {"ref":"readonly","role":"textbox","name":"Computed","readonly":True},
+        {"ref":"unsupported","role":"date","name":"Other date"},
+    ]
+    observed = {e["ref"]:e for e in e.observe()["elements"]}
+    assert "fill" in observed["date"]["allowed_actions"] and "type" not in observed["date"]["allowed_actions"]
+    assert {"fill","type"} <= set(observed["number"]["allowed_actions"])
+    assert "select" in observed["choice"]["allowed_actions"]
+    assert not {"fill","type"} & set(observed["choice"]["allowed_actions"])
+    assert not {"fill","type"} & set(observed["readonly"]["allowed_actions"])
+    assert "fill" not in observed["unsupported"]["allowed_actions"]
+
+
+@pytest.mark.parametrize("kind",["date","missing_option","duplicate_option","disabled_option"])
+def test_invalid_later_native_input_rejects_the_entire_plan_before_first_input(batch,kind):
+    e=batch
+    if kind=="date":
+        target={"ref":"native","role":"date","name":"Schedule","native_control":"date","native_input_verified":True,"value_format":"YYYY-MM-DD","value":""}
+        action,value="fill","2027-02-29"
+    else:
+        options=[{"name":"North","disabled":kind=="disabled_option"}]
+        if kind=="duplicate_option":
+            options.append({"name":"North","disabled":False})
+        target={"ref":"native","role":"combobox","name":"Region","native_control":"select","options":options}
+        action,value="select","Missing" if kind=="missing_option" else "North"
+    e.state["extra_elements"]=[target]
+    result=e.execute(e.request(
+        values={"name":{"description":"Name","value":"Example"},"native":{"description":"Native value","value":value}},
+        plan=[{"action":"fill","target":{"ref":"node-1"},"input":"name"},
+              {"action":action,"target":{"ref":"native"},"input":"native"}],
+    ))
+    assert result["status"]=="needs_pa" and not e.inputs() and not e.state["value"]
+
+
+def test_partial_date_edits_invalidate_the_owner_snapshot_even_with_no_complete_date(batch):
+    e=batch
+    date={"ref":"date","role":"date","name":"Schedule","native_control":"date","native_input_verified":True,"value_format":"YYYY-MM-DD","value":"","date_parts":{"year":0,"month":0,"day":0}}
+    e.state["extra_elements"]=[date]
+    request=e.request()
+    date["date_parts"]["month"]=3
+    result=e.execute(request)
+    assert result["status"]=="needs_pa" and not e.inputs()
+
+
+def test_sensitive_date_parts_are_redacted_along_with_the_canonical_value(batch):
+    e=batch
+    def date(observation):
+        parts=list(map(int,e.state["value"].split("-"))) if e.state["value"] else [0,0,0]
+        observation["elements"][0].update(role="date",native_control="date",native_input_verified=True,value_format="YYYY-MM-DD",date_parts=dict(zip(("year","month","day"),parts)))
+    e.state["observation_hook"]=date
+    result=e.execute(e.request(
+        values={"name":{"description":"Private date","value":"2027-03-18","sensitive":True}},
+        plan=[{"action":"fill","target":{"ref":"node-1"},"input":"name"}],
+    ))
+    assert result["status"]=="needs_verification" and e.state["value"]=="2027-03-18"
+    assert "2027-03-18" not in json.dumps(result)
+    assert result["observation"]["elements"][0]["date_parts"]=="[redacted]"
+
+
+def test_action_schema_requires_the_fields_needed_by_each_operation(batch):
+    schema=RunRequest.model_json_schema()
+    assert {"target","input"} <= set(schema["$defs"]["PlannedInput"]["required"])
+    assert {"target","key"} <= set(schema["$defs"]["PlannedKey"]["required"])
+    with pytest.raises(ValidationError):
+        batch.request(plan=[{"action":"key","key":"Enter"}])
+    with pytest.raises(ValidationError):
+        batch.request(plan=[{"action":"fill","target":{"ref":"node-1"}}])
+
+
+@pytest.mark.parametrize("constraint,value",[
+    ({"min":"2020-06-15"},"2020-01-01"),
+    ({"max":"2030-06-15"},"2030-12-31"),
+    ({"step":"2","step_base":"2027-03-18"},"2027-03-19"),
+])
+def test_known_native_date_constraints_reject_a_later_step_before_any_input(batch,constraint,value):
+    e=batch
+    e.state["extra_elements"]=[{"ref":"native","role":"date","name":"Schedule","native_control":"date","native_input_verified":True,
+                                "value_format":"YYYY-MM-DD","value":"",**constraint}]
+    result=e.execute(e.request(
+        values={"name":{"description":"Name","value":"Example"},"date":{"description":"Date","value":value}},
+        plan=[{"action":"fill","target":{"ref":"node-1"},"input":"name"},
+              {"action":"fill","target":{"ref":"native"},"input":"date"}],
+    ))
+    assert result["status"]=="needs_pa" and not e.inputs()
+
+
+@pytest.mark.parametrize("field,value",[
+    ("min","2027-01-01"),("max","2029-01-01"),("step","2"),("step_base","2027-03-18"),
+])
+def test_native_date_constraint_changes_invalidate_grounding_before_unrelated_input(batch,field,value):
+    e=batch
+    date={"ref":"native","role":"date","name":"Schedule","native_control":"date","native_input_verified":True,
+          "value_format":"YYYY-MM-DD","value":"","min":"2020-01-01","max":"2030-12-31","step":"1","step_base":"2020-01-01"}
+    e.state["extra_elements"]=[date]
+    request=e.request()
+    date[field]=value
+    result=e.execute(request)
+    assert result["status"]=="needs_pa" and not e.inputs() and not e.state["value"]

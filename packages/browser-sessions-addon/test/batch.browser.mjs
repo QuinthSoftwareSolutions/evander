@@ -96,6 +96,36 @@ test("guarded plans use the real service, relay and shared Chrome with crash-saf
       assert.equal(result.status,"needs_verification",result.reason);
       assert.equal(await page.locator("#result").textContent(),"Zinc added");
     });
+    await t.test("one durable plan fills native date, number and text, then selects once",async()=>{
+      await page.evaluate(()=>{
+        const form=document.createElement("form");form.setAttribute("aria-label","Native editor");
+        form.innerHTML='<label>Schedule date<input id="schedule" type="date"></label><label>Units<input id="units" type="number"></label><label>Memo<input id="memo"></label><label>Region<select id="region"><option>North</option><option>South</option><option>South extra</option></select></label>';
+        document.body.append(form);window.nativeChanges=0;
+        document.querySelector("#region").addEventListener("change",()=>window.nativeChanges++);
+      });
+      const observed=await observe();
+      assert.ok(observed.elements.find(e=>e.name==="Schedule date").allowed_actions.includes("fill"));
+      assert.ok(observed.elements.find(e=>e.name==="Region").allowed_actions.includes("select"));
+      const payload={request_id:"native-controls",generation:state.control_generation,observation_id:observed.observation_id,
+        goal:"Prepare native fields",values:{date:{description:"Schedule",value:"2027-03-18",sensitive:true},
+          quantity:{description:"Units",value:"12"},memo:{description:"Memo",value:"Ready"},region:{description:"Region",value:"South"}},
+        completion:{kind:"value",target:{role:"combobox",name:"Region"},input:"region"},
+        plan:[{action:"fill",target:{role:"date",name:"Schedule date"},input:"date"},
+              {action:"fill",target:{role:"spinbutton",name:"Units"},input:"quantity"},
+              {action:"fill",target:{role:"textbox",name:"Memo"},input:"memo"},
+              {action:"select",target:{role:"combobox",name:"Region"},input:"region"}]};
+      const receipt=await f.api(path+"/run",payload);
+      assert.equal(receipt.status,"needs_verification",receipt.reason);
+      assert.deepEqual(receipt.steps.map(s=>s.outcome),["completed","completed","completed","completed"]);
+      assert.equal(await page.locator("#schedule").inputValue(),"2027-03-18");
+      assert.equal(await page.locator("#units").inputValue(),"12");
+      assert.equal(await page.locator("#memo").inputValue(),"Ready");
+      assert.equal(await page.locator("#region").inputValue(),"South");
+      assert.equal(await page.evaluate(()=>window.nativeChanges),1);
+      assert.equal(receipt.observation.elements.find(e=>e.role==="date").date_parts,"[redacted]");
+      assert.equal((await f.api(path+"/run",payload)).id,receipt.id);
+      assert.equal(await page.evaluate(()=>window.nativeChanges),1);
+    });
     await t.test("acknowledged human pause during input prevents the second action",async()=>{
       await page.exposeFunction("testPause",()=>sharing({kind:"control",action:"pause"}));
       await page.evaluate(()=>document.querySelector("input").addEventListener("input",()=>{
