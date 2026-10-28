@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
+import evander.repositories.orchestration as orchestration_repository
 
 from completion_recovery_support import (
     assert_completion_query_plans,
@@ -333,6 +336,65 @@ def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     assert execution_store.find_execution_by_idempotency_key("idem-1") == running
     assert execution_store.get_execution("exec-1") == running
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
+
+
+def test_latest_gate_lookup_materializes_only_the_selected_payload(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    store = SqliteGateExecutionStore(path)
+    now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
+    for execution_id, finished_minutes, started_minutes, gate_id in [
+        ("older", 3, 3, "merge-1"),
+        ("later-finish", 10, 2, "merge-1"),
+        ("latest-a", 10, 4, "merge-1"),
+        ("latest-z", 10, 4, "merge-1"),
+        ("unrelated", 30, 30, "other"),
+    ]:
+        record = _gate_record(
+            execution_id=execution_id,
+            idempotency_key=execution_id,
+            gate_id=gate_id,
+            finished_at=now + timedelta(minutes=finished_minutes),
+        )
+        record.started_at = now + timedelta(minutes=started_minutes)
+        store.put(record)
+
+    # Observe payload reads without wall-clock timing or a particular query string.
+    with connect_orchestration_db(path) as connection:
+        connection.execute("ALTER TABLE gate_executions RENAME TO observed_gate_records")
+        columns = [
+            row["name"] for row in connection.execute("PRAGMA table_info(observed_gate_records)")
+        ]
+        projection = ", ".join(
+            "observe_gate_payload(payload_json) AS payload_json" if name == "payload_json" else name
+            for name in columns
+        )
+        connection.execute(
+            f"CREATE VIEW gate_executions AS SELECT {projection} FROM observed_gate_records"
+        )
+
+    payload_reads = 0
+
+    def observe_payload(payload):
+        nonlocal payload_reads
+        payload_reads += 1
+        return payload
+
+    @contextmanager
+    def observed_connection(database_path):
+        with connect_orchestration_db_read_only(database_path) as connection:
+            connection.create_function("observe_gate_payload", 1, observe_payload)
+            yield connection
+
+    monkeypatch.setattr(
+        orchestration_repository, "connect_orchestration_db_read_only", observed_connection
+    )
+    result = store.find_latest_execution_for_gate("merge-1")
+    assert result is not None
+    assert result.execution_id == "latest-z"
+    assert payload_reads == 1
+    payload_reads = 0
+    assert store.find_latest_execution_for_gate("absent") is None
+    assert payload_reads == 0
 
 
 def test_gate_completion_and_successor_event_commit_atomically(tmp_path: Path, monkeypatch) -> None:
