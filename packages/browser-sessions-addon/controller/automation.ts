@@ -7,11 +7,27 @@ function equal(a: string, b: string) {
   const x=Buffer.from(a), y=Buffer.from(b);
   return !!a && x.length===y.length && timingSafeEqual(x,y);
 }
+function interruptedFocus(error: unknown) {
+  const message=error instanceof Error?error.message:String(error);
+  return (error instanceof Error && error.name==="TargetClosedError") ||
+    ["page_unavailable","stale_control"].includes(message) ||
+    /\b(?:Target page, context or browser has been closed|Target closed|Session closed)\b/.test(message);
+}
+export async function observeTargetDestruction(owner:any, notify:(target:string)=>void) {
+  // Page.close on a CDP observer also fires when that observer disconnects.
+  // Only the browser-lifetime owner's independent protocol connection can
+  // supply the destruction evidence used to release a target's input fence.
+  const session=await owner.newBrowserCDPSession();
+  session.on("Target.targetDestroyed",({targetId}:{targetId:string})=>notify(targetId));
+  await session.send("Target.setDiscoverTargets",{discover:true});
+  return session;
+}
 export function automationBridge(config: any, endpoint: string, update: (state:any)=>Promise<void>, initial: any, focus: (target:string)=>Promise<void>=async()=>{}, fenceCommands: ()=>Promise<void>=async()=>{}) {
   let state=initial, token="";
   const clients=new Set<any>();
   const upstreams=new Set<any>();
   const pending=new Set<Promise<void>>();
+  const targetDestructions=new Set<(target:string)=>void>();
   const allowed=(url: string)=>url==="about:blank" || config.allowed_origins.includes(new URL(url).origin);
   const revoke=async()=>{
     token="";
@@ -57,19 +73,44 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
     clients.add(client);
     const upstream=new WebSocket(endpoint);
     upstreams.add(upstream);
-    const waits=new Map<number,()=>void>();
+    const waits=new Map<number,{sessionId?:string;done:()=>void}>();
+    const retired=new Set<number>();
+    const closedTargets=new Set<string>();
     const queued:any[]=[];
     const targets=new Map<string,string>();
     const fail=(message:any)=>client.send(JSON.stringify({id:message.id,sessionId:message.sessionId,error:{code:-32000,message:"Evander browser policy denied command"}}));
+    const closed=(message:any)=>{
+      if(client.readyState===1)client.send(JSON.stringify({id:message.id,sessionId:message.sessionId,error:{code:-32000,message:"Target closed"}}));
+    };
+    const targetDestroyed=(target:string)=>{
+      // Only independent browser Target.targetDestroyed evidence calls this.
+      // Neither observer Page.close nor a CDP detach can release an input fence.
+      closedTargets.add(target);
+      for(const [id,wait] of waits)if(wait.sessionId && targets.get(wait.sessionId)===target) {
+        waits.delete(id);retired.add(id);wait.done();closed({id,sessionId:wait.sessionId});
+      }
+    };
+    targetDestructions.add(targetDestroyed);
+    const focusFailed=(error:unknown)=>{
+      // Input may already have reached Chrome. A queued viewer selection can
+      // lose its target while that page closes; it must not kill the controller.
+      // Other failures remain visible as an interrupted automation connection.
+      if(!interruptedFocus(error))client.close(1011,"browser_focus_failed");
+    };
     client.on("message",(raw:any)=>{
       try {
         if(!clients.has(client) || !equal(clientToken,token) || clientGeneration!==state.control_generation || state.controller!=="agent:"+state.agent_session_id || !token) {client.close(4001,"control_revoked");return;}
         const message=JSON.parse(String(raw));
+        const target=targets.get(message.sessionId);
+        if(target && closedTargets.has(target)) {closed(message);return;}
         if(["Browser.close","Browser.crash","DOM.setFileInputFiles","Target.exposeDevToolsProtocol","Target.sendMessageToTarget"].includes(message.method)) {fail(message);return;}
         if(message.method==="Network.loadNetworkResource" && !allowed(message.params?.url??"")) {fail(message);return;}
         if(message.method==="Target.attachToTarget" && message.params?.flatten===false) {fail(message);return;}
         if(["Page.navigate","Target.createTarget"].includes(message.method) && message.params?.url && !allowed(message.params.url)) {fail(message);return;}
-        if((message.method.startsWith("Input.") || message.method==="Page.navigate") && targets.has(message.sessionId))void focus(targets.get(message.sessionId)!);
+        if((message.method.startsWith("Input.") || message.method==="Page.navigate") && targets.has(message.sessionId)) {
+          try {void focus(targets.get(message.sessionId)!).catch(focusFailed);}
+          catch(error) {focusFailed(error);}
+        }
         if(message.method==="Target.createBrowserContext") {
           message.params={...message.params,disposeOnDetach:false};
           if(config.proxy) {message.params.proxyServer=config.proxy.server;message.params.proxyBypassList="<-loopback>"+(config.proxy.bypass?","+config.proxy.bypass:"");}
@@ -78,7 +119,7 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
         if(["Browser.setDownloadBehavior","Page.setDownloadBehavior"].includes(message.method)) message.params={...message.params,behavior:"deny"};
         let done!:()=>void;
         const settled=new Promise<void>(resolve=>{done=resolve;});
-        pending.add(settled);waits.set(message.id,()=>{pending.delete(settled);done();});
+        pending.add(settled);waits.set(message.id,{sessionId:message.sessionId,done:()=>{pending.delete(settled);done();}});
         if(upstream.readyState===WebSocket.OPEN) upstream.send(JSON.stringify(message));else queued.push(message);
       } catch {client.close(1008,"invalid_command");}
     });
@@ -87,11 +128,14 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
       try {
         const message=JSON.parse(String(event.data));
         if(message.method==="Target.attachedToTarget")targets.set(message.params.sessionId,message.params.targetInfo.targetId);
-        if(message.id!==undefined) {waits.get(message.id)?.();waits.delete(message.id);}
+        if(message.id!==undefined) {
+          if(retired.delete(message.id))return;
+          waits.get(message.id)?.done();waits.delete(message.id);
+        }
         if(client.readyState===1) client.send(String(event.data));
       } catch {client.close(1011,"browser_disconnected");}
     });
-    upstream.addEventListener("close",()=>{for(const done of waits.values()) done();waits.clear();upstreams.delete(upstream);client.close(1011,"browser_disconnected");});
+    upstream.addEventListener("close",()=>{for(const wait of waits.values())wait.done();waits.clear();targetDestructions.delete(targetDestroyed);upstreams.delete(upstream);client.close(1011,"browser_disconnected");});
     upstream.addEventListener("error",()=>upstream.close());
     client.on("close",()=>{
       // A descriptor authorizes one connection. An old close notification must
@@ -105,5 +149,5 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
   });
   const listening=new Promise<number>(resolve=>server.once("listening",()=>resolve((server.address() as any).port)));
   server.listen(config.control_port??11895,"0.0.0.0");
-  return {revoke,setState,listening,active:()=>clients.size>0,close:async()=>{await revoke().catch(()=>{});for(const upstream of upstreams)upstream.close();sockets.close();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+  return {revoke,setState,listening,targetDestroyed:(target:string)=>{for(const notify of targetDestructions)notify(target);},active:()=>clients.size>0,close:async()=>{await revoke().catch(()=>{});for(const upstream of upstreams)upstream.close();sockets.close();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }

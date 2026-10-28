@@ -36,6 +36,12 @@ in the tool receipt. Playwright can instead use the existing
 `createManagedWebsiteContext` helper, which obtains current authentication through
 the owning job's normal broker configuration.
 
+Both login paths use the browser's delegated target proxy. The hosted controller
+keeps proxy authentication working for contexts created by another Playwright
+connection, including after that connection detaches. The broker's successful
+login response establishes the available website session; verify the signed-in
+application page after navigating the managed context.
+
 ## Connecting test code
 
 Enable `playwright_enabled` in both copies of the approved browser profile and

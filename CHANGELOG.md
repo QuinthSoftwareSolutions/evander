@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-28 - Preserve shared-browser managed login across Playwright contexts (0.138.4)
+
+- Keep the hosted controller's navigation routes while answering its fallback authentication challenges for the browser's configured proxy with the existing delegated proof. Agent-created managed website contexts can navigate and remain signed in after human takeover or reconnection.
+- Serialize hosted tab selection so concurrent agent focus and viewer requests cannot start the same screencast twice and terminate the controller.
+- Keep background focus interruptions on closed pages from terminating the controller. Retire pending commands only after an independent browser-owner `Target.targetDestroyed` event, while retaining normal fences when an observer disconnects or a live target detaches and reporting explicit command failures.
+- Keep proxy authentication scoped to the matching proxy and CDP target, leave application authentication decisions unchanged, and cancel rejected proof instead of retrying indefinitely. Verify managed cookies and browser storage, isolated tabs, retained login, fresh HTTPS CONNECT authentication after agent detach, and transport cleanup with synthetic fixtures.
+
 ## 2026-10-28 - Share live workflow run snapshots (0.138.3)
 
 - Share workflow run collection across REST requests and live streams, with one producer per runtime, event-revision invalidation and a one-second expiry for quiet runtimes. Preserve collection timestamps, filter run/activity permissions separately for every reader, and publish recent-activity-only changes to authorized streams.

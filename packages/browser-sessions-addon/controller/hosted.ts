@@ -4,9 +4,10 @@ import { join as joinPath } from "node:path";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { automationBridge } from "./automation.js";
+import { automationBridge, observeTargetDestruction } from "./automation.js";
 import { BrowserEngine } from "../shared/engine.js";
 import { commandAuthority } from "./commands.js";
+import { controllerConnection } from "./connection.js";
 
 const config = JSON.parse(await readFile(process.env.EVANDER_BROWSER_CONNECTION!, "utf8"));
 const requirePlaywright = createRequire(import.meta.url);
@@ -23,8 +24,9 @@ const owner = await chromium.launch({ headless: true, handleSIGTERM: false, hand
   executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH || undefined,
   ...(config.proxy ? {proxy:config.proxy} : {}),
   args: ["--disable-dev-shm-usage","--remote-debugging-port="+debugPort,"--remote-debugging-address=127.0.0.1"] });
-const browser = await chromium.connectOverCDP("http://127.0.0.1:"+debugPort);
 const version = await fetch("http://127.0.0.1:"+debugPort+"/json/version").then(response=>response.json()) as any;
+const connection = await controllerConnection(version.webSocketDebuggerUrl,config.proxy);
+const browser = await chromium.connectOverCDP(connection.endpoint);
 let storageState: any = undefined;
 try {
   const statePath = process.env.EVANDER_PREVIEW_STATE ?? "/run/preview-output/browser-state.json";
@@ -67,6 +69,7 @@ const known=new WeakMap<any,string>();
 const targetPages=new Map<string,string>();
 const engines=new Map<string,{page:any,cdp:any,engine:BrowserEngine}>();
 let active="";
+let selectionChain=Promise.resolve();
 const registering=new WeakMap<any,Promise<void>>();
 function register(page:any):Promise<void> {
   const existing=registering.get(page);if(existing)return existing;
@@ -89,15 +92,22 @@ async function registerPage(page:any) {
     } finally {await cdp.send("Page.screencastFrameAck",{sessionId:event.sessionId}).catch(()=>{});}
   });
   await cdp.send("Page.enable");
-  page.on("close",()=>{pages.delete(id);engines.delete(id);if(active===id){active="";const next=pages.keys().next().value;if(next)void select(next);}});
+  page.on("close",()=>{targetPages.delete(info.targetInfo.targetId);pages.delete(id);engines.delete(id);if(active===id){active="";const next=pages.keys().next().value;if(next)void select(next);}});
   if(!active)await select(id);
 }
-async function select(id:string) {
-  const selected=engines.get(id);if(!selected)throw new Error("page_unavailable");
-  const previous=engines.get(active);
-  if(previous)await previous.cdp.send("Page.stopScreencast").catch(()=>{});
-  active=id;
-  await selected.cdp.send("Page.startScreencast",{format:"jpeg",quality:65,maxWidth:1920,maxHeight:1080});
+function select(id:string):Promise<void> {
+  // Agent input and viewer selection can request the same transition before
+  // stopScreencast acknowledges. Serialize stop/start pairs to avoid starting
+  // an already active screencast and terminating the hosted controller.
+  const selecting=selectionChain.then(async()=>{
+    const selected=engines.get(id);if(!selected)throw new Error("page_unavailable");
+    const previous=engines.get(active);
+    if(previous)await previous.cdp.send("Page.stopScreencast").catch(()=>{});
+    active=id;
+    await selected.cdp.send("Page.startScreencast",{format:"jpeg",quality:65,maxWidth:1920,maxHeight:1080});
+  });
+  selectionChain=selecting.catch(()=>{});
+  return selecting;
 }
 function pageList(){return [...pages].map(([id,page])=>({id,url:page.url(),selected:id===active})).filter(item=>item.url==="about:blank"||config.allowed_origins.includes(new URL(item.url).origin));}
 for(const current of browser.contexts()) {
@@ -112,8 +122,9 @@ const cdp=engines.get(known.get(page)!)!.cdp;
 const bridge=automationBridge(config,version.webSocketDebuggerUrl,async next=>{
   state=next;for(const current of engines.values())current.engine.update(state);
 },state,async target=>{const id=targetPages.get(target);if(id && active!==id)await select(id);},()=>commands.fence());
+await observeTargetDestruction(owner,bridge.targetDestroyed);
 for(const signal of ["SIGTERM","SIGINT"] as const)process.on(signal,()=>{
-  shuttingDown=true;socket?.close();void bridge.close().finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
+  shuttingDown=true;socket?.close();void bridge.close().finally(()=>connection.close()).finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
 });
 await cdp.send("Page.enable");
 await page.goto(config.entry_url, { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -207,4 +218,4 @@ try {
     await join();
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-} finally { clearInterval(heartbeat); clearTimeout(deadline); await bridge.close(); await owner.close(); await rm(chromeRuntime,{recursive:true,force:true}); }
+} finally { clearInterval(heartbeat); clearTimeout(deadline); await bridge.close(); await connection.close(); await owner.close(); await rm(chromeRuntime,{recursive:true,force:true}); }

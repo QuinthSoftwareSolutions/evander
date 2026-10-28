@@ -3720,7 +3720,7 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { createRequire } from "node:module";
 import { createServer as createServer2 } from "node:net";
-import { once } from "node:events";
+import { once as once2 } from "node:events";
 
 // controller/automation.ts
 import { createServer } from "node:http";
@@ -3741,6 +3741,16 @@ function equal(a, b) {
   const x = Buffer.from(a), y = Buffer.from(b);
   return !!a && x.length === y.length && timingSafeEqual(x, y);
 }
+function interruptedFocus(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return error instanceof Error && error.name === "TargetClosedError" || ["page_unavailable", "stale_control"].includes(message) || /\b(?:Target page, context or browser has been closed|Target closed|Session closed)\b/.test(message);
+}
+async function observeTargetDestruction(owner2, notify) {
+  const session = await owner2.newBrowserCDPSession();
+  session.on("Target.targetDestroyed", ({ targetId }) => notify(targetId));
+  await session.send("Target.setDiscoverTargets", { discover: true });
+  return session;
+}
 function automationBridge(config2, endpoint, update, initial, focus = async () => {
 }, fenceCommands = async () => {
 }) {
@@ -3748,6 +3758,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   const clients = /* @__PURE__ */ new Set();
   const upstreams = /* @__PURE__ */ new Set();
   const pending = /* @__PURE__ */ new Set();
+  const targetDestructions = /* @__PURE__ */ new Set();
   const allowed = (url) => url === "about:blank" || config2.allowed_origins.includes(new URL(url).origin);
   const revoke = async () => {
     token = "";
@@ -3814,9 +3825,27 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
     const upstream = new WebSocket(endpoint);
     upstreams.add(upstream);
     const waits = /* @__PURE__ */ new Map();
+    const retired = /* @__PURE__ */ new Set();
+    const closedTargets = /* @__PURE__ */ new Set();
     const queued = [];
     const targets = /* @__PURE__ */ new Map();
     const fail = (message) => client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32e3, message: "Evander browser policy denied command" } }));
+    const closed = (message) => {
+      if (client.readyState === 1) client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32e3, message: "Target closed" } }));
+    };
+    const targetDestroyed = (target) => {
+      closedTargets.add(target);
+      for (const [id, wait] of waits) if (wait.sessionId && targets.get(wait.sessionId) === target) {
+        waits.delete(id);
+        retired.add(id);
+        wait.done();
+        closed({ id, sessionId: wait.sessionId });
+      }
+    };
+    targetDestructions.add(targetDestroyed);
+    const focusFailed = (error) => {
+      if (!interruptedFocus(error)) client.close(1011, "browser_focus_failed");
+    };
     client.on("message", (raw) => {
       try {
         if (!clients.has(client) || !equal(clientToken, token) || clientGeneration !== state2.control_generation || state2.controller !== "agent:" + state2.agent_session_id || !token) {
@@ -3824,6 +3853,11 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           return;
         }
         const message = JSON.parse(String(raw));
+        const target = targets.get(message.sessionId);
+        if (target && closedTargets.has(target)) {
+          closed(message);
+          return;
+        }
         if (["Browser.close", "Browser.crash", "DOM.setFileInputFiles", "Target.exposeDevToolsProtocol", "Target.sendMessageToTarget"].includes(message.method)) {
           fail(message);
           return;
@@ -3840,7 +3874,13 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           fail(message);
           return;
         }
-        if ((message.method.startsWith("Input.") || message.method === "Page.navigate") && targets.has(message.sessionId)) void focus(targets.get(message.sessionId));
+        if ((message.method.startsWith("Input.") || message.method === "Page.navigate") && targets.has(message.sessionId)) {
+          try {
+            void focus(targets.get(message.sessionId)).catch(focusFailed);
+          } catch (error) {
+            focusFailed(error);
+          }
+        }
         if (message.method === "Target.createBrowserContext") {
           message.params = { ...message.params, disposeOnDetach: false };
           if (config2.proxy) {
@@ -3857,10 +3897,10 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           done = resolve;
         });
         pending.add(settled);
-        waits.set(message.id, () => {
+        waits.set(message.id, { sessionId: message.sessionId, done: () => {
           pending.delete(settled);
           done();
-        });
+        } });
         if (upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify(message));
         else queued.push(message);
       } catch {
@@ -3876,7 +3916,8 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
         const message = JSON.parse(String(event.data));
         if (message.method === "Target.attachedToTarget") targets.set(message.params.sessionId, message.params.targetInfo.targetId);
         if (message.id !== void 0) {
-          waits.get(message.id)?.();
+          if (retired.delete(message.id)) return;
+          waits.get(message.id)?.done();
           waits.delete(message.id);
         }
         if (client.readyState === 1) client.send(String(event.data));
@@ -3885,8 +3926,9 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
       }
     });
     upstream.addEventListener("close", () => {
-      for (const done of waits.values()) done();
+      for (const wait of waits.values()) wait.done();
       waits.clear();
+      targetDestructions.delete(targetDestroyed);
       upstreams.delete(upstream);
       client.close(1011, "browser_disconnected");
     });
@@ -3899,7 +3941,9 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   });
   const listening = new Promise((resolve) => server.once("listening", () => resolve(server.address().port)));
   server.listen(config2.control_port ?? 11895, "0.0.0.0");
-  return { revoke, setState, listening, active: () => clients.size > 0, close: async () => {
+  return { revoke, setState, listening, targetDestroyed: (target) => {
+    for (const notify of targetDestructions) notify(target);
+  }, active: () => clients.size > 0, close: async () => {
     await revoke().catch(() => {
     });
     for (const upstream of upstreams) upstream.close();
@@ -4414,13 +4458,118 @@ function commandAuthority(current) {
   };
 }
 
+// controller/connection.ts
+import { once } from "node:events";
+function proxyAuthentication(proxy) {
+  const challenges = /* @__PURE__ */ new Set(), attempted = /* @__PURE__ */ new Set();
+  const requests = /* @__PURE__ */ new Map();
+  const key = (sessionId, id) => JSON.stringify([sessionId ?? "", id]);
+  const cleanup = (network) => {
+    for (const id of requests.get(network) ?? []) {
+      challenges.delete(id);
+      attempted.delete(id);
+    }
+    requests.delete(network);
+  };
+  return {
+    received(message) {
+      const { method, params, sessionId } = message;
+      if (method === "Fetch.requestPaused" && params.networkId) {
+        const network = key(sessionId, params.networkId);
+        let ids = requests.get(network);
+        if (!ids) requests.set(network, ids = /* @__PURE__ */ new Set());
+        ids.add(key(sessionId, params.requestId));
+      } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+        cleanup(key(sessionId, params.requestId));
+      } else if (method === "Target.detachedFromTarget") {
+        const detached = params.sessionId;
+        for (const id of requests.keys()) if (JSON.parse(id)[0] === detached) cleanup(id);
+        for (const id of challenges) if (JSON.parse(id)[0] === detached) challenges.delete(id);
+        for (const id of attempted) if (JSON.parse(id)[0] === detached) attempted.delete(id);
+      } else if (method === "Fetch.authRequired") {
+        const id = key(sessionId, params.requestId);
+        challenges.delete(id);
+        if (params.authChallenge.source === "Proxy") {
+          try {
+            if (new URL(params.authChallenge.origin).origin === new URL(proxy.server).origin) challenges.add(id);
+          } catch {
+          }
+        }
+      }
+    },
+    sending(message) {
+      if (message.method !== "Fetch.continueWithAuth") return message;
+      const id = key(message.sessionId, message.params.requestId);
+      const trusted = challenges.delete(id);
+      if (!trusted || message.params.authChallengeResponse.response !== "Default" || proxy.username === void 0 || proxy.password === void 0) return message;
+      const authChallengeResponse = attempted.has(id) ? { response: "CancelAuth" } : { response: "ProvideCredentials", username: proxy.username, password: proxy.password };
+      attempted.add(id);
+      return { ...message, params: { ...message.params, authChallengeResponse } };
+    }
+  };
+}
+async function controllerConnection(endpoint, proxy) {
+  if (proxy?.username === void 0 || proxy.password === void 0) return { endpoint, close: async () => {
+  } };
+  const path = "/" + crypto.randomUUID();
+  const server = new import_websocket_server.default({ host: "127.0.0.1", port: 0, path, maxPayload: 8 * 1024 * 1024 });
+  const upstreams = /* @__PURE__ */ new Set();
+  server.on("connection", (client) => {
+    const upstream = new WebSocket(endpoint);
+    const auth = proxyAuthentication(proxy);
+    const queued = [];
+    upstreams.add(upstream);
+    client.on("message", (raw) => {
+      try {
+        const message = JSON.stringify(auth.sending(JSON.parse(String(raw))));
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+        else queued.push(message);
+      } catch {
+        client.close(1011, "browser_disconnected");
+      }
+    });
+    upstream.addEventListener("open", () => {
+      if (client.readyState !== 1) {
+        upstream.close();
+        return;
+      }
+      for (const message of queued) upstream.send(message);
+      queued.length = 0;
+    });
+    upstream.addEventListener("message", (event) => {
+      try {
+        auth.received(JSON.parse(String(event.data)));
+        if (client.readyState === 1) client.send(String(event.data));
+      } catch {
+        client.close(1011, "browser_disconnected");
+      }
+    });
+    upstream.addEventListener("close", () => {
+      upstreams.delete(upstream);
+      client.close(1011, "browser_disconnected");
+    });
+    upstream.addEventListener("error", () => upstream.close());
+    client.on("close", () => upstream.close());
+    client.on("error", () => upstream.close());
+  });
+  await once(server, "listening");
+  return {
+    endpoint: "ws://127.0.0.1:" + server.address().port + path,
+    close: async () => {
+      for (const client of server.clients) client.terminate();
+      for (const upstream of upstreams) upstream.close();
+      await new Promise((resolve) => server.close(() => resolve()));
+    }
+  };
+}
+
 // controller/hosted.ts
 var config = JSON.parse(await readFile(process.env.EVANDER_BROWSER_CONNECTION, "utf8"));
 var requirePlaywright = createRequire(import.meta.url);
 var { chromium } = requirePlaywright(process.env.EVANDER_PLAYWRIGHT_MODULE ?? "/opt/evander/playwright-runtime/node_modules/playwright");
 var portProbe = createServer2();
 portProbe.listen(0, "127.0.0.1");
-await once(portProbe, "listening");
+await once2(portProbe, "listening");
 var debugPort = portProbe.address().port;
 await new Promise((resolve) => portProbe.close(() => resolve()));
 var chromeRuntime = await mkdtemp(joinPath(tmpdir(), "evander-browser-"));
@@ -4437,8 +4586,9 @@ var owner = await chromium.launch({
   ...config.proxy ? { proxy: config.proxy } : {},
   args: ["--disable-dev-shm-usage", "--remote-debugging-port=" + debugPort, "--remote-debugging-address=127.0.0.1"]
 });
-var browser = await chromium.connectOverCDP("http://127.0.0.1:" + debugPort);
 var version = await fetch("http://127.0.0.1:" + debugPort + "/json/version").then((response) => response.json());
+var connection = await controllerConnection(version.webSocketDebuggerUrl, config.proxy);
+var browser = await chromium.connectOverCDP(connection.endpoint);
 var storageState = void 0;
 try {
   const statePath = process.env.EVANDER_PREVIEW_STATE ?? "/run/preview-output/browser-state.json";
@@ -4488,6 +4638,7 @@ var known = /* @__PURE__ */ new WeakMap();
 var targetPages = /* @__PURE__ */ new Map();
 var engines = /* @__PURE__ */ new Map();
 var active = "";
+var selectionChain = Promise.resolve();
 var registering = /* @__PURE__ */ new WeakMap();
 function register(page2) {
   const existing = registering.get(page2);
@@ -4520,6 +4671,7 @@ async function registerPage(page2) {
   });
   await cdp2.send("Page.enable");
   page2.on("close", () => {
+    targetPages.delete(info.targetInfo.targetId);
     pages.delete(id);
     engines.delete(id);
     if (active === id) {
@@ -4530,14 +4682,19 @@ async function registerPage(page2) {
   });
   if (!active) await select(id);
 }
-async function select(id) {
-  const selected = engines.get(id);
-  if (!selected) throw new Error("page_unavailable");
-  const previous = engines.get(active);
-  if (previous) await previous.cdp.send("Page.stopScreencast").catch(() => {
+function select(id) {
+  const selecting = selectionChain.then(async () => {
+    const selected = engines.get(id);
+    if (!selected) throw new Error("page_unavailable");
+    const previous = engines.get(active);
+    if (previous) await previous.cdp.send("Page.stopScreencast").catch(() => {
+    });
+    active = id;
+    await selected.cdp.send("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1920, maxHeight: 1080 });
   });
-  active = id;
-  await selected.cdp.send("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1920, maxHeight: 1080 });
+  selectionChain = selecting.catch(() => {
+  });
+  return selecting;
 }
 function pageList() {
   return [...pages].map(([id, page2]) => ({ id, url: page2.url(), selected: id === active })).filter((item) => item.url === "about:blank" || config.allowed_origins.includes(new URL(item.url).origin));
@@ -4561,10 +4718,11 @@ var bridge = automationBridge(config, version.webSocketDebuggerUrl, async (next)
   const id = targetPages.get(target);
   if (id && active !== id) await select(id);
 }, () => commands.fence());
+await observeTargetDestruction(owner, bridge.targetDestroyed);
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   shuttingDown = true;
   socket?.close();
-  void bridge.close().finally(() => owner.close()).finally(() => rm(chromeRuntime, { recursive: true, force: true })).finally(() => process.exit(0));
+  void bridge.close().finally(() => connection.close()).finally(() => owner.close()).finally(() => rm(chromeRuntime, { recursive: true, force: true })).finally(() => process.exit(0));
 });
 await cdp.send("Page.enable");
 await page.goto(config.entry_url, { waitUntil: "domcontentloaded", timeout: 6e4 });
@@ -4685,6 +4843,7 @@ try {
   clearInterval(heartbeat);
   clearTimeout(deadline);
   await bridge.close();
+  await connection.close();
   await owner.close();
   await rm(chromeRuntime, { recursive: true, force: true });
 }
