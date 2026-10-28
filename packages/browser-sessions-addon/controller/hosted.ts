@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { automationBridge } from "./automation.js";
 import { BrowserEngine } from "../shared/engine.js";
 import { commandAuthority } from "./commands.js";
+import { controllerConnection } from "./connection.js";
 
 const config = JSON.parse(await readFile(process.env.EVANDER_BROWSER_CONNECTION!, "utf8"));
 const requirePlaywright = createRequire(import.meta.url);
@@ -23,8 +24,9 @@ const owner = await chromium.launch({ headless: true, handleSIGTERM: false, hand
   executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH || undefined,
   ...(config.proxy ? {proxy:config.proxy} : {}),
   args: ["--disable-dev-shm-usage","--remote-debugging-port="+debugPort,"--remote-debugging-address=127.0.0.1"] });
-const browser = await chromium.connectOverCDP("http://127.0.0.1:"+debugPort);
 const version = await fetch("http://127.0.0.1:"+debugPort+"/json/version").then(response=>response.json()) as any;
+const connection = await controllerConnection(version.webSocketDebuggerUrl,config.proxy);
+const browser = await chromium.connectOverCDP(connection.endpoint);
 let storageState: any = undefined;
 try {
   const statePath = process.env.EVANDER_PREVIEW_STATE ?? "/run/preview-output/browser-state.json";
@@ -113,7 +115,7 @@ const bridge=automationBridge(config,version.webSocketDebuggerUrl,async next=>{
   state=next;for(const current of engines.values())current.engine.update(state);
 },state,async target=>{const id=targetPages.get(target);if(id && active!==id)await select(id);},()=>commands.fence());
 for(const signal of ["SIGTERM","SIGINT"] as const)process.on(signal,()=>{
-  shuttingDown=true;socket?.close();void bridge.close().finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
+  shuttingDown=true;socket?.close();void bridge.close().finally(()=>connection.close()).finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
 });
 await cdp.send("Page.enable");
 await page.goto(config.entry_url, { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -207,4 +209,4 @@ try {
     await join();
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-} finally { clearInterval(heartbeat); clearTimeout(deadline); await bridge.close(); await owner.close(); await rm(chromeRuntime,{recursive:true,force:true}); }
+} finally { clearInterval(heartbeat); clearTimeout(deadline); await bridge.close(); await connection.close(); await owner.close(); await rm(chromeRuntime,{recursive:true,force:true}); }

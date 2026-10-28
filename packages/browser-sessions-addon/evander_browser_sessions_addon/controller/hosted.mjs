@@ -3720,7 +3720,7 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { createRequire } from "node:module";
 import { createServer as createServer2 } from "node:net";
-import { once } from "node:events";
+import { once as once2 } from "node:events";
 
 // controller/automation.ts
 import { createServer } from "node:http";
@@ -4414,13 +4414,118 @@ function commandAuthority(current) {
   };
 }
 
+// controller/connection.ts
+import { once } from "node:events";
+function proxyAuthentication(proxy) {
+  const challenges = /* @__PURE__ */ new Set(), attempted = /* @__PURE__ */ new Set();
+  const requests = /* @__PURE__ */ new Map();
+  const key = (sessionId, id) => JSON.stringify([sessionId ?? "", id]);
+  const cleanup = (network) => {
+    for (const id of requests.get(network) ?? []) {
+      challenges.delete(id);
+      attempted.delete(id);
+    }
+    requests.delete(network);
+  };
+  return {
+    received(message) {
+      const { method, params, sessionId } = message;
+      if (method === "Fetch.requestPaused" && params.networkId) {
+        const network = key(sessionId, params.networkId);
+        let ids = requests.get(network);
+        if (!ids) requests.set(network, ids = /* @__PURE__ */ new Set());
+        ids.add(key(sessionId, params.requestId));
+      } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+        cleanup(key(sessionId, params.requestId));
+      } else if (method === "Target.detachedFromTarget") {
+        const detached = params.sessionId;
+        for (const id of requests.keys()) if (JSON.parse(id)[0] === detached) cleanup(id);
+        for (const id of challenges) if (JSON.parse(id)[0] === detached) challenges.delete(id);
+        for (const id of attempted) if (JSON.parse(id)[0] === detached) attempted.delete(id);
+      } else if (method === "Fetch.authRequired") {
+        const id = key(sessionId, params.requestId);
+        challenges.delete(id);
+        if (params.authChallenge.source === "Proxy") {
+          try {
+            if (new URL(params.authChallenge.origin).origin === new URL(proxy.server).origin) challenges.add(id);
+          } catch {
+          }
+        }
+      }
+    },
+    sending(message) {
+      if (message.method !== "Fetch.continueWithAuth") return message;
+      const id = key(message.sessionId, message.params.requestId);
+      const trusted = challenges.delete(id);
+      if (!trusted || message.params.authChallengeResponse.response !== "Default" || proxy.username === void 0 || proxy.password === void 0) return message;
+      const authChallengeResponse = attempted.has(id) ? { response: "CancelAuth" } : { response: "ProvideCredentials", username: proxy.username, password: proxy.password };
+      attempted.add(id);
+      return { ...message, params: { ...message.params, authChallengeResponse } };
+    }
+  };
+}
+async function controllerConnection(endpoint, proxy) {
+  if (proxy?.username === void 0 || proxy.password === void 0) return { endpoint, close: async () => {
+  } };
+  const path = "/" + crypto.randomUUID();
+  const server = new import_websocket_server.default({ host: "127.0.0.1", port: 0, path, maxPayload: 8 * 1024 * 1024 });
+  const upstreams = /* @__PURE__ */ new Set();
+  server.on("connection", (client) => {
+    const upstream = new WebSocket(endpoint);
+    const auth = proxyAuthentication(proxy);
+    const queued = [];
+    upstreams.add(upstream);
+    client.on("message", (raw) => {
+      try {
+        const message = JSON.stringify(auth.sending(JSON.parse(String(raw))));
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+        else queued.push(message);
+      } catch {
+        client.close(1011, "browser_disconnected");
+      }
+    });
+    upstream.addEventListener("open", () => {
+      if (client.readyState !== 1) {
+        upstream.close();
+        return;
+      }
+      for (const message of queued) upstream.send(message);
+      queued.length = 0;
+    });
+    upstream.addEventListener("message", (event) => {
+      try {
+        auth.received(JSON.parse(String(event.data)));
+        if (client.readyState === 1) client.send(String(event.data));
+      } catch {
+        client.close(1011, "browser_disconnected");
+      }
+    });
+    upstream.addEventListener("close", () => {
+      upstreams.delete(upstream);
+      client.close(1011, "browser_disconnected");
+    });
+    upstream.addEventListener("error", () => upstream.close());
+    client.on("close", () => upstream.close());
+    client.on("error", () => upstream.close());
+  });
+  await once(server, "listening");
+  return {
+    endpoint: "ws://127.0.0.1:" + server.address().port + path,
+    close: async () => {
+      for (const client of server.clients) client.terminate();
+      for (const upstream of upstreams) upstream.close();
+      await new Promise((resolve) => server.close(() => resolve()));
+    }
+  };
+}
+
 // controller/hosted.ts
 var config = JSON.parse(await readFile(process.env.EVANDER_BROWSER_CONNECTION, "utf8"));
 var requirePlaywright = createRequire(import.meta.url);
 var { chromium } = requirePlaywright(process.env.EVANDER_PLAYWRIGHT_MODULE ?? "/opt/evander/playwright-runtime/node_modules/playwright");
 var portProbe = createServer2();
 portProbe.listen(0, "127.0.0.1");
-await once(portProbe, "listening");
+await once2(portProbe, "listening");
 var debugPort = portProbe.address().port;
 await new Promise((resolve) => portProbe.close(() => resolve()));
 var chromeRuntime = await mkdtemp(joinPath(tmpdir(), "evander-browser-"));
@@ -4437,8 +4542,9 @@ var owner = await chromium.launch({
   ...config.proxy ? { proxy: config.proxy } : {},
   args: ["--disable-dev-shm-usage", "--remote-debugging-port=" + debugPort, "--remote-debugging-address=127.0.0.1"]
 });
-var browser = await chromium.connectOverCDP("http://127.0.0.1:" + debugPort);
 var version = await fetch("http://127.0.0.1:" + debugPort + "/json/version").then((response) => response.json());
+var connection = await controllerConnection(version.webSocketDebuggerUrl, config.proxy);
+var browser = await chromium.connectOverCDP(connection.endpoint);
 var storageState = void 0;
 try {
   const statePath = process.env.EVANDER_PREVIEW_STATE ?? "/run/preview-output/browser-state.json";
@@ -4564,7 +4670,7 @@ var bridge = automationBridge(config, version.webSocketDebuggerUrl, async (next)
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   shuttingDown = true;
   socket?.close();
-  void bridge.close().finally(() => owner.close()).finally(() => rm(chromeRuntime, { recursive: true, force: true })).finally(() => process.exit(0));
+  void bridge.close().finally(() => connection.close()).finally(() => owner.close()).finally(() => rm(chromeRuntime, { recursive: true, force: true })).finally(() => process.exit(0));
 });
 await cdp.send("Page.enable");
 await page.goto(config.entry_url, { waitUntil: "domcontentloaded", timeout: 6e4 });
@@ -4685,6 +4791,7 @@ try {
   clearInterval(heartbeat);
   clearTimeout(deadline);
   await bridge.close();
+  await connection.close();
   await owner.close();
   await rm(chromeRuntime, { recursive: true, force: true });
 }
