@@ -2287,8 +2287,9 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     assert payload["recent_node_activity"][2]["status"] == "delivered"
 
 
+@pytest.mark.parametrize("with_auth", [False, True])
 def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_auth: bool
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
@@ -2346,9 +2347,19 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
     monkeypatch.setattr(
         service.workflow_config_admin, "read_workflow_run_snapshot", lambda: next(snapshots)
     )
+    auth = None
+    if with_auth:
+        auth = SimpleNamespace(can=lambda *args, **kwargs: True)
+        monkeypatch.setattr(
+            service.workflow_config_admin,
+            "read_composed_workflow_editor_document",
+            lambda: SimpleNamespace(
+                graphs=[{"id": "graph", "directory_path": "root", "node_ids": ["trigger-a"]}]
+            ),
+        )
 
     async def read_two_events() -> tuple[str, str]:
-        stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
+        stream = _workflow_run_events(service, RequestStub(), auth=auth)  # type: ignore[arg-type]
         try:
             first = await asyncio.wait_for(anext(stream), timeout=1.0)
             second = await asyncio.wait_for(anext(stream), timeout=1.0)

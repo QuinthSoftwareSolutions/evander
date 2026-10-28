@@ -74,8 +74,10 @@ from evander.repositories.orchestration_db import (
     datetime_to_storage as datetime_to_storage,
     ensure_orchestration_schema,
 )
+from evander.workflow.events import SqliteWorkflowEventJournal
 
 WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS = 15.0
+WORKFLOW_RUN_SNAPSHOT_TTL_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -100,6 +102,9 @@ class WorkflowReportsAdminService:
         self._list_agents = dependencies.list_agents
         self._graph_activity_snapshots: SnapshotCache[WorkflowGraphActivityReportPayload] = (
             SnapshotCache(ttl_seconds=WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS)
+        )
+        self._run_snapshots: SnapshotCache[WorkflowRunSnapshotPayload] = SnapshotCache(
+            ttl_seconds=WORKFLOW_RUN_SNAPSHOT_TTL_SECONDS
         )
 
     @property
@@ -186,14 +191,33 @@ class WorkflowReportsAdminService:
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()
-        now = _utc_now()
+        db_path = Path(stores["orchestration_store_path"])
+        journal = SqliteWorkflowEventJournal(db_path)
+        revision = journal.cursor()
+        identity = db_path.stat()
+        key = (
+            db_path.resolve(),
+            identity.st_dev,
+            identity.st_ino,
+            Path(stores["runtime_dir"]).resolve(),
+        )
+        snapshot = self._run_snapshots.read(
+            key,
+            lambda: self._collect_workflow_run_snapshot(stores),
+            minimum_revision=revision,
+            read_revision=journal.cursor,
+        )
+        return snapshot.model_copy(deep=True)
 
+    def _collect_workflow_run_snapshot(
+        self, stores: Mapping[str, Any]
+    ) -> WorkflowRunSnapshotPayload:
         from .workflow_run_snapshot import WorkflowRunSnapshotBuilder
 
         return WorkflowRunSnapshotBuilder(
             service=self,
             stores=stores,
-            now=now,
+            now=_utc_now(),
             pending_loader=_read_merged_json_objects,
         ).build()
 

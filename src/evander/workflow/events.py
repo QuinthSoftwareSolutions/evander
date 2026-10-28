@@ -118,7 +118,7 @@ class SqliteWorkflowEventJournal:
     async def wait_after(
         self, cursor: int, *, timeout_seconds: float
     ) -> tuple[list[WorkflowChangeEvent], int]:
-        events, next_cursor = self.read_after(cursor)
+        events, next_cursor = await asyncio.to_thread(self.read_after, cursor)
         if events or timeout_seconds <= 0:
             return events, next_cursor
 
@@ -126,7 +126,7 @@ class SqliteWorkflowEventJournal:
         poll_seconds = 0.25
         while time.monotonic() < deadline:
             await asyncio.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
-            events, next_cursor = self.read_after(cursor)
+            events, next_cursor = await asyncio.to_thread(self.read_after, cursor)
             if events:
                 return events, next_cursor
-        return self.read_after(cursor)
+        return await asyncio.to_thread(self.read_after, cursor)
