@@ -4,6 +4,7 @@
 
 - Keep the hosted controller's navigation routes while answering its fallback authentication challenges for the browser's configured proxy with the existing delegated proof. Agent-created managed website contexts can navigate and remain signed in after human takeover or reconnection.
 - Serialize hosted tab selection so concurrent agent focus and viewer requests cannot start the same screencast twice and terminate the controller.
+- Keep background focus interruptions on closed pages from terminating the controller. Retire pending commands only after the owner observes the physical target close, while retaining normal fences for live or merely detached targets and reporting explicit command failures.
 - Keep proxy authentication scoped to the matching proxy and CDP target, leave application authentication decisions unchanged, and cancel rejected proof instead of retrying indefinitely. Verify managed cookies and browser storage, isolated tabs, retained login, fresh HTTPS CONNECT authentication after agent detach, and transport cleanup with synthetic fixtures.
 
 ## 2026-10-28 - Share live workflow run snapshots (0.138.3)

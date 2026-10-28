@@ -3741,6 +3741,10 @@ function equal(a, b) {
   const x = Buffer.from(a), y = Buffer.from(b);
   return !!a && x.length === y.length && timingSafeEqual(x, y);
 }
+function interruptedFocus(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return error instanceof Error && error.name === "TargetClosedError" || ["page_unavailable", "stale_control"].includes(message) || /\b(?:Target page, context or browser has been closed|Target closed|Session closed)\b/.test(message);
+}
 function automationBridge(config2, endpoint, update, initial, focus = async () => {
 }, fenceCommands = async () => {
 }) {
@@ -3748,6 +3752,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   const clients = /* @__PURE__ */ new Set();
   const upstreams = /* @__PURE__ */ new Set();
   const pending = /* @__PURE__ */ new Set();
+  const targetClosures = /* @__PURE__ */ new Set();
   const allowed = (url) => url === "about:blank" || config2.allowed_origins.includes(new URL(url).origin);
   const revoke = async () => {
     token = "";
@@ -3814,9 +3819,27 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
     const upstream = new WebSocket(endpoint);
     upstreams.add(upstream);
     const waits = /* @__PURE__ */ new Map();
+    const retired = /* @__PURE__ */ new Set();
+    const closedTargets = /* @__PURE__ */ new Set();
     const queued = [];
     const targets = /* @__PURE__ */ new Map();
     const fail = (message) => client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32e3, message: "Evander browser policy denied command" } }));
+    const closed = (message) => {
+      if (client.readyState === 1) client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32e3, message: "Target closed" } }));
+    };
+    const targetClosed = (target) => {
+      closedTargets.add(target);
+      for (const [id, wait] of waits) if (wait.sessionId && targets.get(wait.sessionId) === target) {
+        waits.delete(id);
+        retired.add(id);
+        wait.done();
+        closed({ id, sessionId: wait.sessionId });
+      }
+    };
+    targetClosures.add(targetClosed);
+    const focusFailed = (error) => {
+      if (!interruptedFocus(error)) client.close(1011, "browser_focus_failed");
+    };
     client.on("message", (raw) => {
       try {
         if (!clients.has(client) || !equal(clientToken, token) || clientGeneration !== state2.control_generation || state2.controller !== "agent:" + state2.agent_session_id || !token) {
@@ -3824,6 +3847,11 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           return;
         }
         const message = JSON.parse(String(raw));
+        const target = targets.get(message.sessionId);
+        if (target && closedTargets.has(target)) {
+          closed(message);
+          return;
+        }
         if (["Browser.close", "Browser.crash", "DOM.setFileInputFiles", "Target.exposeDevToolsProtocol", "Target.sendMessageToTarget"].includes(message.method)) {
           fail(message);
           return;
@@ -3840,7 +3868,13 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           fail(message);
           return;
         }
-        if ((message.method.startsWith("Input.") || message.method === "Page.navigate") && targets.has(message.sessionId)) void focus(targets.get(message.sessionId));
+        if ((message.method.startsWith("Input.") || message.method === "Page.navigate") && targets.has(message.sessionId)) {
+          try {
+            void focus(targets.get(message.sessionId)).catch(focusFailed);
+          } catch (error) {
+            focusFailed(error);
+          }
+        }
         if (message.method === "Target.createBrowserContext") {
           message.params = { ...message.params, disposeOnDetach: false };
           if (config2.proxy) {
@@ -3857,10 +3891,10 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
           done = resolve;
         });
         pending.add(settled);
-        waits.set(message.id, () => {
+        waits.set(message.id, { sessionId: message.sessionId, done: () => {
           pending.delete(settled);
           done();
-        });
+        } });
         if (upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify(message));
         else queued.push(message);
       } catch {
@@ -3876,7 +3910,8 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
         const message = JSON.parse(String(event.data));
         if (message.method === "Target.attachedToTarget") targets.set(message.params.sessionId, message.params.targetInfo.targetId);
         if (message.id !== void 0) {
-          waits.get(message.id)?.();
+          if (retired.delete(message.id)) return;
+          waits.get(message.id)?.done();
           waits.delete(message.id);
         }
         if (client.readyState === 1) client.send(String(event.data));
@@ -3885,8 +3920,9 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
       }
     });
     upstream.addEventListener("close", () => {
-      for (const done of waits.values()) done();
+      for (const wait of waits.values()) wait.done();
       waits.clear();
+      targetClosures.delete(targetClosed);
       upstreams.delete(upstream);
       client.close(1011, "browser_disconnected");
     });
@@ -3899,7 +3935,9 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   });
   const listening = new Promise((resolve) => server.once("listening", () => resolve(server.address().port)));
   server.listen(config2.control_port ?? 11895, "0.0.0.0");
-  return { revoke, setState, listening, active: () => clients.size > 0, close: async () => {
+  return { revoke, setState, listening, targetClosed: (target) => {
+    for (const notify of targetClosures) notify(target);
+  }, active: () => clients.size > 0, close: async () => {
     await revoke().catch(() => {
     });
     for (const upstream of upstreams) upstream.close();
@@ -4595,6 +4633,8 @@ var targetPages = /* @__PURE__ */ new Map();
 var engines = /* @__PURE__ */ new Map();
 var active = "";
 var selectionChain = Promise.resolve();
+var notifyTargetClosed = (_target) => {
+};
 var registering = /* @__PURE__ */ new WeakMap();
 function register(page2) {
   const existing = registering.get(page2);
@@ -4627,6 +4667,8 @@ async function registerPage(page2) {
   });
   await cdp2.send("Page.enable");
   page2.on("close", () => {
+    notifyTargetClosed(info.targetInfo.targetId);
+    targetPages.delete(info.targetInfo.targetId);
     pages.delete(id);
     engines.delete(id);
     if (active === id) {
@@ -4673,6 +4715,7 @@ var bridge = automationBridge(config, version.webSocketDebuggerUrl, async (next)
   const id = targetPages.get(target);
   if (id && active !== id) await select(id);
 }, () => commands.fence());
+notifyTargetClosed = bridge.targetClosed;
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   shuttingDown = true;
   socket?.close();

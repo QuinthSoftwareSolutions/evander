@@ -152,6 +152,11 @@ for (const { authenticatedProxy, nativeLogin, secure } of [{authenticatedProxy:f
         const response = await fetch(`http://127.0.0.1:${controlPort}/control`, { method: "POST", headers: { Authorization: "Bearer worker-proof", "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
         assert.equal(response.status, 200, await response.text());
       };
+      const nativeCommand = async (action, extra = {}) => {
+        const id = crypto.randomUUID();
+        relay.send(JSON.stringify({kind: "command", actor: state.controller, command: {id, action, generation: state.control_generation, ...extra}}));
+        return until(() => results.get(id), "native " + action, 5000);
+      };
       await control({ session: state, automation_token: "agent-proof" });
       trace("descriptor granted");
       agent = await chromium.connectOverCDP(`ws://127.0.0.1:${controlPort}/connect`, { headers: { Authorization: "Bearer agent-proof", "X-Evander-Control-Generation": "0" }, timeout: 5000 });
@@ -189,6 +194,29 @@ for (const { authenticatedProxy, nativeLogin, secure } of [{authenticatedProxy:f
       assert.ok(original);
       assert.equal(await original.locator("h1").textContent({timeout: 3000}), "Login required");
       assert.equal(await original.evaluate(() => fetch("/identity").then(response => response.text())), "anonymous");
+      if (!authenticatedProxy) {
+        const disposableContext = await agent.newContext();
+        const closingPage = await disposableContext.newPage();
+        const closingInput = await disposableContext.newCDPSession(closingPage);
+        const closingId = await until(async () => {
+          const listed = await nativeCommand("pages");
+          return listed.result.pages.find(item => item.url === "about:blank")?.id;
+        }, "disposable target registered");
+        assert.equal((await nativeCommand("select_page", {page_id: initial.result.page_id})).error, undefined);
+        // A closing target can invalidate focus requests already queued behind
+        // the original page's stop-screencast call. Losing that target must not
+        // terminate the controller or conceal explicit invalid-page errors.
+        await bounded(Promise.allSettled([
+          ...Array.from({length: 16}, (_, x) => closingInput.send("Input.dispatchMouseEvent", {type: "mouseMoved", x, y: 1})),
+          closingInput.send("Page.close"),
+        ]), "closing target with queued focus", 3000);
+        await until(() => closingPage.isClosed(), "disposable target closed");
+        assert.equal((await nativeCommand("select_page", {page_id: initial.result.page_id})).error, undefined);
+        const rejected = await nativeCommand("select_page", {page_id: closingId});
+        assert.equal(rejected.error, true);
+        assert.equal(rejected.code, "page_unavailable");
+        await disposableContext.close();
+      }
       if (secure) {
         // Two in-flight input requests can both attempt to select the managed
         // tab while the initial tab's stop-screencast acknowledgement is pending.
