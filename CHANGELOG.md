@@ -3,6 +3,7 @@
 ## 2026-10-28 - Share live workflow run snapshots (0.138.3)
 
 - Share workflow run collection across REST requests and live streams, with one producer per runtime, event-revision invalidation and a one-second expiry for quiet runtimes. Preserve collection timestamps, filter run/activity permissions separately for every reader, and publish recent-activity-only changes to authorized streams.
+- Capture the current revision when a waiting reader becomes the producer, and share that revision with its result, so staggered readers reuse one fresh collection rather than rebuilding it sequentially.
 - Keep live-stream authorization setup, journal cursors and event polling off the Admin Web event loop so slow storage reads do not stall unrelated requests.
 
 ## 2026-10-27 - Restore complete test coverage (0.138.2)

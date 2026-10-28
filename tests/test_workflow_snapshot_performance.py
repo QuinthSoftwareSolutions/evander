@@ -209,53 +209,72 @@ def test_switching_runtime_does_not_reuse_another_database_snapshot(runtime, tmp
     assert runtime.service._read_workflow_run_snapshot().runs[0].event_id == "event-beta"
 
 
-def test_new_revision_waits_for_older_collection_then_coalesces_one_fresh_collection(
-    runtime, monkeypatch
+@pytest.mark.parametrize("stagger_revisions", [False, True])
+def test_waiting_readers_share_one_fresh_collection_across_revisions(
+    runtime, monkeypatch, stagger_revisions
 ):
     _publish(runtime.queue)
     entered = threading.Event()
     release = threading.Event()
-    waiting = threading.Event()
-    waiter_count = 0
-    waiter_lock = threading.Lock()
+    names = ("beta", "gamma", "delta")
+    waiting = {name: threading.Event() for name in names}
+    resume = {name: threading.Event() for name in names}
+    reader = threading.local()
     collections = []
     collect = runtime.service._collect_workflow_run_snapshot
 
     class TrackedFuture(Future):
         def result(self, timeout=None):
-            nonlocal waiter_count
-            with waiter_lock:
-                waiter_count += 1
-                if waiter_count == 3:
-                    waiting.set()
-            return super().result(timeout=timeout)
+            name = reader.name
+            waiting[name].set()
+            result = super().result(timeout=timeout)
+            # Wake the oldest revision first to expose redundant rebuilds;
+            # relying on the scheduler's waiter order would hide the race.
+            assert resume[name].wait(5)
+            return result
 
     monkeypatch.setattr(snapshot_cache, "Future", TrackedFuture)
 
     def blocked(stores):
-        collections.append(True)
         result = collect(stores)
+        collections.append(sorted(run.event_id for run in result.runs))
         if len(collections) == 1:
             entered.set()
             assert release.wait(5)
         return result
 
     monkeypatch.setattr(runtime.service, "_collect_workflow_run_snapshot", blocked)
+
+    def read(name):
+        reader.name = name
+        return runtime.service._read_workflow_run_snapshot()
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         first = executor.submit(runtime.service._read_workflow_run_snapshot)
         try:
             assert entered.wait(3)
-            runtime.queue.mark_delivered("event-alpha", delivered_at=NOW)
-            readers = [
-                executor.submit(runtime.service._read_workflow_run_snapshot) for _ in range(3)
-            ]
-            assert waiting.wait(3)
-            assert collections == [True]
+            readers = {}
+            expected = ["event-alpha", "event-beta"]
+            for name in names:
+                if name == "beta" or stagger_revisions:
+                    _publish(runtime.queue, f"event-{name}", f"trigger-{name}")
+                readers[name] = executor.submit(read, name)
+                assert waiting[name].wait(3)
+            if stagger_revisions:
+                expected.extend(["event-gamma", "event-delta"])
+            expected.sort()
+            assert collections == [["event-alpha"]]
+            release.set()
+            assert first.result(timeout=3).runs[0].event_id == "event-alpha"
+            for name in names:
+                resume[name].set()
+                result = readers[name].result(timeout=3)
+                assert sorted(run.event_id for run in result.runs) == expected
         finally:
             release.set()
-        assert first.result(timeout=3).runs[0].event_id == "event-alpha"
-        assert all(future.result(timeout=3).runs == [] for future in readers)
-    assert len(collections) == 2
+            for event in resume.values():
+                event.set()
+    assert collections == [["event-alpha"], expected]
 
 
 @pytest.mark.parametrize("mode", ["existing", "new", "timeout"])

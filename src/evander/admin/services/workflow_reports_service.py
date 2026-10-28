@@ -205,6 +205,7 @@ class WorkflowReportsAdminService:
             key,
             lambda: self._collect_workflow_run_snapshot(stores),
             minimum_revision=revision,
+            read_revision=journal.cursor,
         )
         return snapshot.model_copy(deep=True)
 

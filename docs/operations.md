@@ -1236,7 +1236,9 @@ the actual collection time/window rather than pretending a cached result was jus
 
 Live workflow run snapshots are shared by REST reads and event streams in each Admin Web process.
 Concurrent readers collect one snapshot per runtime at a time. A newer workflow journal revision
-requires a new collection; otherwise snapshots expire one second after collection completes.
+requires a new collection. Each producer captures the current revision after taking ownership,
+so readers arriving at different revisions can share updates committed while they waited.
+Otherwise snapshots expire one second after collection completes.
 The returned timestamp remains the collection time. Each reader still receives its own permission
 filtering for runs, node totals and recent activity. Stream setup and journal polling run outside
 the web event loop so a slow storage read does not block unrelated requests. This sharing does

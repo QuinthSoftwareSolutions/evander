@@ -19,13 +19,16 @@ class SnapshotCache(Generic[T]):
     Callers must copy mutable snapshots before handing them to consumers. A
     monotonically increasing minimum revision invalidates older collections
     without allowing concurrent producers for different revisions of one key.
+    The optional revision reader runs after producer ownership is acquired and
+    before collection, so a waiting producer includes revisions committed while
+    it waited. All waiters receive that collection's actual revision.
     """
 
     def __init__(self, *, ttl_seconds: float, max_entries: int = 16) -> None:
         self._ttl_seconds = ttl_seconds
         self._max_entries = max_entries
         self._entries: OrderedDict[Hashable, tuple[float, int, T]] = OrderedDict()
-        self._inflight: dict[Hashable, tuple[int, Future[T]]] = {}
+        self._inflight: dict[Hashable, Future[tuple[int, T]]] = {}
         self._lock = threading.Lock()
 
     def read(
@@ -35,6 +38,7 @@ class SnapshotCache(Generic[T]):
         *,
         refresh: bool = False,
         minimum_revision: int = 0,
+        read_revision: Callable[[], int] | None = None,
     ) -> T:
         while True:
             with self._lock:
@@ -47,30 +51,30 @@ class SnapshotCache(Generic[T]):
                 ):
                     self._entries.move_to_end(key)
                     return cached[2]
-                inflight = self._inflight.get(key)
-                if inflight is None:
-                    pending: Future[T] = Future()
-                    self._inflight[key] = (minimum_revision, pending)
+                pending = self._inflight.get(key)
+                if pending is None:
+                    pending = Future()
+                    self._inflight[key] = pending
                     break
-            revision, pending = inflight
-            result = pending.result()
+            revision, result = pending.result()
             if revision >= minimum_revision:
                 return result
             # A request following a newer event must not consume a collection
             # that began before that event. Join or produce the next revision.
         try:
+            revision = minimum_revision if read_revision is None else read_revision()
             result = collect()
             with self._lock:
                 self._entries[key] = (
                     time.monotonic() + self._ttl_seconds,
-                    minimum_revision,
+                    revision,
                     result,
                 )
                 self._entries.move_to_end(key)
                 while len(self._entries) > self._max_entries:
                     self._entries.popitem(last=False)
                 self._inflight.pop(key)
-            pending.set_result(result)
+            pending.set_result((revision, result))
             return result
         except BaseException as exc:
             with self._lock:

@@ -76,6 +76,11 @@ def test_snapshot_cache_coalesces_concurrent_readers_and_retries_failures(monkey
     with pytest.raises(ValueError, match="collection failed"):
         cache.read("failure", fail)
     assert cache.read("failure", lambda: 7) == 7
+    with pytest.raises(ValueError, match="collection failed"):
+        cache.read("revision-failure", lambda: 42, read_revision=fail)
+    assert cache.read(
+        "revision-failure", lambda: 7, minimum_revision=1, read_revision=lambda: 1
+    ) == 7
 
 
 def test_capacity_snapshot_expires_refreshes_and_keeps_original_timestamp(monkeypatch) -> None:
