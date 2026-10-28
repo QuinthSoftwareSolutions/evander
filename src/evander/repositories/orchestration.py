@@ -1112,13 +1112,18 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             return None
         with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
             connection.execute("BEGIN")
+            # Select the ID first so sorting cannot materialize large historical payloads.
             row = connection.execute(
                 f"""
                 SELECT payload_json
                 FROM {self.table_name}
-                WHERE gate_id = ?
-                ORDER BY finished_at DESC, started_at DESC, execution_id DESC
-                LIMIT 1
+                WHERE execution_id = (
+                    SELECT execution_id
+                    FROM {self.table_name}
+                    WHERE gate_id = ?
+                    ORDER BY finished_at DESC, started_at DESC, execution_id DESC
+                    LIMIT 1
+                )
                 """,
                 (normalized_gate_id,),
             ).fetchone()

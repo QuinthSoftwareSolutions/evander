@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-28 - Avoid loading gate history while finding its latest result (0.138.5)
+
+- Select the latest gate execution ID before loading its payload, so large historical payloads do not stall workflow dispatch during sorting. Preserve finish-time, start-time, and execution-ID ordering.
+
 ## 2026-10-28 - Preserve shared-browser managed login across Playwright contexts (0.138.4)
 
 - Keep the hosted controller's navigation routes while answering its fallback authentication challenges for the browser's configured proxy with the existing delegated proof. Agent-created managed website contexts can navigate and remain signed in after human takeover or reconnection.
