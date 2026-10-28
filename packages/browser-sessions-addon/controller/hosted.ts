@@ -69,6 +69,7 @@ const known=new WeakMap<any,string>();
 const targetPages=new Map<string,string>();
 const engines=new Map<string,{page:any,cdp:any,engine:BrowserEngine}>();
 let active="";
+let selectionChain=Promise.resolve();
 const registering=new WeakMap<any,Promise<void>>();
 function register(page:any):Promise<void> {
   const existing=registering.get(page);if(existing)return existing;
@@ -94,12 +95,19 @@ async function registerPage(page:any) {
   page.on("close",()=>{pages.delete(id);engines.delete(id);if(active===id){active="";const next=pages.keys().next().value;if(next)void select(next);}});
   if(!active)await select(id);
 }
-async function select(id:string) {
-  const selected=engines.get(id);if(!selected)throw new Error("page_unavailable");
-  const previous=engines.get(active);
-  if(previous)await previous.cdp.send("Page.stopScreencast").catch(()=>{});
-  active=id;
-  await selected.cdp.send("Page.startScreencast",{format:"jpeg",quality:65,maxWidth:1920,maxHeight:1080});
+function select(id:string):Promise<void> {
+  // Agent input and viewer selection can request the same transition before
+  // stopScreencast acknowledges. Serialize stop/start pairs to avoid starting
+  // an already active screencast and terminating the hosted controller.
+  const selecting=selectionChain.then(async()=>{
+    const selected=engines.get(id);if(!selected)throw new Error("page_unavailable");
+    const previous=engines.get(active);
+    if(previous)await previous.cdp.send("Page.stopScreencast").catch(()=>{});
+    active=id;
+    await selected.cdp.send("Page.startScreencast",{format:"jpeg",quality:65,maxWidth:1920,maxHeight:1080});
+  });
+  selectionChain=selecting.catch(()=>{});
+  return selecting;
 }
 function pageList(){return [...pages].map(([id,page])=>({id,url:page.url(),selected:id===active})).filter(item=>item.url==="about:blank"||config.allowed_origins.includes(new URL(item.url).origin));}
 for(const current of browser.contexts()) {

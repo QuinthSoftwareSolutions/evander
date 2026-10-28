@@ -4594,6 +4594,7 @@ var known = /* @__PURE__ */ new WeakMap();
 var targetPages = /* @__PURE__ */ new Map();
 var engines = /* @__PURE__ */ new Map();
 var active = "";
+var selectionChain = Promise.resolve();
 var registering = /* @__PURE__ */ new WeakMap();
 function register(page2) {
   const existing = registering.get(page2);
@@ -4636,14 +4637,19 @@ async function registerPage(page2) {
   });
   if (!active) await select(id);
 }
-async function select(id) {
-  const selected = engines.get(id);
-  if (!selected) throw new Error("page_unavailable");
-  const previous = engines.get(active);
-  if (previous) await previous.cdp.send("Page.stopScreencast").catch(() => {
+function select(id) {
+  const selecting = selectionChain.then(async () => {
+    const selected = engines.get(id);
+    if (!selected) throw new Error("page_unavailable");
+    const previous = engines.get(active);
+    if (previous) await previous.cdp.send("Page.stopScreencast").catch(() => {
+    });
+    active = id;
+    await selected.cdp.send("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1920, maxHeight: 1080 });
   });
-  active = id;
-  await selected.cdp.send("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1920, maxHeight: 1080 });
+  selectionChain = selecting.catch(() => {
+  });
+  return selecting;
 }
 function pageList() {
   return [...pages].map(([id, page2]) => ({ id, url: page2.url(), selected: id === active })).filter((item) => item.url === "about:blank" || config.allowed_origins.includes(new URL(item.url).origin));

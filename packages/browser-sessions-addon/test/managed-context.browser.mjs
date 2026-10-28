@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { createHash, X509Certificate } from "node:crypto";
 import { connect } from "node:net";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -31,10 +33,12 @@ async function bounded(promise, label, milliseconds = 5000) {
   } finally { clearTimeout(timer); }
 }
 
-for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {authenticatedProxy:true}, {authenticatedProxy:true,nativeLogin:true}]) {
-  test(`managed shared context navigates and hands back control${authenticatedProxy ? " through an authenticated proxy" : ""}${nativeLogin ? " with controller login" : ""}`, { timeout: 30000 }, async () => {
+for (const { authenticatedProxy, nativeLogin, secure } of [{authenticatedProxy:false}, {authenticatedProxy:true}, {authenticatedProxy:true,nativeLogin:true}, {authenticatedProxy:true,secure:true}]) {
+  test(`managed shared context navigates and hands back control${authenticatedProxy ? " through an authenticated proxy" : ""}${nativeLogin ? " with controller login" : ""}${secure ? " using HTTPS CONNECT" : ""}`, { timeout: 30000 }, async () => {
     const trace = message => { if (process.env.EVANDER_TEST_TRACE) console.error(authenticatedProxy, message); };
-    let controller, agent, relay, proxy;
+    let controller, agent, relay, proxy, tlsServer;
+    let connectChallenges = 0, authorizedConnects = 0, challengeNextConnect = false;
+    let applicationProxyHeaders = 0;
     let escapedRequests = 0;
     const denied = createServer((_request, response) => { escapedRequests++; response.end("Unexpected navigation"); });
     denied.listen(0, "127.0.0.1"); await once(denied, "listening");
@@ -42,7 +46,8 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
     const sockets = new Set();
     const results = new Map();
     let ready = false, controllerError = "", clicks = 0;
-    const server = createServer((request, response) => {
+    const serve = (request, response) => {
+      if (request.headers["proxy-authorization"]) applicationProxyHeaders++;
       if (request.url.startsWith("/session/")) {
         response.setHeader("Content-Type", "application/json");
         response.end(JSON.stringify({origin,expiresAt:Date.now()/1000+60,storageState:{cookies:[{name:"signed-in",value:"yes",url:origin,httpOnly:true}],origins:[{origin,localStorage:[{name:"identity",value:"verified"}]}]},sessionStorage:{role:"managed"}}));
@@ -53,10 +58,12 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       response.setHeader("Content-Type", "text/html");
       if (request.url === "/clicked") { clicks++; response.end("ok"); return; }
       response.end('<h1 id="identity"></h1><button onclick="fetch(\'/clicked\')">Run</button><script>document.querySelector("#identity").textContent=localStorage.getItem("identity")==="verified"&&sessionStorage.getItem("role")==="managed"?"Signed in":"Login required"</script>');
-    });
+    };
+    const server = createServer(serve);
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
-    const origin = "http://127.0.0.1:" + server.address().port;
+    const relayOrigin = "http://127.0.0.1:" + server.address().port;
+    let origin = relayOrigin;
     const wsServer = new WebSocketServer({ server, path: "/relay" });
     let state = { id: "browser-managed", agent_session_id: "agent-one", controller: "agent:agent-one", control_generation: 0, expires_at: Date.now() / 1000 + 60, allowed_origins: [origin] };
     wsServer.on("connection", socket => {
@@ -72,8 +79,25 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
     const controlPort = probe.address().port; await new Promise(resolve => probe.close(resolve));
     const folder = await mkdtemp(join(tmpdir(), "evander-managed-context-"));
     const proxyAuth = "Basic " + Buffer.from("proxy-user:proxy-proof").toString("base64");
-    let proxyConfig;
+    let proxyConfig, chromiumExecutable;
     try {
+      if (secure) {
+        // Generate a disposable fixture identity, then trust only its exact
+        // public key in this test browser. Production TLS settings are unchanged.
+        const keyPath = join(folder, "localhost.key"), certPath = join(folder, "localhost.crt");
+        execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1",
+          "-subj", "/CN=evander-fixture.local", "-addext", "subjectAltName=IP:127.0.0.1",
+          "-keyout", keyPath, "-out", certPath], {stdio: "ignore", timeout: 5000});
+        const key = await readFile(keyPath), cert = await readFile(certPath);
+        const spki = createHash("sha256").update(new X509Certificate(cert).publicKey.export({format: "der", type: "spki"})).digest("base64");
+        chromiumExecutable = join(folder, "fixture-chromium");
+        const quotedChromium = "'" + chromium.executablePath().replaceAll("'", "'\"'\"'") + "'";
+        await writeFile(chromiumExecutable, `#!/bin/sh\nexec ${quotedChromium} --ignore-certificate-errors-spki-list=${spki} "$@"\n`, {mode: 0o700});
+        tlsServer = createHttpsServer({key, cert}, serve);
+        tlsServer.listen(0, "127.0.0.1"); await once(tlsServer, "listening");
+        origin = "https://127.0.0.1:" + tlsServer.address().port;
+        state = {...state, allowed_origins: [origin]};
+      }
       if (authenticatedProxy) {
         proxy = createServer((request, response) => {
           trace("proxy request " + request.url + " authorized=" + (request.headers["proxy-authorization"] === proxyAuth));
@@ -89,10 +113,14 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
         });
         proxy.on("connect", (request, socket, head) => {
           sockets.add(socket); socket.on("close", () => sockets.delete(socket));
-          if (request.headers["proxy-authorization"] !== proxyAuth) {
+          if (request.url !== new URL(origin).host) { socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          const forceChallenge = challengeNextConnect;
+          challengeNextConnect = false;
+          if (request.headers["proxy-authorization"] !== proxyAuth || forceChallenge) {
+            connectChallenges++;
             socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="fixture"\r\nContent-Length: 0\r\n\r\n'); return;
           }
-          if (request.url !== new URL(origin).host) { socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          authorizedConnects++;
           const upstream = connect(new URL(origin).port, "127.0.0.1", () => {
             socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) upstream.write(head);
             socket.pipe(upstream); upstream.pipe(socket);
@@ -103,10 +131,10 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
         proxy.listen(0, "127.0.0.1"); await once(proxy, "listening");
         proxyConfig = { server: "http://127.0.0.1:" + proxy.address().port, username: "proxy-user", password: "proxy-proof", bypass: "<-loopback>" };
       }
-      const config = { session: state, entry_url: origin + "/login", allowed_origins: [origin], endpoint_token: "worker-proof", relay_url: origin + "/relay", control_port: controlPort, playwright_enabled: true, website_session:{relay_url:origin,session_id:"proxy~browser-managed",token:"proof",aliases:["ui"]}, ...(proxyConfig ? { proxy: proxyConfig } : {}) };
+      const config = { session: state, entry_url: origin + "/login", allowed_origins: [origin], endpoint_token: "worker-proof", relay_url: relayOrigin + "/relay", control_port: controlPort, playwright_enabled: true, website_session:{relay_url:relayOrigin,session_id:"proxy~browser-managed",token:"proof",aliases:["ui"]}, ...(proxyConfig ? { proxy: proxyConfig } : {}) };
       await writeFile(join(folder, "connection.json"), JSON.stringify(config));
       controller = spawn(process.execPath, ["evander_browser_sessions_addon/controller/hosted.mjs"], {
-        env: { ...process.env, EVANDER_BROWSER_CONNECTION: join(folder, "connection.json"), EVANDER_PREVIEW_STATE: join(folder, "missing-state.json"), EVANDER_PLAYWRIGHT_MODULE: require.resolve("playwright") },
+        env: { ...process.env, EVANDER_BROWSER_CONNECTION: join(folder, "connection.json"), EVANDER_PREVIEW_STATE: join(folder, "missing-state.json"), EVANDER_PLAYWRIGHT_MODULE: require.resolve("playwright"), ...(chromiumExecutable ? {PLAYWRIGHT_MCP_EXECUTABLE_PATH: chromiumExecutable} : {}) },
         stdio: ["ignore", "ignore", "pipe"], detached: true,
       });
       controller.stderr.on("data", data => controllerError += data);
@@ -140,7 +168,7 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
         const previous = Object.fromEntries(["HTTP_TARGET_RELAY_BASE_URL", "EVANDER_SESSION_ID", "EVANDER_MCP_SESSION_TOKEN"].map(key => [key, process.env[key]]));
         let context;
         try {
-          Object.assign(process.env, {HTTP_TARGET_RELAY_BASE_URL: origin, EVANDER_SESSION_ID: "agent-one", EVANDER_MCP_SESSION_TOKEN: "job-proof"});
+          Object.assign(process.env, {HTTP_TARGET_RELAY_BASE_URL: relayOrigin, EVANDER_SESSION_ID: "agent-one", EVANDER_MCP_SESSION_TOKEN: "job-proof"});
           context = await bounded(createManagedWebsiteContext(agent, "ui"), "managed context");
         } finally {
           for (const [key, value] of Object.entries(previous)) {
@@ -161,6 +189,21 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       assert.ok(original);
       assert.equal(await original.locator("h1").textContent({timeout: 3000}), "Login required");
       assert.equal(await original.evaluate(() => fetch("/identity").then(response => response.text())), "anonymous");
+      if (secure) {
+        // Two in-flight input requests can both attempt to select the managed
+        // tab while the initial tab's stop-screencast acknowledgement is pending.
+        relay.send(JSON.stringify({kind: "command", actor: "agent:agent-one", command: {id: "select-initial", action: "select_page", page_id: initial.result.page_id, generation: 0}}));
+        const selected = await until(() => results.get("select-initial"), "initial tab selection");
+        assert.equal(selected.error, undefined);
+        const managedPage = selected.result.pages.find(item => item.url === origin + "/application");
+        assert.ok(managedPage);
+        const input = await page.context().newCDPSession(page);
+        await bounded(Promise.all([1, 2].map(x => input.send("Input.dispatchMouseEvent", {type: "mouseMoved", x, y: 1}))), "concurrent tab focus");
+        await bounded(input.detach(), "input session detach");
+        relay.send(JSON.stringify({kind: "command", actor: "agent:agent-one", command: {id: "select-managed", action: "select_page", page_id: managedPage.id, generation: 0}}));
+        const managedSelected = await until(() => results.get("select-managed"), "managed tab selection after concurrent input");
+        assert.equal(managedSelected.error, undefined);
+      }
       await page.bringToFront();
       await page.getByRole("button", { name: "Run", exact: true }).click({ timeout: 3000 });
       await until(() => clicks === 1, "one confirmed click");
@@ -169,6 +212,15 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       await control({ session: state });
       await disconnected;
       assert.equal(agent.isConnected(), false);
+      const challengesBeforeDetach = connectChallenges;
+      if (secure) {
+        assert.ok(connectChallenges > 0, "HTTPS must challenge for delegated proxy proof");
+        assert.ok(authorizedConnects > 0, "HTTPS must use an authenticated CONNECT tunnel");
+        // Require another challenge with no agent CDP client present, rather
+        // than silently reusing its authenticated tunnel for retained navigation.
+        challengeNextConnect = true;
+        for (const socket of sockets) socket.destroy();
+      }
       relay.send(JSON.stringify({ kind: "command", actor: "user:operator", command: { id: "pages-after-takeover", action: "pages", generation: 1 } }));
       const pages = await until(() => results.get("pages-after-takeover"), "retained pages");
       assert.equal(pages.error, undefined);
@@ -179,6 +231,7 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       relay.send(JSON.stringify({kind: "command", actor: "user:operator", command: {id: "human-navigation", action: "navigate", page_id: retained.id, url: origin + "/retained", generation: 1}}));
       const humanNavigation = await until(() => results.get("human-navigation"), "human navigation");
       assert.equal(humanNavigation.error, undefined, JSON.stringify(humanNavigation));
+      if (secure) assert.ok(connectChallenges > challengesBeforeDetach, "controller navigation must survive a fresh CONNECT challenge after agent detach");
       state = {...state, controller: "agent:agent-one", control_generation: 2};
       await control({session: state, automation_token: "fresh-agent-proof"});
       agent = await chromium.connectOverCDP(`ws://127.0.0.1:${controlPort}/connect`, {headers: {Authorization: "Bearer fresh-agent-proof", "X-Evander-Control-Generation": "2"}, timeout: 5000});
@@ -189,13 +242,14 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       assert.equal(clicks, 1);
       await assert.rejects(resumed.goto(deniedOrigin + "/direct", {waitUntil: "domcontentloaded", timeout: 5000}), /Evander browser policy denied/);
       assert.equal(escapedRequests, 0);
-      if (authenticatedProxy) {
+      if (authenticatedProxy && !secure) {
         // The delegated proxy independently enforces destinations after an
         // allowed page redirects or opens a popup before its Page is available.
         const redirected = await resumed.goto(origin + "/redirect", {waitUntil: "domcontentloaded", timeout: 5000});
         assert.equal(redirected.status(), 403);
         assert.equal(escapedRequests, 0);
       }
+      assert.equal(applicationProxyHeaders, 0, "delegated proxy proof must not become an application request header");
       assert.equal(controllerError, "");
     } catch (error) {
       trace(String(error));
@@ -215,6 +269,7 @@ for (const { authenticatedProxy, nativeLogin } of [{authenticatedProxy:false}, {
       for (const socket of sockets) socket.destroy();
       if (proxy) { proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); }
       trace("proxy closed");
+      if (tlsServer) { tlsServer.closeAllConnections(); await new Promise(resolve => tlsServer.close(resolve)); }
       server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
       denied.closeAllConnections(); await new Promise(resolve => denied.close(resolve));
       await rm(folder, { recursive: true, force: true });
