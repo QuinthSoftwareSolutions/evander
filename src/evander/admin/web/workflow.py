@@ -232,6 +232,11 @@ def _filter_workflow_run_snapshot_payload(
             for node_id, counts in node_activity.items()
             if str(node_id or "").strip() in readable_node_ids
         }
+    payload["recent_node_activity"] = [
+        activity
+        for activity in payload.get("recent_node_activity", [])
+        if str(activity.get("node_id") or "").strip() in readable_node_ids
+    ]
     return payload
 
 
@@ -424,60 +429,37 @@ async def workflow_run_events(
     auth: AdminWebAuth | None = None,
 ) -> AsyncIterator[str]:
     last_state_key: str | None = None
-    journal = service.workflow_config_admin.workflow_event_journal()
-    cursor = journal.cursor()
+    journal = await run_in_threadpool(service.workflow_config_admin.workflow_event_journal)
+    cursor = await run_in_threadpool(journal.cursor)
 
     def build_snapshot_event() -> tuple[str, str]:
         try:
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
             if auth is None:
-                payload = json.dumps(snapshot.model_dump(mode="json"))
+                payload = snapshot.model_dump(mode="json")
             else:
                 document = service.workflow_config_admin.read_composed_workflow_editor_document()
-                readable_graphs, readable_node_ids = _require_workflow_run_read_access(
+                _, readable_node_ids = _require_workflow_run_read_access(
                     auth=auth, request=request, graphs=document.graphs
                 )
                 if not document.graphs:
-                    payload = json.dumps(snapshot.model_dump(mode="json"))
+                    payload = snapshot.model_dump(mode="json")
                 else:
-                    payload = json.dumps(
-                        _filter_workflow_run_snapshot_payload(
-                            snapshot, readable_node_ids=readable_node_ids
-                        )
+                    payload = _filter_workflow_run_snapshot_payload(
+                        snapshot, readable_node_ids=readable_node_ids
                     )
-                if readable_graphs:
-                    state_key = json.dumps(
-                        {
-                            "runs": [
-                                run.model_dump(mode="json")
-                                for run in snapshot.runs
-                                if any(
-                                    node.node_id in readable_node_ids for node in run.active_nodes
-                                )
-                            ],
-                            "node_activity": {
-                                node_id: counts
-                                for node_id, counts in snapshot.node_activity.items()
-                                if node_id in readable_node_ids
-                            },
-                        },
-                        sort_keys=True,
-                    )
-                    return state_key, f"event: snapshot\ndata: {payload}\n\n"
         except ValueError as exc:
             payload = json.dumps({"error": str(exc)})
             return f"error:{payload}", f"event: error\ndata: {payload}\n\n"
         state_key = json.dumps(
             {
-                "runs": [run.model_dump(mode="json") for run in snapshot.runs],
-                "node_activity": snapshot.node_activity,
-                "recent_node_activity": [
-                    item.model_dump(mode="json") for item in snapshot.recent_node_activity
-                ],
+                "runs": payload.get("runs", []),
+                "node_activity": payload.get("node_activity", {}),
+                "recent_node_activity": payload.get("recent_node_activity", []),
             },
             sort_keys=True,
         )
-        return state_key, f"event: snapshot\ndata: {payload}\n\n"
+        return state_key, f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
 
     async def snapshot_event() -> tuple[str, str] | None:
         if await request.is_disconnected():
@@ -1029,7 +1011,7 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
-    async def stream_runs(request: Request) -> StreamingResponse:
+    def build_stream_response(request: Request) -> StreamingResponse | JSONResponse:
         try:
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
             if document.graphs:
@@ -1049,6 +1031,9 @@ def workflow_routes(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+
+    async def stream_runs(request: Request) -> StreamingResponse | JSONResponse:
+        return await run_in_threadpool(build_stream_response, request)
 
     async def validate_document(request: Request) -> JSONResponse:
         try:

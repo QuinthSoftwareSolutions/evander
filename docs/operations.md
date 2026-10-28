@@ -1234,6 +1234,14 @@ once for node totals and distinct run counts. Explicit report periods remain fre
 Refresh and cache-control bypasses refresh these service snapshots too; payload timestamps retain
 the actual collection time/window rather than pretending a cached result was just collected.
 
+Live workflow run snapshots are shared by REST reads and event streams in each Admin Web process.
+Concurrent readers collect one snapshot per runtime at a time. A newer workflow journal revision
+requires a new collection; otherwise snapshots expire one second after collection completes.
+The returned timestamp remains the collection time. Each reader still receives its own permission
+filtering for runs, node totals and recent activity. Stream setup and journal polling run outside
+the web event loop so a slow storage read does not block unrelated requests. This sharing does
+not change database indexes or the history-index maintenance schedule.
+
 Team cost reports maintain a disposable `runtime/team-cost-report.db` projection alongside the
 authoritative model-usage store. Normal reads update only changed request groups, including late
 transcripts, corrections, deletions, and attribution changes. The first build, pricing changes,
