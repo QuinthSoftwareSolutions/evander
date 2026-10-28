@@ -3745,6 +3745,12 @@ function interruptedFocus(error) {
   const message = error instanceof Error ? error.message : String(error);
   return error instanceof Error && error.name === "TargetClosedError" || ["page_unavailable", "stale_control"].includes(message) || /\b(?:Target page, context or browser has been closed|Target closed|Session closed)\b/.test(message);
 }
+async function observeTargetDestruction(owner2, notify) {
+  const session = await owner2.newBrowserCDPSession();
+  session.on("Target.targetDestroyed", ({ targetId }) => notify(targetId));
+  await session.send("Target.setDiscoverTargets", { discover: true });
+  return session;
+}
 function automationBridge(config2, endpoint, update, initial, focus = async () => {
 }, fenceCommands = async () => {
 }) {
@@ -3752,7 +3758,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   const clients = /* @__PURE__ */ new Set();
   const upstreams = /* @__PURE__ */ new Set();
   const pending = /* @__PURE__ */ new Set();
-  const targetClosures = /* @__PURE__ */ new Set();
+  const targetDestructions = /* @__PURE__ */ new Set();
   const allowed = (url) => url === "about:blank" || config2.allowed_origins.includes(new URL(url).origin);
   const revoke = async () => {
     token = "";
@@ -3827,7 +3833,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
     const closed = (message) => {
       if (client.readyState === 1) client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32e3, message: "Target closed" } }));
     };
-    const targetClosed = (target) => {
+    const targetDestroyed = (target) => {
       closedTargets.add(target);
       for (const [id, wait] of waits) if (wait.sessionId && targets.get(wait.sessionId) === target) {
         waits.delete(id);
@@ -3836,7 +3842,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
         closed({ id, sessionId: wait.sessionId });
       }
     };
-    targetClosures.add(targetClosed);
+    targetDestructions.add(targetDestroyed);
     const focusFailed = (error) => {
       if (!interruptedFocus(error)) client.close(1011, "browser_focus_failed");
     };
@@ -3922,7 +3928,7 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
     upstream.addEventListener("close", () => {
       for (const wait of waits.values()) wait.done();
       waits.clear();
-      targetClosures.delete(targetClosed);
+      targetDestructions.delete(targetDestroyed);
       upstreams.delete(upstream);
       client.close(1011, "browser_disconnected");
     });
@@ -3935,8 +3941,8 @@ function automationBridge(config2, endpoint, update, initial, focus = async () =
   });
   const listening = new Promise((resolve) => server.once("listening", () => resolve(server.address().port)));
   server.listen(config2.control_port ?? 11895, "0.0.0.0");
-  return { revoke, setState, listening, targetClosed: (target) => {
-    for (const notify of targetClosures) notify(target);
+  return { revoke, setState, listening, targetDestroyed: (target) => {
+    for (const notify of targetDestructions) notify(target);
   }, active: () => clients.size > 0, close: async () => {
     await revoke().catch(() => {
     });
@@ -4633,8 +4639,6 @@ var targetPages = /* @__PURE__ */ new Map();
 var engines = /* @__PURE__ */ new Map();
 var active = "";
 var selectionChain = Promise.resolve();
-var notifyTargetClosed = (_target) => {
-};
 var registering = /* @__PURE__ */ new WeakMap();
 function register(page2) {
   const existing = registering.get(page2);
@@ -4667,7 +4671,6 @@ async function registerPage(page2) {
   });
   await cdp2.send("Page.enable");
   page2.on("close", () => {
-    notifyTargetClosed(info.targetInfo.targetId);
     targetPages.delete(info.targetInfo.targetId);
     pages.delete(id);
     engines.delete(id);
@@ -4715,7 +4718,7 @@ var bridge = automationBridge(config, version.webSocketDebuggerUrl, async (next)
   const id = targetPages.get(target);
   if (id && active !== id) await select(id);
 }, () => commands.fence());
-notifyTargetClosed = bridge.targetClosed;
+await observeTargetDestruction(owner, bridge.targetDestroyed);
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   shuttingDown = true;
   socket?.close();

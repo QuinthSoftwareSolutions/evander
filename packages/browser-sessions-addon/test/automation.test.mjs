@@ -108,7 +108,7 @@ test("physical target closure retires only its waits; session detach does not by
     for(const [id,sessionId] of [[1,"page-session"],[2,"live-session"]])
       f.client.send(JSON.stringify({id,sessionId,method:"Input.dispatchMouseEvent",params:{type:"mouseMoved",x:1,y:1}}));
     await until(()=>held.size===2);
-    f.bridge.targetClosed("page-target");
+    f.bridge.targetDestroyed("page-target");
     assert.deepEqual((await until(()=>received.find(message=>message.id===1))).error,{code:-32000,message:"Target closed"});
     // A delayed browser response must not become a second reply to the retired request.
     f.peer.send(JSON.stringify({id:1,sessionId:"page-session",result:{}}));

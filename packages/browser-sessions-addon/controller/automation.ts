@@ -13,12 +13,21 @@ function interruptedFocus(error: unknown) {
     ["page_unavailable","stale_control"].includes(message) ||
     /\b(?:Target page, context or browser has been closed|Target closed|Session closed)\b/.test(message);
 }
+export async function observeTargetDestruction(owner:any, notify:(target:string)=>void) {
+  // Page.close on a CDP observer also fires when that observer disconnects.
+  // Only the browser-lifetime owner's independent protocol connection can
+  // supply the destruction evidence used to release a target's input fence.
+  const session=await owner.newBrowserCDPSession();
+  session.on("Target.targetDestroyed",({targetId}:{targetId:string})=>notify(targetId));
+  await session.send("Target.setDiscoverTargets",{discover:true});
+  return session;
+}
 export function automationBridge(config: any, endpoint: string, update: (state:any)=>Promise<void>, initial: any, focus: (target:string)=>Promise<void>=async()=>{}, fenceCommands: ()=>Promise<void>=async()=>{}) {
   let state=initial, token="";
   const clients=new Set<any>();
   const upstreams=new Set<any>();
   const pending=new Set<Promise<void>>();
-  const targetClosures=new Set<(target:string)=>void>();
+  const targetDestructions=new Set<(target:string)=>void>();
   const allowed=(url: string)=>url==="about:blank" || config.allowed_origins.includes(new URL(url).origin);
   const revoke=async()=>{
     token="";
@@ -73,15 +82,15 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
     const closed=(message:any)=>{
       if(client.readyState===1)client.send(JSON.stringify({id:message.id,sessionId:message.sessionId,error:{code:-32000,message:"Target closed"}}));
     };
-    const targetClosed=(target:string)=>{
-      // Only the browser owner's physical page-close observation calls this.
-      // A CDP-session detach alone cannot release dispatched input from a fence.
+    const targetDestroyed=(target:string)=>{
+      // Only independent browser Target.targetDestroyed evidence calls this.
+      // Neither observer Page.close nor a CDP detach can release an input fence.
       closedTargets.add(target);
       for(const [id,wait] of waits)if(wait.sessionId && targets.get(wait.sessionId)===target) {
         waits.delete(id);retired.add(id);wait.done();closed({id,sessionId:wait.sessionId});
       }
     };
-    targetClosures.add(targetClosed);
+    targetDestructions.add(targetDestroyed);
     const focusFailed=(error:unknown)=>{
       // Input may already have reached Chrome. A queued viewer selection can
       // lose its target while that page closes; it must not kill the controller.
@@ -126,7 +135,7 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
         if(client.readyState===1) client.send(String(event.data));
       } catch {client.close(1011,"browser_disconnected");}
     });
-    upstream.addEventListener("close",()=>{for(const wait of waits.values())wait.done();waits.clear();targetClosures.delete(targetClosed);upstreams.delete(upstream);client.close(1011,"browser_disconnected");});
+    upstream.addEventListener("close",()=>{for(const wait of waits.values())wait.done();waits.clear();targetDestructions.delete(targetDestroyed);upstreams.delete(upstream);client.close(1011,"browser_disconnected");});
     upstream.addEventListener("error",()=>upstream.close());
     client.on("close",()=>{
       // A descriptor authorizes one connection. An old close notification must
@@ -140,5 +149,5 @@ export function automationBridge(config: any, endpoint: string, update: (state:a
   });
   const listening=new Promise<number>(resolve=>server.once("listening",()=>resolve((server.address() as any).port)));
   server.listen(config.control_port??11895,"0.0.0.0");
-  return {revoke,setState,listening,targetClosed:(target:string)=>{for(const notify of targetClosures)notify(target);},active:()=>clients.size>0,close:async()=>{await revoke().catch(()=>{});for(const upstream of upstreams)upstream.close();sockets.close();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+  return {revoke,setState,listening,targetDestroyed:(target:string)=>{for(const notify of targetDestructions)notify(target);},active:()=>clients.size>0,close:async()=>{await revoke().catch(()=>{});for(const upstream of upstreams)upstream.close();sockets.close();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }

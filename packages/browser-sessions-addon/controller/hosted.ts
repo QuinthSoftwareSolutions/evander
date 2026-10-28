@@ -4,7 +4,7 @@ import { join as joinPath } from "node:path";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { automationBridge } from "./automation.js";
+import { automationBridge, observeTargetDestruction } from "./automation.js";
 import { BrowserEngine } from "../shared/engine.js";
 import { commandAuthority } from "./commands.js";
 import { controllerConnection } from "./connection.js";
@@ -70,7 +70,6 @@ const targetPages=new Map<string,string>();
 const engines=new Map<string,{page:any,cdp:any,engine:BrowserEngine}>();
 let active="";
 let selectionChain=Promise.resolve();
-let notifyTargetClosed=(_target:string)=>{};
 const registering=new WeakMap<any,Promise<void>>();
 function register(page:any):Promise<void> {
   const existing=registering.get(page);if(existing)return existing;
@@ -93,7 +92,7 @@ async function registerPage(page:any) {
     } finally {await cdp.send("Page.screencastFrameAck",{sessionId:event.sessionId}).catch(()=>{});}
   });
   await cdp.send("Page.enable");
-  page.on("close",()=>{notifyTargetClosed(info.targetInfo.targetId);targetPages.delete(info.targetInfo.targetId);pages.delete(id);engines.delete(id);if(active===id){active="";const next=pages.keys().next().value;if(next)void select(next);}});
+  page.on("close",()=>{targetPages.delete(info.targetInfo.targetId);pages.delete(id);engines.delete(id);if(active===id){active="";const next=pages.keys().next().value;if(next)void select(next);}});
   if(!active)await select(id);
 }
 function select(id:string):Promise<void> {
@@ -123,7 +122,7 @@ const cdp=engines.get(known.get(page)!)!.cdp;
 const bridge=automationBridge(config,version.webSocketDebuggerUrl,async next=>{
   state=next;for(const current of engines.values())current.engine.update(state);
 },state,async target=>{const id=targetPages.get(target);if(id && active!==id)await select(id);},()=>commands.fence());
-notifyTargetClosed=bridge.targetClosed;
+await observeTargetDestruction(owner,bridge.targetDestroyed);
 for(const signal of ["SIGTERM","SIGINT"] as const)process.on(signal,()=>{
   shuttingDown=true;socket?.close();void bridge.close().finally(()=>connection.close()).finally(()=>owner.close()).finally(()=>rm(chromeRuntime,{recursive:true,force:true})).finally(()=>process.exit(0));
 });
