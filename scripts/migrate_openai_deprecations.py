@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from evander.admin.composition import admin_config_mutation_file_lock
 from evander.directories import DirectoryService, DirectoryStore
-from evander.directory_config import DirectoryConfigStore
+from evander.directory_config import DIRECTORY_CONFIG_OVERLAYS_KEY, DirectoryConfigStore
 from evander.host_config import HostConfig
 from evander.repositories.directories import ReadOnlyJsonDirectoryRepository
 
@@ -157,6 +157,20 @@ def browser_rows(runtime):
                 in db.execute("SELECT directory,revision,payload FROM settings ORDER BY directory")]
 
 
+def directory_overlay(config_store, directory, domain):
+    """Match the runtime's file-first, metadata-fallback ownership exactly."""
+    stored = config_store.read_for_directory(directory, domain=domain)
+    if stored is not None:
+        return "file", stored
+    overlays = directory.metadata.get(DIRECTORY_CONFIG_OVERLAYS_KEY)
+    overlay = overlays.get(domain) if isinstance(overlays, dict) else None
+    if overlay is None:
+        return "absent", None
+    if not isinstance(overlay, dict):
+        raise ValueError("Directory metadata configuration overlay must be an object")
+    return "metadata", overlay
+
+
 def inventory(runtime_dir=None, env_files=()):
     """Return a metadata-only public plan and private validated replacement payloads."""
     runtime = Path(runtime_dir).resolve() if runtime_dir is not None else None
@@ -177,8 +191,10 @@ def inventory(runtime_dir=None, env_files=()):
         directories = [directory_service.show("root").directory,
                        *directory_service.list_descendants("root")]
         directories.sort(key=lambda item: (item.path.count("/"), item.path))
-        original = {(d.path, domain): config_store.read_for_directory(d, domain=domain)
-                    for d in directories for domain in ("providers", "connectors")}
+        sources = {(d.path, domain): directory_overlay(config_store, d, domain)
+                   for d in directories for domain in ("providers", "connectors")}
+        directory_ids = {d.path: d.id for d in directories}
+        original = {key: raw for key, (_, raw) in sources.items()}
         updated = deepcopy(original)
         for directory in directories:
             path = directory.path
@@ -219,6 +235,7 @@ def inventory(runtime_dir=None, env_files=()):
             candidate = updated[key]
             delta = changes(raw or {}, candidate or {})
             entry = {"kind": "directory", "directory": key[0], "domain": key[1],
+                     "directory_id": directory_ids[key[0]], "source": sources[key][0],
                      "revision": digest(raw), "changes": delta}
             entries.append(entry)
             if delta:
@@ -257,7 +274,7 @@ def inventory(runtime_dir=None, env_files=()):
                 entry.get("domain", ""), entry.get("path", ""))
     entries.sort(key=order)
     candidates.sort(key=lambda item: order(item[0]))
-    plan = {"schema": 1, "runtime_dir": str(runtime) if runtime else None,
+    plan = {"schema": 2, "runtime_dir": str(runtime) if runtime else None,
             "registry_hash": registry_hash, "host_hash": host_hash, "entries": entries}
     return plan, candidates
 
@@ -268,6 +285,37 @@ def private_write(path, content, *, mode=0o600):
         stream.write(content)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def write_directory_candidate(runtime, host, entry, candidate):
+    directories = DirectoryStore(host.directories_store_path)
+    store = DirectoryConfigStore(directories, runtime_dir=runtime)
+    directory = DirectoryService(directories).show(entry["directory_id"]).directory
+    if directory.path != entry["directory"]:
+        raise ValueError("Directory moved before migration")
+
+    def check_source(info):
+        source, raw = directory_overlay(store, info, entry["domain"])
+        if source != entry["source"] or digest(raw) != entry["revision"]:
+            raise ValueError("Directory configuration changed before migration")
+
+    if entry["source"] != "metadata":
+        check_source(directory)
+        store.write(directory.path, domain=entry["domain"], payload=candidate)
+        return
+
+    def update(items):
+        current = items.get(directory.id)
+        if current is None or (current.name, current.parent_id) != (directory.name, directory.parent_id):
+            raise ValueError("Directory moved before migration")
+        check_source(directory.model_copy(update={"metadata": current.metadata}))
+        metadata = deepcopy(current.metadata)
+        metadata[DIRECTORY_CONFIG_OVERLAYS_KEY][entry["domain"]] = candidate
+        items[current.id] = current.model_copy(update={"metadata": metadata})
+
+    # Compare and update the active overlay in one registry transaction. Creating
+    # a partial domain file here would hide the rest of the metadata overlay.
+    directories.update_all(update)
 
 
 def apply(plan, *, backup_dir, maintenance=False):
@@ -297,10 +345,7 @@ def apply(plan, *, backup_dir, maintenance=False):
             for entry, _, candidate in candidates:
                 if entry["kind"] == "directory":
                     host = HostConfig.model_validate(json.loads((runtime / "host-config.json").read_text()))
-                    store = DirectoryConfigStore(DirectoryStore(host.directories_store_path), runtime_dir=runtime)
-                    if digest(store.read(entry["directory"], domain=entry["domain"])) != entry["revision"]:
-                        raise ValueError("Directory configuration changed before migration")
-                    store.write(entry["directory"], domain=entry["domain"], payload=candidate)
+                    write_directory_candidate(runtime, host, entry, candidate)
                 elif entry["kind"] == "browser":
                     from evander_browser_sessions_addon.models import Settings
                     from evander_browser_sessions_addon.state import Store
@@ -319,7 +364,8 @@ def apply(plan, *, backup_dir, maintenance=False):
                         os.replace(temporary, path)
                     finally:
                         Path(temporary).unlink(missing_ok=True)
-                completed.append({k: v for k, v in entry.items() if k in {"kind", "directory", "domain", "path"}})
+                completed.append({k: v for k, v in entry.items()
+                                  if k in {"kind", "directory", "directory_id", "domain", "source", "path"}})
         except Exception:
             # No blind rollback across independently revisioned stores.
             raise RuntimeError(json.dumps({"message": "Migration stopped; generate a fresh preview", "completed": completed,

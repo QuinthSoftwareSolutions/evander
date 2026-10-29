@@ -18,7 +18,7 @@ umask 077
   > /var/backups/evander/openai-migration-plan.json
 ```
 
-Use the actual configured runtime and explicit bridge environment paths. `--env-file` can be repeated, or omitted when no bridge environment file needs migration; environment-only previews may omit `--runtime-dir`. The preview reads existing state without initializing stores, changing revisions or making provider requests. It includes model/backend/voice/speed changes, source revisions and hashes, never credential values. Configured browser/narration consumers require their reviewed add-on packages to validate candidate settings.
+Use the actual configured runtime and explicit bridge environment paths. `--env-file` can be repeated, or omitted when no bridge environment file needs migration; environment-only previews may omit `--runtime-dir`. The preview reads existing state without initializing stores, changing revisions or making provider requests. It includes model/backend/voice/speed changes, directory IDs, owning sources (`file`, `metadata`, or `absent`), source revisions and hashes, never credential values. Configured browser/narration consumers require their reviewed add-on packages to validate candidate settings.
 
 Review the preview, then apply exactly those targets:
 
@@ -35,9 +35,9 @@ Apply requires an explicit maintenance acknowledgement and recovery storage outs
 - Known deprecated OpenAI speech models move to `gpt-realtime-2.1-mini` with `speech_backend: realtime`. Unsupported built-in voices (`onyx`, `nova`, `fable`) become `cedar`; supported voice selections remain. Speeds above `1.5` are clamped to `1.5` only by this migration.
 - Known deprecated live transcription selections become `gpt-live-transcribe`; bounded browser recording transcription uses `gpt-transcribe`. Legacy conversational Realtime and mini selections become `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` respectively.
 - Custom endpoints retain their model, voice and speed selections. Existing Speech API configurations receive an explicit `speech_api` backend. Where a custom child endpoint inherits a model from a public OpenAI parent, the script pins its previous effective selection before the parent changes.
-- Only owning configuration records are changed. Ordinary inherited settings do not gain child overrides. The script does not modify credentials, workflow packs, session history or pricing records. Explicitly disabled transcription remains disabled.
+- Only owning configuration records are changed. File-backed domains take precedence, including empty objects; otherwise the script reads and updates active `metadata.config_overlays` through the directory store. Shadowed metadata stays untouched, and migrating metadata does not create a partial file that hides its other settings. Ordinary inherited settings do not gain child overrides. The script does not modify credentials, workflow packs, session history or pricing records. Explicitly disabled transcription remains disabled.
 
-Realtime speech supports speeds from `0.25` to `1.5`; the compatible Speech API path retains `0.25` to `4`. New invalid values are rejected rather than clamped. Requests stay on the host and retain existing authorization, byte/time limits, streamed PCM playback and session-owned WAV artifacts.
+Realtime speech supports speeds from `0.25` to `1.5`; the compatible Speech API path retains `0.25` to `4`. New invalid values are rejected rather than clamped. Requests stay on the host and retain existing authorization, byte/time limits, streamed PCM playback and session-owned WAV artifacts. Speech connections reject redirects before a second handshake so credentials stay on the configured endpoint, including its base path.
 
 ## Verification and recovery
 

@@ -5,9 +5,14 @@ import base64
 from contextlib import aclosing
 import io
 import json
+from types import SimpleNamespace
 import wave
 
 import pytest
+from websockets.asyncio.client import connect as WebSocketConnect
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 from evander.realtime_speech import RealtimeSpeechError, pcm_wav, realtime_speech_chunks
 
@@ -52,6 +57,94 @@ def stream(socket, **overrides):
     )
     options.update(overrides)
     return realtime_speech_chunks(**options)
+
+
+@pytest.fixture
+def handshake_transport(monkeypatch):
+    """Keep the installed client's handshake/redirect lifecycle; replace only I/O."""
+    def install(status=None, location=None):
+        attempts = []
+
+        class Connection(Socket):
+            def __init__(self):
+                super().__init__([delta(), done()])
+                self.aborted = False
+                self.keepalive = False
+                self.transport = SimpleNamespace(abort=self.abort)
+
+            def abort(self):
+                self.aborted = True
+
+            async def handshake(self, headers, user_agent):
+                attempts.append((self.connector.uri, dict(headers)))
+                if status is not None and len(attempts) == 1:
+                    headers = Headers({"Location": location}) if location else Headers()
+                    raise InvalidStatus(Response(status, "private upstream response", headers))
+
+            def start_keepalive(self):
+                self.keepalive = True
+
+        socket = Connection()
+
+        async def create_connection(connector):
+            socket.connector = connector
+            return socket
+
+        monkeypatch.setattr(WebSocketConnect, "create_connection", create_connection)
+        return socket, attempts
+
+    return install
+
+
+@pytest.mark.parametrize("status", [300, 301, 302, 303, 307, 308])
+@pytest.mark.parametrize("location", [
+    "wss://different-origin.test/sink", "//different-origin.test/sink", "/outside-scope",
+])
+def test_default_connection_rejects_redirects_before_another_authenticated_handshake(
+    handshake_transport, status, location
+):
+    socket, attempts = handshake_transport(status, location)
+
+    async def consume():
+        return [chunk async for chunk in stream(socket, connect=None)]
+
+    with pytest.raises(RealtimeSpeechError) as failure:
+        asyncio.run(consume())
+    assert str(failure.value) == "Speech provider rejected the connection"
+    assert not failure.value.authentication_failed
+    assert attempts == [("wss://api.openai.com/v1/realtime?model=configured-speech",
+                         {"Authorization": "Bearer synthetic-secret"})]
+    assert socket.aborted and not socket.keepalive
+    assert not socket.sent
+
+
+@pytest.mark.parametrize("status,authentication_failed", [(401, True), (403, True), (503, False)])
+def test_default_connection_preserves_sanitized_handshake_failures(
+    handshake_transport, status, authentication_failed
+):
+    socket, attempts = handshake_transport(status)
+
+    async def consume():
+        return [chunk async for chunk in stream(socket, connect=None)]
+
+    with pytest.raises(RealtimeSpeechError) as failure:
+        asyncio.run(consume())
+    assert str(failure.value) == "Speech provider rejected the connection"
+    assert failure.value.authentication_failed is authentication_failed
+    assert len(attempts) == 1 and socket.aborted
+
+
+def test_default_connection_completes_speech_and_closes_the_configured_endpoint(handshake_transport):
+    socket, attempts = handshake_transport()
+
+    async def consume():
+        return b"".join([chunk async for chunk in stream(socket, connect=None)])
+
+    assert asyncio.run(consume()) == b"\x01\x00" * 2400
+    assert attempts == [("wss://api.openai.com/v1/realtime?model=configured-speech",
+                         {"Authorization": "Bearer synthetic-secret"})]
+    assert socket.keepalive and socket.closed and not socket.aborted
+    assert socket.sent[1]["item"]["content"][0]["text"] == "Order 42 costs 19.50 EUR."
 
 
 def test_configured_speech_produces_pcm_and_sealed_wav_without_sending_secrets_as_content():

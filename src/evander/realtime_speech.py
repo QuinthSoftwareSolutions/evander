@@ -11,8 +11,15 @@ import json
 from urllib.parse import urlencode, urlsplit, urlunsplit
 import wave
 
-import websockets
+from websockets.asyncio.client import connect as WebSocketConnect
 from websockets.exceptions import InvalidStatus, WebSocketException
+
+
+class _DirectSpeechConnect(WebSocketConnect):
+    def process_redirect(self, exc: Exception) -> Exception:
+        # Credentials are scoped to the configured API base, including its path.
+        # Reject before the client opens another connection or forwards headers.
+        return exc
 
 
 class RealtimeSpeechError(RuntimeError):
@@ -90,7 +97,7 @@ async def realtime_speech_chunks(
     try:
         check_access()
         async with asyncio.timeout_at(deadline):
-            socket = await (connect or websockets.connect)(
+            socket = await (connect or _DirectSpeechConnect)(
                 url, additional_headers=dict(headers), proxy=None,
                 open_timeout=timeout, close_timeout=2, max_size=1_000_000,
             )
