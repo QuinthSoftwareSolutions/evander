@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-29 - Separate the landing site (0.138.9)
+
+- Remove the standalone landing page and its hosting configuration from the control-plane repository, along with its unused root JavaScript dependency.
+
 ## 2026-10-29 - Generalize release examples (0.138.8)
 
 - Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
