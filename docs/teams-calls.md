@@ -135,7 +135,7 @@ Use Admin Web **Configuration → the assistant directory → People & Communica
 Call visual context enabled** (`teams_call_visual_context_enabled`). It inherits from root and
 starts false. Grant the original assistant `get_voice_query_visual_context` without approval
 in the same session/workflow tool settings used for `submit_voice_query_response`.
-Use `gpt-realtime-2` or `gpt-realtime`, including their dated snapshots, for the existing
+Use `gpt-realtime-2`, `gpt-realtime-2.1` or `gpt-realtime-2.1-mini`, including their dated snapshots, for the existing
 `openai_realtime_model` setting. Other configured models, missing grants, or approval requirements
 leave the admitted call in audio mode; the admission response includes the reason.
 Enabling this setting affects new calls. Changing the caller map keeps an active call attached

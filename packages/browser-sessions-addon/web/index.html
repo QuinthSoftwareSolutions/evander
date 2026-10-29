@@ -35,7 +35,8 @@
 <section class="settings-section" aria-labelledby="voice-heading"><h3 id="voice-heading">Voice</h3>
 <div class="settings-toggles"><label class="check"><input type="checkbox" id="voice-enabled">Enable voice for this directory</label></div>
 <div class="form-grid">
-<label>Speech API base URL<input id="voice-provider" type="url"></label>
+<label><span id="voice-backend-label">Speech API</span><select id="voice-backend" aria-labelledby="voice-backend-label"><option value="realtime">Realtime</option><option value="speech_api">Speech API compatible provider</option></select></label>
+<label>Provider API base URL<input id="voice-provider" type="url"></label>
 <div id="voice-credential"></div>
 <label>Transcription model<input id="voice-stt"></label>
 <label>Speech model<input id="voice-tts"></label>

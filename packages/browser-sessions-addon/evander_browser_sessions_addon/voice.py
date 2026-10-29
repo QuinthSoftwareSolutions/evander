@@ -15,6 +15,8 @@ import httpx
 from starlette.requests import ClientDisconnect
 from starlette.responses import StreamingResponse
 
+from evander.realtime_speech import RealtimeSpeechError, pcm_wav, realtime_speech_chunks
+
 from .models import BrowserError, identifier, origin
 
 
@@ -111,8 +113,9 @@ async def normalize_recording(audio, mime, seconds):
 
 
 class Voice:
-    def __init__(self, service, *, transport=None):
+    def __init__(self, service, *, transport=None, websocket_connect=None):
         self.service, self.store, self.transport = service, service.store, transport
+        self.websocket_connect = websocket_connect
 
     def configured(self, session_id):
         session = self.store.get(session_id)
@@ -243,6 +246,26 @@ class Voice:
                 content.extend(chunk)
         return bytes(content)
 
+    async def realtime_chunks(self, session_id, config, text, *, maximum, validate=lambda: None):
+        def authorize():
+            self.configured(session_id)
+            validate()
+
+        try:
+            chunks = realtime_speech_chunks(
+                base_url=config.api_base_url, model=config.speech_model, voice=config.voice,
+                instructions=config.instructions, speed=config.speed, text=text,
+                headers={"Authorization": "Bearer " + self.service.credentials.token(
+                    config._directory, "voice", config.api_base_url, config.credential_ref
+                )},
+                maximum=maximum, authorize=authorize, connect=self.websocket_connect,
+            )
+            async with aclosing(chunks):
+                async for chunk in chunks:
+                    yield chunk
+        except RealtimeSpeechError:
+            raise BrowserError("Speech service is unavailable", "speech_provider", 502) from None
+
     async def transcribe(self, session_id, actor, request_id, audio, mime):
         config = self.configured(session_id)
         if mime not in AUDIO_TYPES or not audio or len(audio) > config.max_audio_bytes:
@@ -299,12 +322,16 @@ class Voice:
         config, text = self.speech_input(session_id, actor, request_id, message_id)
         completed = False
         try:
-            content = await self.provider(
-                config,
-                "/audio/speech",
-                maximum=8_000_000,
-                json=speech_payload(config, text, "wav"),
-            )
+            if config.speech_backend == "realtime":
+                chunks = self.realtime_chunks(session_id, config, text, maximum=8_000_000 - 44)
+                async with aclosing(chunks):
+                    pcm = b"".join([chunk async for chunk in chunks])
+                content = pcm_wav(pcm)
+            else:
+                content = await self.provider(
+                    config, "/audio/speech", maximum=8_000_000,
+                    json=speech_payload(config, text, "wav"),
+                )
             if not content.startswith(b"RIFF") or content[8:12] != b"WAVE":
                 raise BrowserError("Invalid speech response", "speech_provider", 502)
             self.configured(session_id)
@@ -323,11 +350,15 @@ class Voice:
         completed = False
         size = 0
         try:
-            async with aclosing(self.provider_chunks(
-                config, "/audio/speech", maximum=8_000_000,
-                content_types={"audio/pcm", "application/octet-stream"},
-                json=speech_payload(config, text, "pcm"),
-            )) as chunks:
+            provider = (
+                self.realtime_chunks(session_id, config, text, maximum=8_000_000, validate=validate)
+                if config.speech_backend == "realtime" else self.provider_chunks(
+                    config, "/audio/speech", maximum=8_000_000,
+                    content_types={"audio/pcm", "application/octet-stream"},
+                    json=speech_payload(config, text, "pcm"),
+                )
+            )
+            async with aclosing(provider) as chunks:
                 async for chunk in chunks:
                     self.configured(session_id)
                     validate()

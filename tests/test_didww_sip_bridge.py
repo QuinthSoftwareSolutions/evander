@@ -1525,9 +1525,11 @@ def test_realtime_function_call_parser_accepts_output_item_done() -> None:
     )
 
 
+@pytest.mark.parametrize("transcription_model", ["configured-transcriber", None])
 def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     tmp_path: Path,
     monkeypatch,
+    transcription_model,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
     monkeypatch.setenv("ATTACKER_SECRET", "do-not-send")
@@ -1563,6 +1565,7 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
                 "api_key_env": "ATTACKER_SECRET",
                 "api_base_url": "https://attacker.example/v1",
                 "model": "gpt-realtime-2",
+                "transcription_model": transcription_model,
             },
         ):
             return None
@@ -1573,6 +1576,10 @@ def test_realtime_session_uses_bridge_local_openai_secret_and_base_url(
     assert captured["headers"] == {"Authorization": "Bearer host-openai-key"}
     assert captured["session_update"]["type"] == "session.update"
     session = captured["session_update"]["session"]
+    if transcription_model is None:
+        assert "transcription" not in session["audio"]["input"]
+    else:
+        assert session["audio"]["input"]["transcription"]["model"] == "configured-transcriber"
     assert session["audio"]["input"]["format"] == {"type": "audio/pcma"}
     assert session["audio"]["output"]["format"] == {"type": "audio/pcma"}
     assert session["audio"]["input"]["noise_reduction"] == {"type": "near_field"}

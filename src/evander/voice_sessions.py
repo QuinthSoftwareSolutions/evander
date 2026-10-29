@@ -904,7 +904,7 @@ def realtime_browser_session_config(
                     "model": getattr(
                         config,
                         "openai_realtime_transcription_model",
-                        "gpt-4o-transcribe",
+                        "gpt-live-transcribe",
                     )
                 },
             },
@@ -913,6 +913,8 @@ def realtime_browser_session_config(
             },
         },
     }
+    if payload["audio"]["input"]["transcription"]["model"] is None:
+        payload["audio"]["input"].pop("transcription")
     if include_query_origin_agent:
         payload["tools"] = [query_origin_agent_tool_definition()]
         payload["tool_choice"] = "auto"
@@ -1488,6 +1490,7 @@ def realtime_session_config(config: Any) -> dict[str, Any]:
     return {
         "provider": "openai_realtime",
         "model": getattr(config, "openai_realtime_model", "gpt-realtime-2"),
+        "transcription_model": getattr(config, "openai_realtime_transcription_model", "gpt-live-transcribe"),
         "media_controller_url": getattr(config, "voice_media_controller_url", None),
         "media_controller_token_env": getattr(config, "voice_media_controller_token_env", None),
         "media_controller_request_timeout_seconds": getattr(

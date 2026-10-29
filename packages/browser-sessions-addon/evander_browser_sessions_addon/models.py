@@ -160,8 +160,9 @@ class VoiceSettings(Contract):
     credential_ref: str | None = Field(default=None, pattern=CREDENTIAL_REF)
     _directory: str = PrivateAttr(default="")
     transcription_model: str = Field(default="gpt-transcribe", min_length=1, max_length=128)
-    speech_model: str = Field(default="gpt-4o-mini-tts", min_length=1, max_length=128)
-    voice: str = Field(default="onyx", min_length=1, max_length=128)
+    speech_backend: Literal["realtime", "speech_api"] = "realtime"
+    speech_model: str = Field(default="gpt-realtime-2.1-mini", min_length=1, max_length=128)
+    voice: str = Field(default="cedar", min_length=1, max_length=128)
     speed: float = Field(default=1.1, ge=0.25, le=4.0, allow_inf_nan=False)
     instructions: str = Field(
         default=(
@@ -180,20 +181,19 @@ class VoiceSettings(Contract):
     def compatible_delivery_defaults(cls, value):
         if not isinstance(value, dict):
             return value
-        endpoint = value.get("api_base_url", "https://api.openai.com/v1")
-        model = value.get("speech_model", "gpt-4o-mini-tts")
-        if (
-            isinstance(endpoint, str)
-            and endpoint.strip().rstrip("/") == "https://api.openai.com/v1"
-            and isinstance(model, str)
-            and model.strip() in {"gpt-4o-mini-tts", "gpt-4o-mini-tts-2025-12-15"}
-        ):
+        if value.get("speech_backend", "realtime") == "realtime":
             return value
-        # An old custom connection did not opt into optional synthesis controls.
+        # Compatible Speech API providers may not implement delivery controls.
         value = dict(value)
         value.setdefault("speed", 1.0)
         value.setdefault("instructions", "")
         return value
+
+    @model_validator(mode="after")
+    def speech_speed(self):
+        if self.speech_backend == "realtime" and self.speed > 1.5:
+            raise ValueError("Realtime speech speed must be between 0.25 and 1.5")
+        return self
 
     @field_validator("api_base_url")
     @classmethod

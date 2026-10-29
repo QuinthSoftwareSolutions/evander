@@ -7,20 +7,16 @@ Register add-on ID `demo-video-addon`, module `evander_demo_video_addon`, connec
 result. Input is exactly `{"text":"..."}`, 1–2000 characters. Existing connector operation
 grants, argument policies and configured approvals apply. No new MCP tool is introduced.
 
-The host configuration fixes `base_url`, `model`, `voice`, optional `instructions` and `speed`.
-Authentication is an existing connector auth profile. The adapter sends a bounded
-`POST <base_url>/audio/speech` request with WAV output. HTTPS is required; loopback HTTP is
-accepted for local tests. Redirects are not followed. The maximum is 40 seconds, 8 MB and
-120 seconds of decoded PCM per beat. Authorization is rechecked during delivery and before
-staging. Failed, revoked, malformed, truncated or oversized responses produce no audio artifact.
+The host configuration selects `speech_backend` (`realtime` by default or `speech_api`), `base_url`, `model`, `voice`, optional `instructions` and `speed`. Authentication uses an existing connector auth profile. The shipped example uses `gpt-realtime-2.1-mini` and Cedar over a host-owned Realtime WebSocket. Generated mono 24 kHz PCM is sealed as WAV only after successful completion. Compatible providers can explicitly select `speech_api` to retain `POST <base_url>/audio/speech`.
+
+HTTPS is required; loopback HTTP is accepted for local tests. Redirects and environment proxies are not used by the Realtime adapter. Realtime speed is limited to `0.25`–`1.5`; Speech API speed allows `0.25`–`4`. Both paths retain the 40-second, 8 MB and 120-second decoded PCM limits per beat. Authorization is rechecked during delivery and before staging. Failed, revoked, malformed, truncated or oversized responses produce no audio artifact.
 
 The result is the normal `ConnectorInvocationResult`: a session-owned `audio/wav` artifact,
 its digest/expiry and `value.duration_seconds`. No host path, credentials or raw audio is
 returned through the connector result. Copy it into the guest with
 `communication_copy_artifact_to_workspace`, then import it into the request workspace.
 
-Speech-provider migration is deliberately separate. Keep configuration consistent with the
-current voice setup. Do not move existing browser voice users as part of this feature.
+Migrate existing settings explicitly using the [one-time migration](../../../docs/openai-deprecation-migration.md). Runtime settings are not normalized into replacement model IDs.
 
 ## Portable worker
 

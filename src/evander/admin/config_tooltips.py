@@ -381,6 +381,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "JSON object mapping logical model names to Azure deployment names used by the relay."
     ),
     "openai_realtime_model": ("OpenAI Realtime model used for projected live voice sessions."),
+    "openai_realtime_transcription_model": (
+        "Input transcription model for browser, phone and Teams voice sessions. "
+        "Defaults to gpt-live-transcribe; null disables transcription."
+    ),
     "openai_realtime_api_key_env": (
         "Host environment variable used to mint browser Realtime client secrets for Team "
         "Add-on direct agent calls. SIP and meeting bridges still use bridge-local key "

@@ -2705,6 +2705,7 @@ invent fallback graph IDs for state nodes.
 | `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
 | `openai_realtime_model` | provider config overlays | Realtime model passed to projected voice-session bridges and Team Add-on browser direct agent calls; defaults to `gpt-realtime-2`. |
+| `openai_realtime_transcription_model` | provider config overlays | Input transcription model for browser, phone and Teams sessions; defaults to `gpt-live-transcribe`. Set null to disable. Explicit values are passed through without model migration. |
 | `openai_realtime_api_key_env` | provider config overlays | Host env-var name used to mint ephemeral OpenAI Realtime client secrets for Team Add-on browser direct agent calls; defaults to `OPENAI_API_KEY`. SIP and meeting bridges still use bridge-local API key configuration. |
 | `openai_realtime_api_base_url` | provider config overlays | OpenAI-compatible Realtime API base URL used for Team Add-on browser direct agent calls; defaults to `https://api.openai.com/v1`. SIP and meeting bridges still use bridge-local upstream URL configuration. |
 | `voice_media_controller_url` | provider config overlays | Optional voice media controller URL passed to DIDWW or Teams bridges. |

@@ -199,6 +199,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "retell_request_timeout_seconds",
             "phone_call_backend",
             "openai_realtime_model",
+            "openai_realtime_transcription_model",
             "openai_realtime_api_key_env",
             "openai_realtime_api_base_url",
             "voice_media_controller_url",

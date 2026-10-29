@@ -26,6 +26,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("in-memory mode honors configured default voice", InMemoryModeHonorsConfiguredDefaultVoice),
     ("graph mode validates required config", GraphModeValidatesRequiredConfig),
     ("graph mode can select OpenAI Realtime speech", GraphModeCanSelectOpenAIRealtimeSpeech),
+    ("realtime transcription defaults, overrides and disabling", RealtimeTranscriptionConfiguration),
     ("join request accepts projection and realtime metadata", JoinRequestAcceptsProjectionAndRealtimeMetadata),
     ("join records active meeting state", JoinRecordsActiveMeetingState),
     ("transcript events are emitted after cursor", TranscriptEventsAreEmittedAfterCursor),
@@ -111,6 +112,35 @@ static Task GraphModeCanSelectOpenAIRealtimeSpeech()
     AssertEqual("marin", options.DefaultVoice);
     AssertEqual(null, options.AzureSpeech);
     return Task.CompletedTask;
+}
+
+static async Task RealtimeTranscriptionConfiguration()
+{
+    var values = RequiredGraphConfig();
+    values["Bridge:SpeechMode"] = "OpenAIRealtime";
+    values["OpenAIRealtime:ApiKey"] = "synthetic-key";
+    var defaults = BridgeOptions.FromConfiguration(new ConfigurationBuilder()
+        .AddInMemoryCollection(values).Build());
+    AssertEqual("gpt-live-transcribe", defaults.OpenAIRealtime?.TranscriptionModel);
+    foreach (var transcription in new string?[] { "configured-transcriber", null })
+    {
+        var socket = new FakeRealtimeWebSocketClient();
+        var adapter = new OpenAIRealtimeSpeechAdapter(
+            new OpenAIRealtimeOptions("synthetic-key", new Uri("wss://api.openai.test/v1/realtime"),
+                "gpt-realtime-2", "marin", "server_vad", "gpt-live-transcribe"),
+            new FakeRealtimeWebSocketClientFactory(socket));
+        await using var session = await adapter.StartAsync(new MeetingSpeechStartRequest(
+            "configured", null, new FakeMeetingAudioSession(), null,
+            new Dictionary<string, object> { ["transcription_model"] = transcription! }, null,
+            (_, _) => Task.CompletedTask, (_, _) => Task.CompletedTask,
+            (_, _, _, _, _) => Task.CompletedTask), CancellationToken.None);
+        using var message = JsonDocument.Parse(socket.SentMessages[0]);
+        var input = message.RootElement.GetProperty("session").GetProperty("audio").GetProperty("input");
+        if (transcription is null)
+            AssertEqual(JsonValueKind.Null, input.GetProperty("transcription").ValueKind);
+        else
+            AssertEqual(transcription, input.GetProperty("transcription").GetProperty("model").GetString());
+    }
 }
 
 static Task JoinRequestAcceptsProjectionAndRealtimeMetadata()

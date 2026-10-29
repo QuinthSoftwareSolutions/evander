@@ -204,7 +204,7 @@ public sealed record OpenAIRealtimeOptions(
     string Model,
     string DefaultVoice,
     string TurnDetection,
-    string TranscriptionModel)
+    string? TranscriptionModel)
 {
     public static OpenAIRealtimeOptions FromConfiguration(IConfiguration configuration)
     {
@@ -244,7 +244,7 @@ public sealed record OpenAIRealtimeOptions(
             Optional(
                 configuration,
                 "OpenAIRealtime:TranscriptionModel",
-                "OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-4o-transcribe");
+                "OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-live-transcribe");
     }
 
     private static string? Optional(IConfiguration configuration, string configKey, string envKey)

@@ -351,6 +351,8 @@ def build(output: Path, node: str, playwright_module: str):
         connector = config_data["connectors"]["demo-narration"]
         connector["disabled"] = False
         connector["config"]["base_url"] = server.origin + "/v1"
+        connector["config"]["speech_backend"] = "speech_api"
+        connector["config"]["model"] = "fixture-speech"
         config = ConnectorDirectoryConfig.model_validate(config_data)
         session = SessionManifest(
             session_id="review-42",

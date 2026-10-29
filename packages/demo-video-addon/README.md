@@ -49,7 +49,4 @@ Source fixtures use synthetic identities, a local application and a local speech
 They prove browser capture, assembly and timing; they do not establish provider account access,
 production deployment success or the quality of the configured provider voice.
 
-The existing Speech API contract is retained intentionally. OpenAI schedules the current
-Speech API models for retirement on **January 6, 2027**; migration is a separate coordinated
-change across voice users, not part of this feature. See the
-[official deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-10-01-text-to-speech-models).
+Narration defaults to `gpt-realtime-2.1-mini` through a host-owned Realtime connection with Cedar. Custom Speech API providers remain configurable. Existing settings use the explicit [one-time migration](../../docs/openai-deprecation-migration.md); they are not rewritten by runtime loaders.
