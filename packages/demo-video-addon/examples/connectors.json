@@ -11,10 +11,11 @@
       "disabled": true,
       "config": {
         "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini-tts",
-        "voice": "onyx",
+        "speech_backend": "realtime",
+        "model": "gpt-realtime-2.1-mini",
+        "voice": "cedar",
         "instructions": "Read the supplied words only. Sound like an interested colleague giving a practical demonstration: conversational, engaged and clear. Vary intonation, emphasize choices and results, and use natural pauses so the listener can follow. Keep the delivery grounded and unhurried.",
-        "speed": 1.0
+        "speed": 1.1
       },
       "operations": {
         "synthesize": {

@@ -1,22 +1,25 @@
-"""A bounded Speech API connector. All provider settings and authentication are host-owned."""
+"""Bounded narration; provider settings and authentication remain host-owned."""
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 from io import BytesIO
 import struct
 from time import monotonic
+from typing import Literal
 from urllib.parse import urlsplit
 import wave
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evander.connectors.drivers import (
     ConnectorInvocationError,
     ConnectorUpstreamAuthenticationError,
 )
 from evander.connectors.models import ConnectorArtifactResult, ConnectorInvocationResult
+from evander.realtime_speech import RealtimeSpeechError, pcm_wav, realtime_speech_chunks
 
 
 MAX_AUDIO_BYTES = 8_000_000
@@ -27,12 +30,19 @@ class SpeechSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_url: str
-    model: str = Field(min_length=1, max_length=128)
-    voice: str = Field(min_length=1, max_length=128)
+    speech_backend: Literal["realtime", "speech_api"] = "realtime"
+    model: str = Field(default="gpt-realtime-2.1-mini", min_length=1, max_length=128)
+    voice: str = Field(default="cedar", min_length=1, max_length=128)
     instructions: str = Field(
         default="Speak naturally, warmly and clearly. Read the supplied text only.", max_length=2000
     )
-    speed: float = Field(default=1.0, ge=0.25, le=4.0, allow_inf_nan=False)
+    speed: float = Field(default=1.1, ge=0.25, le=4.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def speech_speed(self):
+        if self.speech_backend == "realtime" and self.speed > 1.5:
+            raise ValueError("Realtime speech speed must be between 0.25 and 1.5")
+        return self
 
     @field_validator("base_url")
     @classmethod
@@ -111,8 +121,9 @@ def normalize_wav(content: bytes) -> tuple[bytes, float]:
 
 
 class NarrationConnectorDriver:
-    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None, websocket_connect=None):
         self.transport = transport
+        self.websocket_connect = websocket_connect
 
     def validate_definition(self, definition):
         SpeechSettings.model_validate(definition.config)
@@ -146,31 +157,18 @@ class NarrationConnectorDriver:
         try:
             if context.authorize:
                 context.authorize()
-            async with asyncio.timeout(min(operation.timeout_seconds, 40)):
-                async with httpx.AsyncClient(
-                    transport=self.transport, follow_redirects=False
-                ) as client:
-                    async with client.stream(
-                        "POST",
-                        settings.base_url + "/audio/speech",
-                        headers=context.auth_headers,
-                        json=payload,
-                    ) as response:
-                        if response.status_code == 401:
-                            raise ConnectorUpstreamAuthenticationError(
-                                "Speech provider rejected authentication"
-                            )
-                        if response.status_code != 200:
-                            raise ConnectorInvocationError("Speech provider request failed")
-                        content = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if context.authorize:
-                                context.authorize()
-                            content.extend(chunk)
-                            if len(content) > maximum:
-                                raise ConnectorInvocationError(
-                                    "Speech audio exceeded its byte limit"
-                                )
+            if settings.speech_backend == "realtime":
+                chunks = realtime_speech_chunks(
+                    base_url=settings.base_url, model=settings.model, voice=settings.voice,
+                    instructions=settings.instructions, speed=settings.speed, text=text,
+                    headers=context.auth_headers, maximum=maximum - 44,
+                    timeout=min(operation.timeout_seconds, 40), authorize=context.authorize,
+                    connect=self.websocket_connect,
+                )
+                async with aclosing(chunks):
+                    content = bytearray(pcm_wav(b"".join([chunk async for chunk in chunks])))
+            else:
+                content = await self._speech_api(settings, payload, maximum, operation, context)
             if context.sensitive_values:
                 from evander.credentials.sanitize import reject_reflected_credentials
 
@@ -201,7 +199,41 @@ class NarrationConnectorDriver:
                 value={"duration_seconds": duration},
                 duration_ms=int((monotonic() - started) * 1000),
             )
+        except RealtimeSpeechError as exc:
+            if exc.authentication_failed:
+                raise ConnectorUpstreamAuthenticationError("Speech provider rejected authentication") from None
+            raise ConnectorInvocationError(
+                "Speech provider unavailable or timed out; no completed audio artifact"
+            ) from None
         except (httpx.HTTPError, TimeoutError):
             raise ConnectorInvocationError(
                 "Speech provider unavailable or timed out; no completed audio artifact"
             ) from None
+
+    async def _speech_api(self, settings, payload, maximum, operation, context):
+        async with asyncio.timeout(min(operation.timeout_seconds, 40)):
+            async with httpx.AsyncClient(
+                transport=self.transport, follow_redirects=False
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    settings.base_url + "/audio/speech",
+                    headers=context.auth_headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code == 401:
+                        raise ConnectorUpstreamAuthenticationError(
+                            "Speech provider rejected authentication"
+                        )
+                    if response.status_code != 200:
+                        raise ConnectorInvocationError("Speech provider request failed")
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if context.authorize:
+                            context.authorize()
+                        content.extend(chunk)
+                        if len(content) > maximum:
+                            raise ConnectorInvocationError(
+                                "Speech audio exceeded its byte limit"
+                            )
+        return content

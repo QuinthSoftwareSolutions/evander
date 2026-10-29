@@ -474,6 +474,7 @@ class GatewayConfig(BaseModel):
     retell_request_timeout_seconds: float = Field(default=30.0, gt=0)
     phone_call_backend: Literal["retell", "openai_realtime_didww"] = "retell"
     openai_realtime_model: str = Field(default="gpt-realtime-2", min_length=1)
+    openai_realtime_transcription_model: str | None = Field(default="gpt-live-transcribe", min_length=1)
     openai_realtime_api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     openai_realtime_api_base_url: str = "https://api.openai.com/v1"
     voice_media_controller_url: str | None = None

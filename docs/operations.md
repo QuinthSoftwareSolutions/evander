@@ -48,6 +48,8 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 | Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
 | Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
 
+See [OpenAI model deprecation migration](openai-deprecation-migration.md) for the explicit voice configuration cutover.
+
 ## MCP SDK compatibility
 
 The gateway and installed add-ons use MCP Python SDK `>=2.3.0,<3`. The checked-in

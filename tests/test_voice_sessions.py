@@ -141,6 +141,15 @@ def test_realtime_browser_session_config_includes_origin_query_tool() -> None:
     assert custom_payload["audio"]["output"]["voice"] == {"id": "voice_custom"}
 
 
+def test_live_transcription_default_and_explicit_disable_reach_browser_session() -> None:
+    default = realtime_browser_session_config(GatewayConfig(), instructions="Answer briefly.")
+    assert default["audio"]["input"]["transcription"] == {"model": "gpt-live-transcribe"}
+    disabled = realtime_browser_session_config(
+        GatewayConfig(openai_realtime_transcription_model=None), instructions="Answer briefly."
+    )
+    assert "transcription" not in disabled["audio"]["input"]
+
+
 def test_openai_realtime_client_secret_service_posts_browser_session_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -303,6 +303,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "local_openai_provider_name"): "Local OpenAI provider name",
     ("providers", "local_openai_max_concurrency"): "Local inference max concurrency",
     ("providers", "openai_realtime_model"): "OpenAI Realtime model",
+    ("providers", "openai_realtime_transcription_model"): "Live transcription model",
     ("providers", "openai_realtime_api_key_env"): "OpenAI Realtime API key env",
     ("providers", "openai_realtime_api_base_url"): "OpenAI Realtime API base URL",
     ("providers", "container_worker_images"): "Approved container image catalog",

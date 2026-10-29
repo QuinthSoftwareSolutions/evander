@@ -130,7 +130,8 @@ def speech_provider(domain, monkeypatch):
     service, _, _ = domain
     revision, settings = service.store.settings("root")
     # Redirect the native OpenAI configuration to the mocked provider origin.
-    settings.voice = VoiceSettings(enabled=True).model_copy(
+    settings.voice = VoiceSettings(enabled=True, speech_backend="speech_api", speech_model="custom-tts",
+        voice="onyx", speed=1.1, instructions="Speak warmly.").model_copy(
         update={"api_base_url": "https://speech.test/v1"}
     )
     service.store.save_settings("root", revision, settings)
