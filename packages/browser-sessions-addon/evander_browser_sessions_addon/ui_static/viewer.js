@@ -1251,11 +1251,21 @@ function renderSettings() {
     settings.voice.enabled = input("voice-enabled").checked;
     syncAdvanced();
   };
+  input("voice-backend").value = settings.voice.speech_backend ?? "realtime";
+  const speedLimit = () => {
+    input("voice-speed").max = input("voice-backend").value === "realtime" ? "1.5" : "4";
+  };
+  input("voice-backend").onchange = () => {
+    settings.voice.speech_backend = input("voice-backend").value;
+    speedLimit();
+    syncAdvanced();
+  };
+  speedLimit();
   for (const [id, key, fallback] of [
     ["voice-provider", "api_base_url", "https://api.openai.com/v1"],
     ["voice-stt", "transcription_model", "gpt-transcribe"],
-    ["voice-tts", "speech_model", "gpt-4o-mini-tts"],
-    ["voice-name", "voice", "onyx"],
+    ["voice-tts", "speech_model", "gpt-realtime-2.1-mini"],
+    ["voice-name", "voice", "cedar"],
     ["voice-speed", "speed", 1.1],
     ["voice-instructions", "instructions", ""],
     ["voice-seconds", "max_recording_seconds", 45]

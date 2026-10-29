@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import json
@@ -31,9 +32,13 @@ def wav_bytes(seconds=0.1):
     return output.getvalue()
 
 
-def configured_service(tmp_path, handler, *, available=True):
+def configured_service(tmp_path, handler, *, available=True, realtime=False, websocket_connect=None):
     payload = json.loads((Path(__file__).parents[1] / "examples/connectors.json").read_text())
     payload["connectors"]["demo-narration"]["disabled"] = False
+    if not realtime:
+        payload["connectors"]["demo-narration"]["config"].update(
+            speech_backend="speech_api", model="custom-tts", voice="onyx"
+        )
     config = ConnectorDirectoryConfig.model_validate(payload)
     session = SessionManifest(
         session_id="review-42",
@@ -44,7 +49,9 @@ def configured_service(tmp_path, handler, *, available=True):
     )
     registry = ConnectorRegistry()
     registry.register(
-        "demo_video_narration", NarrationConnectorDriver(transport=httpx.MockTransport(handler))
+        "demo_video_narration", NarrationConnectorDriver(
+            transport=httpx.MockTransport(handler), websocket_connect=websocket_connect
+        )
     )
     service = ConnectorService(
         runtime_dir=tmp_path,
@@ -85,7 +92,7 @@ def test_host_auth_and_settings_produce_session_owned_wav(tmp_path):
     assert request.headers["authorization"] == "Bearer synthetic-host-secret"
     assert str(request.url) == "https://api.openai.com/v1/audio/speech"
     body = json.loads(request.content)
-    assert body["model"] == "gpt-4o-mini-tts"
+    assert body["model"] == "custom-tts"
     assert body["voice"] == "onyx"
     assert body["response_format"] == "wav"
     assert body["input"] == "Here is why the change matters."
@@ -97,6 +104,53 @@ def test_host_auth_and_settings_produce_session_owned_wav(tmp_path):
     assert result.value["duration_seconds"] == pytest.approx(0.1)
     assert "synthetic-host-secret" not in result.model_dump_json()
     assert "blob_path" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "revoked"])
+def test_realtime_narration_requires_completed_authorized_audio_before_staging(tmp_path, outcome):
+    class Provider:
+        def __init__(self):
+            self.events = iter([
+                {"type": "session.updated"},
+                {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\0\1" * 2400).decode()},
+                {"type": "response.done", "response": {"status": outcome}},
+            ])
+            self.closed = False
+            self.sent = []
+
+        async def connect(self, url, **kwargs):
+            assert url == "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini"
+            assert kwargs["additional_headers"] == {"Authorization": "Bearer synthetic-host-secret"}
+            return self
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+        async def recv(self):
+            value = next(self.events)
+            if outcome == "revoked" and value["type"] == "response.output_audio.delta":
+                session.connector_grants = {}
+            return json.dumps(value)
+
+        async def close(self):
+            self.closed = True
+
+    provider = Provider()
+    service, session, _ = configured_service(
+        tmp_path, lambda request: pytest.fail("Realtime must not call the Speech API"),
+        realtime=True, websocket_connect=provider.connect,
+    )
+    if outcome == "completed":
+        result = invoke(service, session)
+        record = CommunicationArtifactStore(tmp_path).get(result.artifact.artifact_id)
+        assert record.metadata.session_id == "review-42"
+        assert result.value["duration_seconds"] == pytest.approx(0.1)
+        assert provider.sent[0]["session"]["audio"]["output"]["voice"] == "cedar"
+    else:
+        with pytest.raises((ConnectorInvocationError, ConnectorPolicyError)):
+            invoke(service, session)
+        assert not list((tmp_path / "communication-artifacts").glob("*.json"))
+    assert provider.closed
 
 
 @pytest.mark.parametrize(

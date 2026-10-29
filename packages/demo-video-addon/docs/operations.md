@@ -178,10 +178,6 @@ PR attachments have the PR provider's lifetime after upload. No new public video
 access tokens are introduced. Report provider size/preview limitations honestly; v1 promises
 an MP4 attachment link, not inline playback in every Azure DevOps client.
 
-## Speech API retirement
+## Speech-provider migration
 
-V1 intentionally retains the current Speech API. OpenAI schedules `tts-1`, `tts-1-hd` and
-`gpt-4o-mini-tts` variants for removal on **January 6, 2027**. Plan and review one coordinated
-migration for existing voice users and this connector before that date; do not migrate browser
-voice users incidentally while deploying demo videos. The authoritative notice is
-[OpenAI's deprecation page](https://developers.openai.com/api/docs/deprecations#2026-10-01-text-to-speech-models).
+The shipped narration example uses `gpt-realtime-2.1-mini` through Realtime with Cedar. Existing OpenAI Speech API settings must be migrated explicitly; custom Speech API providers remain supported with `speech_backend: speech_api`. Follow the [one-time OpenAI migration](../../../docs/openai-deprecation-migration.md) during the reviewed deployment cutover. Runtime code does not silently replace selected models.

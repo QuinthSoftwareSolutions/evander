@@ -303,10 +303,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                                 ["type"] = "audio/pcm",
                                 ["rate"] = PcmAudio.RealtimeSampleRate,
                             },
-                            ["transcription"] = new Dictionary<string, object?>
-                            {
-                                ["model"] = settings.TranscriptionModel,
-                            },
+                            ["transcription"] = settings.TranscriptionModel is null ? null
+                                : new Dictionary<string, object?> { ["model"] = settings.TranscriptionModel },
                             ["turn_detection"] = new Dictionary<string, object?>
                             {
                                 ["type"] = settings.TurnDetection,
@@ -868,7 +866,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             string model,
             string voice,
             string turnDetection,
-            string transcriptionModel,
+            string? transcriptionModel,
             string instructions)
         {
             ApiKey = apiKey;
@@ -890,7 +888,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
 
         public string TurnDetection { get; }
 
-        public string TranscriptionModel { get; }
+        public string? TranscriptionModel { get; }
 
         public string Instructions { get; }
 
@@ -901,8 +899,11 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             var model = FirstString(request.Realtime, "model") ?? options.Model;
             var voice = FirstString(request.Realtime, "voice") ?? options.DefaultVoice;
             var turnDetection = FirstString(request.Realtime, "turn_detection") ?? options.TurnDetection;
-            var transcriptionModel = FirstString(request.Realtime, "transcription_model")
-                ?? options.TranscriptionModel;
+            var transcriptionModel = request.Realtime is not null
+                && request.Realtime.TryGetValue("transcription_model", out var transcription)
+                && (transcription is null || transcription is JsonElement { ValueKind: JsonValueKind.Null })
+                ? null
+                : FirstString(request.Realtime, "transcription_model") ?? options.TranscriptionModel;
             return new OpenAIRealtimeSessionSettings(
                 options.ApiKey,
                 BuildRealtimeUri(options.BaseUrl, model),

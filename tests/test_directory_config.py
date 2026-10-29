@@ -24,6 +24,20 @@ from evander.vm.templates import (
 )
 
 
+def test_live_transcription_model_inherits_and_can_be_disabled(tmp_path: Path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    resolver = ProviderConfigResolver(config)
+    DirectoryService(resolver.directory_store).create(parent="root", name="team")
+    resolver.config_store.write("root", domain="providers", payload={
+        "openai_realtime_transcription_model": "configured-transcriber",
+    })
+    assert resolver.resolve_for_directory("root/team").openai_realtime_transcription_model == "configured-transcriber"
+    resolver.config_store.write("root/team", domain="providers", payload={
+        "openai_realtime_transcription_model": None,
+    })
+    assert resolver.resolve_for_directory("root/team").openai_realtime_transcription_model is None
+
+
 def test_local_openai_max_concurrency_is_root_only(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
