@@ -227,10 +227,16 @@ def test_partial_apply_pins_metadata_child_before_parent_and_fresh_preview_finis
     assert not migration.inventory(runtime)[1]
 
 
+@pytest.mark.parametrize("base_url", [
+    "https://api.openai.com/v1", "https://api.openai.com:443/v1",
+    "https://API.OPENAI.COM/v1", "HTTPS://Api.OpenAI.Com:443/v1/",
+])
 def test_preview_apply_preserves_custom_inheritance_and_is_idempotent(
-    migration, configured_runtime, tmp_path
+    migration, configured_runtime, tmp_path, base_url
 ):
     runtime, configs = configured_runtime
+    root = configs.read("root", domain="providers")
+    configs.write("root", domain="providers", payload={**root, "openai_realtime_api_base_url": base_url})
     before = {str(p.relative_to(runtime)): p.read_bytes() for p in runtime.rglob("*") if p.is_file()}
     plan, _ = migration.inventory(runtime)
     assert before == {str(p.relative_to(runtime)): p.read_bytes() for p in runtime.rglob("*") if p.is_file()}
@@ -239,6 +245,7 @@ def test_preview_apply_preserves_custom_inheritance_and_is_idempotent(
     result = migration.apply(plan, backup_dir=tmp_path / "recovery", maintenance=True)
     assert configs.read("root", domain="providers")["openai_realtime_model"] == "gpt-realtime-2.1"
     assert configs.read("root", domain="providers")["openai_realtime_transcription_model"] == "gpt-live-transcribe"
+    assert configs.read("root", domain="providers")["openai_realtime_api_base_url"] == base_url.rstrip("/")
     custom = configs.read("root/custom", domain="providers")
     assert custom["openai_realtime_model"] == "gpt-realtime-2025-08-28"
     assert custom["openai_realtime_transcription_model"] == "gpt-4o-transcribe"
@@ -267,18 +274,40 @@ def test_stale_sources_and_unreviewed_changes_are_rejected_before_any_write(
     assert not (tmp_path / "recovery").exists()
 
 
-def test_env_migration_preserves_secrets_comments_permissions_and_custom_providers(migration, tmp_path):
+@pytest.mark.parametrize("base_url", [
+    None, "https://api.openai.com:443/v1", "https://API.OPENAI.COM/v1",
+    "WSS://Api.OpenAI.Com:443/v1/realtime",
+])
+def test_env_migration_preserves_secrets_comments_permissions(migration, tmp_path, base_url):
     env = tmp_path / "bridge.env"
-    env.write_text('OPENAI_API_KEY=synthetic-secret\nexport OPENAI_REALTIME_MODEL="gpt-realtime" # selected\nOPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe\n')
+    endpoint = f"OPENAI_REALTIME_API_BASE_URL={base_url}\n" if base_url else ""
+    env.write_text(endpoint + 'OPENAI_API_KEY=synthetic-secret\nexport OPENAI_REALTIME_MODEL="gpt-realtime" # selected\nOPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe\n')
     env.chmod(0o640)
     plan, _ = migration.inventory(env_files=[env])
     assert "synthetic-secret" not in json.dumps(plan)
     migration.apply(plan, backup_dir=tmp_path / "recovery", maintenance=True)
-    assert env.read_text() == ('OPENAI_API_KEY=synthetic-secret\nexport OPENAI_REALTIME_MODEL="gpt-realtime-2.1" # selected\nOPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-live-transcribe\n')
+    assert env.read_text() == (endpoint + 'OPENAI_API_KEY=synthetic-secret\nexport OPENAI_REALTIME_MODEL="gpt-realtime-2.1" # selected\nOPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-live-transcribe\n')
     assert stat.S_IMODE(env.stat().st_mode) == 0o640
-    custom = tmp_path / "custom.env"
-    custom.write_text('OPENAI_REALTIME_API_BASE_URL=https://custom.test/v1\nOPENAI_REALTIME_MODEL=gpt-realtime\n')
-    assert not migration.inventory(env_files=[custom])[1]
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://custom.test/v1", "https://api.openai.com:8443/v1",
+    "https://api.openai.com.example.test/v1", "https://api.openai.com@custom.test/v1",
+    "https://synthetic-user@api.openai.com/v1", "https://@api.openai.com/v1",
+    "http://api.openai.com/v1", "https://api.openai.com/custom/v1",
+    "https://api.openai.com/v1?provider=custom", "https://api.openai.com/v1#custom",
+    "https://api.openai.com:not-a-port/v1", "https://api.openai.com:65536/v1",
+])
+def test_env_migration_does_not_rewrite_non_public_endpoints(migration, tmp_path, base_url):
+    env = tmp_path / "custom.env"
+    original = (f"OPENAI_REALTIME_API_BASE_URL='{base_url}'\n"
+                "OPENAI_REALTIME_MODEL=gpt-realtime\n"
+                "OPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe\n")
+    env.write_text(original)
+    plan, candidates = migration.inventory(env_files=[env])
+    assert not candidates
+    assert migration.apply(plan, backup_dir=tmp_path / "recovery", maintenance=True)["already_migrated"]
+    assert env.read_text() == original
 
 
 def test_apply_requires_explicit_maintenance_and_external_recovery_storage(migration, configured_runtime, tmp_path):

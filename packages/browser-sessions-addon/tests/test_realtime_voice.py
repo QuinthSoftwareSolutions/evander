@@ -100,7 +100,10 @@ def test_realtime_stream_cleanup_never_records_partial_speech_as_completed(
         assert db.execute("SELECT state FROM voice_requests").fetchone()[0] == "unknown"
 
 
-def test_one_time_browser_migration_preserves_credentials_and_does_not_create_inherited_rows(domain):
+@pytest.mark.parametrize("base_url", [
+    "https://api.openai.com/v1", "https://api.openai.com:443/v1", "https://API.OPENAI.COM/v1",
+])
+def test_one_time_browser_migration_preserves_credentials_and_does_not_create_inherited_rows(domain, base_url):
     service, _, _ = domain
     runtime = service.runtime_dir
     (runtime / "host-config.json").write_text(HostConfig(runtime_dir=runtime).model_dump_json())
@@ -108,6 +111,7 @@ def test_one_time_browser_migration_preserves_credentials_and_does_not_create_in
     revision, settings = service.store.settings("root")
     settings.voice = VoiceSettings(
         enabled=True, speech_backend="speech_api", speech_model="gpt-4o-mini-tts-2025-12-15",
+        api_base_url=base_url, transcription_model="gpt-4o-transcribe",
         voice="onyx", speed=2.5, instructions="Keep the chosen delivery.",
     )
     service.store.save_settings("root", revision, settings)
@@ -122,6 +126,8 @@ def test_one_time_browser_migration_preserves_credentials_and_does_not_create_in
     assert after_revision == before_revision + 1
     assert loaded.voice.speech_backend == "realtime"
     assert loaded.voice.speech_model == "gpt-realtime-2.1-mini"
+    assert loaded.voice.transcription_model == "gpt-transcribe"
+    assert loaded.voice.api_base_url == base_url
     assert loaded.voice.voice == "cedar" and loaded.voice.speed == 1.5
     assert loaded.voice.instructions == "Keep the chosen delivery."
     with service.store.connect() as db:

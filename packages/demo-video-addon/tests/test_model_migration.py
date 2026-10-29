@@ -13,7 +13,10 @@ from evander.host_config import HostConfig
 @pytest.mark.parametrize("root_source,child_source", [
     ("file", "file"), ("metadata", "file"), ("file", "metadata"), ("metadata", "metadata"),
 ])
-def test_narration_migration_changes_public_models_and_preserves_custom_child(tmp_path, root_source, child_source):
+@pytest.mark.parametrize("base_url", [
+    "https://api.openai.com/v1", "https://api.openai.com:443/v1", "https://API.OPENAI.COM/v1",
+])
+def test_narration_migration_changes_public_models_and_preserves_custom_child(tmp_path, root_source, child_source, base_url):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (runtime / "host-config.json").write_text(HostConfig(runtime_dir=runtime).model_dump_json())
@@ -24,7 +27,7 @@ def test_narration_migration_changes_public_models_and_preserves_custom_child(tm
     payload = json.loads((Path(__file__).parents[1] / "examples/connectors.json").read_text())
     voice = payload["connectors"]["demo-narration"]["config"]
     voice.pop("speech_backend")
-    voice.update(model="gpt-4o-mini-tts", voice="onyx", speed=2.0)
+    voice.update(base_url=base_url, model="gpt-4o-mini-tts", voice="onyx", speed=2.0)
     custom = deepcopy(payload)
     custom["connectors"]["demo-narration"]["config"]["base_url"] = "https://custom.test/v1"
     for path, source, value in (("root", root_source, payload), ("root/custom", child_source, custom)):
@@ -47,6 +50,7 @@ def test_narration_migration_changes_public_models_and_preserves_custom_child(tm
     assert public["model"] == "gpt-realtime-2.1-mini"
     assert public["speech_backend"] == "realtime" and public["voice"] == "cedar"
     assert public["speed"] == 1.5
+    assert public["base_url"] == base_url
     private = effective("root/custom")
     assert private["model"] == "gpt-4o-mini-tts"
     assert private["voice"] == "onyx" and private["speed"] == 2

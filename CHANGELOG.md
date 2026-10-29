@@ -6,6 +6,7 @@
 - Default live transcription to GPT Live Transcribe across browser, phone and Teams calls; expose directory-scoped overrides and explicit disabling, and accept current Realtime models for Teams visual context.
 - Supply a one-time preview/apply migration with revision checks, private recovery copies and preservation of custom-provider inheritance. Runtime loaders never substitute deprecated model IDs. Apply saved-setting changes only during the human-reviewed CI/CD cutover.
 - Keep speech credentials on the configured endpoint by rejecting WebSocket redirects, and migrate active metadata-backed directory settings in place with the same precedence as runtime resolution.
+- Recognize equivalent OpenAI endpoint spellings with hostname casing or explicit port 443 during migration while preserving custom destinations and the configured URL.
 
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 

@@ -54,10 +54,16 @@ def digest(value):
 
 
 def official(url):
-    parts = urlsplit(url)
-    return (parts.scheme in {"https", "wss"} and parts.netloc == "api.openai.com"
-            and parts.path.rstrip("/") in {"/v1", "/v1/realtime"}
-            and not parts.query and not parts.fragment)
+    try:
+        parts = urlsplit(url)
+        # Hostnames are case-insensitive; an explicit default TLS port is equivalent.
+        return (parts.scheme in {"https", "wss"} and parts.hostname == "api.openai.com"
+                and parts.port in {None, 443}
+                and parts.username is None and parts.password is None
+                and parts.path.rstrip("/") in {"/v1", "/v1/realtime"}
+                and not parts.query and not parts.fragment)
+    except ValueError:
+        return False
 
 
 def merge(left, right):
