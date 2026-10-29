@@ -241,7 +241,14 @@ target's expected transition is allowed: fill must equal its supplied literal,
 type must equal the previous value plus that literal, and checkbox/radio clicks
 must produce their deterministic checked state. Other changed values/states need
 an explicit satisfied value/state checkpoint for that target; incidental focus
-changes are ignored. Identity must remain stable. Ordered checkpoints can wait between actions; `stop_after` is unnecessary
+changes are ignored. For example, when editing Name enables an already observed
+Save button, check `disabled: false` for that button before the next independent
+field edit. This authorizes only the declared property on the same existing
+control; its identity and all other observed state must remain stable. It does
+not authorize a new control or make an initially unavailable action valid.
+Enabled controls may omit `disabled`; that omission means false, while an absent
+checked or expanded state cannot satisfy a toggle checkpoint.
+Ordered checkpoints can wait between actions; `stop_after` is unnecessary
 and rejected in plan mode. All explicit actions execute before completion is
 checked, even if the condition held initially. Total runtime is at most five
 seconds, further bounded by the directory cap; use short plans.
@@ -320,6 +327,14 @@ If `observation_current` is false, or a retry receipt has no observation, obtain
 a fresh observation. Retrying an identical run request with the same ID returns
 its receipt; it never executes another run. Use a fresh ID only for a deliberately
 new objective. Restart and disconnect do not authorize replay.
+
+When `observation_current` is true, inspect the returned observation to verify the
+result and use its ID for the next grounded plan. Verification does not itself
+require another observe call. For navigation, supply a completion predicate for
+the destination's visible heading or other unique control so the run waits for
+the landing page; a completed click with `completion: null` does not prove that
+navigation finished. A final satisfied checkpoint can supply both the completion
+evidence and the returned observation without an additional browser read.
 
 Browser-chat messages, voice transcripts and page annotations return to the
 creating agent and conversation. Use `browser_session_reply` with the supplied

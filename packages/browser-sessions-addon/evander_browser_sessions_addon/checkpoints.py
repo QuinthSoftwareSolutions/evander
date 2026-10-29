@@ -49,7 +49,9 @@ def evaluate(condition, observation, values):
         if not isinstance(value, str) or len(value.encode("utf-16-le", "surrogatepass")) >= 2000:
             return None
         return evidence if value == values[condition.input].value else None
-    state = element.get(condition.kind)
+    # Enabled AX controls omit disabled rather than emitting false. This matches
+    # the action validator's interpretation; other missing state is not evidence.
+    state = element.get(condition.kind, False if condition.kind == "disabled" else None)
     if state in ("true", "false"):
         state = state == "true"
     return evidence if isinstance(state, bool) and state == condition.expected else None
