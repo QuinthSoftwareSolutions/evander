@@ -142,6 +142,14 @@ def create_query(context, call=None, images=None, request_id="function-1"):
     )
 
 
+@pytest.mark.parametrize("model", ["gpt-realtime-2.1", "gpt-realtime-2.1-mini"])
+def test_recommended_realtime_models_keep_visual_context_available(context, model):
+    context.provider_config.config_store.write("root/personal", domain="providers", payload={
+        "openai_realtime_model": model,
+    })
+    assert admit(context).caller_metadata["visual_context"]["enabled"]
+
+
 def test_visuals_default_off_and_directory_override_keeps_admitted_binding(context):
     assert not GatewayConfig().teams_call_visual_context_enabled
     first = admit(context)

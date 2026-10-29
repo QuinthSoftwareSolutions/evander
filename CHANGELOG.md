@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-29 - Prepare the open-source release (0.138.7)
+## 2026-10-29 - Prepare the open-source release (0.139.1)
 
 - License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
 - Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
@@ -8,6 +8,21 @@
 - Remove and ignore root-level SQLite runtime stores and their journal files, and reject them in CI if reintroduced.
 - Add contribution and private vulnerability-reporting guidance and public CI for the Python and Admin Web suites.
 - Require generic, customer-neutral tests and examples and restrict unrelated brand names in repository guidance.
+
+## 2026-10-29 - Create narrated explainers for Teams chats (0.139.0)
+
+- Extend the optional Demo Video add-on with general Teams requests, evidence-backed cards and approved browser recordings, keeping existing PR manifests and publication receipts compatible.
+- Deliver verified MP4s and transcripts through existing Teams artifact and idempotency controls, with a separate managed skill and recovery guidance.
+- Reuse the existing offline media toolchain and validate its original inventory when installing or reusing a bundle.
+- Validate supplied narration and recordings during preflight even when no readiness receipt is requested.
+
+## 2026-10-29 - Migrate deprecated OpenAI audio integrations (0.138.7)
+
+- Generate browser speech and demo narration through configurable host-owned Realtime connections, defaulting to GPT-Realtime-2.1 Mini and Cedar while retaining compatible Speech API providers and bounded PCM/WAV outputs.
+- Default live transcription to GPT Live Transcribe across browser, phone and Teams calls; expose directory-scoped overrides and explicit disabling, and accept current Realtime models for Teams visual context.
+- Supply a one-time preview/apply migration with revision checks, private recovery copies and preservation of custom-provider inheritance. Runtime loaders never substitute deprecated model IDs. Apply saved-setting changes only during the human-reviewed CI/CD cutover.
+- Keep speech credentials on the configured endpoint by rejecting WebSocket redirects, and migrate active metadata-backed directory settings in place with the same precedence as runtime resolution.
+- Recognize equivalent OpenAI endpoint spellings with hostname casing or explicit port 443 during migration while preserving custom destinations and the configured URL.
 
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 

@@ -122,7 +122,8 @@ service.store.save_settings(
         relay_url=base,
         relay_credential_ref=relay_ref,
         fast_execution={"enabled": True},
-        voice={"enabled": True, "api_base_url": base + "/test/provider", "credential_ref": voice_ref},
+        voice={"enabled": True, "speech_backend": "speech_api", "speech_model": "fixture-speech",
+               "voice": "onyx", "api_base_url": base + "/test/provider", "credential_ref": voice_ref},
     ),
 )
 auth = AdminWebAuth(AdminWebConfig.from_env(), AdminWebUserStore(folder / "users.db"))

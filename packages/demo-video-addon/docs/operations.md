@@ -139,6 +139,32 @@ Perform this only after Jonathan's source review and the later rollout authoriza
    quality, clear video picture, optional SRT/transcript and PR attachment access. Then verify a duplicate delivery and
    a recoverable media/publication failure without a second deployment. Only then enable normal use.
 
+## General videos for a personal assistant
+
+After reviewed CI/CD delivery and separately authorized workflow changes, import the packaged
+`general-video` skill through the managed Skills surface. Add it and only the required
+`demo-narration.synthesize` grant to the selected assistant's own settings, preserving its other
+grants and approvals. Reconcile the existing session as well as future provisioning: an
+`effect:agent:create` configured with `existing_agent_behavior: noop` does not reinstall a skill
+or toolchain in an existing session. Use the supported additive skill installation and the
+pipeline-prepared bundle. Verify the archive and bootstrap against the reviewed deployed source,
+bind copies to their verified digests, and verify readiness after recreation or lost workspace state.
+
+Pass the incoming message's exact existing `chat:` target and message ID as trusted request
+context. Keep the original request identity when later messages steer an unfinished video.
+Ensure the assistant can copy narration artifacts, stage files and use `teams_post_file`,
+while retaining file approvals and size/type policies. A Teams chat post omits `thread_id` and
+uses the worker's stable publication key. Never post again with a new key after an uncertain
+result. If the running service cannot resolve the narration credential for the assistant's
+directory, repair that scoped configuration through the supported credential controls before
+the canary; do not broaden other assistants' access or expose credentials to the guest.
+
+Read the current workflow document immediately before making an operator-specific change,
+validate the candidate, save with the fresh revision and lock, and verify both orchestrators
+adopted it. Run one separately authorized short canary and inspect the actual MP4, transcript,
+Teams delivery and link access. Browser recordings use only approved targets; the assistant
+does not deploy or reset a target as part of a general video request.
+
 There is no target/session lease. The existing pre-deployment busy check is retained; people
 coordinate subsequent use. An operator changing the target during a recording can invalidate
 the demonstration and requires inspection before continuing.
@@ -178,10 +204,6 @@ PR attachments have the PR provider's lifetime after upload. No new public video
 access tokens are introduced. Report provider size/preview limitations honestly; v1 promises
 an MP4 attachment link, not inline playback in every Azure DevOps client.
 
-## Speech API retirement
+## Speech-provider migration
 
-V1 intentionally retains the current Speech API. OpenAI schedules `tts-1`, `tts-1-hd` and
-`gpt-4o-mini-tts` variants for removal on **January 6, 2027**. Plan and review one coordinated
-migration for existing voice users and this connector before that date; do not migrate browser
-voice users incidentally while deploying demo videos. The authoritative notice is
-[OpenAI's deprecation page](https://developers.openai.com/api/docs/deprecations#2026-10-01-text-to-speech-models).
+The shipped narration example uses `gpt-realtime-2.1-mini` through Realtime with Cedar. Existing OpenAI Speech API settings must be migrated explicitly; custom Speech API providers remain supported with `speech_backend: speech_api`. Follow the [one-time OpenAI migration](../../../docs/openai-deprecation-migration.md) during the reviewed deployment cutover. Runtime code does not silently replace selected models.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import errno
 import hashlib
 import json
 import math
@@ -78,19 +79,32 @@ def nonempty(value, label: str, maximum: int = 2000) -> str:
 
 
 def validate_request(request: dict) -> None:
-    for field in (
-        "repo",
-        "pr_id",
-        "feedback_id",
-        "target",
-        "build_run_id",
-        "build_number",
-        "title",
-    ):
-        nonempty(request.get(field), f"request.{field}", 512)
-    for field in ("source_commit", "build_commit"):
-        if not isinstance(request.get(field), str) or not SHA.fullmatch(request[field]):
-            raise VideoError(f"request.{field} must identify the full pinned commit")
+    kind = request.get("kind", "pr")
+    if kind == "pr":
+        for field in (
+            "repo",
+            "pr_id",
+            "feedback_id",
+            "target",
+            "build_run_id",
+            "build_number",
+            "title",
+        ):
+            nonempty(request.get(field), f"request.{field}", 512)
+        for field in ("source_commit", "build_commit"):
+            if not isinstance(request.get(field), str) or not SHA.fullmatch(request[field]):
+                raise VideoError(f"request.{field} must identify the full pinned commit")
+    elif kind == "teams":
+        nonempty(request.get("title"), "request.title", 512)
+        target = nonempty(request.get("channel_target"), "request.channel_target", 512)
+        message_id = nonempty(request.get("message_id"), "request.message_id", 512)
+        if not re.fullmatch(r"chat:\S+", target) or any(c in message_id for c in "\r\n"):
+            raise VideoError("A Teams video requires its originating chat and message id")
+        for field in ("target", "source_reference"):
+            if field in request:
+                nonempty(request[field], f"request.{field}", 512)
+    else:
+        raise VideoError("request.kind must be pr or teams")
     if "summary" in request:
         nonempty(request["summary"], "request.summary", 600)
 
@@ -397,7 +411,7 @@ def render(manifest_path: Path, toolchain: Path | None = None) -> dict:
         completed.get("publication", {}).get("reply_id")
         and completed.get("render", {}).get("fingerprint") != fingerprint
     ):
-        raise VideoError("A published request is immutable; use a new PR command for another video")
+        raise VideoError("A published request is immutable; use a new request for another video")
     final = local_path(root, "explanation.mp4", exists=False)
     saved = completed.get("render", {})
     if (
@@ -587,7 +601,15 @@ def render(manifest_path: Path, toolchain: Path | None = None) -> dict:
     (cache / "explanation.tmp.mp4").replace(final)
     shutil.copyfile(cache / "captions.srt", local_path(root, "captions.srt", exists=False))
     request = manifest["request"]
-    transcript = f"{request['title']}\nPR {request['pr_id']} | {request['repo']}\nTarget: {request['target']} | Build: {request['build_number']} ({request['build_run_id']})\nSource: {request['source_commit']}\nBuild revision: {request['build_commit']}\nAI-generated narration.\n\n"
+    if request.get("kind", "pr") == "teams":
+        transcript = request["title"] + "\n"
+        if request.get("target"):
+            transcript += f"Target: {request['target']}\n"
+        if request.get("source_reference"):
+            transcript += f"Source: {request['source_reference']}\n"
+        transcript += "AI-generated narration.\n\n"
+    else:
+        transcript = f"{request['title']}\nPR {request['pr_id']} | {request['repo']}\nTarget: {request['target']} | Build: {request['build_number']} ({request['build_run_id']})\nSource: {request['source_commit']}\nBuild revision: {request['build_commit']}\nAI-generated narration.\n\n"
     transcript += "\n\n".join(scene["narration"] for scene in manifest["scenes"])
     transcript += "\n\nEvidence and limitations\n" + "\n".join(
         f"- {scene['title']} [{e['kind']}]: {e['reference']}"
@@ -617,7 +639,7 @@ def render(manifest_path: Path, toolchain: Path | None = None) -> dict:
 def import_audio(manifest_path: Path, scene_id: str, source: Path) -> dict:
     manifest = load_manifest(manifest_path)
     if manifest.get("completed", {}).get("publication", {}).get("reply_id"):
-        raise VideoError("A published request is immutable; use a new PR command")
+        raise VideoError("A published request is immutable; use a new request")
     scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
     if scene is None:
         raise VideoError("Unknown scene")
@@ -692,6 +714,22 @@ def publication(
         )[:600]
         or request["title"]
     )
+    if request.get("kind", "pr") == "teams":
+        key = hashlib.sha256(
+            json.dumps(
+                {k: request[k] for k in ("channel_target", "message_id")}, sort_keys=True
+            ).encode()
+        ).hexdigest()
+        return {
+            "published": False,
+            "channel_target": request["channel_target"],
+            "idempotency_key": "teams-video:" + key + ":final",
+            "artifact_ids": [
+                state[n]["artifact_id"] for n in ("video", "transcript", "captions") if n in state
+            ],
+            "body_text": f"Here is the explanation of {request['title']}.\n\nCovered: {demonstrated}\n\nThe video includes AI-generated narration. The transcript distinguishes what was demonstrated, explained from sources, and illustrated.\n\nLimitations: "
+            + manifest.get("limitations", "No additional limitations recorded."),
+        }
     key = hashlib.sha256(
         json.dumps(
             {k: request[k] for k in ("repo", "pr_id", "feedback_id")}, sort_keys=True
@@ -715,52 +753,86 @@ def install(archive: Path, root: Path) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     version = digest(archive)
     destination = root / "toolchains" / version
-    if not destination.exists():
-        destination.parent.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
-            staging = Path(tmp) / "bundle"
-            staging.mkdir()
-            with tarfile.open(archive, "r:gz") as bundle:
-                members = bundle.getmembers()
-                if sum(m.size for m in members) > 2 * 1024 * 1024 * 1024 or len(members) > 4096:
-                    raise VideoError("Toolchain archive exceeds its extraction budget")
-                names = set()
-                for member in members:
-                    if member.name in names or not (member.isfile() or member.isdir()):
-                        raise VideoError(
-                            "Toolchain archive contains a duplicate or unsupported entry"
-                        )
-                    names.add(member.name)
-                    local_path(staging, member.name, exists=False)
-                bundle.extractall(staging, filter="data")
-            inventory = json.loads((staging / "bundle.json").read_text())
+    destination.parent.mkdir(exist_ok=True)
+
+    def verify_installed(path: Path, inventory: dict) -> None:
+        if path.is_symlink() or not path.is_dir():
+            raise VideoError("Installed toolchain must be a directory without symbolic links")
+        files = set()
+        for item in path.rglob("*"):
+            if item.is_symlink() or not (item.is_file() or item.is_dir()):
+                raise VideoError("Installed toolchain contains an unsupported entry")
+            if item.is_file():
+                files.add(str(item.relative_to(path)))
+        if files != set(inventory["sha256"]) | {"bundle.json"}:
+            raise VideoError("Installed toolchain inventory does not match the archive")
+        if json.loads(local_path(path, "bundle.json").read_text()) != inventory:
+            raise VideoError("Installed toolchain inventory does not match the archive")
+        for name, expected in inventory["sha256"].items():
+            if digest(local_path(path, name)) != expected:
+                raise VideoError("Installed toolchain file failed its digest check")
+
+    # Always read the trusted inventory from the archive, including on reuse. An
+    # installed copy and its manifest could otherwise be modified together.
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        if sum(m.size for m in members) > 2 * 1024 * 1024 * 1024 or len(members) > 4096:
+            raise VideoError("Toolchain archive exceeds its extraction budget")
+        names, files = set(), set()
+        for member in members:
+            canonical = PurePosixPath(member.name).as_posix()
             if (
-                inventory.get("schema_version") != 1
-                or inventory.get("architecture") != platform.machine()
+                member.name != canonical
+                or canonical in names
+                or not (member.isfile() or member.isdir())
             ):
-                raise VideoError(
-                    "Toolchain bundle format or architecture does not match this worker"
-                )
-            files = {str(p.relative_to(staging)) for p in staging.rglob("*") if p.is_file()} - {
-                "bundle.json"
-            }
-            if files != set(inventory["sha256"]):
-                raise VideoError("Toolchain inventory does not match the archive")
-            for name, expected in inventory["sha256"].items():
-                if digest(local_path(staging, name)) != expected:
-                    raise VideoError("Toolchain file failed its digest check")
-            preflight(staging)
-            staging.rename(destination)
-    inventory = json.loads((destination / "bundle.json").read_text())
-    for name, expected in inventory["sha256"].items():
-        if digest(local_path(destination, name)) != expected:
-            raise VideoError("Installed toolchain file failed its digest check")
+                raise VideoError("Toolchain archive contains a duplicate or unsupported entry")
+            names.add(canonical)
+            local_path(destination.parent, canonical, exists=False)
+            if member.isfile():
+                files.add(canonical)
+        if "bundle.json" not in names:
+            raise VideoError("Toolchain archive has no inventory")
+        manifest = bundle.getmember("bundle.json")
+        if not manifest.isfile() or manifest.size > 4 * 1024 * 1024:
+            raise VideoError("Toolchain archive has an invalid inventory")
+        with bundle.extractfile(manifest) as stream:
+            inventory = json.load(stream)
+        if (
+            not isinstance(inventory, dict)
+            or inventory.get("schema_version") != 1
+            or inventory.get("architecture") != platform.machine()
+            or not isinstance(inventory.get("sha256"), dict)
+            or "bundle.json" in inventory["sha256"]
+            or any(
+                not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in inventory["sha256"].values()
+            )
+        ):
+            raise VideoError("Toolchain bundle format or architecture does not match this worker")
+        if files != set(inventory["sha256"]) | {"bundle.json"}:
+            raise VideoError("Toolchain inventory does not match the archive")
+        if not destination.exists() and not destination.is_symlink():
+            with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
+                staging = Path(tmp) / "bundle"
+                staging.mkdir()
+                bundle.extractall(staging, filter="data")
+                verify_installed(staging, inventory)
+                preflight(staging)
+                try:
+                    staging.rename(destination)
+                except OSError as exc:
+                    # Concurrent preparations can finish the same content-addressed bundle.
+                    # Verify the winner's installation below before either proceeds.
+                    if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not destination.is_dir():
+                        raise
+    verify_installed(destination, inventory)
     preflight(destination)
     current = root / "current"
-    pending = root / ".current.tmp"
-    pending.unlink(missing_ok=True)
-    pending.symlink_to(destination.relative_to(root), target_is_directory=True)
-    pending.replace(current)
+    with tempfile.TemporaryDirectory(prefix=".select-", dir=root) as temporary:
+        pending = Path(temporary) / "current"
+        pending.symlink_to(destination.relative_to(root), target_is_directory=True)
+        pending.replace(current)
     return {
         "success": True,
         "toolchain": str(current),
@@ -790,7 +862,7 @@ def main(argv=None) -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--kind", choices=["video", "transcript", "captions"])
     parser.add_argument("--artifact-id")
-    parser.add_argument("--reply-id")
+    parser.add_argument("--reply-id", "--message-id", dest="reply_id")
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--audio", type=Path)
@@ -813,12 +885,15 @@ def main(argv=None) -> int:
                     parser.error(
                         "preflight receipt requires --audio, --recording and --request-key"
                     )
+            if args.audio:
                 audio_duration(args.audio)
+            if args.recording:
                 if not any(
                     s.get("codec_type") == "video"
                     for s in probe(args.recording, result["binaries"])["streams"]
                 ):
                     raise VideoError("Recording preflight has no video")
+            if args.receipt:
                 args.receipt.parent.mkdir(parents=True, exist_ok=True)
                 args.receipt.write_text("ready:" + args.request_key + "\n", encoding="utf-8")
         elif args.command == "install":
@@ -844,7 +919,9 @@ def main(argv=None) -> int:
                 result = publication(args.manifest, kind=args.kind, artifact_id=args.artifact_id)
             elif args.command == "published":
                 if not args.reply_id:
-                    parser.error("published requires --reply-id from the successful reply tool")
+                    parser.error(
+                        "published requires --reply-id or --message-id from the successful post"
+                    )
                 result = publication(args.manifest, reply_id=args.reply_id)
             else:
                 result = publication(args.manifest)

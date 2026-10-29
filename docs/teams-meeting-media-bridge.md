@@ -110,7 +110,7 @@ OPENAI_REALTIME_MODEL="gpt-realtime-2"
 OPENAI_REALTIME_BASE_URL="wss://api.openai.com/v1/realtime"
 OPENAI_REALTIME_VOICE="marin"
 OPENAI_REALTIME_TURN_DETECTION="semantic_vad"
-OPENAI_REALTIME_TRANSCRIPTION_MODEL="gpt-4o-transcribe"
+OPENAI_REALTIME_TRANSCRIPTION_MODEL="gpt-live-transcribe"
 ```
 
 `OPENAI_API_KEY` is accepted as a compatibility fallback when `OPENAI_REALTIME_API_KEY` is not set.

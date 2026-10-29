@@ -9,6 +9,8 @@ containers on dedicated worker VMs. The host owns credentials, policy, workflow 
 Git. Agents reach external systems through explicitly granted MCP tools and narrow model, package,
 Git, and HTTP surfaces.
 
+For existing voice configurations, use the explicit [OpenAI model migration](docs/openai-deprecation-migration.md) during a reviewed release cutover.
+
 ## Start Here
 
 | Task | Guide |

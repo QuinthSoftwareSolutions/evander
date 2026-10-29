@@ -176,7 +176,7 @@ class DidwwSipBridgeConfig(BaseModel):
     openai_realtime_api_base_url: str = "https://api.openai.com/v1"
     openai_realtime_voice: str = "marin"
     openai_realtime_idle_timeout_ms: int = Field(default=10000, ge=5000, le=30000)
-    openai_realtime_transcription_model: str | None = "gpt-4o-transcribe"
+    openai_realtime_transcription_model: str | None = "gpt-live-transcribe"
     openai_realtime_input_noise_reduction_type: Literal[
         "near_field",
         "far_field",
@@ -1367,10 +1367,11 @@ class OpenAIRealtimeSession:
         }
         if noise_reduction_type and noise_reduction_type != "disabled":
             payload["audio"]["input"]["noise_reduction"] = {"type": noise_reduction_type}
-        if self.config.openai_realtime_transcription_model:
-            payload["audio"]["input"]["transcription"] = {
-                "model": self.config.openai_realtime_transcription_model
-            }
+        transcription_model = self.realtime.get(
+            "transcription_model", self.config.openai_realtime_transcription_model
+        )
+        if transcription_model:
+            payload["audio"]["input"]["transcription"] = {"model": transcription_model}
         tools = [_end_call_tool_definition()]
         if self.realtime.get("media_controller_url"):
             tools.append(
@@ -3091,7 +3092,7 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         openai_realtime_voice=_env("OPENAI_REALTIME_VOICE", "marin"),
         openai_realtime_idle_timeout_ms=_env_int("OPENAI_REALTIME_IDLE_TIMEOUT_MS", 10000),
         openai_realtime_transcription_model=_env_optional(
-            "OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"
+            "OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-live-transcribe"
         ),
         openai_realtime_input_noise_reduction_type=_env(
             "OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE", "near_field"

@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const targetIdentifier = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
 async function save(file, value) {
   await writeFile(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -72,18 +73,30 @@ export async function preflightCapture(chromium) {
   }
 }
 
-export async function createRecorder({ chromium, jobDirectory }) {
+export async function createRecorder({ chromium, jobDirectory, allowPublic = false }) {
+  if (typeof allowPublic !== "boolean") throw new Error("allowPublic must be a boolean");
+  if (allowPublic && !process.env.EVANDER_HTTP_TARGET_BROWSER_PROXY_URL) {
+    throw new Error("Public recording requires the session's approved target proxy");
+  }
   await mkdir(jobDirectory, { recursive: true });
   const root = await realpath(jobDirectory);
   const directory = path.join(root, "clips");
   await mkdir(directory, { recursive: true });
   if (await realpath(directory) !== directory) throw new Error("Recording directory cannot be a symlink");
   const helper = await import(pathToFileURL(process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER).href);
-  const browser = await helper.launchSeededChromium(chromium, { headless: true });
+  // Chromium otherwise bypasses proxies for loopback addresses. Public recordings must
+  // route every network request through the session-scoped host proxy.
+  const browser = await helper.launchSeededChromium(chromium, {
+    headless: true,
+    ...(allowPublic ? { args: ["--proxy-bypass-list=<-loopback>"] } : {}),
+  });
   return {
-    async recordScene({ id, targetAlias, setup, act, verify }) {
-      if (!identifier.test(id) || !targetAlias || ![setup, act, verify].every(f => typeof f === "function")) {
+    async recordScene({ id, targetAlias, setup, act, verify, access = "managed" }) {
+      if (typeof id !== "string" || !identifier.test(id) || typeof targetAlias !== "string" || !targetIdentifier.test(targetAlias) || ![setup, act, verify].every(f => typeof f === "function")) {
         throw new Error("A scene needs a safe id, targetAlias, setup, act, and verify callbacks");
+      }
+      if (!["managed", "public"].includes(access) || (access === "public" && !allowPublic)) {
+        throw new Error("Public recording must be explicitly enabled with the session proxy");
       }
       const receiptPath = path.join(directory, `${id}.json`);
       const clipPath = path.join(directory, `${id}.webm`);
@@ -92,6 +105,7 @@ export async function createRecorder({ chromium, jobDirectory }) {
       catch (error) { if (error.code !== "ENOENT") throw error; }
       if (previous) {
         if (previous.target_alias !== targetAlias) throw new Error("Scene target changed; use a fresh scene id");
+        if ((previous.access ?? "managed") !== access) throw new Error("Scene access changed; use a fresh scene id");
         if (previous.state !== "completed") {
           throw new Error("This scene has an uncertain action outcome. Inspect the application before choosing a new scene id; it will not be replayed automatically.");
         }
@@ -99,12 +113,13 @@ export async function createRecorder({ chromium, jobDirectory }) {
         if (createHash("sha256").update(content).digest("hex") !== previous.sha256) throw new Error("Completed recording has changed");
         return { ...previous, reused: true };
       }
-      await save(receiptPath, { state: "recording", target_alias: targetAlias });
+      await save(receiptPath, { state: "recording", target_alias: targetAlias, access });
       let context;
       try {
-        context = await helper.createManagedWebsiteContext(browser, targetAlias, {
-          viewport: { width: 1280, height: 720 },
-        });
+        const options = { viewport: { width: 1280, height: 720 } };
+        context = access === "managed"
+          ? await helper.createManagedWebsiteContext(browser, targetAlias, options)
+          : await browser.newContext(options);
         const page = await context.newPage();
         await setup(page);
         // Neither page creation nor encoder startup belongs to the recording clock.
@@ -129,14 +144,14 @@ export async function createRecorder({ chromium, jobDirectory }) {
         await page.screencast.stop();
         await context.close();
         const receipt = {
-          state: "completed", target_alias: targetAlias, clip: `clips/${id}.webm`,
+          state: "completed", target_alias: targetAlias, access, clip: `clips/${id}.webm`,
           trim_start: start, trim_end: end, result_seconds: result, markers,
           sha256: createHash("sha256").update(await readFile(clipPath)).digest("hex"),
         };
         await save(receiptPath, receipt);
         return receipt;
       } catch (error) {
-        await save(receiptPath, { state: "outcome_unknown", target_alias: targetAlias });
+        await save(receiptPath, { state: "outcome_unknown", target_alias: targetAlias, access });
         throw error;
       } finally {
         await context?.close();

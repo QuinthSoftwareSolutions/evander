@@ -148,7 +148,7 @@ class TeamsVoiceService(VoiceVisualService):
                 **realtime_session_config(config),
                 "voice": getattr(config, "openai_realtime_voice", "marin"),
                 "transcription_model": getattr(
-                    config, "openai_realtime_transcription_model", "gpt-4o-transcribe"
+                    config, "openai_realtime_transcription_model", "gpt-live-transcribe"
                 ),
             },
         }
@@ -157,7 +157,7 @@ class TeamsVoiceService(VoiceVisualService):
         if not config.teams_call_visual_context_enabled:
             return {"enabled": False, "reason": "Visual context is disabled for this assistant"}
         if not re.fullmatch(
-            r"gpt-realtime(?:-2)?(?:-\d{4}-\d{2}-\d{2})?", config.openai_realtime_model
+            r"gpt-realtime(?:-2(?:\.1(?:-mini)?)?)?(?:-\d{4}-\d{2}-\d{2})?", config.openai_realtime_model
         ):
             return {
                 "enabled": False,

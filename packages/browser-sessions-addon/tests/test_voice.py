@@ -25,7 +25,7 @@ def test_speech_settings_require_https_and_only_credential_references():
     with pytest.raises(ValueError):
         VoiceSettings(api_key_env="not a reference")
     assert not VoiceSettings().enabled
-    assert VoiceSettings().voice == "onyx"
+    assert VoiceSettings().voice == "cedar"
     assert VoiceSettings().speed == 1.1
     assert VoiceSettings().instructions
 
@@ -40,7 +40,9 @@ def test_speech_delivery_settings_allow_neutral_delivery_and_bound_style():
     settings = VoiceSettings(speed=1, instructions="")
     assert settings.speed == 1 and settings.instructions == ""
     assert VoiceSettings(speed=0.25).speed == 0.25
-    assert VoiceSettings(speed=4).speed == 4
+    assert VoiceSettings(speech_backend="speech_api", speed=4).speed == 4
+    with pytest.raises(ValueError, match="Realtime speech speed"):
+        VoiceSettings(speed=1.51)
     with pytest.raises(ValueError):
         VoiceSettings(instructions="x" * 2001)
 
@@ -53,13 +55,14 @@ def test_speech_delivery_settings_allow_neutral_delivery_and_bound_style():
     ("https://api.openai.com/v1", "tts-1-hd"),
 ])
 def test_existing_other_provider_models_retain_neutral_delivery(endpoint, model):
-    settings = VoiceSettings(api_base_url=endpoint, speech_model=model)
+    settings = VoiceSettings(api_base_url=endpoint, speech_model=model, speech_backend="speech_api")
     assert settings.speed == 1 and settings.instructions == ""
 
 
-def test_known_openai_snapshot_inherits_engaged_delivery():
-    settings = VoiceSettings(speech_model="gpt-4o-mini-tts-2025-12-15")
-    assert settings.speed == 1.1 and settings.instructions
+def test_runtime_loading_does_not_remap_deprecated_model_selections():
+    settings = VoiceSettings(speech_model="gpt-4o-mini-tts-2025-12-15", speech_backend="speech_api")
+    assert settings.speech_model == "gpt-4o-mini-tts-2025-12-15"
+    assert settings.speech_backend == "speech_api"
 
 
 def test_transcription_retry_does_not_bill_twice_or_persist_audio(domain, hosted, speech_provider):

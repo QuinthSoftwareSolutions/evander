@@ -7,20 +7,16 @@ Register add-on ID `demo-video-addon`, module `evander_demo_video_addon`, connec
 result. Input is exactly `{"text":"..."}`, 1–2000 characters. Existing connector operation
 grants, argument policies and configured approvals apply. No new MCP tool is introduced.
 
-The host configuration fixes `base_url`, `model`, `voice`, optional `instructions` and `speed`.
-Authentication is an existing connector auth profile. The adapter sends a bounded
-`POST <base_url>/audio/speech` request with WAV output. HTTPS is required; loopback HTTP is
-accepted for local tests. Redirects are not followed. The maximum is 40 seconds, 8 MB and
-120 seconds of decoded PCM per beat. Authorization is rechecked during delivery and before
-staging. Failed, revoked, malformed, truncated or oversized responses produce no audio artifact.
+The host configuration selects `speech_backend` (`realtime` by default or `speech_api`), `base_url`, `model`, `voice`, optional `instructions` and `speed`. Authentication uses an existing connector auth profile. The shipped example uses `gpt-realtime-2.1-mini` and Cedar over a host-owned Realtime WebSocket. Generated mono 24 kHz PCM is sealed as WAV only after successful completion. Compatible providers can explicitly select `speech_api` to retain `POST <base_url>/audio/speech`.
+
+HTTPS is required; loopback HTTP is accepted for local tests. Redirects and environment proxies are not used by the Realtime adapter. Realtime speed is limited to `0.25`–`1.5`; Speech API speed allows `0.25`–`4`. Both paths retain the 40-second, 8 MB and 120-second decoded PCM limits per beat. Authorization is rechecked during delivery and before staging. Failed, revoked, malformed, truncated or oversized responses produce no audio artifact.
 
 The result is the normal `ConnectorInvocationResult`: a session-owned `audio/wav` artifact,
 its digest/expiry and `value.duration_seconds`. No host path, credentials or raw audio is
 returned through the connector result. Copy it into the guest with
 `communication_copy_artifact_to_workspace`, then import it into the request workspace.
 
-Speech-provider migration is deliberately separate. Keep configuration consistent with the
-current voice setup. Do not move existing browser voice users as part of this feature.
+Migrate existing settings explicitly using the [one-time migration](../../../docs/openai-deprecation-migration.md). Runtime settings are not normalized into replacement model IDs.
 
 ## Portable worker
 
@@ -29,16 +25,22 @@ existing session. Use a separate directory for each immutable PR feedback reques
 `manifest.json` contract and agent procedures are in the packaged
 [demo-video skill](../evander_demo_video_addon/skills/demo-video/SKILL.md).
 
+Version-1 requests without `kind`, or with `kind: "pr"`, retain the original PR contract.
+For an existing Teams chat, `kind: "teams"` requires the exact `channel_target`, original
+`message_id`, and `title`; `summary`, `target`, and `source_reference` are optional. A
+cards-only request needs no target. The separate [general-video skill](../evander_demo_video_addon/skills/general-video/SKILL.md)
+describes the Teams procedure; the worker never invents PR or build metadata for it.
+
 | Command | Behavior |
 |---|---|
-| `preflight --toolchain <root>` | Check encoders, filters, font and ffprobe. |
-| `preflight ... --audio <wav> --recording <webm> --request-key <key> --receipt <path>` | Also check actual narration/capture and write `ready:<key>` only after success. |
+| `preflight --toolchain <root> [--audio <wav>] [--recording <webm>]` | Check encoders, filters, font and ffprobe; validate any supplied audio or recording. |
+| `preflight ... --audio <wav> --recording <webm> --request-key <key> --receipt <path>` | Require both media inputs and write `ready:<key>` only after all checks succeed. |
 | `import-audio --manifest <path> --scene <id> --source <copied-wav>` | Copy a completed WAV into the request and bind its digest to the exact narration text. |
 | `render --manifest <path> --toolchain <root>` | Render/cache beats, join the MP4, decode/validate it, and write a transcript and measured timeline. |
 | `verify --manifest <path> --toolchain <root>` | Check the final MP4's tracks, duration, dimensions, size and decodability. |
 | `stage-receipt --manifest <path> --kind video\|transcript\|captions --artifact-id <id>` | Record a successful existing staging tool's receipt, bound to the current file digest. Captions are optional. |
 | `publication --manifest <path>` | Return stable final reply arguments, or the already published reply. |
-| `published --manifest <path> --reply-id <id>` | Save the existing reply tool's successful receipt. |
+| `published --manifest <path> --reply-id <id>` | Save the successful PR reply receipt; `--message-id` is an equivalent alias for a Teams post. |
 | `install --archive <bundle> --root <root>` | Validate/extract an offline media bundle and atomically select its private `current` directory. |
 
 Media inputs are regular, relative paths inside the request workspace, with no symlink or
@@ -64,6 +66,11 @@ checks ask the agent to split an overlong beat instead of creating unreadable ou
 worker adds a visible AI-narration label, and the transcript identifies PR/build/source and
 labels evidence as `observed`, `source` or `illustration`. Agent visual/audio review remains
 necessary; format validation alone cannot establish that the explanation is useful or true.
+For Teams requests the transcript includes only real supplied source or target information.
+`publication` returns the original chat target, staged artifact IDs, text and a stable key
+derived from chat and incoming message IDs. Use them unchanged with `teams_post_file`, with
+no `thread_id` for a chat. If the outcome is uncertain, retry only the same payload and key;
+an uncertainty or payload conflict requires operator reconciliation, not a new key.
 
 ## Browser capture
 
@@ -75,6 +82,13 @@ necessary; format validation alone cannot establish that the explanation is usef
 - `recordScene({id, targetAlias, setup, act, verify})`: create a managed website context,
   establish the starting view, record the action and assert its result. Callbacks receive
   a Playwright page; action/verification callbacks also receive `mark(label)`.
+
+An approved unauthenticated target uses `createRecorder({chromium, jobDirectory,
+allowPublic: true})` and `recordScene` with `access: "public"`. This requires the
+session's host-owned browser proxy and disables Chromium's implicit loopback proxy bypass.
+The proxy remains responsible for restricting destinations. Managed access is the default;
+an authentication failure never falls back to public access. Changing a scene's access mode
+or target requires a new scene ID, while old receipts without an access field remain managed.
 
 The recorder stores a completed clip, trim boundaries, action/result markers and a digest.
 It finishes setup before recording and starts its clock on the first received video frame.
