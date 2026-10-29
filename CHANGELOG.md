@@ -4,6 +4,7 @@
 
 - Remove and ignore root-level SQLite runtime stores and their journal files, and reject them in CI if reintroduced.
 - Add contribution and private vulnerability-reporting guidance and public CI for the Python and Admin Web suites.
+- Require generic, customer-neutral tests and examples and restrict unrelated brand names in repository guidance.
 
 ## 2026-10-29 - Separate the landing site (0.138.9)
 
