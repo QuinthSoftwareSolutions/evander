@@ -3,6 +3,8 @@ requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 name = "evander-azure-devops-addon"
 version = "0.2.0"
 description = "Optional Azure DevOps integration and issue-to-merge workflows for Evander."

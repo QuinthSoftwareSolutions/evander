@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-29 - License Evander under AGPLv3 (0.138.7)
+
+- License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
+
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 
 - Honor satisfied value/state checkpoints for other already observed controls when validating a plan's next action. Permit only the explicitly declared property changes, preserving target identity, unrelated state, fresh input checks and durable no-replay receipts.

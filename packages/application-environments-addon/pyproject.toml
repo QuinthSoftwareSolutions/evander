@@ -3,6 +3,8 @@ requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 name = "evander-application-environments-addon"
 version = "0.1.0"
 description = "Independent bounded application environments for Evander."

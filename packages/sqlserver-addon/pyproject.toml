@@ -2,6 +2,8 @@
 requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 [project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 name = "evander-sqlserver-addon"
 version = "0.1.1"
 description = "Registered SQL Server services and disposable resources for Evander."
