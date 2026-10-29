@@ -18,6 +18,7 @@ documentation. Start with the task below, then use the subsystem references for 
 
 - [`../README.md`](../README.md): project overview and first-run path
 - [`operations.md`](operations.md): host installation, service operation, and recovery
+- [`operator-reference.md`](operator-reference.md): detailed operational recipes and feature notes
 - [`architecture.md`](architecture.md): current control-plane architecture and trust boundaries
 - [`configuration-reference.md`](configuration-reference.md): host, directory, provider, and
   service configuration
