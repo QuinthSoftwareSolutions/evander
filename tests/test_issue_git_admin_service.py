@@ -312,12 +312,12 @@ def test_issue_git_admin_service_delete_local_issue_names_session_blockers(
     monkeypatch.setattr(issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None)
 
     created = service.create_issue(title="Fix dashboard", body="Build it")
-    blocking_session_id = "issue-1-root-example-example_backup-20260601T072318Z-run"
+    blocking_session_id = "issue-1-root-example-archive-20260601T072318Z-run"
     admin.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id=blocking_session_id,
             vm_provider="container_worker_vm",
-            directory_path="root/example/example_backup",
+            directory_path="root/example/archive",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(days=1),
             metadata={
@@ -334,10 +334,10 @@ def test_issue_git_admin_service_delete_local_issue_names_session_blockers(
     assert "Cannot delete local issue 1" in delete_result.message
     assert "Destroy vm-1 before deleting local issue" not in delete_result.message
     assert f"session {blocking_session_id!r}" in delete_result.message
-    assert "directory: 'root/example/example_backup'" in delete_result.message
+    assert "directory: 'root/example/archive'" in delete_result.message
     assert "backend: 'container_worker_vm'" in delete_result.message
     assert "agent id: 'container-agent-1'" in delete_result.message
-    assert "selecting directory 'root/example/example_backup'" in delete_result.message
+    assert "selecting directory 'root/example/archive'" in delete_result.message
 
 
 def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_records(

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-29 - Generalize release examples (0.138.8)
+
+- Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
+
 ## 2026-10-29 - License Evander under AGPLv3 (0.138.7)
 
 - License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
