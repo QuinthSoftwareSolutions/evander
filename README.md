@@ -1600,6 +1600,11 @@ Application hosting and shared browsing are independent optional packages: [Appl
 
 Assistant workflows can [start a fresh conversation context](docs/conversation-context-reset.md) with the existing prompt enqueue operation.
 
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull request guidance.
+Report vulnerabilities privately using the instructions in [SECURITY.md](SECURITY.md).
+
 ## License
 
 Evander is licensed under the [GNU Affero General Public License, version 3 only](LICENSE)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-29 - Prepare public contributions (0.138.10)
+
+- Remove and ignore root-level SQLite runtime stores and their journal files, and reject them in CI if reintroduced.
+- Add contribution and private vulnerability-reporting guidance and public CI for the Python and Admin Web suites.
+
 ## 2026-10-29 - Separate the landing site (0.138.9)
 
 - Remove the standalone landing page and its hosting configuration from the control-plane repository, along with its unused root JavaScript dependency.
