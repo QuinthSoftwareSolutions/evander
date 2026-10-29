@@ -10,9 +10,9 @@ export const addonDesignResponses = {
   "/api/addons/bokio-addon/operations": { operations: [{ operation_key: "hosting-invoice", session_id: "accounting-session", status: "completed", updated_at: timestamp, attempt_count: 1 }] },
   "/api/addons/mssql-seed-addon/settings": {
     sidecars: [{ sidecar_id: "worker-a", base_url: "http://worker-a:11990", token_env: "SEED_TOKEN", restore_timeout_seconds: 3600, description: "Development databases" }],
-    seeds: [{ seed_alias: "app-demo", sidecar_id: "worker-a", backup_path: "/var/lib/evander/mssql-seeds/demo.bak", description: "Approved demo dataset" }],
+    seeds: [{ seed_alias: "sample-seed", sidecar_id: "worker-a", backup_path: "/var/lib/evander/mssql-seeds/demo.bak", description: "Approved demo dataset" }],
   },
-  "/api/addons/mssql-seed-addon/databases": { databases: [{ session_id: "session-demo", logical_name: "app", seed_alias: "app-demo", database_name: "session_demo_app", reset_count: 2, last_reset_at: timestamp }] },
+  "/api/addons/mssql-seed-addon/databases": { databases: [{ session_id: "session-demo", logical_name: "sample", seed_alias: "sample-seed", database_name: "session_demo_sample", reset_count: 2, last_reset_at: timestamp }] },
   "/api/addons/miro-addon/connections": { connections: [{ config: { id: "design", name: "Design workspace", directory_path: "root", redirect_uri: "http://localhost/api/addons/miro-addon/oauth/callback", daily_call_budget: 100, enabled: true, allow_workflows: true, allow_create_boards: false, boards: [{ board_id: "example-board", name: "Architecture review", writable: true }] }, revision: 3, connected: true, calls_today: 4 }] },
   "/api/addons/miro-addon/connections/design/activity": { subscriptions: [{ subscription_id: "architecture-review", checked_at: 1790071200 }], operations: [{ operation_id: "diagram-update", operation: "update_items", status: "uncertain", actor: "Design agent" }] },
   "/api/addons/figma-addon/settings": { revision: 3, settings: {

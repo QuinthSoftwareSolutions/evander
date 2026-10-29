@@ -1601,3 +1601,18 @@ Optional [multi-step decision execution](packages/browser-sessions-addon/docs/fa
 Application hosting and shared browsing are independent optional packages: [Application Environments](packages/application-environments-addon/README.md) and [Browser Sessions](packages/browser-sessions-addon/README.md). Existing combined previews require the coordinated cutover guide before upgrade.
 
 Assistant workflows can [start a fresh conversation context](docs/conversation-context-reset.md) with the existing prompt enqueue operation.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull request guidance.
+Report vulnerabilities privately using the instructions in [SECURITY.md](SECURITY.md).
+
+## License
+
+Evander is licensed under the [GNU Affero General Public License, version 3 only](LICENSE)
+(SPDX: `AGPL-3.0-only`). This applies to the first-party contents of this repository,
+including the independently packaged add-ons. Third-party components retain their own
+licenses and notices, including the [Team UI bundles](src/evander_team_addon/ui_static/THIRD_PARTY_LICENSES.txt),
+[browser controller](packages/browser-sessions-addon/evander_browser_sessions_addon/controller/THIRD_PARTY_LICENSES.txt),
+[Teams fonts](packages/teams-graph-addon/evander_teams_graph_addon/assets/fonts/LICENSE.txt),
+and [Godot](docker/evander-runner-godot/LICENSE.godot.txt).

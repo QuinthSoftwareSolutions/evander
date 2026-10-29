@@ -8,7 +8,7 @@ a readable article view, archive navigation, and changelog access.
 
 Branch: `feature/admin-design-system`.
 Starting main: `6b88a08b8cd8423d2737e9670a467df44669b1ed`.
-Integration base: `c564a87bf9533fe02027fe1b72e1a3f8c96b338e` (`example/main`).
+Integration base: `c564a87bf9533fe02027fe1b72e1a3f8c96b338e` (`main`).
 The implementation has passed the full local test suites and is ready for publication.
 No deployment or live configuration/workflow change is part of this work.
 The original study and browser evidence are preserved outside the repository.
@@ -200,7 +200,7 @@ conformance. No live backend mutation or deployment was part of this work.
 
 ## Integration with refreshed main
 
-The branch was advanced to the refreshed `example/main`, then the saved redesign was applied
+The branch was advanced to the refreshed `main`, then the saved redesign was applied
 and conflicts resolved before its first feature commit. This preserves the current workflow
 editor modules, backend performance work, customer-neutral branding/defaults, and removal of
 legacy HTTP-target fields. Compact sidebar dimensions now live in `editorConstants.ts`,

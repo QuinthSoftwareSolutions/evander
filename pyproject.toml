@@ -3,8 +3,10 @@ requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+license = "AGPL-3.0-only AND MIT AND ISC AND BSD-3-Clause"
+license-files = ["LICENSE", "src/evander_team_addon/ui_static/THIRD_PARTY_LICENSES.txt"]
 name = "evander"
-version = "0.139.0"
+version = "1.0.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"

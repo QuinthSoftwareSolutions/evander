@@ -1,6 +1,6 @@
 # Evander Repo Notes
 
-This file is for future Codex instances working in the `evander` repo.
+This file is for agents working in the `evander` repo.
 
 ## Production Source Changes
 
@@ -34,6 +34,21 @@ The security model is:
 - guests and worker containers get only explicit host/control-plane ports
 - model, package, Git, HTTP-target, and MCP access go through narrow host-owned surfaces
 - code transport uses Git, not MCP payloads
+
+## Customer And Brand Neutrality
+
+- Keep all repository content customer-neutral, including source code, tests, fixtures,
+  examples, documentation, configuration, images, generated artifacts, filenames, and both
+  tracked and ignored files.
+- Never add customer-specific tests, examples, fixtures, names, identifiers, verifier scripts,
+  policies, incident notes, or evidence. Reproduce the relevant platform behavior with generic
+  synthetic substitutes, including invented identities, domains, and data. Customer-owned
+  material belongs in operator-owned storage outside the repository.
+- Apart from Evander, do not introduce unrelated company, organization, product, or brand
+  names anywhere in the repository, including as example identities or placeholders. Name
+  third parties only when necessary to identify a real dependency or supported integration,
+  or to preserve required third-party attribution and license notices.
+- The former project name Truman may appear only when identifying Evander's historical name.
 
 ## Current Core Surfaces
 
@@ -433,10 +448,6 @@ Do not leave stalled test processes running while continuing work.
   Shared tests should use synthetic adapters rather than import an optional add-on.
   `addons/` remains ignored operator-local storage. Existing bundled add-ons can
   migrate separately; do not migrate unrelated add-ons as part of a new feature.
-- Keep this repository customer-neutral. Customer-specific names, identifiers,
-  verifier scripts, policies, tests, incident notes and evidence belong in
-  operator-owned storage outside the repository, never in tracked or ignored files.
-  Keep platform behavior generic and use synthetic identities in examples and tests.
 - Treat `src/evander/admin/composition.py::build_admin_runtime` and
   `AdminRuntimeComponents` as the supported admin runtime assembly surface for CLI, gateway,
   and Admin Web integration. Place domain logic in the narrow services under

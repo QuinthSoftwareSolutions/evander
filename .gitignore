@@ -8,6 +8,14 @@ runtime/
 /host-config.json
 /approvals.json
 /audit.db
+/communication-targets.db
+/communication-targets.db-*
+/discord-inbox-store.db
+/discord-inbox-store.db-*
+/teams_messages.db
+/teams_messages.db-*
+/wake-requests-store.db
+/wake-requests-store.db-*
 /audit.jsonl
 /directories.json
 /discord_commands.json

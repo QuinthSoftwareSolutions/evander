@@ -122,12 +122,6 @@ or API references:
 - [`test-suite-review-2026-09-24.md`](test-suite-review-2026-09-24.md): dated test-pruning review,
   not a current suite result
 
-## Managed Upstream Documentation
-
-Documentation below `frontend/evander-landing/.agents/` is managed skill or upstream framework
-content. Refresh it from its owning upstream source when dependencies change; do not treat it as
-an Evander API reference.
-
 ## Update Contract
 
 When behavior changes, update the relevant authoritative document, canonical manual chapter, and

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-29 - Prepare the open-source release (1.0.0)
+
+- License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
+- Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
+- Remove the standalone landing page and its hosting configuration from the control-plane repository, along with its unused root JavaScript dependency.
+- Remove and ignore root-level SQLite runtime stores and their journal files, and reject them in CI if reintroduced.
+- Add contribution and private vulnerability-reporting guidance and public CI for the Python and Admin Web suites.
+- Require generic, customer-neutral tests and examples and restrict unrelated brand names in repository guidance.
+
 ## 2026-10-29 - Create narrated explainers for Teams chats (0.139.0)
 
 - Extend the optional Demo Video add-on with general Teams requests, evidence-backed cards and approved browser recordings, keeping existing PR manifests and publication receipts compatible.
