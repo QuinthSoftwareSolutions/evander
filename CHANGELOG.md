@@ -1,22 +1,13 @@
 # Changelog
 
-## 2026-10-29 - Prepare public contributions (0.138.10)
+## 2026-10-29 - Prepare the open-source release (0.138.7)
 
+- License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
+- Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
+- Remove the standalone landing page and its hosting configuration from the control-plane repository, along with its unused root JavaScript dependency.
 - Remove and ignore root-level SQLite runtime stores and their journal files, and reject them in CI if reintroduced.
 - Add contribution and private vulnerability-reporting guidance and public CI for the Python and Admin Web suites.
 - Require generic, customer-neutral tests and examples and restrict unrelated brand names in repository guidance.
-
-## 2026-10-29 - Separate the landing site (0.138.9)
-
-- Remove the standalone landing page and its hosting configuration from the control-plane repository, along with its unused root JavaScript dependency.
-
-## 2026-10-29 - Generalize release examples (0.138.8)
-
-- Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
-
-## 2026-10-29 - License Evander under AGPLv3 (0.138.7)
-
-- License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
 
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 
