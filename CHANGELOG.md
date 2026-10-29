@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-29 - Prepare the open-source release (0.139.1)
+## 2026-10-29 - Prepare the open-source release (1.0.0)
 
 - License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
 - Replace organization-specific identifiers in the rollout notes, issue-deletion regression and add-on design fixtures with generic examples.
