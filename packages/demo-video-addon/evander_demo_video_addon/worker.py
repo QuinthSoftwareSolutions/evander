@@ -885,12 +885,15 @@ def main(argv=None) -> int:
                     parser.error(
                         "preflight receipt requires --audio, --recording and --request-key"
                     )
+            if args.audio:
                 audio_duration(args.audio)
+            if args.recording:
                 if not any(
                     s.get("codec_type") == "video"
                     for s in probe(args.recording, result["binaries"])["streams"]
                 ):
                     raise VideoError("Recording preflight has no video")
+            if args.receipt:
                 args.receipt.parent.mkdir(parents=True, exist_ok=True)
                 args.receipt.write_text("ready:" + args.request_key + "\n", encoding="utf-8")
         elif args.command == "install":

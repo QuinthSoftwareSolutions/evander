@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import struct
 import tarfile
@@ -345,6 +346,77 @@ def test_preflight_failure_never_writes_readiness_receipt(tmp_path):
         == 1
     )
     assert not receipt.exists()
+
+
+def test_preflight_checks_supplied_media_with_and_without_a_receipt(tmp_path, capsys):
+    wav = audio(tmp_path / "narration.wav")
+    recording = tmp_path / "recording.webm"
+    worker.run(
+        [
+            worker.tools()["ffmpeg"],
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=32x32:r=1:d=1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libvpx-vp9",
+            "-threads",
+            "1",
+            str(recording),
+        ]
+    )
+    assert worker.main(["preflight"]) == 0
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    assert worker.main(["preflight", "--audio", str(wav), "--recording", str(recording)]) == 0
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    receipt = tmp_path / "ready.txt"
+    assert (
+        worker.main(
+            [
+                "preflight",
+                "--audio",
+                str(wav),
+                "--recording",
+                str(recording),
+                "--receipt",
+                str(receipt),
+                "--request-key",
+                "example-request",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    assert receipt.read_text() == "ready:example-request\n"
+
+    bad_wav = tmp_path / "bad.wav"
+    bad_wav.write_bytes(b"invalid audio")
+    bad_recording = tmp_path / "bad.webm"
+    bad_recording.write_bytes(b"invalid video")
+    for supplied_audio, supplied_recording in (
+        (tmp_path / "missing.wav", recording),
+        (bad_wav, recording),
+        (wav, tmp_path / "missing.webm"),
+        (wav, bad_recording),
+    ):
+        assert (
+            worker.main(
+                [
+                    "preflight",
+                    "--audio",
+                    str(supplied_audio),
+                    "--recording",
+                    str(supplied_recording),
+                ]
+            )
+            == 1
+        )
+        assert json.loads(capsys.readouterr().err)["success"] is False
 
 
 def test_silent_provider_audio_cannot_be_published_as_narration(tmp_path):

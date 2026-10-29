@@ -5,6 +5,7 @@
 - Extend the optional Demo Video add-on with general Teams requests, evidence-backed cards and approved browser recordings, keeping existing PR manifests and publication receipts compatible.
 - Deliver verified MP4s and transcripts through existing Teams artifact and idempotency controls, with a separate managed skill and recovery guidance.
 - Reuse the existing offline media toolchain and validate its original inventory when installing or reusing a bundle.
+- Validate supplied narration and recordings during preflight even when no readiness receipt is requested.
 
 ## 2026-10-29 - Migrate deprecated OpenAI audio integrations (0.138.7)
 

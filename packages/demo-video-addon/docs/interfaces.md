@@ -33,8 +33,8 @@ describes the Teams procedure; the worker never invents PR or build metadata for
 
 | Command | Behavior |
 |---|---|
-| `preflight --toolchain <root>` | Check encoders, filters, font and ffprobe. |
-| `preflight ... --audio <wav> --recording <webm> --request-key <key> --receipt <path>` | Also check actual narration/capture and write `ready:<key>` only after success. |
+| `preflight --toolchain <root> [--audio <wav>] [--recording <webm>]` | Check encoders, filters, font and ffprobe; validate any supplied audio or recording. |
+| `preflight ... --audio <wav> --recording <webm> --request-key <key> --receipt <path>` | Require both media inputs and write `ready:<key>` only after all checks succeed. |
 | `import-audio --manifest <path> --scene <id> --source <copied-wav>` | Copy a completed WAV into the request and bind its digest to the exact narration text. |
 | `render --manifest <path> --toolchain <root>` | Render/cache beats, join the MP4, decode/validate it, and write a transcript and measured timeline. |
 | `verify --manifest <path> --toolchain <root>` | Check the final MP4's tracks, duration, dimensions, size and decodability. |
