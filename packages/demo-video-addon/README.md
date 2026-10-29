@@ -10,6 +10,11 @@ three minutes and allow up to five.
 The MP4 plays with a clear picture and narration. Captions are an optional separate SRT file;
 the plain-text transcript is always delivered.
 
+The separate `general-video` skill creates narrated explainers for an existing Teams chat,
+including cards-only videos and recordings of explicitly approved targets. It uses the same
+media tools and preserves the originating chat and message identity for delivery. It does not
+deploy applications or provide AI-generated footage.
+
 This is a separately installed project. Core does not install or activate it. No new service,
 core workflow node type, target lease or session lease is introduced. Target use is coordinated
 by people. Customer-specific workflow configuration belongs in operator-owned storage.
@@ -37,7 +42,8 @@ The portable worker has no Python package dependencies. It uses an offline FFmpe
 bundle and the session's existing seeded Playwright runtime. Recording and encoding execute
 inside the isolated session. Narration uses `call_connector`; provider settings, authentication,
 operation grants and approvals remain on the host. MP4 and transcript publication uses the
-existing communication-artifact and Azure DevOps PR attachment tools.
+existing communication-artifact and Azure DevOps PR attachment tools. Teams delivery uses
+`teams_post_file` with existing session permissions and an idempotency key.
 
 Source fixtures use synthetic identities, a local application and a local speech substitute.
 They prove browser capture, assembly and timing; they do not establish provider account access,

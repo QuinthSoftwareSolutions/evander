@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from fractions import Fraction
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
 import os
@@ -11,10 +12,39 @@ import struct
 import subprocess
 from threading import Thread
 import wave
+from urllib.parse import urlsplit
 
 import pytest
 
 from evander_demo_video_addon import worker
+
+
+class PublicTargetProxy(BaseHTTPRequestHandler):
+    """Synthetic proxy that exposes only one public target to the browser."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        target = urlsplit(self.path)
+        if not target.scheme:
+            # A direct loopback request bypassed the proxy; the test must detect it.
+            status, body = 200, b"direct loopback"
+        elif target.hostname == "approved.example.test":
+            status = 200
+            body = (Path(__file__).parent / "fixtures/application.html").read_bytes()
+        else:
+            status, body = 403, b"target denied"
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 @pytest.mark.parametrize(
@@ -176,6 +206,56 @@ def test_managed_browser_recordings_and_action_recovery(tmp_path, startup_delay)
                 )
                 counts.append(sum(1 for rgb in crop.get_flattened_data() if max(rgb) < 160))
         assert counts[1] > box["width"] * box["height"] / 2 and counts[0] < counts[1] / 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_public_browser_recording_uses_proxy_and_never_falls_back_from_managed_login(tmp_path):
+    project = Path(__file__).parents[1]
+    module = os.environ.get(
+        "DEMO_PLAYWRIGHT_MODULE", str(project / "node_modules/playwright/index.js")
+    )
+    node = shutil.which("node")
+    if not node or not Path(module).is_file():
+        pytest.skip(
+            "Install this add-on's Node fixture dependency and provision Playwright browsers"
+        )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PublicTargetProxy)
+    origin = f"http://127.0.0.1:{server.server_address[1]}"
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = {
+            **os.environ,
+            "DEMO_REVIEW_OUTPUT": str(tmp_path),
+            "DEMO_PLAYWRIGHT_MODULE": module,
+            "DEMO_CAPTURE_HELPER": str(project / "evander_demo_video_addon/capture.mjs"),
+            "EVANDER_PLAYWRIGHT_LAUNCH_HELPER": str(
+                project.parents[1] / "src/evander/assets/playwright-launch.mjs"
+            ),
+            "HTTP_TARGET_RELAY_BASE_URL": origin + "/relay",
+            "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL": origin,
+            "EVANDER_SESSION_ID": "example-session",
+            "EVANDER_MCP_SESSION_TOKEN": "synthetic-proof",
+        }
+        result = subprocess.run(
+            [node, str(project / "tests/fixtures/public_capture_scenarios.mjs")],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["success"] is True
+        receipt = json.loads((tmp_path / "clips/public.json").read_text())
+        clip = tmp_path / receipt["clip"]
+        assert receipt["sha256"] == worker.digest(clip)
+        assert any(
+            stream["codec_type"] == "video"
+            for stream in worker.probe(clip, worker.tools())["streams"]
+        )
     finally:
         server.shutdown()
         server.server_close()

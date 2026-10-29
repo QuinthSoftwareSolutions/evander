@@ -327,6 +327,61 @@ def test_initial_post_uncertainty_never_creates_a_second_message(host, monkeypat
     assert len(calls) == 1 and len(host.runtime.teams_messages.read_all()) == 1
 
 
+def test_chat_video_delivery_reuses_receipt_and_rejects_a_changed_payload(host):
+    def stage(name, content, mime_type):
+        return host.store.stage(
+            provider="workspace",
+            session_id="session-a",
+            content=content,
+            original_filename=name,
+            mime_type=mime_type,
+        ).artifact_id
+
+    video = stage("explanation.mp4", b"synthetic video", "video/mp4")
+    transcript = stage("transcript.txt", b"synthetic transcript", "text/plain")
+    args = ("session-a", "chat:existing-chat", "Here is the explanation", [video, transcript])
+    first = host.commands.post_file(*args, idempotency_key="teams-video:request-1")
+    second = host.commands.post_file(*args, idempotency_key="teams-video:request-1")
+    assert first["message_id"] == second["message_id"]
+    assert len(host.runtime.teams_messages.read_all()) == 1
+    replacement = stage("replacement.mp4", b"different video", "video/mp4")
+    with pytest.raises(ValueError, match="conflicts"):
+        host.commands.post_file(
+            "session-a",
+            "chat:existing-chat",
+            "Here is the explanation",
+            [replacement, transcript],
+            idempotency_key="teams-video:request-1",
+        )
+    assert len(host.runtime.teams_messages.read_all()) == 1
+
+
+def test_chat_video_delivery_does_not_repeat_an_uncertain_post(host, monkeypatch):
+    video = host.store.stage(
+        provider="workspace",
+        session_id="session-a",
+        content=b"synthetic video",
+        original_filename="explanation.mp4",
+        mime_type="video/mp4",
+    ).artifact_id
+    service = host.runtime.teams_service
+    original = service.post_file
+    calls = []
+
+    def lost(*args, **kwargs):
+        calls.append(1)
+        original(*args, **kwargs)
+        raise TimeoutError("Response lost")
+
+    monkeypatch.setattr(service, "post_file", lost)
+    args = ("session-a", "chat:existing-chat", "Here is the explanation", [video])
+    with pytest.raises(TimeoutError):
+        host.commands.post_file(*args, idempotency_key="teams-video:request-2")
+    with pytest.raises(ValueError, match="uncertain"):
+        host.commands.post_file(*args, idempotency_key="teams-video:request-2")
+    assert len(calls) == 1 and len(host.runtime.teams_messages.read_all()) == 1
+
+
 def test_mcp_image_inputs_use_bound_session_and_hide_signed_urls_from_audit(host):
     from evander.gateway import create_server
 

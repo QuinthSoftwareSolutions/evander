@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import struct
 import tarfile
@@ -25,11 +26,12 @@ def audio(path, seconds=0.6):
     return path
 
 
-def request_manifest(tmp_path, scene=None):
+def request_manifest(tmp_path, scene=None, request=None):
     path = tmp_path / "manifest.json"
     value = {
         "schema_version": 1,
-        "request": {
+        "request": request
+        or {
             "repo": "sample-app",
             "pr_id": "42",
             "feedback_id": "feedback-1",
@@ -56,6 +58,17 @@ def request_manifest(tmp_path, scene=None):
     source = audio(tmp_path / "speech.wav")
     worker.import_audio(path, value["scenes"][0]["id"], source)
     return path
+
+
+def teams_request(**overrides):
+    return {
+        "kind": "teams",
+        "channel_target": "chat:example-chat",
+        "message_id": "message-17",
+        "title": "How the process works",
+        "summary": "Explain the principal steps.",
+        **overrides,
+    }
 
 
 def test_render_real_mp4_captions_transcript_and_resume(tmp_path, monkeypatch):
@@ -251,6 +264,68 @@ def test_publication_receipts_bind_to_files_and_keep_same_idempotency_key(tmp_pa
         worker.publication(path)
 
 
+def test_teams_video_renders_and_publishes_without_pr_metadata(tmp_path, capsys):
+    path = request_manifest(tmp_path, request=teams_request())
+    result = worker.render(path)
+    assert result["width"] == 1280 and result["height"] == 720
+    transcript = (tmp_path / "transcript.txt").read_text()
+    assert "How the process works" in transcript
+    assert "AI-generated narration" in transcript
+    assert "PR " not in transcript and "Build:" not in transcript
+    assert "This option makes planned production time explicit." in transcript
+
+    worker.publication(path, kind="video", artifact_id="comm_" + "a" * 32)
+    worker.publication(path, kind="transcript", artifact_id="comm_" + "b" * 32)
+    publication = worker.publication(path)
+    assert publication["channel_target"] == "chat:example-chat"
+    assert publication["idempotency_key"].startswith("teams-video:")
+    assert publication["artifact_ids"] == ["comm_" + "a" * 32, "comm_" + "b" * 32]
+    assert "Explain the principal steps." in publication["body_text"]
+    assert "PR " not in publication["body_text"] and "Build:" not in publication["body_text"]
+    assert worker.publication(path) == publication
+
+    assert worker.main(["published", "--manifest", str(path), "--message-id", "sent-42"]) == 0
+    assert '"reply_id": "sent-42"' in capsys.readouterr().out
+    assert worker.publication(path) == {"published": True, "reply_id": "sent-42"}
+    with pytest.raises(worker.VideoError, match="published request is immutable"):
+        worker.import_audio(path, "purpose", tmp_path / "speech.wav")
+
+
+def test_teams_publication_identity_is_scoped_to_the_chat_and_original_message(tmp_path):
+    identities = [
+        ("chat:one", "message-1"),
+        ("chat:one", "message-2"),
+        ("chat:two", "message-1"),
+    ]
+    keys = []
+    for index, (chat, message_id) in enumerate(identities):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        path = request_manifest(
+            directory, request=teams_request(channel_target=chat, message_id=message_id)
+        )
+        worker.render(path)
+        worker.publication(path, kind="video", artifact_id="comm_" + "a" * 32)
+        worker.publication(path, kind="transcript", artifact_id="comm_" + "b" * 32)
+        keys.append(worker.publication(path)["idempotency_key"])
+    assert len(set(keys)) == len(identities)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        teams_request(channel_target="user:example"),
+        teams_request(channel_target="chat:other\nchat:example"),
+        teams_request(message_id=""),
+        teams_request(message_id="message\nother"),
+        teams_request(kind="unknown"),
+    ],
+)
+def test_teams_video_requires_an_existing_chat_and_message_identity(tmp_path, case):
+    with pytest.raises(worker.VideoError):
+        request_manifest(tmp_path, request=case)
+
+
 def test_preflight_failure_never_writes_readiness_receipt(tmp_path):
     receipt = tmp_path / "ready.txt"
     receipt.write_text("ready:old-request\n")
@@ -271,6 +346,77 @@ def test_preflight_failure_never_writes_readiness_receipt(tmp_path):
         == 1
     )
     assert not receipt.exists()
+
+
+def test_preflight_checks_supplied_media_with_and_without_a_receipt(tmp_path, capsys):
+    wav = audio(tmp_path / "narration.wav")
+    recording = tmp_path / "recording.webm"
+    worker.run(
+        [
+            worker.tools()["ffmpeg"],
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=32x32:r=1:d=1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libvpx-vp9",
+            "-threads",
+            "1",
+            str(recording),
+        ]
+    )
+    assert worker.main(["preflight"]) == 0
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    assert worker.main(["preflight", "--audio", str(wav), "--recording", str(recording)]) == 0
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    receipt = tmp_path / "ready.txt"
+    assert (
+        worker.main(
+            [
+                "preflight",
+                "--audio",
+                str(wav),
+                "--recording",
+                str(recording),
+                "--receipt",
+                str(receipt),
+                "--request-key",
+                "example-request",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["success"] is True
+    assert receipt.read_text() == "ready:example-request\n"
+
+    bad_wav = tmp_path / "bad.wav"
+    bad_wav.write_bytes(b"invalid audio")
+    bad_recording = tmp_path / "bad.webm"
+    bad_recording.write_bytes(b"invalid video")
+    for supplied_audio, supplied_recording in (
+        (tmp_path / "missing.wav", recording),
+        (bad_wav, recording),
+        (wav, tmp_path / "missing.webm"),
+        (wav, bad_recording),
+    ):
+        assert (
+            worker.main(
+                [
+                    "preflight",
+                    "--audio",
+                    str(supplied_audio),
+                    "--recording",
+                    str(supplied_recording),
+                ]
+            )
+            == 1
+        )
+        assert json.loads(capsys.readouterr().err)["success"] is False
 
 
 def test_silent_provider_audio_cannot_be_published_as_narration(tmp_path):

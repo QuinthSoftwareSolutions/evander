@@ -10,7 +10,7 @@ const { createRecorder, preflightCapture } = await import(pathToFileURL(process.
 const output = process.env.DEMO_REVIEW_OUTPUT;
 const origin = process.env.DEMO_FIXTURE_ORIGIN;
 const observations = {};
-process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH = chromium.executablePath();
+process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH = process.env.DEMO_CHROMIUM_EXECUTABLE || chromium.executablePath();
 process.env.DEMO_VIDEO_PREFLIGHT_DIR = path.join(output, "preflight");
 await mkdir(output, { recursive: true });
 const preflight = await preflightCapture(chromium);
