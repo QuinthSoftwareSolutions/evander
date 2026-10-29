@@ -134,12 +134,6 @@
     - role: verification
 
   post_tasks:
-    - name: Publish an explicitly supplied demo-video CI bundle
-      ansible.builtin.include_tasks: "{{ playbook_dir }}/../packages/demo-video-addon/deployment/install-bundle.yml"
-      vars:
-        evander_demo_video_bundle_root: "{{ evander_demo_video_release_root | default('/srv/evander/demo-video') }}"
-      when: evander_demo_video_bundle_source_dir | default('') | length > 0
-
     - name: Clear deployment status runtime flag
       ansible.builtin.file:
         path: "{{ evander_deployment_status_path }}"

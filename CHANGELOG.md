@@ -4,7 +4,7 @@
 
 - Extend the optional Demo Video add-on with general Teams requests, evidence-backed cards and approved browser recordings, keeping existing PR manifests and publication receipts compatible.
 - Deliver verified MP4s and transcripts through existing Teams artifact and idempotency controls, with a separate managed skill and recovery guidance.
-- Build and verify content-addressed offline media releases for opt-in CI/CD publication without replacing existing PR video bundles.
+- Reuse the existing offline media toolchain and validate its original inventory when installing or reusing a bundle.
 
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 

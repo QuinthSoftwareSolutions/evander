@@ -89,14 +89,6 @@ default runner images do not gain a mandatory media dependency.
 Publish this reviewed bundle through the established CI/CD pipeline. Do not copy source or
 built assets into the running control-plane installation or manually restart it to activate them.
 
-For CI, `scripts/build_ci_bundle.py` builds the same archive, installs it into a disposable
-directory to verify the inventory and tools, checks the packaged worker and capture helper
-against the reviewed source, and writes a source-revision and SHA-256 release record. The
-optional control-plane playbook task accepts that CI artifact and publishes it in a
-content-addressed release directory without replacing an existing mismatched file or the PR
-workflow's existing bundle. Supply the source directory and all three digests as CI deployment
-variables; leaving the source directory unset performs no video publication.
-
 `effect:agent:copy-files` copies the prepared archive and portable `worker.py` into the existing
 session. The example executes its offline installer before deployment. The installer rejects
 duplicate/traversing archive paths, links, devices, extraction-budget excess and digest mismatch,
@@ -155,7 +147,8 @@ After reviewed CI/CD delivery and separately authorized workflow changes, import
 grants and approvals. Reconcile the existing session as well as future provisioning: an
 `effect:agent:create` configured with `existing_agent_behavior: noop` does not reinstall a skill
 or toolchain in an existing session. Use the supported additive skill installation and the
-verified, content-addressed bundle; verify readiness after recreation or lost workspace state.
+pipeline-prepared bundle. Verify the archive and bootstrap against the reviewed deployed source,
+bind copies to their verified digests, and verify readiness after recreation or lost workspace state.
 
 Pass the incoming message's exact existing `chat:` target and message ID as trusted request
 context. Keep the original request identity when later messages steer an unfinished video.
