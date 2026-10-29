@@ -7,7 +7,7 @@ import json
 import uuid
 from urllib.parse import quote, quote_plus
 
-from .checkpoints import matches, triggered
+from .checkpoints import evaluate, matches, triggered
 from .choices import target_actions, validate_input
 from .execution import BrowserRun, redact
 from .models import BrowserCommand, BrowserError
@@ -35,7 +35,10 @@ def page_identity(observation):
 
 
 def target_state(element):
-    return digest({k: element.get(k) for k in STATE_KEYS})
+    state = {k: element.get(k) for k in STATE_KEYS}
+    # AX omits the default enabled state; explicit false is the same state.
+    state["disabled"] = element.get("disabled", False)
+    return digest(state)
 
 
 def target_identity(element):
@@ -101,6 +104,34 @@ def confirmed_change(action, before, after, values, checkpoints):
         raise BrowserError("Input did not produce its expected observed state", "batch_state_changed", 409)
 
 
+def confirmed_checkpoint_changes(before, after, values, checkpoints, edited_ref):
+    """A declared predicate authorizes only that field on the same existing control."""
+    expected, observed = {}, {}
+    for checkpoint in checkpoints:
+        condition = checkpoint.condition
+        if condition.kind not in {"value", "checked", "expanded", "disabled"}:
+            continue
+        original, current = resolve(before, condition.target), resolve(after, condition.target)
+        if original["ref"] != current["ref"] or target_identity(original) != target_identity(current):
+            raise BrowserError("Checkpoint target identity changed", "batch_target_changed", 409)
+        if evaluate(condition, after, values) is None:
+            raise BrowserError("Checkpoint no longer holds", "batch_state_changed", 409)
+        ref = original["ref"]
+        if ref == edited_ref:
+            continue  # confirmed_change also checks the action's own exact effect.
+        expected.setdefault(ref, dict(original))
+        observed[ref] = current
+        if condition.kind == "value":
+            expected[ref]["value"] = values[condition.input].value
+        else:
+            state = current.get(condition.kind)
+            expected[ref][condition.kind] = str(condition.expected).lower() if isinstance(state, str) else condition.expected
+    for ref, target in expected.items():
+        if target_state(target) != target_state(observed[ref]):
+            raise BrowserError("Checkpoint target changed beyond its predicate", "batch_state_changed", 409)
+    return {ref: target_state(target) for ref, target in observed.items()}
+
+
 class BrowserBatch(BrowserRun):
     def execute_plan(self, agent, session_id, request, fingerprint, settings):
         actor = "agent:" + agent
@@ -157,6 +188,7 @@ class BrowserBatch(BrowserRun):
                     observation_id=observation["observation_id"], revalidate=True,
                     deadline_at=run["deadline_at"], **options,
                 )
+                before = observation
                 mutating, current = True, False
                 self.service.command(session_id, actor, command, agent=True, run_id=run["id"], step_index=index)
                 mutating = False
@@ -171,16 +203,21 @@ class BrowserBatch(BrowserRun):
                         raise BrowserError("Page changed during a batch", "batch_page_changed", 409)
                     if element is not None:
                         after = resolve(observation, action.target)
-                        before = initial[index]
-                        if after["ref"] != before["ref"] or target_identity(after) != identities[before["ref"]]:
+                        original = initial[index]
+                        if after["ref"] != original["ref"] or target_identity(after) != identities[original["ref"]]:
                             raise BrowserError("Edited target identity changed", "batch_target_changed", 409)
                         confirmed_change(action, element, after, request.values, due_by_step[index])
-                        expected[before["ref"]] = target_state(after)
+                        expected[original["ref"]] = target_state(after)
+                    expected.update(confirmed_checkpoint_changes(
+                        before, observation, request.values, due_by_step[index],
+                        element["ref"] if element else None,
+                    ))
                     if {e["ref"]: target_state(e) for e in observation["elements"]} != expected:
                         raise BrowserError("Observed controls or page context changed unexpectedly", "batch_state_changed", 409)
             # Explicit plans execute all actions even when completion was true initially.
-            observation = self.observe(agent, session_id, actor, run)
-            current = True
+            if not current:
+                observation = self.observe(agent, session_id, actor, run)
+                current = True
             if request.completion is not None:
                 while True:
                     completion = self.completed(request, observation, satisfied)

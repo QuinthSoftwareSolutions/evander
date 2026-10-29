@@ -84,6 +84,137 @@ def test_repeated_target_allows_confirmed_own_value_changes(batch):
     assert e.state["value"] == "Second" and len(e.inputs()) == 2 and not e.state["saved"]
 
 
+@pytest.fixture
+def reactive_batch(batch):
+    """A name/description form enables Save and optionally updates a preview."""
+    e = batch
+    e.state["description"] = ""
+    original = e.service.peer_factory.call
+
+    def call(base, token, method, path, payload):
+        command = (payload or {}).get("command", {})
+        if path.endswith("/command") and command.get("action") == "fill" and command.get("ref") == "description":
+            e.state["commands"].append(command)
+            e.state["description"] = command["text"]
+            return {"success": True}
+        return original(base, token, method, path, payload)
+
+    def observe(observation):
+        save = observation["elements"][1]
+        save["disabled"] = not bool(e.state["value"])
+        if not save["disabled"] and e.state.get("omit_enabled_disabled"):
+            save.pop("disabled")
+        if e.state["value"]:
+            save.update(e.state.get("reactive_change", {}))
+        observation["elements"].append({
+            "ref": "description", "role": "textbox", "name": "Description",
+            "value": e.state["description"],
+        })
+        if e.state.get("show_preview"):
+            observation["elements"].append({
+                "ref": "preview", "role": "textbox", "name": "Preview",
+                "readonly": True, "value": e.state["value"].upper(),
+            })
+
+    def request(**kwargs):
+        payload = {
+            "values": {
+                "name": {"description": "Name", "value": "Example"},
+                "description": {"description": "Description", "value": "Prepared locally"},
+            },
+            "plan": [PLAN[0], {"action": "fill", "target": {"ref": "description"}, "input": "description"}],
+            "checkpoints": [{
+                "id": "save-enabled", "after": {"action": "fill", "input": "name"},
+                "condition": {"kind": "disabled", "target": {"ref": "node-2"}, "expected": False},
+                "timeout_seconds": 0.1,
+            }],
+            "completion": {"kind": "value", "target": {"ref": "description"}, "input": "description"},
+        }
+        payload.update(kwargs)
+        return e.request(**payload)
+
+    e.service.peer_factory.call = call
+    e.state["observation_hook"] = observe
+    e.reactive_request = request
+    return e
+
+
+@pytest.mark.parametrize("omit_enabled_disabled", [False, True])
+def test_declared_reactive_change_keeps_independent_edits_in_one_plan(reactive_batch, omit_enabled_disabled):
+    e = reactive_batch
+    e.state["omit_enabled_disabled"] = omit_enabled_disabled
+    result = e.execute(e.reactive_request())
+    assert result["status"] == "needs_verification" and result["completion"]["status"] == "satisfied"
+    assert result["checkpoints"][0]["status"] == "satisfied"
+    assert e.state["value"] == "Example" and e.state["description"] == "Prepared locally"
+    assert [c["ref"] for c in e.inputs()] == ["node-1", "description"]
+    assert not e.state["saved"] and not e.state["provider_calls"]
+
+
+def test_undeclared_reactive_change_still_stops_later_input(reactive_batch):
+    e = reactive_batch
+    result = e.execute(e.reactive_request(checkpoints=[]))
+    assert result["status"] == "needs_pa" and not e.state["description"]
+    assert [c["ref"] for c in e.inputs()] == ["node-1"]
+
+
+@pytest.mark.parametrize("change", [
+    {"name": "Other account"},
+    {"context": [{"role": "dialog", "name": "Other account"}]},
+    {"readonly": True},
+    {"value": "Unexpected value"},
+])
+def test_checkpoint_does_not_authorize_other_changes_to_its_target(reactive_batch, change):
+    e = reactive_batch
+    e.state["reactive_change"] = change
+    result = e.execute(e.reactive_request())
+    assert result["checkpoints"][0]["status"] == "satisfied"
+    assert result["status"] == "needs_pa" and not e.state["description"]
+    assert [c["ref"] for c in e.inputs()] == ["node-1"]
+
+
+def test_related_value_checkpoint_requires_the_supplied_private_literal(reactive_batch):
+    e = reactive_batch
+    e.state["show_preview"] = True
+    request = e.reactive_request()
+    payload = request.model_dump()
+    payload["values"]["name"]["sensitive"] = True
+    payload["values"]["preview"] = {"description": "Expected preview", "value": "EXAMPLE", "sensitive": True}
+    payload["checkpoints"].append({
+        "id": "preview-ready", "after": {"action": "fill", "input": "name"},
+        "condition": {"kind": "value", "target": {"ref": "preview"}, "input": "preview"},
+    })
+    result = e.execute(RunRequest(**payload))
+    assert result["status"] == "needs_verification" and e.state["description"] == "Prepared locally"
+    assert "EXAMPLE" not in json.dumps(result) and "Example" not in json.dumps(result)
+    with e.service.store.connect() as db:
+        assert "EXAMPLE" not in str([tuple(row) for row in db.execute("SELECT payload FROM browser_runs")])
+
+
+def test_final_checkpoint_supplies_the_result_without_an_extra_read(batch):
+    e = batch
+    result = e.execute(e.request(plan=PLAN[:1], checkpoints=[{
+        "id": "name-ready", "after": {"action": "fill", "input": "name"},
+        "condition": {"kind": "value", "target": {"ref": "node-1"}, "input": "name"},
+    }], completion={"kind": "value", "target": {"ref": "node-1"}, "input": "name"}))
+    assert result["status"] == "needs_verification" and result["observation_current"]
+    assert result["observation"]["observation_id"] == result["checkpoints"][0]["observation_id"]
+    assert result["completion"]["observation_id"] == result["observation"]["observation_id"]
+    assert [c["action"] for c in e.state["commands"]] == ["observe", "observe", "fill", "observe"]
+
+
+@pytest.mark.parametrize("kind,expected", [("disabled", True), ("checked", False), ("expanded", False)])
+def test_missing_state_cannot_prove_disabled_or_an_unreported_toggle(batch, kind, expected):
+    e = batch
+    result = e.execute(e.request(plan=PLAN[:1], checkpoints=[{
+        "id": "unproven-state", "after": {"action": "fill", "input": "name"},
+        "condition": {"kind": kind, "target": {"ref": "node-2"}, "expected": expected},
+        "timeout_seconds": 0.1,
+    }]))
+    assert result["status"] == "needs_pa" and result["checkpoints"][0]["status"] == "timed_out"
+    assert [c["action"] for c in e.inputs()] == ["fill"] and not e.state["saved"]
+
+
 @pytest.mark.parametrize("change", ["value", "selection", "duplicate", "truncated"])
 def test_initial_owner_snapshot_is_a_mutable_state_fence(batch, change):
     e = batch

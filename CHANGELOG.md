@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
+
+- Honor satisfied value/state checkpoints for other already observed controls when validating a plan's next action. Permit only the explicitly declared property changes, preserving target identity, unrelated state, fresh input checks and durable no-replay receipts.
+- Interpret an omitted AX disabled property as the enabled default, consistently with action validation, while keeping missing checked/expanded state unknown.
+- Reuse a final checkpoint's current observation for completion and the returned result instead of reading the browser again. Clarify how agents can verify and continue from current returned observations and wait for navigation with a completion predicate.
+
 ## 2026-10-28 - Avoid loading gate history while finding its latest result (0.138.5)
 
 - Select the latest gate execution ID before loading its payload, so large historical payloads do not stall workflow dispatch during sorting. Preserve finish-time, start-time, and execution-ID ordering.
