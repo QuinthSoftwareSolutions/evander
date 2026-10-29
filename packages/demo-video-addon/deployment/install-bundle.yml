@@ -1,0 +1,130 @@
+---
+# Included by the control-plane deployment only when an operator supplies a CI artifact.
+- name: Validate the requested immutable video bundle
+  ansible.builtin.assert:
+    that:
+      - evander_demo_video_bundle_source_dir is match('^/')
+      - evander_demo_video_bundle_root is match('^/')
+      - evander_demo_video_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - evander_demo_video_bootstrap_sha256 is match('^[0-9a-f]{64}$')
+      - evander_demo_video_release_metadata_sha256 is match('^[0-9a-f]{64}$')
+
+- name: Verify video bundle artifacts on the CI controller
+  ansible.builtin.stat:
+    path: "{{ evander_demo_video_bundle_source_dir }}/{{ item.name }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - { name: toolchain.tar.gz, sha256: "{{ evander_demo_video_bundle_sha256 }}" }
+    - { name: worker.py, sha256: "{{ evander_demo_video_bootstrap_sha256 }}" }
+    - { name: release.json, sha256: "{{ evander_demo_video_release_metadata_sha256 }}" }
+  register: evander_demo_video_source_files
+  delegate_to: localhost
+  become: false
+
+- name: Require verified, regular video release artifacts
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.checksum | default('') == item.item.sha256
+  loop: "{{ evander_demo_video_source_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Inspect the video release parent
+  ansible.builtin.stat:
+    path: "{{ evander_demo_video_bundle_root }}/releases"
+    follow: false
+  register: evander_demo_video_release_parent
+
+- name: Reject a non-directory video release parent
+  ansible.builtin.assert:
+    that:
+      - not (evander_demo_video_release_parent.stat.exists | default(false)) or (evander_demo_video_release_parent.stat.isdir | default(false))
+      - not (evander_demo_video_release_parent.stat.islnk | default(false))
+
+- name: Create the video release parent when absent
+  ansible.builtin.file:
+    path: "{{ evander_demo_video_bundle_root }}/releases"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_group | default(evander_run_user) }}"
+    mode: "0750"
+  when: not (evander_demo_video_release_parent.stat.exists | default(false))
+
+- name: Inspect the addressed video release directory
+  ansible.builtin.stat:
+    path: "{{ evander_demo_video_bundle_root }}/releases/{{ evander_demo_video_bundle_sha256 }}"
+    follow: false
+  register: evander_demo_video_release_directory
+
+- name: Reject a non-directory video release
+  ansible.builtin.assert:
+    that:
+      - not (evander_demo_video_release_directory.stat.exists | default(false)) or (evander_demo_video_release_directory.stat.isdir | default(false))
+      - not (evander_demo_video_release_directory.stat.islnk | default(false))
+
+- name: Create the addressed video release directory
+  ansible.builtin.file:
+    path: "{{ evander_demo_video_bundle_root }}/releases/{{ evander_demo_video_bundle_sha256 }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_group | default(evander_run_user) }}"
+    mode: "0750"
+  when: not (evander_demo_video_release_directory.stat.exists | default(false))
+
+- name: Inspect any existing video release artifacts
+  ansible.builtin.stat:
+    path: "{{ evander_demo_video_bundle_root }}/releases/{{ evander_demo_video_bundle_sha256 }}/{{ item.name }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - { name: toolchain.tar.gz, sha256: "{{ evander_demo_video_bundle_sha256 }}" }
+    - { name: worker.py, sha256: "{{ evander_demo_video_bootstrap_sha256 }}" }
+    - { name: release.json, sha256: "{{ evander_demo_video_release_metadata_sha256 }}" }
+  register: evander_demo_video_existing_files
+
+- name: Refuse to replace an existing mismatched video artifact
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false)) or (item.stat.isreg | default(false))
+      - not (item.stat.islnk | default(false))
+      - not (item.stat.exists | default(false)) or (item.stat.checksum | default('')) == item.item.sha256
+  loop: "{{ evander_demo_video_existing_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Publish missing video release artifacts
+  ansible.builtin.copy:
+    src: "{{ evander_demo_video_bundle_source_dir }}/{{ item.item.name }}"
+    dest: "{{ evander_demo_video_bundle_root }}/releases/{{ evander_demo_video_bundle_sha256 }}/{{ item.item.name }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_group | default(evander_run_user) }}"
+    mode: "0640"
+    force: false
+  loop: "{{ evander_demo_video_existing_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: not (item.stat.exists | default(false))
+
+- name: Verify published video release artifacts
+  ansible.builtin.stat:
+    path: "{{ evander_demo_video_bundle_root }}/releases/{{ evander_demo_video_bundle_sha256 }}/{{ item.name }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - { name: toolchain.tar.gz, sha256: "{{ evander_demo_video_bundle_sha256 }}" }
+    - { name: worker.py, sha256: "{{ evander_demo_video_bootstrap_sha256 }}" }
+    - { name: release.json, sha256: "{{ evander_demo_video_release_metadata_sha256 }}" }
+  register: evander_demo_video_published_files
+
+- name: Require the published video release to match its CI artifact
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.checksum | default('') == item.item.sha256
+  loop: "{{ evander_demo_video_published_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

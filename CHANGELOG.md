@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-29 - Create narrated explainers for Teams chats (0.139.0)
+
+- Extend the optional Demo Video add-on with general Teams requests, evidence-backed cards and approved browser recordings, keeping existing PR manifests and publication receipts compatible.
+- Deliver verified MP4s and transcripts through existing Teams artifact and idempotency controls, with a separate managed skill and recovery guidance.
+- Build and verify content-addressed offline media releases for opt-in CI/CD publication without replacing existing PR video bundles.
+
 ## 2026-10-29 - Keep declared reactive browser edits in one guarded plan (0.138.6)
 
 - Honor satisfied value/state checkpoints for other already observed controls when validating a plan's next action. Permit only the explicitly declared property changes, preserving target identity, unrelated state, fresh input checks and durable no-replay receipts.

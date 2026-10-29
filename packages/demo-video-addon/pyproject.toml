@@ -28,7 +28,7 @@ include = ["evander_demo_video_addon*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-evander_demo_video_addon = ["addon.json", "capture.mjs", "skills/demo-video/SKILL.md"]
+evander_demo_video_addon = ["addon.json", "capture.mjs", "skills/demo-video/SKILL.md", "skills/general-video/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

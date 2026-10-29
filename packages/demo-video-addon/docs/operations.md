@@ -89,6 +89,14 @@ default runner images do not gain a mandatory media dependency.
 Publish this reviewed bundle through the established CI/CD pipeline. Do not copy source or
 built assets into the running control-plane installation or manually restart it to activate them.
 
+For CI, `scripts/build_ci_bundle.py` builds the same archive, installs it into a disposable
+directory to verify the inventory and tools, checks the packaged worker and capture helper
+against the reviewed source, and writes a source-revision and SHA-256 release record. The
+optional control-plane playbook task accepts that CI artifact and publishes it in a
+content-addressed release directory without replacing an existing mismatched file or the PR
+workflow's existing bundle. Supply the source directory and all three digests as CI deployment
+variables; leaving the source directory unset performs no video publication.
+
 `effect:agent:copy-files` copies the prepared archive and portable `worker.py` into the existing
 session. The example executes its offline installer before deployment. The installer rejects
 duplicate/traversing archive paths, links, devices, extraction-budget excess and digest mismatch,
@@ -138,6 +146,31 @@ Perform this only after Jonathan's source review and the later rollout authoriza
    revision, deployment outcome, browser behavior, explanation, narration/caption timing, audio
    quality, clear video picture, optional SRT/transcript and PR attachment access. Then verify a duplicate delivery and
    a recoverable media/publication failure without a second deployment. Only then enable normal use.
+
+## General videos for a personal assistant
+
+After reviewed CI/CD delivery and separately authorized workflow changes, import the packaged
+`general-video` skill through the managed Skills surface. Add it and only the required
+`demo-narration.synthesize` grant to the selected assistant's own settings, preserving its other
+grants and approvals. Reconcile the existing session as well as future provisioning: an
+`effect:agent:create` configured with `existing_agent_behavior: noop` does not reinstall a skill
+or toolchain in an existing session. Use the supported additive skill installation and the
+verified, content-addressed bundle; verify readiness after recreation or lost workspace state.
+
+Pass the incoming message's exact existing `chat:` target and message ID as trusted request
+context. Keep the original request identity when later messages steer an unfinished video.
+Ensure the assistant can copy narration artifacts, stage files and use `teams_post_file`,
+while retaining file approvals and size/type policies. A Teams chat post omits `thread_id` and
+uses the worker's stable publication key. Never post again with a new key after an uncertain
+result. If the running service cannot resolve the narration credential for the assistant's
+directory, repair that scoped configuration through the supported credential controls before
+the canary; do not broaden other assistants' access or expose credentials to the guest.
+
+Read the current workflow document immediately before making an operator-specific change,
+validate the candidate, save with the fresh revision and lock, and verify both orchestrators
+adopted it. Run one separately authorized short canary and inspect the actual MP4, transcript,
+Teams delivery and link access. Browser recordings use only approved targets; the assistant
+does not deploy or reset a target as part of a general video request.
 
 There is no target/session lease. The existing pre-deployment busy check is retained; people
 coordinate subsequent use. An operator changing the target during a recording can invalidate
