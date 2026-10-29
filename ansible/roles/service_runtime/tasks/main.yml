@@ -1,0 +1,94 @@
+---
+- name: Define managed systemd service map
+  ansible.builtin.set_fact:
+    evander_systemd_units:
+      - key: admin_web
+        unit: evander-admin-web.service
+      - key: gateway
+        unit: evander-gateway.service
+      - key: firewall
+        unit: evander-firewall.service
+      - key: openai_relay
+        unit: evander-openai-relay.service
+      - key: didww_sip_bridge
+        unit: evander-didww-sip-bridge.service
+      - key: nuget_relay
+        unit: evander-nuget-relay.service
+      - key: npm_audit_facade
+        unit: evander-npm-audit-facade.service
+      - key: http_target_relay
+        unit: evander-http-target-relay.service
+      - key: http_target_browser_proxy
+        unit: evander-http-target-browser-proxy.service
+      - key: codex_egress_proxy
+        unit: evander-codex-egress-proxy.service
+      - key: ado_worker
+        unit: evander-ado-worker.service
+      - key: proxy_issue_sync
+        unit: evander-proxy-issue-sync.service
+      - key: discord_ingest
+        unit: evander-discord-ingest.service
+      - key: scheduled_wake
+        unit: evander-scheduled-wake.service
+      - key: managed_git_refresh
+        unit: evander-managed-git-refresh.service
+      - key: teams_ingest
+        unit: evander-teams-ingest.service
+      - key: teams_notifications
+        unit: evander-teams-notifications.service
+      - key: teams_meeting_ingest
+        unit: evander-teams-meeting-ingest.service
+      - key: effect_orchestrator
+        unit: evander-effect-orchestrator.service
+      - key: trigger_orchestrator
+        unit: evander-trigger-orchestrator.service
+
+- name: Wait for automatic apt maintenance before reconciling services
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - apt-daily.service
+      - apt-daily-upgrade.service
+  register: evander_apt_maintenance_state
+  changed_when: false
+  failed_when: false
+  until:
+    - "'active' not in evander_apt_maintenance_state.stdout_lines"
+    - "'activating' not in evander_apt_maintenance_state.stdout_lines"
+    - "'deactivating' not in evander_apt_maintenance_state.stdout_lines"
+    - "'reloading' not in evander_apt_maintenance_state.stdout_lines"
+  retries: 180
+  delay: 5
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd:
+    daemon_reload: true
+  register: evander_systemd_daemon_reload
+  until: evander_systemd_daemon_reload is succeeded
+  retries: 3
+  delay: 2
+
+- name: Discover installed services before reconciling optional units
+  ansible.builtin.service_facts:
+
+- name: Reconcile systemd service enablement and runtime state
+  ansible.builtin.systemd:
+    name: "{{ item.unit }}"
+    enabled: "{{ evander_services.get(item.key, false) | bool }}"
+    state: >-
+      {{
+        'restarted'
+        if (evander_services.get(item.key, false) | bool)
+          and (
+            (evander_run_user_membership_changed | default(false))
+            or (evander_managed_service_config_changed | default(false))
+          )
+        else ('started' if evander_services.get(item.key, false) | bool else 'stopped')
+      }}
+  register: evander_systemd_service_reconcile
+  until: evander_systemd_service_reconcile is succeeded
+  retries: 3
+  delay: 2
+  loop: "{{ evander_systemd_units }}"
+  when: (evander_services.get(item.key, false) | bool) or item.unit in ansible_facts.services

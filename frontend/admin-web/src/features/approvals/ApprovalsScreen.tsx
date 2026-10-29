@@ -1,0 +1,1034 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
+import { useAdminUi } from "../admin/AdminContext";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { FilterDisclosure } from "../admin/FilterDisclosure";
+import { Tooltip } from "../admin/Tooltip";
+import { hashQueryParam } from "../../adminRouting";
+
+type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "exhausted";
+
+type ApprovalItem = {
+  request_id: string;
+  session_id: string;
+  action_type: string;
+  tool_name: string;
+  payload_digest: string;
+  human_summary: string;
+  intended_effect?: string | null;
+  directory_path: string;
+  vm_id?: string | null;
+  status: ApprovalStatus;
+  created_at: string;
+  expires_at: string;
+  approver?: string | null;
+  decision_at?: string | null;
+  decision_reason?: string | null;
+  payload: Record<string, unknown>;
+  decision_history: Array<{
+    status: ApprovalStatus;
+    approver?: string | null;
+    reason?: string | null;
+    decided_at: string;
+  }>;
+};
+
+type ApprovalHealth = {
+  total: number;
+  pending: number;
+  approved: number;
+  denied: number;
+  expired: number;
+  exhausted: number;
+  oldest_pending_age_seconds?: number | null;
+};
+
+type ApprovalIndexResponse = {
+  items: ApprovalItem[];
+  health: ApprovalHealth;
+};
+
+type ApprovalDetailResponse = {
+  request: ApprovalItem;
+  redacted_payload: Record<string, unknown>;
+  audit_context: Array<Record<string, unknown>>;
+  age_seconds: number;
+  expires_in_seconds: number;
+  payload_summary?: string | null;
+  approval_diagnostics?: ApprovalReviewDiagnostics | null;
+};
+
+type ApprovalReviewDiagnostics = {
+  [key: string]: unknown;
+  request_id?: string | null;
+  status?: string | null;
+  action_type?: string | null;
+  tool_name?: string | null;
+  payload_digest?: string | null;
+  approver?: string | null;
+  decision_at?: string | null;
+  decision_reason?: string | null;
+  created_at?: string | null;
+  expires_at?: string | null;
+  age_seconds?: number | null;
+  expires_in_seconds?: number | null;
+  payload_summary?: string | null;
+  approved_payload?: unknown;
+  requested_payload?: unknown;
+  blocked_tool_call_diagnostics?: Array<Record<string, unknown> | null>;
+};
+
+type ApprovalPayloadDifferenceEntry = {
+  path: string;
+  approved_value?: unknown;
+  attempted_value?: unknown;
+};
+
+type ApprovalPayloadDifferenceBucket = {
+  entries: ApprovalPayloadDifferenceEntry[];
+  truncated: boolean;
+};
+
+type ApprovalPayloadDifferences = {
+  changed: ApprovalPayloadDifferenceBucket;
+  missing: ApprovalPayloadDifferenceBucket;
+  extra: ApprovalPayloadDifferenceBucket;
+  truncated: boolean;
+};
+
+type NormalizedApprovalPayloadDiagnostic = {
+  approvalRequestId: string | null;
+  status: string | null;
+  rejectionKind: string | null;
+  reason: string | null;
+  payloadMatch: boolean | null;
+  approvedPayloadDigest: string | null;
+  attemptedPayloadDigest: string | null;
+  payloadSummary: string | null;
+  approvedPayloadSummary: unknown;
+  attemptedPayloadSummary: unknown;
+  differences: ApprovalPayloadDifferences;
+};
+
+type Filters = {
+  status: string;
+  directOnly: boolean;
+  sessionId: string;
+  vmId: string;
+  toolName: string;
+  minAgeMinutes: string;
+};
+
+const POLL_INTERVAL_MS = 10000;
+
+function toQuery(filters: Filters, selectedDirectoryPath: string): string {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("statuses", filters.status);
+  if (selectedDirectoryPath.trim()) params.set("directory_path", selectedDirectoryPath.trim());
+  params.set("direct_only", String(filters.directOnly));
+  if (filters.sessionId.trim()) params.set("session_id", filters.sessionId.trim());
+  if (filters.vmId.trim()) params.set("vm_id", filters.vmId.trim());
+  if (filters.toolName.trim()) params.set("tool_name", filters.toolName.trim());
+  if (filters.minAgeMinutes.trim()) {
+    const minAgeMinutes = Number(filters.minAgeMinutes);
+    if (Number.isFinite(minAgeMinutes) && minAgeMinutes >= 0) {
+      params.set("min_age_seconds", String(minAgeMinutes * 60));
+    }
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+function displayToolName(item: Pick<ApprovalItem, "tool_name" | "action_type">): string {
+  return item.tool_name || item.action_type;
+}
+
+function approvalRequestIdFromHash(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return hashQueryParam(window.location.hash, "request_id") ?? hashQueryParam(window.location.hash, "approval_id") ?? "";
+}
+
+function approvalDecisionFromHash(): "approve" | "deny" | "" {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const decision = hashQueryParam(window.location.hash, "decision")?.toLowerCase() ?? "";
+  return decision === "approve" || decision === "deny" ? decision : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  return text ? text : null;
+}
+
+function jsonText(value: unknown, fallback = "None"): string {
+  if (value === undefined) {
+    return fallback;
+  }
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text ?? fallback;
+  } catch {
+    return typeof value === "string" ? value : String(value);
+  }
+}
+
+function normalizeDiagnosticEntries(value: unknown): ApprovalPayloadDifferenceEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    const path = stringField(entry.path) ?? "<root>";
+    const normalized: ApprovalPayloadDifferenceEntry = { path };
+    if ("approved_value" in entry) {
+      normalized.approved_value = entry.approved_value;
+    }
+    if ("attempted_value" in entry) {
+      normalized.attempted_value = entry.attempted_value;
+    }
+    return [normalized];
+  });
+}
+
+function normalizeDiagnosticBucket(value: unknown): ApprovalPayloadDifferenceBucket {
+  if (Array.isArray(value)) {
+    return {
+      entries: normalizeDiagnosticEntries(value),
+      truncated: false,
+    };
+  }
+  if (!isRecord(value)) {
+    return {
+      entries: [],
+      truncated: false,
+    };
+  }
+  return {
+    entries: normalizeDiagnosticEntries(value.entries),
+    truncated: Boolean(value.truncated),
+  };
+}
+
+function normalizeDiagnosticDifferences(value: unknown): ApprovalPayloadDifferences {
+  if (!isRecord(value)) {
+    const emptyBucket = { entries: [], truncated: false };
+    return {
+      changed: emptyBucket,
+      missing: emptyBucket,
+      extra: emptyBucket,
+      truncated: false,
+    };
+  }
+  const changed = normalizeDiagnosticBucket(value.changed);
+  const missing = normalizeDiagnosticBucket(value.missing);
+  const extra = normalizeDiagnosticBucket(value.extra);
+  return {
+    changed,
+    missing,
+    extra,
+    truncated: Boolean(value.truncated || changed.truncated || missing.truncated || extra.truncated),
+  };
+}
+
+function normalizeApprovalPayloadDiagnostic(value: Record<string, unknown> | null | undefined): NormalizedApprovalPayloadDiagnostic | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const approvedPayloadSummary = value.approved_payload_summary ?? value.approved_payload ?? value.requested_payload ?? null;
+  const attemptedPayloadSummary = value.attempted_payload_summary ?? value.attempted_payload ?? null;
+  return {
+    approvalRequestId: stringField(value.approval_request_id),
+    status: stringField(value.status),
+    rejectionKind: stringField(value.rejection_kind),
+    reason: stringField(value.reason),
+    payloadMatch: typeof value.payload_match === "boolean" ? value.payload_match : null,
+    approvedPayloadDigest: stringField(value.approved_payload_digest),
+    attemptedPayloadDigest: stringField(value.attempted_payload_digest),
+    payloadSummary: stringField(value.payload_summary),
+    approvedPayloadSummary,
+    attemptedPayloadSummary,
+    differences: normalizeDiagnosticDifferences(value.differences),
+  };
+}
+
+function diagnosticMatchLabel(value: boolean | null): string {
+  if (value === true) {
+    return "Match";
+  }
+  if (value === false) {
+    return "Mismatch";
+  }
+  return "Unknown";
+}
+
+function diagnosticMatchClass(value: boolean | null): string {
+  if (value === true) {
+    return "state-running";
+  }
+  if (value === false) {
+    return "state-fail";
+  }
+  return "state-idle";
+}
+
+function renderDiagnosticBucket(
+  label: string,
+  bucket: ApprovalPayloadDifferenceBucket,
+  emptyText: string,
+) {
+  return (
+    <section className="approval-payload-diagnostic-bucket">
+      <div className="approval-payload-diagnostic-bucket-header">
+        <h4>{label}</h4>
+        <span className="panel-meta">
+          {bucket.entries.length} {bucket.entries.length === 1 ? "entry" : "entries"}
+          {bucket.truncated ? " truncated" : ""}
+        </span>
+      </div>
+      {bucket.entries.length > 0 ? (
+        <div className="approval-payload-diagnostic-entry-list">
+          {bucket.entries.map((entry) => (
+            <div key={`${label}-${entry.path}`} className="approval-payload-diagnostic-entry">
+              <code className="approval-payload-diagnostic-path">{entry.path}</code>
+              <div className="approval-payload-diagnostic-value-grid">
+                {"approved_value" in entry ? (
+                  <div className="approval-payload-diagnostic-value-cell">
+                    <span>Approved</span>
+                    <pre>{jsonText(entry.approved_value)}</pre>
+                  </div>
+                ) : null}
+                {"attempted_value" in entry ? (
+                  <div className="approval-payload-diagnostic-value-cell">
+                    <span>Attempted</span>
+                    <pre>{jsonText(entry.attempted_value)}</pre>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state approval-payload-diagnostic-empty">{emptyText}</div>
+      )}
+    </section>
+  );
+}
+
+function ApprovalPayloadDiagnosticSection({
+  diagnostic,
+  summaryLabel,
+  summary,
+  attemptedSummaryLabel,
+  attemptedSummary,
+}: {
+  diagnostic: NormalizedApprovalPayloadDiagnostic;
+  summaryLabel: string;
+  summary: unknown;
+  attemptedSummaryLabel: string;
+  attemptedSummary: unknown;
+}) {
+  return (
+    <details className="panel compact-disclosure approval-payload-diagnostic" open={diagnostic.payloadMatch === false}>
+      <summary className="panel-header compact-disclosure-summary">
+        <div>
+          <h3>Approval payload diagnostic</h3>
+          <p className="field-description">
+            Diagnostic only: the diff explains why the payload was rejected, but it does not loosen the approval boundary.
+          </p>
+        </div>
+        <span className={`status-pill ${diagnosticMatchClass(diagnostic.payloadMatch)}`}>{diagnosticMatchLabel(diagnostic.payloadMatch)}</span>
+      </summary>
+
+      <dl className="property-grid approval-payload-diagnostic-grid">
+        <div>
+          <dt>Approval request</dt>
+          <dd>{diagnostic.approvalRequestId ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{diagnostic.status ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>
+            <Tooltip content="The reason category reported by the approval diagnostics.">
+              <span>Rejection reason</span>
+            </Tooltip>
+          </dt>
+          <dd>{diagnostic.rejectionKind ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>Reason</dt>
+          <dd>{diagnostic.reason ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>
+            <Tooltip content="A digest is a compact fingerprint of the approved arguments, not the full secret payload.">
+              <span>Approved arguments</span>
+            </Tooltip>
+          </dt>
+          <dd>{diagnostic.approvedPayloadDigest ?? "n/a"}</dd>
+        </div>
+        <div>
+          <dt>
+            <Tooltip content="A digest is a compact fingerprint of the submitted arguments, not the full secret payload.">
+              <span>Submitted arguments</span>
+            </Tooltip>
+          </dt>
+          <dd>{diagnostic.attemptedPayloadDigest ?? "n/a"}</dd>
+        </div>
+      </dl>
+
+      {diagnostic.payloadSummary ? (
+        <p className="muted-copy approval-payload-diagnostic-summary-note">
+          Payload summary: <span>{diagnostic.payloadSummary}</span>
+        </p>
+      ) : null}
+
+      <div className="approval-payload-diagnostic-summaries">
+        <div className="approval-payload-diagnostic-summary">
+          <h4>{summaryLabel}</h4>
+          <pre>{jsonText(summary)}</pre>
+        </div>
+        <div className="approval-payload-diagnostic-summary">
+          <h4>{attemptedSummaryLabel}</h4>
+          <pre>{jsonText(attemptedSummary)}</pre>
+        </div>
+      </div>
+
+      <div className="approval-payload-diagnostic-differences">
+        {renderDiagnosticBucket("Changed fields", diagnostic.differences.changed, "No changed fields were reported.")}
+        {renderDiagnosticBucket("Missing fields", diagnostic.differences.missing, "No missing fields were reported.")}
+        {renderDiagnosticBucket("Extra fields", diagnostic.differences.extra, "No extra fields were reported.")}
+      </div>
+    </details>
+  );
+}
+
+export function ApprovalsScreen() {
+  const { privilegedUnlocked, authRequired, currentUserId, currentUserLabel, selectedDirectoryPath } = useAdminUi();
+  const initialRequestId = approvalRequestIdFromHash();
+  const initialDecision = approvalDecisionFromHash();
+  const [filters, setFilters] = useState<Filters>({
+    status: initialRequestId ? "" : "pending",
+    directOnly: false,
+    sessionId: "",
+    vmId: "",
+    toolName: "",
+    minAgeMinutes: "",
+  });
+  const [response, setResponse] = useState<ApprovalIndexResponse | null>(null);
+  const [selectedId, setSelectedId] = useState<string>(initialRequestId);
+  const [deepLinkedRequestId, setDeepLinkedRequestId] = useState<string>(initialRequestId);
+  const [deepLinkedDecision, setDeepLinkedDecision] = useState<"approve" | "deny" | "">(initialDecision);
+  const [detail, setDetail] = useState<ApprovalDetailResponse | null>(null);
+  const [approver, setApprover] = useState("admin");
+  const [reason, setReason] = useState("");
+  const [revokeReason, setRevokeReason] = useState("");
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [acting, setActing] = useState<"approve" | "deny" | "revoke" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const approveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const denyButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const query = useMemo(() => toQuery(filters, selectedDirectoryPath), [filters, selectedDirectoryPath]);
+  const usesAnonymousApprover = !authRequired;
+  const signedInApprover = currentUserLabel.trim() || currentUserId.trim() || "unknown";
+  const mutationLocked = !privilegedUnlocked;
+  const isPendingApproval = detail?.request.status === "pending";
+
+  async function loadApprovals(options: { preserveSelectedId?: string } = {}) {
+    const next = await fetchJson<ApprovalIndexResponse>(`/api/admin/approvals${query}`);
+    setResponse(next);
+    setSelectedId((current) => {
+      if (options.preserveSelectedId && current === options.preserveSelectedId) return current;
+      if (current && next.items.some((item) => item.request_id === current)) return current;
+      if (current && current === deepLinkedRequestId) return current;
+      return "";
+    });
+  }
+
+  useEffect(() => {
+    const applyDeepLink = () => {
+      const requestId = approvalRequestIdFromHash();
+      const decision = approvalDecisionFromHash();
+      if (!requestId) {
+        setDeepLinkedDecision("");
+        return;
+      }
+      setDeepLinkedRequestId(requestId);
+      setSelectedId(requestId);
+      setDeepLinkedDecision(decision);
+      setFilters((current) => (current.status ? { ...current, status: "" } : current));
+    };
+
+    applyDeepLink();
+    window.addEventListener("hashchange", applyDeepLink);
+    return () => window.removeEventListener("hashchange", applyDeepLink);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        await loadApprovals();
+        if (cancelled) return;
+        setError(null);
+      } catch (reasonValue: unknown) {
+        if (cancelled) return;
+        setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void load();
+    const interval = window.setInterval(() => void load().catch(() => {}), POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [query]);
+
+  useEffect(() => {
+    if (!detail || detail.request.status !== "pending" || mutationLocked || !deepLinkedDecision) {
+      return;
+    }
+    const targetButton = deepLinkedDecision === "approve" ? approveButtonRef.current : denyButtonRef.current;
+    targetButton?.focus();
+  }, [detail, deepLinkedDecision, mutationLocked]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(selectedId)}`)
+      .then((payload) => {
+        if (cancelled) return;
+        setDetail(payload);
+        setReason(payload.request.status === "pending" ? "" : payload.request.decision_reason ?? "");
+        setRevokeReason("");
+        setError(null);
+      })
+      .catch((reasonValue: unknown) => {
+        if (cancelled) return;
+        setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  async function submitDecision(approve: boolean) {
+    if (!detail) return;
+    const resolvedApprover = usesAnonymousApprover ? approver.trim() : signedInApprover;
+    if (!resolvedApprover) {
+      setError("Approver is required.");
+      return;
+    }
+    if (!reason.trim()) {
+      setError("Reason is required.");
+      return;
+    }
+    setActing(approve ? "approve" : "deny");
+    try {
+      const actionLabel = approve ? "Approved" : "Denied";
+      await fetchJson<{ request: ApprovalItem }>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}/decision`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...(usesAnonymousApprover ? { approver: resolvedApprover } : {}),
+          approve,
+          reason: reason.trim(),
+        }),
+      });
+      await loadApprovals({ preserveSelectedId: detail.request.request_id });
+      const refreshed = await fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}`);
+      setDetail(refreshed);
+      setReason(refreshed.request.decision_reason ?? reason.trim());
+      setStatusMessage(`${actionLabel} ${detail.request.request_id}.`);
+      setError(null);
+    } catch (reasonValue: unknown) {
+      setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function submitRevoke() {
+    if (!detail) return;
+    const resolvedApprover = usesAnonymousApprover ? approver.trim() : signedInApprover;
+    if (!resolvedApprover) {
+      setError("Approver is required.");
+      return;
+    }
+    if (!revokeReason.trim()) {
+      setError("Reason is required.");
+      return;
+    }
+    setActing("revoke");
+    try {
+      await fetchJson<{ request: ApprovalItem }>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}/revoke`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...(usesAnonymousApprover ? { approver: resolvedApprover } : {}),
+          reason: revokeReason.trim(),
+        }),
+      });
+      await loadApprovals({ preserveSelectedId: detail.request.request_id });
+      const refreshed = await fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}`);
+      setDetail(refreshed);
+      setRevokeReason(refreshed.request.decision_reason ?? revokeReason.trim());
+      setStatusMessage(`Revoked ${detail.request.request_id}.`);
+      setError(null);
+    } catch (reasonValue: unknown) {
+      setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
+    } finally {
+      setActing(null);
+    }
+  }
+
+  const items = response?.items ?? [];
+  const selectedApprovalIsValid = detail ? detail.request.status === "approved" && detail.expires_in_seconds > 0 : false;
+  const canRevokeSelectedApproval = selectedApprovalIsValid;
+  const approvalDiagnostics = detail?.approval_diagnostics ?? null;
+  const approvalDiagnostic = useMemo(() => {
+    if (!approvalDiagnostics) {
+      return null;
+    }
+    const diagnostic = normalizeApprovalPayloadDiagnostic(approvalDiagnostics);
+    if (!diagnostic) {
+      return null;
+    }
+    const blockedDiagnostics = approvalDiagnostics.blocked_tool_call_diagnostics ?? [];
+    const blockedDiagnostic = blockedDiagnostics.find((entry) => isRecord(entry));
+    const normalizedBlockedDiagnostic = normalizeApprovalPayloadDiagnostic(blockedDiagnostic);
+    if (normalizedBlockedDiagnostic) {
+      return {
+        ...diagnostic,
+        approvalRequestId: normalizedBlockedDiagnostic.approvalRequestId ?? diagnostic.approvalRequestId,
+        status: normalizedBlockedDiagnostic.status ?? diagnostic.status,
+        rejectionKind: normalizedBlockedDiagnostic.rejectionKind ?? diagnostic.rejectionKind,
+        reason: normalizedBlockedDiagnostic.reason ?? diagnostic.reason,
+        payloadMatch: normalizedBlockedDiagnostic.payloadMatch ?? diagnostic.payloadMatch,
+        approvedPayloadDigest: normalizedBlockedDiagnostic.approvedPayloadDigest ?? diagnostic.approvedPayloadDigest,
+        attemptedPayloadDigest: normalizedBlockedDiagnostic.attemptedPayloadDigest ?? diagnostic.attemptedPayloadDigest,
+        attemptedPayloadSummary:
+          normalizedBlockedDiagnostic.attemptedPayloadSummary ??
+          approvalDiagnostics.requested_payload ??
+          diagnostic.attemptedPayloadSummary,
+        differences: normalizedBlockedDiagnostic.differences,
+      };
+    }
+    return {
+      ...diagnostic,
+      payloadMatch: true,
+      attemptedPayloadSummary: diagnostic.attemptedPayloadSummary ?? diagnostic.approvedPayloadSummary,
+    };
+  }, [approvalDiagnostics]);
+
+  return (
+    <RecordWorkspace
+      records={items.map((item) => ({
+        id: item.request_id,
+        href: `#approvals?${new URLSearchParams({ request_id: item.request_id })}`,
+      }))}
+      selectedId={selectedId}
+      recordRouteKeys="request_id,approval_id"
+      onSelect={(id) => {
+        setDeepLinkedRequestId("");
+        setDeepLinkedDecision("");
+        setSelectedId(id);
+      }}
+    >
+      <div className="feature-page approvals-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Approval queue</div>
+              <h1>Approvals</h1>
+            </div>
+            <button type="button" onClick={() => void loadApprovals()}>
+              Refresh
+            </button>
+          </div>
+          {mutationLocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to approve, deny, or revoke queued requests.
+            </div>
+          ) : null}
+          <label className="field-stack">
+            <span>Status</span>
+            <select
+              value={filters.status}
+              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
+            >
+              <option value="">All</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="denied">Denied</option>
+              <option value="expired">Expired</option>
+            </select>
+          </label>
+          <FilterDisclosure activeCount={[filters.directOnly, filters.sessionId.trim(), filters.vmId.trim(), filters.toolName.trim(), filters.minAgeMinutes.trim()].filter(Boolean).length}>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={filters.directOnly}
+              onChange={(event) => setFilters((current) => ({ ...current, directOnly: event.target.checked }))}
+            />
+            <Tooltip content="Checked means only the selected directory is searched and child directories are excluded.">
+              <span>Exclude sub-directories</span>
+            </Tooltip>
+          </label>
+          <label className="field-stack">
+            <Tooltip content="Filter approvals by session ID.">
+              <span>Session</span>
+            </Tooltip>
+            <input
+              value={filters.sessionId}
+              onChange={(event) => setFilters((current) => ({ ...current, sessionId: event.target.value }))}
+              placeholder="issue-14084-session"
+            />
+          </label>
+          <label className="field-stack">
+            <Tooltip content="Filter approvals by VM ID.">
+              <span>VM</span>
+            </Tooltip>
+            <input
+              value={filters.vmId}
+              onChange={(event) => setFilters((current) => ({ ...current, vmId: event.target.value }))}
+              placeholder="vm-14084"
+            />
+          </label>
+          <label className="field-stack">
+            <Tooltip content="Filter approvals by the requested tool name.">
+              <span>Tool</span>
+            </Tooltip>
+            <input
+              value={filters.toolName}
+              onChange={(event) => setFilters((current) => ({ ...current, toolName: event.target.value }))}
+              placeholder="email_send_approved"
+            />
+          </label>
+          <label className="field-stack">
+            <Tooltip content="Show requests older than the entered number of minutes.">
+              <span>Older than (minutes)</span>
+            </Tooltip>
+            <input
+              type="number"
+              min="0"
+              value={filters.minAgeMinutes}
+              onChange={(event) => setFilters((current) => ({ ...current, minAgeMinutes: event.target.value }))}
+              placeholder="5"
+            />
+          </label>
+          </FilterDisclosure>
+          {filters.directOnly || filters.sessionId || filters.vmId || filters.toolName || filters.minAgeMinutes ? (
+            <button type="button" onClick={() => setFilters((current) => ({
+              ...current, directOnly: false, sessionId: "", vmId: "", toolName: "", minAgeMinutes: "",
+            }))}>Clear filters</button>
+          ) : null}
+          <div className="feature-list">
+            {items.map((item) => (
+              <button
+                key={item.request_id}
+                type="button"
+                className={`feature-list-item approval-list-item${selectedId === item.request_id ? " selected" : ""}`}
+                onClick={() => {
+                  setDeepLinkedRequestId("");
+                  setDeepLinkedDecision("");
+                  setSelectedId(item.request_id);
+                }}
+              >
+                <div className="feature-list-title-row approval-list-item-title-row">
+                  <strong>{item.human_summary}</strong>
+                  <span
+                    className={`status-pill state-${item.status === "approved" ? "running" : item.status === "pending" ? "idle" : "failed"}`}
+                  >
+                    {item.status}
+                  </span>
+                </div>
+                <Tooltip content={`Requested tool/action: ${displayToolName(item)}`} inline={false}>
+                  <div className="feature-list-meta">{displayToolName(item)}</div>
+                </Tooltip>
+                <div className="feature-list-meta">
+                  {item.session_id}
+                  {item.vm_id ? ` • ${item.vm_id}` : ""}
+                </div>
+                <div className="feature-list-meta">{formatTimestamp(item.created_at)}</div>
+              </button>
+            ))}
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading approval requests...</div> : null}
+            {!loading && !error && items.length === 0 ? (
+              <div className="empty-state">No approval requests matched the current filters.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{detail ? detail.request.human_summary : "Select a request"}</h2>
+              <p className="muted-text">Review payload context, record decisions, and keep the reason trail intact.</p>
+            </div>
+            <div className="feature-toolbar-actions">
+              <span className="panel-meta">{loading ? "Loading..." : `${items.length} shown`}</span>
+            </div>
+          </div>
+
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
+
+          {detailLoading && selectedId && !detail ? (
+              <div className="empty-state">Loading approval request...</div>
+            ) : detail ? (
+              <div className="stack-layout">
+                <section className="panel approval-review-summary">
+                  <div className="panel-header approval-review-summary-header">
+                    <h3>Summary</h3>
+                    <span className="panel-meta">{detail.request.directory_path}</span>
+                  </div>
+                  <div className="approval-review-summary-body">
+                    <p>{detail.request.human_summary}</p>
+                    {detail.payload_summary ? (
+                      <p className="muted-copy">
+                        Payload summary:{" "}
+                        <Tooltip content={detail.payload_summary}>
+                          <span>{detail.payload_summary}</span>
+                        </Tooltip>
+                      </p>
+                    ) : null}
+                    {detail.request.intended_effect ? (
+                      <p className="muted-copy">
+                        Intended effect:{" "}
+                        <Tooltip content={detail.request.intended_effect}>
+                          <span>{detail.request.intended_effect}</span>
+                        </Tooltip>
+                      </p>
+                    ) : null}
+                  </div>
+                </section>
+
+                <article className="panel">
+                <dl className="property-grid">
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{detail.request.status}</dd>
+                  </div>
+                  <div>
+                    <dt>Tool</dt>
+                    <dd>
+                      <Tooltip content={`Requested tool/action: ${displayToolName(detail.request)}`}>
+                        {displayToolName(detail.request)}
+                      </Tooltip>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Session</dt>
+                    <dd><a href={`#sessions?${new URLSearchParams({ session_id: detail.request.session_id })}`}>{detail.request.session_id}</a></dd>
+                  </div>
+                  <div>
+                    <dt>VM</dt>
+                    <dd>{detail.request.vm_id ? <a href={`#vms?${new URLSearchParams({ vm_name: detail.request.vm_id })}`}>{detail.request.vm_id}</a> : "None"}</dd>
+                  </div>
+                  <div>
+                    <dt>Created</dt>
+                    <dd>{formatTimestamp(detail.request.created_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Age</dt>
+                    <dd>{formatRelativeSeconds(detail.age_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>Expires</dt>
+                    <dd>{formatTimestamp(detail.request.expires_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Expires in</dt>
+                    <dd>{formatRelativeSeconds(detail.expires_in_seconds)}</dd>
+                  </div>
+                </dl>
+
+                </article>
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>Redacted payload</h3>
+                    </div>
+                    <pre className="log-view">{JSON.stringify(detail.redacted_payload, null, 2)}</pre>
+                  </article>
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>Decision</h3>
+                      <span className="panel-meta">
+                        {isPendingApproval
+                          ? usesAnonymousApprover
+                            ? "Required approver and reason"
+                            : "Signed-in user and reason"
+                          : canRevokeSelectedApproval
+                            ? "Revocation reason required"
+                            : "Recorded decision"}
+                      </span>
+                    </div>
+                    <div className="panel-body">
+                      {isPendingApproval ? (
+                        <>
+                          {usesAnonymousApprover ? (
+                            <label className="field-stack">
+                              <span>Approver</span>
+                              <input
+                                value={approver}
+                                onChange={(event) => setApprover(event.target.value)}
+                                disabled={mutationLocked}
+                              />
+                            </label>
+                          ) : (
+                            <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
+                          )}
+                          <label className="field-stack">
+                            <span>Reason</span>
+                            <textarea
+                              value={reason}
+                              rows={4}
+                              onChange={(event) => setReason(event.target.value)}
+                              disabled={mutationLocked}
+                            />
+                          </label>
+                          <div className="action-row">
+                            <button
+                              type="button"
+                              className="primary"
+                              ref={approveButtonRef}
+                              disabled={acting !== null || mutationLocked}
+                              onClick={() => void submitDecision(true)}
+                            >
+                              {acting === "approve" ? "Approving..." : "Approve"}
+                            </button>
+                            <button
+                              type="button"
+                              className="danger"
+                              ref={denyButtonRef}
+                              disabled={acting !== null || mutationLocked}
+                              onClick={() => void submitDecision(false)}
+                            >
+                              {acting === "deny" ? "Denying..." : "Deny"}
+                            </button>
+                          </div>
+                        </>
+                      ) : canRevokeSelectedApproval ? (
+                        <>
+                          <label className="field-stack">
+                            <Tooltip content="Explain why the approved grant is being revoked.">
+                              <span>Revocation reason</span>
+                            </Tooltip>
+                            <textarea
+                              value={revokeReason}
+                              rows={4}
+                              onChange={(event) => setRevokeReason(event.target.value)}
+                              disabled={mutationLocked}
+                            />
+                          </label>
+                          <div className="action-row">
+                            <Tooltip content="Revoking invalidates this grant for all future use.">
+                              <button
+                                type="button"
+                                className="danger"
+                                disabled={acting !== null || mutationLocked}
+                                onClick={() => void submitRevoke()}
+                              >
+                                {acting === "revoke" ? "Revoking..." : "Revoke"}
+                              </button>
+                            </Tooltip>
+                          </div>
+                        </>
+                      ) : null}
+                      {!isPendingApproval ? (
+                        <p className="muted-copy">
+                          Decision recorded by {detail.request.approver ?? "unknown"} at{" "}
+                          {formatTimestamp(detail.request.decision_at)}.
+                        </p>
+                      ) : null}
+                    </div>
+                  </article>
+
+
+                {approvalDiagnostic ? (
+                  <ApprovalPayloadDiagnosticSection
+                    diagnostic={approvalDiagnostic}
+                    summaryLabel="Approved arguments"
+                    summary={approvalDiagnostics?.approved_payload ?? detail.redacted_payload}
+                    attemptedSummaryLabel={
+                      approvalDiagnostics?.blocked_tool_call_diagnostics?.length
+                        ? "Submitted arguments"
+                        : "Requested arguments"
+                    }
+                    attemptedSummary={
+                      approvalDiagnostic.attemptedPayloadSummary ??
+                      approvalDiagnostics?.requested_payload ??
+                      detail.redacted_payload
+                    }
+                  />
+                ) : null}
+
+                <details className="panel compact-disclosure">
+                  <summary className="panel-header compact-disclosure-summary">
+                    <h3>Decision history</h3>
+                    <span className="panel-meta">{detail.request.decision_history.length} decisions</span>
+                  </summary>
+                  {detail.request.decision_history.length > 0 ? (
+                    <div className="history-list">
+                      {detail.request.decision_history.map((entry, index) => (
+                        <div key={`${entry.decided_at}-${index}`} className="history-card">
+                          <strong>{entry.status}</strong>
+                          <span>{entry.approver ?? "unknown approver"}</span>
+                          <span>{formatTimestamp(entry.decided_at)}</span>
+                          <p>{entry.reason ?? "No reason recorded."}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-state">No decision has been recorded yet.</div>
+                  )}
+                </details>
+
+                <details className="panel compact-disclosure">
+                  <summary className="panel-header compact-disclosure-summary">
+                    <h3>Audit context</h3>
+                    <span className="panel-meta">{detail.audit_context.length} entries</span>
+                  </summary>
+                  <p className="muted-copy">Request ID: {detail.request.request_id} · Arguments hash: {detail.request.payload_digest}</p>
+                  {detail.audit_context.length > 0 ? (
+                    <pre className="log-view">{JSON.stringify(detail.audit_context, null, 2)}</pre>
+                  ) : (
+                    <div className="empty-state">No matching audit entries were found.</div>
+                  )}
+                </details>
+              </div>
+            ) : (
+              <RecordPlaceholder>Select an approval to view details</RecordPlaceholder>
+            )}
+        </section>
+      </div>
+    </RecordWorkspace>
+  );
+}

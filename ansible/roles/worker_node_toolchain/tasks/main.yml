@@ -1,0 +1,195 @@
+---
+- name: Resolve worker Node toolchain source mode
+  ansible.builtin.set_fact:
+    evander_worker_node_toolchain_uses_archive: >-
+      {{
+        (evander_worker_node_toolchain_archive_path | default('') | string | trim | length) > 0
+      }}
+
+- name: Check local Node toolchain archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_node_toolchain_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_node_archive_stat
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - evander_worker_node_toolchain_uses_archive | bool
+
+- name: Assert local Node toolchain archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_node_archive_stat.stat.exists
+      - evander_worker_node_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local Node toolchain archive:
+      {{ evander_worker_node_toolchain_archive_path }}. Set
+      evander_worker_node_toolchain_archive_path to a tar.gz containing
+      the contents of a Node {{ evander_worker_node_version }} runtime, or
+      unset it and set HOST_NODE_ROOT/evander_worker_node_toolchain_local_path.
+    success_msg: Local Node toolchain archive is present.
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - evander_worker_node_toolchain_uses_archive | bool
+
+- name: Check local Node toolchain directory
+  ansible.builtin.stat:
+    path: "{{ evander_worker_node_toolchain_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_node_local_stat
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+
+- name: Check local Node/npm/npx binaries
+  ansible.builtin.stat:
+    path: "{{ evander_worker_node_toolchain_local_path }}/bin/{{ item }}"
+  delegate_to: localhost
+  become: false
+  loop:
+    - node
+    - npm
+    - npx
+  register: evander_worker_node_local_binary_stats
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+
+- name: Assert local Node toolchain directory includes node npm and npx
+  ansible.builtin.assert:
+    that:
+      - evander_worker_node_local_stat.stat.exists
+      - evander_worker_node_local_stat.stat.isdir
+      - >-
+        {{
+          evander_worker_node_local_binary_stats.results
+          | selectattr('stat.exists')
+          | list
+          | length == 3
+        }}
+    fail_msg: >-
+      Missing local Node toolchain at
+      {{ evander_worker_node_toolchain_local_path }}. Expected bin/node,
+      bin/npm, and bin/npx. Install Node {{ evander_worker_node_version }}
+      locally, set HOST_NODE_ROOT, or provide
+      evander_worker_node_toolchain_archive_path.
+    success_msg: Local Node toolchain includes node, npm, and npx.
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+
+- name: Create local temporary Node toolchain archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: evander-node-toolchain
+  delegate_to: localhost
+  become: false
+  register: evander_worker_node_archive_tmp
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+
+- name: Pack local Node toolchain directory
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_node_toolchain_local_path }}"
+      - -czf
+      - "{{ evander_worker_node_archive_tmp.path }}/node-toolchain.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+
+- name: Resolve Node toolchain archive to copy
+  ansible.builtin.set_fact:
+    evander_worker_node_toolchain_archive_to_copy: >-
+      {{
+        evander_worker_node_toolchain_archive_path
+        if (evander_worker_node_toolchain_uses_archive | bool)
+        else evander_worker_node_archive_tmp.path ~ '/node-toolchain.tar.gz'
+      }}
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Copy Node toolchain archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_node_toolchain_archive_to_copy }}"
+    dest: "{{ evander_worker_node_toolchain_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Reset worker Node toolchain cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_node_cache_path }}"
+    state: absent
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Recreate worker Node toolchain cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_node_cache_path }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Unpack Node toolchain into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_node_toolchain_remote_archive_path }}"
+    dest: "{{ evander_worker_node_cache_path }}"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Verify worker Node toolchain binaries on host cache
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - >-
+        export PATH="{{ evander_worker_node_cache_path }}/bin:$PATH";
+        node --version && npm --version && npx --version
+  changed_when: false
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Verify Node toolchain is available inside runner container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.22.1:ro"
+      - -v
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0:ro"
+      - "{{ evander_runner_image_name }}"
+      - bash
+      - -lc
+      - >-
+        export PATH="/opt/evander/toolchains/node-v24.22.1/bin:$PATH";
+        node --version && npm --version && npx --version &&
+        test "$(/opt/evander/toolchains/node-v24.14.0/bin/node --version)" = "$(node --version)"
+  changed_when: false
+  when: evander_worker_node_toolchain_enabled | bool
+
+- name: Remove temporary local Node toolchain archive directory
+  ansible.builtin.file:
+    path: "{{ evander_worker_node_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_node_toolchain_enabled | bool
+    - not (evander_worker_node_toolchain_uses_archive | bool)
+    - evander_worker_node_archive_tmp.path is defined

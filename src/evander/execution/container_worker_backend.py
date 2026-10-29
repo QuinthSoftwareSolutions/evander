@@ -1,0 +1,1015 @@
+from __future__ import annotations
+
+import uuid
+from copy import copy
+import hashlib
+import logging
+from datetime import datetime
+from typing import Any
+
+from evander.execution.logs import log_page_from_end as _log_page_from_end
+from evander.config import GatewayConfig
+from evander.model_usage.runtime import model_usage_store
+from evander.worker.models import (
+    SAFE_ID_PATTERN,
+    WorkerFileWriteRecord,
+    WorkerFileWriteRequest,
+    WorkerGitKeyDeleteRecord,
+    WorkerGitWriteKeyRecord,
+    WorkerGitWriteKeyRequest,
+    WorkerJobRequest,
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
+    WorkerRepoCloneRecord,
+    WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRecord,
+    WorkerReferenceRepoPrepareRequest,
+    WorkerResourceLimits,
+    WorkerSessionPrepareRequest,
+    WorkerSessionRecord,
+    WorkerTaskDependencyGitSource,
+    WorkerTaskWorktreeCleanupRecord,
+    WorkerTaskWorktreeCleanupRequest,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
+    now_utc,
+)
+from evander.worker.security import sanitize_metadata, sanitize_text
+
+from .backend import ExecutionTarget
+from .container_worker_client import ContainerWorkerClient, ContainerWorkerClientError
+from .container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
+from .models import (
+    ExecutionBackendCapabilities,
+    ExecutionBackendKind,
+    ExecutionHandle,
+    ExecutionSpec,
+    ExecutionStatus,
+    ExecutionStatusKind,
+    PreparedExecution,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ContainerWorkerVmExecutionBackend:
+    def __init__(
+        self,
+        *,
+        config: GatewayConfig,
+        client: ContainerWorkerClient | None = None,
+        repository: ContainerWorkerExecutionRepository | None = None,
+    ) -> None:
+        if not config.container_worker_base_url:
+            raise ValueError("container_worker_vm requires container_worker_base_url.")
+        self.config = config
+        self.client = client or ContainerWorkerClient(
+            base_url=config.container_worker_base_url,
+            token_env=config.container_worker_token_env,
+            timeout_seconds=config.container_worker_request_timeout_seconds,
+        )
+        self.repository = repository or ContainerWorkerExecutionRepository(
+            config.runtime_dir / "container-worker-executions.db"
+        )
+
+    @property
+    def kind(self) -> ExecutionBackendKind:
+        return ExecutionBackendKind.CONTAINER_WORKER_VM
+
+    @property
+    def capabilities(self) -> ExecutionBackendCapabilities:
+        return ExecutionBackendCapabilities()
+
+    def config_for_session(
+        self, session_id: str, *, directory_path: str | None = None
+    ) -> GatewayConfig:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+
+        return ContainerWorkerAssignmentService(self.config).resolve(
+            session_id, directory_path=directory_path
+        )
+
+    def _client_for_config(self, config: GatewayConfig) -> ContainerWorkerClient:
+        if (
+            str(config.container_worker_base_url or "").rstrip("/")
+            == str(self.config.container_worker_base_url or "").rstrip("/")
+            and config.container_worker_token_env == self.config.container_worker_token_env
+        ):
+            return self.client
+        return ContainerWorkerClient(
+            base_url=config.container_worker_base_url,
+            token_env=config.container_worker_token_env,
+            timeout_seconds=config.container_worker_request_timeout_seconds,
+        )
+
+    def _client_for_session(self, session_id: str) -> ContainerWorkerClient:
+        return self._client_for_config(self.config_for_session(session_id))
+
+    def _client_for_mapping(self, mapping: ContainerWorkerExecutionRecord) -> ContainerWorkerClient:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+
+        config = ContainerWorkerAssignmentService(self.config).resolve(
+            mapping.session_id, directory_path=mapping.directory_path, worker_url=mapping.worker_url
+        )
+        return self._client_for_config(config)
+
+    def prepare(self, spec: ExecutionSpec) -> PreparedExecution:
+        execution_id = self._safe_execution_id(spec.target_name)
+        session_id = spec.session_id or execution_id
+        config = self.config_for_session(session_id, directory_path=spec.directory_path)
+        target_name = spec.target_name or execution_id
+        persistence_mode = spec.persistence_mode or config.container_worker_workspace_persistence
+        workspace_mode = spec.workspace_mode or persistence_mode
+        metadata = sanitize_metadata(
+            {
+                **spec.metadata,
+                "session_id": session_id,
+                "directory_path": spec.directory_path,
+                "persistence_mode": persistence_mode,
+                "workspace_mode": workspace_mode,
+                "gateway_url": config.gateway_url,
+                "openai_relay_port": config.openai_relay_port,
+                "http_target_relay_port": config.http_target_relay_port,
+                "nuget_relay_port": config.nuget_relay_port,
+            }
+        )
+        if spec.codex_turn is not None or spec.codex_runtime is not None:
+            context = model_usage_store(config.runtime_dir).get_correlation_context(
+                metadata.get("dispatch_id")
+            )
+            metadata["inference_usage_context"] = {
+                field: getattr(context, field, None) for field in (
+                    "cost_category", "workflow_run_id", "effect_id", "node_id", "trace_id",
+                )
+            }
+            if context is None or not context.cost_attribution_recorded:
+                from evander.repositories.session_manifests import JsonSessionManifestRepository
+
+                session = JsonSessionManifestRepository(config.session_store_path).get_session(
+                    session_id
+                )
+                metadata["inference_usage_context"]["cost_category"] = (
+                    session.cost_category if session is not None else None
+                )
+            metadata["inference_usage_context"].update(
+                directory_path=spec.directory_path, dispatch_id=metadata.get("dispatch_id"),
+            )
+        return PreparedExecution(
+            backend=self.kind,
+            execution_id=execution_id,
+            target_name=target_name,
+            session_id=session_id,
+            directory_path=spec.directory_path,
+            command=spec.command,
+            codex_turn=spec.codex_turn,
+            codex_runtime=spec.codex_runtime,
+            image=spec.image or config.container_worker_default_image,
+            repo_source=spec.repo_source,
+            clone_branch=spec.clone_branch,
+            working_directory=spec.working_directory,
+            resource_limits=spec.resource_limits,
+            persistence_mode=persistence_mode,
+            workspace_mode=workspace_mode,
+            metadata=metadata,
+        )
+
+    def start(self, target: ExecutionTarget) -> ExecutionHandle:
+        prepared = (
+            target
+            if isinstance(target, PreparedExecution)
+            else self.prepare(self._spec_from_target(target))
+        )
+        request = self._job_request(prepared)
+        client = self._client_for_session(request.session_id)
+        record = client.create(request)
+        mapping = ContainerWorkerExecutionRecord(
+            execution_id=prepared.execution_id,
+            session_id=request.session_id,
+            worker_job_id=record.job_id,
+            worker_url=client.base_url,
+            target_name=prepared.target_name,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+            last_status=record.status,
+            directory_path=prepared.directory_path,
+            metadata=self._metadata_from_worker_record(
+                {**prepared.metadata, "image": record.image},
+                record,
+            ),
+        )
+        self.repository.put(mapping)
+        return ExecutionHandle(
+            backend=self.kind,
+            execution_id=prepared.execution_id,
+            target_name=prepared.target_name,
+            session_id=request.session_id,
+            directory_path=prepared.directory_path,
+            command=prepared.command,
+            codex_turn=prepared.codex_turn,
+            codex_runtime=prepared.codex_runtime,
+            image=request.image,
+            repo_source=prepared.repo_source,
+            clone_branch=prepared.clone_branch,
+            working_directory=prepared.working_directory,
+            resource_limits=prepared.resource_limits,
+            persistence_mode=prepared.persistence_mode,
+            workspace_mode=prepared.workspace_mode,
+            metadata=mapping.metadata,
+        )
+
+    def inspect(self, target: ExecutionTarget) -> ExecutionStatus:
+        mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
+        if mapping.cleanup_status == "cleanup_succeeded" or mapping.last_status == "removed":
+            self.sync_model_usage(mapping)
+            current = self._save_observation(mapping, expected=expected)
+            return self._status_from_record(
+                current or mapping,
+                current.last_status if current is not None else "removed",
+                message="container worker job was destroyed",
+            )
+        try:
+            record = self._client_for_mapping(mapping).get(mapping.worker_job_id)
+        except ContainerWorkerClientError as exc:
+            if exc.status_code != 404:
+                raise
+            observed_at = now_utc()
+            current = self._mark_cleanup_succeeded(
+                mapping,
+                attempted_at=observed_at,
+                completed_at=observed_at,
+                expected=expected,
+            )
+            return self._status_from_record(
+                current or mapping,
+                current.last_status if current is not None else "removed",
+                message="container worker job no longer exists",
+            )
+        mapping.last_status = record.status
+        mapping.started_at = record.started_at
+        mapping.finished_at = record.finished_at
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        self.sync_model_usage(mapping)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
+
+    def stop(self, target: ExecutionTarget, *, timeout_seconds: int = 60) -> ExecutionStatus:
+        del timeout_seconds
+        mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
+        record = self._client_for_mapping(mapping).stop(mapping.worker_job_id)
+        mapping.last_status = record.status
+        mapping.finished_at = record.finished_at
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        self.sync_model_usage(mapping)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
+
+    def interrupt_active_tool(
+        self,
+        target: ExecutionTarget,
+        *,
+        max_elapsed_seconds: float | None = None,
+        reason: str = "operator_requested",
+    ) -> ExecutionStatus:
+        """Interrupt a worker-selected stalled test process group only.
+
+        `reason` and `max_elapsed_seconds` are retained locally for audit metadata. The worker
+        deliberately receives neither a caller-selected process ID nor a command string.
+        """
+        mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
+        record = self._client_for_mapping(mapping).interrupt_active_tool(
+            mapping.worker_job_id,
+            max_elapsed_seconds=max_elapsed_seconds,
+            reason=reason,
+        )
+        mapping.last_status = record.status
+        mapping.started_at = record.started_at
+        mapping.finished_at = record.finished_at
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        interruption = mapping.metadata.get("active_tool_interruption")
+        if isinstance(interruption, dict):
+            interruption = dict(interruption)
+            interruption["requested_reason"] = str(reason or "operator_requested")
+            if max_elapsed_seconds is not None:
+                interruption["watchdog_threshold_seconds"] = float(max_elapsed_seconds)
+            mapping.metadata["active_tool_interruption"] = sanitize_metadata(interruption)
+        current = self._save_observation(mapping, expected=expected)
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message=record.error,
+        )
+
+    def destroy(self, target: ExecutionTarget) -> ExecutionStatus:
+        mapping = self._mapping_for_target(target)
+        expected = mapping.model_copy(deep=True)
+        attempted_at = now_utc()
+        try:
+            self._client_for_mapping(mapping).delete(mapping.worker_job_id)
+        except ContainerWorkerClientError as exc:
+            self._mark_cleanup_failed(
+                mapping,
+                error=sanitize_text(str(exc)),
+                attempted_at=attempted_at,
+                expected=expected,
+            )
+            raise
+        completed_at = now_utc()
+        self.sync_model_usage(mapping)
+        current = self._mark_cleanup_succeeded(
+            mapping,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+            expected=expected,
+        )
+        return self._status_from_record(
+            current or mapping, current.last_status if current is not None else "removed",
+            message="container worker job deleted",
+        )
+
+    def get_log_snapshot(
+        self,
+        target: ExecutionTarget,
+        *,
+        lines: int = 50,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+        mode: str | None = None,
+    ) -> str:
+        del repo_name, vm_user
+        mapping = self._mapping_for_target(target)
+        text = self._client_for_mapping(mapping).logs(mapping.worker_job_id, mode=mode)
+        if lines <= 0:
+            return text
+        return "\n".join(text.splitlines()[-lines:]) + (
+            "\n" if text.endswith("\n") and text.splitlines() else ""
+        )
+
+    def get_log_page(
+        self,
+        target: ExecutionTarget,
+        *,
+        limit: int = 200,
+        offset: int = 0,
+        query: str | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        mapping = self._mapping_for_target(target)
+        text, metadata = self._client_for_mapping(mapping).logs_page(
+            mapping.worker_job_id,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
+        if metadata.get("paged"):
+            return {
+                "text": text,
+                "limit": int(metadata.get("limit") or limit),
+                "offset": int(metadata.get("offset") or offset),
+                "returned_lines": int(
+                    metadata.get("returned_lines")
+                    if metadata.get("returned_lines") is not None
+                    else len(text.splitlines())
+                ),
+                "total_lines": metadata.get("total_lines"),
+                "start_line": metadata.get("start_line"),
+                "end_line": metadata.get("end_line"),
+                "has_more_before": bool(metadata.get("has_more_before")),
+                "query": str(query or "").strip() or None,
+            }
+        return _log_page_from_end(text, limit=limit, offset=offset, query=query)
+
+    def prepare_session(
+        self,
+        *,
+        session_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> WorkerSessionRecord:
+        return self._client_for_session(session_id).prepare_session(
+            WorkerSessionPrepareRequest(
+                session_id=session_id,
+                metadata=sanitize_metadata(metadata or {}),
+            )
+        )
+
+    def clone_repo(
+        self,
+        *,
+        session_id: str,
+        repo_source: str,
+        clone_branch: str | None = None,
+        repo_name: str | None = None,
+        reconcile_existing_remote: bool = False,
+    ) -> WorkerRepoCloneRecord:
+        return self._client_for_session(session_id).clone_repo(
+            session_id,
+            WorkerRepoCloneRequest(
+                repo_source=repo_source,
+                clone_branch=clone_branch,
+                repo_name=repo_name,
+                reconcile_existing_remote=reconcile_existing_remote,
+            ),
+        )
+
+    def prepare_reference_repo(
+        self,
+        *,
+        session_id: str,
+        repo_source: str,
+        repo_name: str,
+        source_ref: str,
+        commit_sha: str | None,
+        configuration_version: str,
+        update_existing: bool = True,
+        preparation_fingerprint: str | None = None,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        return self._client_for_session(session_id).prepare_reference_repo(
+            session_id,
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=repo_source,
+                repo_name=repo_name,
+                source_ref=source_ref,
+                commit_sha=commit_sha,
+                configuration_version=configuration_version,
+                update_existing=update_existing,
+                preparation_fingerprint=preparation_fingerprint,
+            ),
+        )
+
+    def prepare_task_worktree(
+        self,
+        *,
+        session_id: str,
+        repo_name: str,
+        worktree_name: str,
+        preparation_attempt_id: str | None = None,
+        required_git_recovery_protocol: int | None = None,
+        branch: str,
+        base_ref: str,
+        expected_base_commit_sha: str | None = None,
+        expected_base_tree_hash: str | None = None,
+        dependency_git_sources: list[dict[str, str]] | None = None,
+        dependency_composition_mode: str = "automatic",
+        dependency_composition_recovery_id: str | None = None,
+        resolved_dependency_branch: str | None = None,
+        resolved_dependency_commit_sha: str | None = None,
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
+        dependency_merge_author_name: str | None = None,
+        dependency_merge_author_email: str | None = None,
+        dependency_composition_commit_message: str | None = None,
+    ) -> WorkerTaskWorktreeRecord:
+        return self._client_for_session(session_id).prepare_task_worktree(
+            session_id,
+            WorkerTaskWorktreeRequest(
+                repo_name=repo_name,
+                worktree_name=worktree_name,
+                preparation_attempt_id=preparation_attempt_id,
+                required_git_recovery_protocol=required_git_recovery_protocol,
+                branch=branch,
+                base_ref=base_ref,
+                expected_base_commit_sha=expected_base_commit_sha,
+                expected_base_tree_hash=expected_base_tree_hash,
+                dependency_git_sources=[
+                    WorkerTaskDependencyGitSource.model_validate(source)
+                    for source in dependency_git_sources or []
+                ],
+                dependency_composition_mode=dependency_composition_mode,
+                dependency_composition_recovery_id=dependency_composition_recovery_id,
+                resolved_dependency_branch=resolved_dependency_branch,
+                resolved_dependency_commit_sha=resolved_dependency_commit_sha,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                dependency_merge_author_name=dependency_merge_author_name,
+                dependency_merge_author_email=dependency_merge_author_email,
+                dependency_composition_commit_message=(dependency_composition_commit_message),
+            ),
+        )
+
+    def capture_git_salvage(self, session_id, request):
+        return self._client_for_session(session_id).capture_git_salvage(session_id, request)
+
+    def cleanup_task_worktree(
+        self,
+        *,
+        session_id: str,
+        repo_name: str,
+        worktree_name: str,
+        preparation_attempt_id: str | None = None,
+        branch: str,
+        expected_commit_sha: str | None,
+        expected_target_dir: str,
+        dry_run: bool = False,
+    ) -> WorkerTaskWorktreeCleanupRecord:
+        if not dry_run:
+            from evander.session_dependencies import SessionDependencies
+
+            SessionDependencies(self.config.runtime_dir).release(
+                "workspace:" + session_id + ":" + expected_target_dir
+            )
+        return self._client_for_session(session_id).cleanup_task_worktree(
+            session_id,
+            WorkerTaskWorktreeCleanupRequest(
+                repo_name=repo_name,
+                worktree_name=worktree_name,
+                preparation_attempt_id=preparation_attempt_id,
+                branch=branch,
+                expected_commit_sha=expected_commit_sha,
+                expected_target_dir=expected_target_dir,
+                dry_run=dry_run,
+            ),
+        )
+
+    def provision_git_write_key(
+        self,
+        *,
+        session_id: str,
+        git_host: str,
+        git_user: str,
+        git_ssh_alias: str,
+        key_name: str = "evander-git-write",
+        alias_is_exact: bool = False,
+    ) -> WorkerGitWriteKeyRecord:
+        return self._client_for_session(session_id).provision_git_write_key(
+            session_id,
+            WorkerGitWriteKeyRequest(
+                git_host=git_host,
+                git_user=git_user,
+                git_ssh_alias=git_ssh_alias,
+                key_name=key_name,
+                alias_is_exact=alias_is_exact,
+            ),
+        )
+
+    def revoke_git_key(self, *, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
+        return self._client_for_session(session_id).revoke_git_key(session_id, key_name)
+
+    def write_files(
+        self,
+        *,
+        session_id: str,
+        files: list[dict[str, Any]],
+        preparation_fingerprint: str | None = None,
+    ) -> WorkerFileWriteRecord:
+        return self._client_for_session(session_id).write_files(
+            session_id,
+            WorkerFileWriteRequest.model_validate(
+                {
+                    "files": files,
+                    "preparation_fingerprint": preparation_fingerprint,
+                }
+            ),
+        )
+
+    def read_session_artifact_text(
+        self,
+        *,
+        session_id: str,
+        relative_path: str,
+    ) -> str:
+        return self._client_for_session(session_id).read_session_artifact_text(
+            session_id, relative_path
+        )
+
+    def read_session_artifact_text_bounded(
+        self,
+        *,
+        session_id: str,
+        relative_path: str,
+        max_bytes: int,
+    ) -> str:
+        return self._client_for_session(session_id).read_session_artifact_text_bounded(
+            session_id, relative_path, max_bytes=max_bytes
+        )
+
+    def provision_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseRecord:
+        record = self._client_for_session(session_id).provision_mssql_database(
+            session_id,
+            WorkerMssqlDatabaseRequest(logical_name=logical_name),
+        )
+        return self._apply_mssql_endpoint_config(record, config=self.config_for_session(session_id))
+
+    def list_mssql_databases(
+        self,
+        *,
+        session_id: str,
+    ) -> WorkerMssqlDatabaseListRecord:
+        return self._client_for_session(session_id).list_mssql_databases(session_id)
+
+    def drop_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseDeleteRecord:
+        return self._client_for_session(session_id).drop_mssql_database(session_id, logical_name)
+
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        from .preservation import require_session_data_disposable
+        require_session_data_disposable(self.config.runtime_dir, normalized_session_id)
+        from evander.session_dependencies import SessionDependencies
+
+        SessionDependencies(self.config.runtime_dir).release(normalized_session_id)
+        list_by_session = getattr(self.repository, "list_by_session", None)
+        if callable(list_by_session):
+            mappings = list(list_by_session(normalized_session_id))
+        else:
+            read_all = getattr(self.repository, "read_all", None)
+            if not callable(read_all):
+                mappings = []
+            else:
+                mappings = [
+                    record
+                    for record in read_all().values()
+                    if record.session_id == normalized_session_id
+                ]
+        attempted_at = now_utc()
+        try:
+            response = self._client_for_session(normalized_session_id).delete_session(
+                normalized_session_id
+            )
+        except ContainerWorkerClientError as exc:
+            error = sanitize_text(str(exc))
+            self._mark_session_cleanup_failed(
+                mappings,
+                error=error,
+                attempted_at=attempted_at,
+            )
+            raise
+        completed_at = now_utc()
+        for mapping in mappings:
+            self.sync_model_usage(mapping)
+        self._mark_session_cleanup_succeeded(
+            mappings,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+        )
+        return response
+
+    def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
+        command = self._command_from_spec(prepared.command)
+        config = self.config_for_session(prepared.session_id or prepared.execution_id)
+        image = str(prepared.image or config.container_worker_default_image).strip()
+        payload: dict[str, Any] = {
+            "session_id": prepared.session_id or prepared.execution_id,
+            "job_id": prepared.execution_id,
+            "image": image,
+            "command": command,
+            "metadata": sanitize_metadata(prepared.metadata),
+        }
+        if prepared.codex_runtime is not None:
+            payload["codex_runtime"] = prepared.codex_runtime.model_dump(mode="json")
+        if prepared.codex_turn is not None:
+            payload["codex_turn"] = prepared.codex_turn.model_dump(mode="json", exclude_none=True)
+        if prepared.repo_source:
+            payload["repo_source"] = prepared.repo_source
+        if prepared.clone_branch:
+            payload["clone_branch"] = prepared.clone_branch
+        if prepared.working_directory:
+            payload["working_directory"] = prepared.working_directory
+        if prepared.resource_limits:
+            payload["resource_limits"] = WorkerResourceLimits.model_validate(
+                prepared.resource_limits
+            )
+        return WorkerJobRequest.model_validate(payload)
+
+    def _apply_mssql_endpoint_config(
+        self,
+        record: WorkerMssqlDatabaseRecord,
+        *,
+        config: GatewayConfig,
+    ) -> WorkerMssqlDatabaseRecord:
+        server = str(config.container_worker_mssql_host or record.server).strip()
+        server = server or record.server
+        port = int(config.container_worker_mssql_port)
+        if server == record.server and port == record.port:
+            return record
+        connection_string = (
+            f"Server=tcp:{server},{port};"
+            f"Database={record.database_name};"
+            f"User ID={record.username};"
+            f"Password={record.password};"
+            "Encrypt=True;TrustServerCertificate=True"
+        )
+        return record.model_copy(
+            update={
+                "server": server,
+                "port": port,
+                "connection_string": connection_string,
+            }
+        )
+
+    def _command_from_spec(self, command: Any) -> list[str]:
+        if command is None:
+            raise ValueError("ExecutionSpec.command is required for container_worker_vm.")
+        if isinstance(command, str):
+            text = command.strip()
+            if not text:
+                raise ValueError("ExecutionSpec.command is required for container_worker_vm.")
+            return ["bash", "-lc", text]
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(item, str) and item for item in command)
+        ):
+            return command
+        raise ValueError("ExecutionSpec.command must be a non-empty string or list of strings.")
+
+    def for_reconciliation(self, target: ExecutionTarget) -> "ContainerWorkerVmExecutionBackend":
+        """Pin a continuation to one immutable worker job, never its replacement."""
+        bound = copy(self)
+        bound._reconciliation_owner = self._mapping_for_target(target)
+        return bound
+
+    def _save_observation(
+        self, mapping: ContainerWorkerExecutionRecord, *, expected: ContainerWorkerExecutionRecord,
+    ) -> ContainerWorkerExecutionRecord | None:
+        current = self.repository.save_observation(mapping, expected=expected)
+        owner = getattr(self, "_reconciliation_owner", None)
+        if current is not None and owner is not None and not self.repository._same_worker_job(current, owner):
+            raise RuntimeError("container worker reconciliation job was replaced")
+        return current
+
+    def _mapping_for_target(self, target: ExecutionTarget) -> ContainerWorkerExecutionRecord:
+        if isinstance(target, PreparedExecution | ExecutionHandle):
+            mapping = self.repository.resolve(target.execution_id)
+        else:
+            mapping = self.repository.resolve(str(target or ""))
+        owner = getattr(self, "_reconciliation_owner", None)
+        if owner is not None and (
+            mapping.execution_id != owner.execution_id
+            or not self.repository._same_worker_job(mapping, owner)
+        ):
+            raise RuntimeError("container worker reconciliation job was replaced")
+        return mapping
+
+    def _spec_from_target(self, target: ExecutionTarget) -> ExecutionSpec:
+        if isinstance(target, ExecutionHandle):
+            return ExecutionSpec(
+                backend=self.kind,
+                target_name=target.target_name,
+                session_id=target.session_id,
+                directory_path=target.directory_path,
+                command=target.command,
+                codex_turn=target.codex_turn,
+                codex_runtime=target.codex_runtime,
+                image=target.image,
+                repo_source=target.repo_source,
+                clone_branch=target.clone_branch,
+                resource_limits=target.resource_limits,
+                persistence_mode=target.persistence_mode,
+                workspace_mode=target.workspace_mode,
+                metadata=target.metadata,
+            )
+        raw_target = str(target or "").strip()
+        return ExecutionSpec(backend=self.kind, target_name=raw_target, metadata={})
+
+    def _safe_execution_id(self, target_name: str | None) -> str:
+        if target_name:
+            candidate = target_name.strip()
+            if SAFE_ID_PATTERN.fullmatch(candidate):
+                return candidate
+        return f"exec-{uuid.uuid4().hex}"
+
+    def _status_from_record(
+        self,
+        mapping: ContainerWorkerExecutionRecord,
+        worker_status: str,
+        *,
+        message: str | None,
+    ) -> ExecutionStatus:
+        outcome = _failed_codex_outcome(mapping.metadata)
+        status = self._map_status(worker_status)
+        if outcome is not None:
+            status = ExecutionStatusKind.FAILED
+            message = message or str(outcome.get("message") or "Codex execution failed")
+        return ExecutionStatus(
+            backend=self.kind,
+            execution_id=mapping.execution_id,
+            target_name=mapping.target_name,
+            status=status,
+            session_id=mapping.session_id,
+            message=message,
+            started_at=mapping.started_at,
+            finished_at=mapping.finished_at,
+            metadata=mapping.metadata,
+        )
+
+    def _map_status(self, worker_status: str) -> ExecutionStatusKind:
+        normalized = str(worker_status or "").strip().casefold()
+        if normalized in {"created", "starting"}:
+            return ExecutionStatusKind.STARTING
+        if normalized == "running":
+            return ExecutionStatusKind.RUNNING
+        if normalized in {"stopped", "exited"}:
+            return ExecutionStatusKind.STOPPED
+        if normalized == "failed":
+            return ExecutionStatusKind.FAILED
+        if normalized == "cleanup_failed":
+            return ExecutionStatusKind.FAILED
+        if normalized == "removed":
+            return ExecutionStatusKind.DESTROYED
+        return ExecutionStatusKind.UNKNOWN
+
+    @staticmethod
+    def _metadata_from_worker_record(
+        existing_metadata: dict[str, Any],
+        record: Any,
+    ) -> dict[str, Any]:
+        metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+        worker_metadata = (
+            dict(record.metadata) if isinstance(getattr(record, "metadata", None), dict) else {}
+        )
+        for key in (
+            "codex_outcome",
+            "agent_provider",
+            "model_provider_mode",
+            "model",
+            "codex_auth_mode",
+            "codex_subscription_thread_id",
+            "codex_subscription_turn_id",
+            "codex_subscription_exit_code",
+            "codex_subscription_deferral",
+            "exit_code",
+            "worker_terminal_kind",
+            "active_tool",
+            "active_tool_interruption",
+            "read_only_mounts",
+            "model_usage_capture",
+        ):
+            if key in worker_metadata:
+                metadata[key] = worker_metadata[key]
+        failure_cause = getattr(record, "failure_cause", None)
+        if failure_cause is not None:
+            metadata["worker_failure_cause"] = getattr(failure_cause, "value", str(failure_cause))
+        if getattr(record, "error", None):
+            metadata["worker_error"] = str(record.error)
+        metadata["worker_status"] = record.status
+        return sanitize_metadata(metadata)
+
+    def sync_model_usage(
+        self, mapping: ContainerWorkerExecutionRecord, *, max_pages: int = 10,
+    ) -> None:
+        """Import live receipts only. Old jobs have no capture marker or journal entries."""
+        if mapping.metadata.get("model_usage_capture") != 1 or mapping.metadata.get("model_usage_complete"):
+            return
+        try:
+            client = self._client_for_mapping(mapping)
+            cursor = int(mapping.metadata.get("model_usage_cursor", 0))
+            store = model_usage_store(self.config.runtime_dir)
+            worker_id = hashlib.sha256(mapping.worker_url.rstrip("/").encode()).hexdigest()[:16]
+            for _ in range(max_pages):  # Bound each execution poll to 2,000 receipts.
+                page = client.model_usage(mapping.worker_job_id, cursor=cursor)
+                if page.next_cursor < cursor or ((page.has_more or page.events) and page.next_cursor == cursor):
+                    raise ValueError("worker usage cursor did not advance")
+                for event in page.events:
+                    if (
+                        event.session_id != mapping.session_id or event.billing_kind != "subscription"
+                        or event.provider != "openai_chatgpt_subscription"
+                        or event.raw_usage_metadata.get("request_metadata", {}).get("worker_job_id") != mapping.worker_job_id
+                    ):
+                        raise ValueError("worker usage does not belong to this execution")
+                    context = mapping.metadata.get("inference_usage_context") or {}
+                    event = event.model_copy(update={
+                        "event_id": f"worker-{worker_id}:{event.event_id}",
+                        "request_id": f"worker-{worker_id}:{event.request_id}",
+                        "directory_path": mapping.directory_path,
+                        "dispatch_id": mapping.metadata.get("dispatch_id"),
+                        "cost_attribution_recorded": True,
+                        **{field: context.get(field) for field in (
+                            "cost_category", "workflow_run_id", "effect_id", "node_id", "trace_id",
+                        )},
+                    })
+                    store.upsert_event(event)
+                cursor = page.next_cursor
+                mapping.metadata["model_usage_cursor"] = cursor
+                mapping.metadata["model_usage_complete"] = page.complete and not page.has_more
+                mapping.metadata.pop("model_usage_sync_error", None)
+                self.repository.save_model_usage_progress(mapping)
+                if not page.has_more:
+                    break
+        except Exception as exc:  # Reporting must not fail agent execution or cleanup.
+            mapping.metadata["model_usage_sync_error"] = type(exc).__name__
+            logger.warning("worker_usage_sync_failed exception_class=%s", type(exc).__name__)
+        finally:
+            self.repository.save_model_usage_progress(mapping)
+
+    def _mark_cleanup_succeeded(
+        self,
+        mapping: ContainerWorkerExecutionRecord,
+        *,
+        attempted_at: datetime,
+        completed_at: datetime,
+        expected: ContainerWorkerExecutionRecord | None = None,
+    ) -> ContainerWorkerExecutionRecord | None:
+        mapping.last_status = "removed"
+        mapping.finished_at = mapping.finished_at or completed_at
+        mapping.cleanup_status = "cleanup_succeeded"
+        mapping.cleanup_attempted_at = attempted_at
+        mapping.cleanup_completed_at = completed_at
+        mapping.cleanup_error = None
+        mapping.metadata = {
+            **mapping.metadata,
+            "worker_status": "removed",
+            "cleanup_status": "cleanup_succeeded",
+            "cleanup_attempted_at": attempted_at.isoformat(),
+            "cleanup_completed_at": completed_at.isoformat(),
+        }
+        if expected is not None:
+            return self._save_observation(mapping, expected=expected)
+        self.repository.put(mapping)
+        return mapping
+
+    def _mark_cleanup_failed(
+        self,
+        mapping: ContainerWorkerExecutionRecord,
+        *,
+        error: str,
+        attempted_at: datetime,
+        expected: ContainerWorkerExecutionRecord | None = None,
+    ) -> None:
+        completed_at = now_utc()
+        sanitized_error = sanitize_text(error)
+        mapping.last_status = "cleanup_failed"
+        mapping.finished_at = completed_at
+        mapping.cleanup_status = "cleanup_failed"
+        mapping.cleanup_attempted_at = attempted_at
+        mapping.cleanup_completed_at = completed_at
+        mapping.cleanup_error = sanitized_error
+        mapping.metadata = {
+            **mapping.metadata,
+            "worker_status": "cleanup_failed",
+            "cleanup_status": "cleanup_failed",
+            "cleanup_attempted_at": attempted_at.isoformat(),
+            "cleanup_completed_at": completed_at.isoformat(),
+            "cleanup_error": sanitized_error,
+        }
+        if expected is not None:
+            self._save_observation(mapping, expected=expected)
+        else:
+            self.repository.put(mapping)
+
+    def _mark_session_cleanup_succeeded(
+        self,
+        mappings: list[ContainerWorkerExecutionRecord],
+        *,
+        attempted_at: datetime,
+        completed_at: datetime,
+    ) -> None:
+        for mapping in mappings:
+            self._mark_cleanup_succeeded(
+                mapping,
+                attempted_at=attempted_at,
+                completed_at=completed_at,
+            )
+
+    def _mark_session_cleanup_failed(
+        self,
+        mappings: list[ContainerWorkerExecutionRecord],
+        *,
+        error: str,
+        attempted_at: datetime,
+    ) -> None:
+        for mapping in mappings:
+            self._mark_cleanup_failed(
+                mapping,
+                error=error,
+                attempted_at=attempted_at,
+            )
+
+
+def _failed_codex_outcome(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    outcome = metadata.get("codex_outcome")
+    if not isinstance(outcome, dict):
+        return None
+    status = str(outcome.get("status") or "").strip().casefold()
+    if status != "failed":
+        return None
+    return outcome

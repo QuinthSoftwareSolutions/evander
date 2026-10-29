@@ -1,0 +1,472 @@
+# Evander Repo Notes
+
+This file is for agents working in the `evander` repo.
+
+## Production Source Changes
+
+- Develop and test source changes in a local worktree and publish a reviewable branch.
+- Production source changes require human review before deployment. An agent or subagent review
+  does not replace human review.
+- Deploy production source changes only through the established CI/CD pipelines. Do not edit
+  production source files, switch the running installation to another Git revision, copy source
+  or built assets into it, or reinstall packages manually. Do not use manual service restarts to
+  activate source changes outside CI/CD.
+- Approval to implement, fix, test, review, commit, or push a change is not approval to deploy it.
+  Explicit deployment approval still requires the reviewed source and the established pipeline.
+- Rollbacks follow the same approved CI/CD process unless Jonathan explicitly authorizes a
+  different rollback procedure.
+- If required review or pipeline access is unavailable, report the blocker before changing
+  production. Do not substitute an ad hoc SSH or Ansible deployment.
+- Read-only production inspection remains available for authorized diagnosis. Operational
+  configuration and workflow changes retain their own authorization, API, revision, and lock
+  requirements below.
+
+## Purpose
+
+This repo implements a host-side control plane for isolated agent execution. The main execution
+target is still disposable libvirt VMs, with an additive `container_worker_vm` backend for worker
+VMs that run disposable Docker containers.
+
+The security model is:
+
+- no general guest/container internet by default
+- host keeps real secrets
+- guests and worker containers get only explicit host/control-plane ports
+- model, package, Git, HTTP-target, and MCP access go through narrow host-owned surfaces
+- code transport uses Git, not MCP payloads
+
+## Customer And Brand Neutrality
+
+- Keep all repository content customer-neutral, including source code, tests, fixtures,
+  examples, documentation, configuration, images, generated artifacts, filenames, and both
+  tracked and ignored files.
+- Never add customer-specific tests, examples, fixtures, names, identifiers, verifier scripts,
+  policies, incident notes, or evidence. Reproduce the relevant platform behavior with generic
+  synthetic substitutes, including invented identities, domains, and data. Customer-owned
+  material belongs in operator-owned storage outside the repository.
+- Apart from Evander, do not introduce unrelated company, organization, product, or brand
+  names anywhere in the repository, including as example identities or placeholders. Name
+  third parties only when necessary to identify a real dependency or supported integration,
+  or to preserve required third-party attribution and license notices.
+- The former project name Truman may appear only when identifying Evander's historical name.
+
+## Current Core Surfaces
+
+- MCP gateway:
+  - Entry point: `evander-gateway`
+  - Code: `src/evander/gateway/server.py`, `src/evander/gateway/app.py`, and
+    `src/evander/gateway/cli.py`
+  - Default guest-reachable port: `8000`
+  - Gateway liveness is checked on `/mcp`; a plain GET can return `406 Not Acceptable` and still
+    prove the MCP endpoint is reachable.
+
+- OpenAI relay:
+  - Entry point: `evander-openai-relay`
+  - Code: `src/evander/relays/openai.py`
+  - Default guest-reachable port: `11434`
+  - The streaming path intentionally keeps the upstream client alive for the full stream and
+    forwards raw SSE bytes.
+
+- Codex subscription egress proxy:
+  - Entry point: `evander-codex-egress-proxy`
+  - Code: `src/evander/worker/codex_egress_proxy.py`
+  - Default private worker-facing port: `11889`
+  - Restricts both worker source CIDRs and OpenAI/ChatGPT destination hosts. This port belongs in
+    the worker-to-control-plane deployment policy, not the guest firewall defaults.
+
+- NuGet relay:
+  - Entry point: `evander-nuget-relay`
+  - Code: `src/evander/relays/nuget.py`
+  - Default guest-reachable port: `11666`
+  - Health endpoint: `/healthz`
+
+- HTTP target relay:
+  - Entry point: `evander-http-target-relay`
+  - Code: `src/evander/relays/http_target.py`
+  - Default guest-reachable port: `11777`
+  - Session-scoped relay for allowlisted external HTTP targets. It forwards guest-managed auth
+    headers/cookies; host secrets are not injected into the guest request.
+
+- HTTP target browser proxy:
+  - Entry point: `evander-http-target-browser-proxy`
+  - Code: `src/evander/relays/http_target_browser_proxy.py`
+  - Default guest-reachable port: `11778`
+  - Authenticated forward proxy that preserves real browser origins while restricting connections
+    to the current session's configured HTTP targets.
+
+- Admin Web:
+  - Entry point: `evander-admin-web`
+  - Code: `src/evander/admin/web/app.py`
+  - Default port from `config/admin-web.env.example`: `8100`
+  - This is the supported operator GUI for dashboard, VMs/issues, sessions, approvals, tool-call
+    audit, workflow editing/runs/reports, configuration, workers, skills, chat, and users.
+
+- Workflow runtime:
+  - Trigger worker command: `evander-cli trigger-orchestrator`
+  - Trigger worker service: `evander-trigger-orchestrator.service`
+  - Effect worker: `evander-effect-orchestrator`
+  - Config: `config/trigger-orchestrator/config.json`
+  - Operator workflow packs: `config/workflow-packs/*.json`
+  - Checked-in pack files are examples or built-ins; live operator pack files may be ignored by
+    Git and edited through Admin Web.
+
+- Provider and wake workers:
+  - ADO PR feedback/completion worker: `evander-ado-worker`; Azure DevOps work-item intake is
+    workflow-owned
+  - ADO proxy issue freshness worker: `evander-proxy-issue-sync`
+  - Discord ingest: `evander-discord-ingest`
+  - Scheduled wake: `evander-scheduled-wake`
+  - Teams ingest: `evander-cli teams-ingest` via `scripts/run_teams_ingest.sh`
+  - Teams meeting ingest: `evander-teams-meeting-ingest`
+  - There is no current `evander-host-heartbeat` service. Azure DevOps PR feedback polling
+    lives in the ADO worker; Discord/scheduled wakeups live in their dedicated wake workers.
+
+- Execution backends:
+  - Default: `libvirt_vm`
+  - Additive worker backend: `container_worker_vm`
+  - Worker daemon entry point: `evander-worker-daemon`
+  - Worker daemon docs: `docs/container-worker-backend.md`
+  - The worker daemon is deployed by the dedicated Ansible worker playbook, not by
+    `scripts/install_systemd_units.sh` on the control plane.
+
+- Managed Git repositories:
+  - Domain service: `src/evander/admin/services/managed_git_service.py`
+  - Operator CLI: `evander-cli git-repos ...`
+  - Registry: `runtime/managed-git-repositories.json`
+  - Bare repositories: `runtime/managed-git/`
+  - Ephemeral worktrees: `runtime/git-worktrees/`
+  - Restricted SSH enforcement: `scripts/git_ssh_command_wrapper.sh`
+  - Docs: `docs/git-remotes.md`
+
+## Important Defaults
+
+- Firewall default allowed host ports:
+  - `22` for SSH/Git
+  - `8000` for MCP
+  - `11434` for OpenAI relay
+  - `11666` for NuGet relay
+  - `11777` for HTTP target relay
+  - `11778` for HTTP target browser proxy
+  - `11881` for the npm audit relay
+  - `8081` for Nexus PyPI/npm package cache when enabled
+  - `3142` for apt-cacher-ng worker provisioning when enabled
+  - Source of truth: `config/firewall.env.example`
+
+- Runtime configuration:
+  - Host-global bootstrap config: `runtime/host-config.json`
+  - Directory-scoped config root: `runtime/directory-config/root/...`
+  - `root` is the immutable top-level directory and the live default baseline.
+  - Legacy gateway YAML is no longer accepted as bootstrap or migration input.
+
+- Guest cloud-init:
+  - Template: `config/cloud-init-user-data.yaml`
+  - Creates unprivileged `agent` and privileged setup user `agent-admin`.
+  - Writes `/etc/evander/session.env`.
+  - Writes provider-neutral guest config at `/home/agent/.agent/config.env`.
+  - Adds a shell profile hook that loads the session env and sets a placeholder
+    `OPENAI_API_KEY`.
+  - Creates `/artifacts` and links `/home/agent/artifacts` to it.
+  - Fixes `/home/agent` ownership.
+
+- VM storage:
+  - VM disks live under `/var/lib/libvirt/images/evander`.
+  - New VM overlays default to `20G`; override with `DISK_SIZE_GB`.
+  - Do not put VM disks under a normal user's home directory.
+
+## Systemd Services
+
+Install persistent control-plane services with:
+
+```bash
+./scripts/install_systemd_units.sh --preflight
+sudo ./scripts/install_systemd_units.sh
+```
+
+The current install script renders and enables:
+
+- `evander-firewall.service`
+- `evander-gateway.service`
+- `evander-admin-web.service`
+- `evander-openai-relay.service`
+- `evander-codex-egress-proxy.service`
+- `evander-didww-sip-bridge.service`
+- `evander-nuget-relay.service`
+- `evander-npm-audit-facade.service`
+- `evander-http-target-relay.service`
+- `evander-http-target-browser-proxy.service`
+- `evander-ado-worker.service`
+- `evander-proxy-issue-sync.service`
+- `evander-discord-ingest.service`
+- `evander-scheduled-wake.service`
+- `evander-managed-git-refresh.service`
+- `evander-teams-ingest.service`
+- `evander-teams-notifications.service`
+- `evander-teams-meeting-ingest.service`
+- `evander-privacy-maintenance.service`
+- `evander-effect-orchestrator.service`
+- `evander-trigger-orchestrator.service`
+
+Before install/start, populate the required local config and secret files for the services you use:
+
+- `config/firewall.env`
+- `config/admin-web.env`
+- optional `config/gateway.env`
+- optional `config/openai-relay.env`
+- optional `config/nuget-relay.env`
+- optional `config/npm-audit-facade.env`
+- optional `config/didww-sip-bridge.env`
+- `config/ado-worker/config.json`
+- optional `config/proxy-issue-sync/config.json`
+- optional `config/discord-ingest/config.json`
+- optional `config/scheduled-wake/config.json`
+- optional `config/managed-git-refresh.env`
+- `config/trigger-orchestrator/config.json`
+- optional `config/teams-ingest/config.json`
+- optional `config/teams-meeting-ingest/config.json`
+- optional repo-root `secrets.env`
+
+## Known Good Flows
+
+### Bring Up The Host Stack
+
+1. Ensure host packages exist:
+   - `openssh-server`
+   - `qemu-system-x86`
+   - `libvirt-daemon-system`
+   - `libvirt-clients`
+   - `virtinst`
+   - `cloud-image-utils`
+   - `ovmf`
+   - `nftables`
+
+2. Install Python package into `.venv`:
+
+   ```bash
+   uv pip install -e '.[dev]'
+   ```
+
+3. Initialize runtime state:
+
+   ```bash
+   evander-cli init-state --runtime-dir runtime
+   ```
+
+4. Create network/firewall and install services:
+
+   ```bash
+   sudo ./scripts/create_libvirt_network.sh
+   test -f config/firewall.env || cp config/firewall.env.example config/firewall.env
+   ./scripts/install_systemd_units.sh --preflight
+   sudo ./scripts/install_systemd_units.sh
+   ```
+
+5. Start the services you need, usually beginning with:
+
+   ```bash
+   sudo systemctl start evander-firewall.service
+   sudo systemctl start evander-gateway.service
+   sudo systemctl start evander-admin-web.service
+   sudo systemctl start evander-openai-relay.service
+   sudo systemctl start evander-codex-egress-proxy.service
+   sudo systemctl start evander-nuget-relay.service
+   sudo systemctl start evander-http-target-relay.service
+   sudo systemctl start evander-http-target-browser-proxy.service
+   sudo systemctl start evander-trigger-orchestrator.service
+   sudo systemctl start evander-effect-orchestrator.service
+   ```
+
+Use `evander-cli status --runtime-dir runtime --json` as the first broad health check.
+
+### Create Or Recreate A VM
+
+```bash
+sudo ./scripts/destroy_agent_vm.sh vm-real
+sudo ./scripts/create_base_vm.sh
+sudo ./scripts/launch_agent_vm.sh vm-real real-session
+./scripts/bootstrap_codex_vm.sh vm-real
+```
+
+Optional guest bootstraps include:
+
+- `./scripts/bootstrap_copilot_vm.sh vm-real`
+- `./scripts/bootstrap_dotnet_vm.sh vm-real`
+- `./scripts/bootstrap_nuget_vm.sh vm-real`
+- `./scripts/bootstrap_python_vm.sh vm-real /path/to/repo /home/agent/repo`
+- `./scripts/bootstrap_python_packages_vm.sh vm-real <package-spec> [...]`
+- `./scripts/bootstrap_mssql_vm.sh vm-real`
+- `./scripts/bootstrap_playwright_vm.sh vm-real`
+- `./scripts/bootstrap_frontend_deps_vm.sh vm-real /path/to/repo /path/to/repo/frontend`
+
+If guest tools seem stale, rerun the relevant bootstrap script; they are intended to reconcile
+state.
+
+### Verify Guest Codex
+
+Inside the VM:
+
+1. `source ~/.profile` if using the current shell.
+2. `codex --version`
+3. `codex exec --skip-git-repo-check -C /tmp "Reply with exactly: relay works"`
+
+If Codex tries to call `https://api.openai.com/v1` directly, relay-aware guest config did not land
+or was overwritten.
+
+### Verify Guest Playwright
+
+Inside the VM:
+
+```bash
+source ~/.profile
+node -e 'const { chromium } = require("playwright"); console.log(chromium.executablePath())'
+```
+
+### Issue VM And Git Flow
+
+Issue flows create the VM first, then clone/bootstrap a repo as separate steps:
+
+```bash
+evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project.slnx --playwright
+evander-cli git-repos register --directory-path root --repo-source /path/to/local/repo
+evander-cli clone-repo-into-vm vm-14084 --managed-repo-id <managed-repo-id>
+```
+
+For managed Git repositories:
+
+1. Register or refresh the upstream with `evander-cli git-repos register`.
+2. Clone into the VM/container using only the returned `managed_repo_id`; the control plane
+   provisions scoped guest Git SSH internally.
+3. Let the guest push only to `refs/evander/agents/<session-id>/<topic>`.
+4. Let the queued workflow pin and promote the trigger's exact SHA.
+5. Publish that approved SHA with the managed push/PR effects and an explicit lease.
+
+The guest clone flow writes `/home/agent/AGENTS.md`, configures `git sync-base` and
+`git push-agent`, and uses root-owned logs under `/var/log/evander/agent-runs`.
+
+### Container Worker Flow
+
+Use this only when the directory/provider config selects `execution_backend: container_worker_vm`.
+
+1. Build the runner image with `scripts/build_evander_runner_image.sh`.
+2. Deploy the worker VM with `ansible/worker.yml`.
+3. Configure root provider settings such as `container_worker_base_url`,
+   `container_worker_token_env`, and guest relay URLs.
+4. Verify from the control plane:
+
+   ```bash
+   evander-cli execution smoke-container-worker --json
+   ```
+
+The worker backend is intentionally bounded: no general secret transport, no general internet
+egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing ADO issue worker.
+
+## Common Pitfalls Already Hit
+
+- `src/evander/openai_relay.py` and `src/evander/nuget_relay.py` are stale paths; use
+  `src/evander/relays/openai.py` and `src/evander/relays/nuget.py`.
+- `evander-host-heartbeat.service` and `config/host-heartbeat.env` are stale references.
+- Guest-local heartbeat timers are retired; provider bootstraps remove existing timer assets.
+- Azure DevOps PR feedback and completion pickup are handled by `evander-ado-worker`.
+- Discord message triggers and workflow prompt effects own Discord dispatch; scheduled resumes
+  are handled by `evander-scheduled-wake`.
+- Putting VM disks under a normal user's home directory fails with `libvirt-qemu` permission
+  errors.
+- Guest shell often needs `source ~/.profile` after bootstrap for current-session `PATH` and relay
+  env updates.
+- Codex may prompt for auth if the placeholder `OPENAI_API_KEY` shell hook is missing.
+- Git clone from VM to host requires both host `openssh-server` and firewall port `22`.
+- Guest Git push should use the restricted SSH key installed by `bootstrap_git_vm.sh`, not the host
+  password.
+- Workflow pack edits can race with other operators. Use Admin Web/API revision and lock behavior;
+  do not rewrite live pack files from stale local copies. Never write directly to live pack files.
+- `frontend/admin-web/dist/index.html` is tracked and often churns during builds. If built
+  assets are not in scope, avoid carrying generated hash-pointer changes.
+
+## Files To Read First
+
+- `README.md`
+- `docs/operations.md`
+- `docs/architecture.md`
+- `docs/execution-backends.md`
+- `docs/container-worker-backend.md`
+- `docs/git-remotes.md`
+- `docs/configuration-reference.md`
+- `docs/live-smoke-tests.md`
+- `pyproject.toml`
+
+## Tests
+
+Before adding a test, apply these principles. If it cannot identify a realistic regression and
+observable product behavior it protects, do not add it.
+
+- State the regression the test would catch and assert the resulting behavior through a stable
+  boundary. Inspect source text only when the source artifact itself is the contract.
+- Derive expected results independently of the fixture or input. Do not just read back values the
+  test supplied or assert that a hand-authored example matches itself.
+- Keep the strongest test for each behavior. Remove weaker duplicates when better coverage is
+  added, and do not retain tests for dead production paths.
+- Prioritize meaningful failure and boundary cases, including authorization, isolation,
+  persistence, retries, and recovery. Match the cost of the test harness to the risk it covers.
+- For user-facing schemas, assert fields, defaults, and validation rules. Avoid pinning incidental
+  wording, CSS selectors, implementation placement, or empty field lists without a real contract.
+- Check documentation links and publication integrity where useful. Keyword presence in prose
+  does not establish that an instruction is correct; test fixtures alone need no regression test.
+- Reassess a test when the product path changes or stronger coverage is added.
+
+Run the Python suite with:
+
+```bash
+./.venv/bin/pytest -q
+```
+
+Focused suites that often matter for control-plane changes:
+
+- systemd installer: `tests/test_install_systemd_units_script.py`
+- firewall defaults: `tests/test_firewall_defaults.py`
+- relay behavior: `tests/test_openai_relay.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`
+- VM/bootstrap behavior: `tests/test_bootstrap_script.py`, `tests/test_playwright_bootstrap_docs.py`,
+  `tests/test_nuget_shared_cache_docs.py`
+- workflow runtime: `tests/test_trigger_orchestrator.py`, `tests/test_effect_orchestrator.py`,
+  `tests/test_workflow_packs.py`
+- container worker: `tests/test_container_worker_docs.py`,
+  `tests/test_container_worker_execution_backend.py`, `tests/test_ansible_container_worker_bundle.py`
+
+Do not assume the suite is currently green; run it and inspect failures in the current worktree.
+
+For UI, browser, Playwright, Admin Web, and broad smoke tests, use explicit command-level
+timeouts and prefer focused tests first. These tests can hang on pending promises, unclosed
+browser/server handles, `networkidle` waits, or missing UI conditions even after nearby assertions
+have passed. If a broad UI/smoke command times out, stop it, report the exact command, timeout, and
+last useful output, then keep verification scoped to the focused suites that cover the change.
+Do not leave stalled test processes running while continuing work.
+
+## Guidance For Future Changes
+
+- New add-ons belong in self-contained projects under `packages/<addon-id>/`, with
+  their own Python packaging metadata, runtime package, documentation, examples,
+  tests and fixtures. Keep add-on-specific Node dependencies and deployment assets
+  there too. The core distribution must not install these projects implicitly.
+  Shared tests should use synthetic adapters rather than import an optional add-on.
+  `addons/` remains ignored operator-local storage. Existing bundled add-ons can
+  migrate separately; do not migrate unrelated add-ons as part of a new feature.
+- Treat `src/evander/admin/composition.py::build_admin_runtime` and
+  `AdminRuntimeComponents` as the supported admin runtime assembly surface for CLI, gateway,
+  and Admin Web integration. Place domain logic in the narrow services under
+  `src/evander/admin/services/`; keep route handlers and compatibility adapters thin and
+  domain-scoped.
+- Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.
+- Prefer host-seeded artifacts over guest internet installs.
+- If adding a new guest capability, update the bootstrap script, `README.md`,
+  `docs/operations.md`, `docs/configuration-reference.md`, and focused tests.
+- If adding a new host service, update `pyproject.toml`, a systemd template,
+  `scripts/install_systemd_units.sh`, config examples, firewall impact, docs, and tests.
+- If adding a workflow node/provider, update provider schema/implementation, registry wiring,
+  schema bootstrap/catalog metadata, docs, and focused validation/conformance tests.
+- Every feature or bugfix branch must include exactly one version bump and a matching
+  `CHANGELOG.md` entry. Use a patch bump for fixes and internal maintenance, and a minor bump
+  for new user-visible capability. Never make a major bump unless Jonathan explicitly directs
+  it. Keep `pyproject.toml` and `src/evander/__init__.py` synchronized. Before merge, rebase and
+  rerun the version bump if the target branch has already advanced the version.
+- If touching workflow packs over SSH or Admin Web, assume other users may be editing them at the
+  same time. Use existing API, revision, and lock mechanisms to avoid version mismatches and
+  unintended overwrites.
+- The user often has unrelated work in the tree. Do not revert changes you did not make.

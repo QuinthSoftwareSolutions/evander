@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import pytest
+
+from evander.effects.binding import BindingResolutionError, resolve_effect_config_bindings
+from evander.workflow.binding import (
+    binding_trace_to_payload,
+    resolve_gate_map_bindings,
+    resolve_workflow_bindings,
+)
+
+
+def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None:
+    raw = {
+        "prompt": "Ticket ${{trigger_1.ticket_id}}",
+        "nested": ["${{effect_1.session_id}}", {"name": "${{gate_1.vm_name}}"}],
+    }
+    upstream = {
+        "trigger_1": {"ticket_id": 42},
+        "effect_1": {"session_id": "session-7"},
+        "gate_1": {"vm_name": "vm-9"},
+    }
+    declared = {
+        "trigger_1": {"ticket_id"},
+        "effect_1": {"session_id"},
+        "gate_1": {"vm_name"},
+    }
+
+    workflow_result = resolve_workflow_bindings(raw, upstream, declared)
+    effect_result = resolve_effect_config_bindings(raw, upstream, declared)
+    gate_result = resolve_gate_map_bindings(raw, upstream, declared)
+
+    assert workflow_result == effect_result == gate_result
+    assert workflow_result.resolved_config == {
+        "prompt": "Ticket 42",
+        "nested": ["session-7", {"name": "vm-9"}],
+    }
+
+
+def test_workflow_binding_resolution_supports_dynamic_object_keys() -> None:
+    raw = {
+        "targets": {
+            "${{gate_1.alias}}-api": {"base_url": "https://${{gate_1.alias}}.example.test:5001"}
+        }
+    }
+    upstream = {"gate_1": {"alias": "demo7"}}
+    declared = {"gate_1": {"alias"}}
+
+    result = resolve_gate_map_bindings(raw, upstream, declared)
+
+    assert result.resolved_config == {
+        "targets": {"demo7-api": {"base_url": "https://demo7.example.test:5001"}}
+    }
+    assert result.trace.consumed_output_keys == ("gate_1.alias",)
+
+
+def test_workflow_binding_resolution_records_trace_entries() -> None:
+    raw = {
+        "prompt": "Ticket ${{trigger_1.ticket_id}}",
+        "resume_thread_id": "${{query_1.metadata.thread_id ?? effect_1.thread_id}}",
+    }
+    upstream = {
+        "trigger_1": {"ticket_id": 42},
+        "query_1": {"metadata": {}},
+        "effect_1": {"thread_id": "thread-7"},
+    }
+    declared = {
+        "trigger_1": {"ticket_id"},
+        "query_1": {"metadata"},
+        "effect_1": {"thread_id"},
+    }
+
+    result = resolve_workflow_bindings(raw, upstream, declared)
+    payload = binding_trace_to_payload(result.trace)
+
+    assert result.resolved_config == {
+        "prompt": "Ticket 42",
+        "resume_thread_id": "thread-7",
+    }
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id", "trigger_1.ticket_id")
+    assert payload is not None
+    assert payload["entries"][0]["config_path"] == "$.prompt"
+    assert payload["entries"][0]["reference"] == "trigger_1.ticket_id"
+    assert payload["entries"][0]["status"] == "resolved"
+    assert payload["entries"][0]["value_type"] == "int"
+    assert payload["entries"][1]["config_path"] == "$.resume_thread_id"
+    assert payload["entries"][1]["reference"] == "effect_1.thread_id"
+    assert payload["entries"][1]["fallback_used"] is True
+    assert payload["entries"][1]["status"] == "fallback_used"
+
+
+def test_workflow_binding_resolution_rejects_undeclared_and_malformed_references() -> None:
+    with pytest.raises(BindingResolutionError, match="not declared"):
+        resolve_workflow_bindings(
+            {"prompt": "${{trigger_1.missing}}"},
+            {"trigger_1": {"present": "ok"}},
+            {"trigger_1": {"present"}},
+        )
+
+    with pytest.raises(BindingResolutionError, match="Malformed"):
+        resolve_workflow_bindings(
+            {"prompt": "${{trigger_1.missing"},
+            {"trigger_1": {"missing": "x"}},
+            {"trigger_1": {"missing"}},
+        )
+
+
+def test_workflow_binding_resolution_supports_nested_object_and_list_paths() -> None:
+    raw = {
+        "issue_number": "${{trigger-ticket-created-1.ticket.issue_number}}",
+        "first_tag": "${{trigger-ticket-created-1.ticket.tags.0}}",
+        "prompt": "Issue ${{trigger-ticket-created-1.ticket.issue_number}}",
+    }
+    upstream = {
+        "trigger-ticket-created-1": {
+            "ticket": {
+                "issue_number": "42",
+                "tags": ["bug", "urgent"],
+            }
+        }
+    }
+    declared = {"trigger-ticket-created-1": {"ticket"}}
+
+    result = resolve_workflow_bindings(raw, upstream, declared)
+
+    assert result.resolved_config == {
+        "issue_number": "42",
+        "first_tag": "bug",
+        "prompt": "Issue 42",
+    }
+    assert result.trace.consumed_output_keys == (
+        "trigger-ticket-created-1.ticket.issue_number",
+        "trigger-ticket-created-1.ticket.tags.0",
+    )
+
+
+def test_workflow_binding_resolution_supports_system_values() -> None:
+    seen: list[str] = []
+
+    def system_value_resolver(path: str):
+        seen.append(path)
+        values = {
+            "execution.event_id": "event-1",
+            "execution.node_id": "effect-1",
+            "now.utc_timestamp_compact": "20260406T101500Z",
+            "unique.compact": "unique-1",
+        }
+        if path not in values:
+            raise BindingResolutionError(f"Unknown system binding {path!r}")
+        return values[path]
+
+    result = resolve_workflow_bindings(
+        {
+            "session_id": "issue-${{trigger_1.ticket_id}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+            "metadata": "${{system.execution.event_id}}",
+        },
+        {"trigger_1": {"ticket_id": 42}},
+        {"trigger_1": {"ticket_id"}},
+        system_value_resolver=system_value_resolver,
+    )
+
+    assert result.resolved_config == {
+        "session_id": "issue-42-20260406T101500Z-unique-1",
+        "metadata": "event-1",
+    }
+    assert result.trace.consumed_output_keys == (
+        "system.execution.event_id",
+        "system.now.utc_timestamp_compact",
+        "system.unique.compact",
+        "trigger_1.ticket_id",
+    )
+    assert seen == [
+        "now.utc_timestamp_compact",
+        "unique.compact",
+        "execution.event_id",
+    ]
+
+
+def test_workflow_binding_resolution_prefers_dotted_node_ids_over_system_namespace() -> None:
+    result = resolve_workflow_bindings(
+        {
+            "backend": "${{system.chat_assistant.backend}}",
+            "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+            "timestamp": "${{system.now.utc_timestamp_compact}}",
+        },
+        {
+            "system.chat_assistant": {"backend": "libvirt_vm"},
+            "system.chat_assistant.ensure_session": {"session_id": "assistant-session"},
+        },
+        {
+            "system.chat_assistant": {"backend"},
+            "system.chat_assistant.ensure_session": {"session_id"},
+        },
+        system_value_resolver=lambda path: {
+            "now.utc_timestamp_compact": "20260501T211900Z",
+        }[path],
+    )
+
+    assert result.resolved_config == {
+        "backend": "libvirt_vm",
+        "session_id": "assistant-session",
+        "timestamp": "20260501T211900Z",
+    }
+    assert result.trace.consumed_output_keys == (
+        "system.chat_assistant.backend",
+        "system.chat_assistant.ensure_session.session_id",
+        "system.now.utc_timestamp_compact",
+    )
+
+
+def test_workflow_binding_resolution_supports_null_fallback_for_missing_nested_path() -> None:
+    result = resolve_workflow_bindings(
+        {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? null}}"},
+        {"query_1": {"metadata": {}}},
+        {"query_1": {"metadata"}},
+    )
+
+    assert result.resolved_config == {"resume_thread_id": None}
+    assert result.trace.consumed_output_keys == ()
+
+
+def test_workflow_binding_resolution_supports_output_reference_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? effect_1.thread_id}}"},
+        {
+            "query_1": {"metadata": {}},
+            "effect_1": {"thread_id": "thread-fallback"},
+        },
+        {
+            "query_1": {"metadata"},
+            "effect_1": {"thread_id"},
+        },
+    )
+
+    assert result.resolved_config == {"resume_thread_id": "thread-fallback"}
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id",)
+
+
+def test_workflow_binding_resolution_supports_chained_output_reference_fallbacks() -> None:
+    result = resolve_workflow_bindings(
+        {
+            "agent_thread_id": (
+                "${{effect-agent-enqueue-prompt-1.thread_id "
+                "?? query-session-context-3.metadata.agent_thread_id "
+                "?? null}}"
+            )
+        },
+        {
+            "effect-agent-enqueue-prompt-1": {"queued": True},
+            "query-session-context-3": {"metadata": {"agent_thread_id": "thread-from-session"}},
+        },
+        {
+            "effect-agent-enqueue-prompt-1": {"thread_id", "queued"},
+            "query-session-context-3": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": "thread-from-session"}
+    assert result.trace.consumed_output_keys == (
+        "query-session-context-3.metadata.agent_thread_id",
+    )
+
+
+def test_workflow_binding_resolution_supports_chained_literal_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"agent_thread_id": "${{effect_1.thread_id ?? query_1.metadata.agent_thread_id ?? null}}"},
+        {
+            "effect_1": {"queued": True},
+            "query_1": {"metadata": {}},
+        },
+        {
+            "effect_1": {"thread_id", "queued"},
+            "query_1": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": None}
+    assert result.trace.consumed_output_keys == ()
+
+
+def test_workflow_binding_resolution_uses_first_available_chained_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"agent_thread_id": "${{effect_1.thread_id ?? query_1.metadata.agent_thread_id ?? null}}"},
+        {
+            "effect_1": {"thread_id": "thread-from-effect"},
+            "query_1": {"metadata": {"agent_thread_id": "thread-from-session"}},
+        },
+        {
+            "effect_1": {"thread_id"},
+            "query_1": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": "thread-from-effect"}
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id",)
+
+
+def test_workflow_binding_resolution_rejects_malformed_fallback_expression() -> None:
+    with pytest.raises(BindingResolutionError, match="Malformed"):
+        resolve_workflow_bindings(
+            {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? }}"},
+            {"query_1": {"metadata": {}}},
+            {"query_1": {"metadata"}},
+        )

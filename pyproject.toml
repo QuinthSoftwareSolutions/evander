@@ -1,0 +1,106 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = "AGPL-3.0-only AND MIT AND ISC AND BSD-3-Clause"
+license-files = ["LICENSE", "src/evander_team_addon/ui_static/THIRD_PARTY_LICENSES.txt"]
+name = "evander"
+version = "1.0.0"
+description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "anyio>=4.14.2",
+  "certifi>=2026.10.19",
+  "cryptography>=50.0.0",
+  "croniter>=6.2.2",
+  "httpx>=0.28.1",
+  "httpx2>=2.16.0,<3",
+  "idna>=3.15",
+  "jsonschema>=4.26.0",
+  "markdown-it-py>=3.0.0",
+  "mcp>=2.3.0,<3",
+  "Pillow>=13.0.0",
+  "pypdf>=6.21.1",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.14.2",
+  "python-multipart>=0.0.31",
+  "starlette>=1.3.1",
+  "typer>=0.12.3",
+  "uvicorn>=0.42.0",
+  "websockets>=15.0.1",
+  "PyYAML>=6.0.2",
+  "PyJWT[crypto]>=2.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "jinja2>=3.1.6",
+  "pytest>=9.0.3",
+  "pytest-xdist>=3.8.0",
+  "ruff>=0.6.8",
+]
+
+[project.entry-points."evander.providers"]
+builtin = "evander.providers.builtin:register_providers"
+
+[project.entry-points."evander.addons"]
+team = "evander_team_addon:register_addon"
+bokio = "evander_bokio_addon:register_addon"
+skatteverket = "evander_skatteverket_addon:register_addon"
+mssql_seed = "evander_mssql_seed_addon:register_addon"
+ado_activity = "evander_ado_activity_addon:register_addon"
+elastic_stack = "evander_elastic_stack_addon:register_addon"
+freshservice = "evander_freshservice_addon:register_addon"
+miro = "evander_miro_addon:register_addon"
+figma = "evander_figma_addon:register_addon"
+
+[project.scripts]
+evander-gateway = "evander.gateway:main"
+evander-openai-relay = "evander.relays.openai:main"
+evander-http-target-relay = "evander.relays.http_target:main"
+evander-http-target-browser-proxy = "evander.relays.http_target_browser_proxy:main"
+evander-codex-egress-proxy = "evander.worker.codex_egress_proxy:main"
+evander-nuget-relay = "evander.relays.nuget:main"
+evander-didww-sip-bridge = "evander.didww_sip_bridge:main"
+evander-npm-audit-facade = "evander.relays.npm_audit_facade:main"
+evander-discord-ingest = "evander.messaging.discord_ingest:main"
+evander-effect-orchestrator = "evander.daemons.effect_orchestrator:main"
+evander-scheduled-wake = "evander.messaging.scheduled_wake:main"
+evander-managed-git-refresh = "evander.managed_git_refresh:main"
+evander-worker-daemon = "evander.worker_daemon:main"
+evander-mssql-seed-sidecar = "evander_mssql_seed_addon.sidecar:main"
+evander-cli = "evander.cli:app"
+evander-admin-web = "evander.admin.web.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+evander = ["assets/*.mjs", "templates/*.md", "workflow/builtin_packs/*.json"]
+evander_team_addon = ["addon.json", "ui_static/*"]
+evander_bokio_addon = ["addon.json", "ui_static/*"]
+evander_skatteverket_addon = ["addon.json", "ui_static/*"]
+evander_mssql_seed_addon = ["addon.json", "ui_static/*"]
+evander_ado_activity_addon = ["addon.json"]
+evander_elastic_stack_addon = ["addon.json"]
+evander_freshservice_addon = ["addon.json"]
+evander_miro_addon = ["addon.json", "ui_static/*"]
+evander_figma_addon = ["addon.json", "canvas.js", "ui_static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages"]
+pythonpath = ["src", "tests"]
+addopts = ["--import-mode=importlib"]
+markers = [
+  "performance: elapsed-time contracts run without competing test workers by the complete runner",
+  "documentation: documentation and editorial publication contracts; included in complete runs",
+]

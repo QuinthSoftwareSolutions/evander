@@ -1,0 +1,28 @@
+---
+- name: Create the libvirt network
+  ansible.builtin.command:
+    cmd: "./scripts/create_libvirt_network.sh"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  changed_when: false
+  when: evander_service_profile == "full"
+
+- name: Apply the repo-native firewall policy
+  ansible.builtin.command:
+    cmd: "./scripts/apply_firewall.sh"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment:
+    ALLOWED_TCP_PORTS: "{{ evander_allowed_tcp_ports | join(' ') }}"
+  changed_when: false
+  when: evander_services.firewall | bool
+
+- name: Download the base Ubuntu cloud image
+  ansible.builtin.command:
+    cmd: "./scripts/create_base_vm.sh"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment:
+    VM_STORAGE_DIR: "{{ evander_vm_storage_dir }}"
+  changed_when: false
+  when: evander_service_profile == "full"

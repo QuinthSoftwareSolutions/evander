@@ -1,0 +1,4523 @@
+from __future__ import annotations
+
+from evander.git_recovery import GitPreparationFailure
+
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
+from datetime import UTC, datetime
+import fcntl
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from typing import Any
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from uuid import uuid4
+
+from evander.admin.services.ado_user_connections import AdoUserConnectionService
+from evander.admin.services.pr_publication_service import (
+    PrPublicationDependencies,
+    PrPublicationService,
+)
+from evander.admin.services.pr_feedback_binding_service import (
+    PrFeedbackBindingDependencies,
+    PrFeedbackBindingService,
+)
+from evander.admin.services.pr_publication_policy import (
+    PrPublicationPolicy as PrPublicationPolicy,
+)
+
+from evander.admin.services.managed_git_common import (
+    DEFAULT_STALE_WORKTREE_SECONDS,
+    ManagedGitConflictError,
+    ManagedGitNotFoundError,
+    _HEX_OBJECT_ID,
+    _delete_ref_cas as _delete_managed_ref_cas,
+    _managed_bare_path,
+    _normalize_object_id,
+    _normalize_ref,
+    _require_commit as _require_managed_commit,
+    _resolve_ref as _resolve_managed_ref,
+    _run_update_ref_transaction as _run_managed_update_ref_transaction,
+    _utc_now,
+    _with_git_config_environment,
+    _write_json_atomic,
+    resolve_pinned_source_ref,
+)
+from evander.admin.services.managed_git_worktree_service import (
+    ManagedGitWorktreeDependencies,
+    ManagedGitWorktreeService,
+)
+from evander.consultations import consultation_snapshot_ref
+from evander.review_snapshots import team_review_snapshot_ref
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_refs import managed_branch_ref, private_branch_ref
+from evander.admin.services.managed_git_ref_migration import (
+    LAYOUT_MARKER,
+    migrate_private_refs,
+    private_ref_layout_ready,
+    private_ref_migration_plan,
+)
+from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
+from evander.managed_git_grants import managed_git_grants_from_metadata
+from evander.models import DirectoryPath, ToolName as ToolName
+from evander.pr_tracking import PrMapStore
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.storage import JsonObjectStore
+
+
+REGISTRY_SCHEMA = "evander.managed-git-repositories/v1"
+REGISTRY_FILENAME = "managed-git-repositories.json"
+DEFAULT_HOST_COMMIT_NAME = DEFAULT_AGENT_GIT_IDENTITY.name
+DEFAULT_HOST_COMMIT_EMAIL = DEFAULT_AGENT_GIT_IDENTITY.email
+DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS = 5 * 60
+_MANAGED_GIT_PUSH_MAX_ATTEMPTS = 3
+_MANAGED_GIT_PUSH_INITIAL_BACKOFF_SECONDS = 1.0
+_MANAGED_GIT_PUSH_MAX_BACKOFF_SECONDS = 4.0
+_managed_git_push_sleep = time.sleep
+
+
+def _parse_optional_utc_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+_MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
+_AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
+_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS = 10.0
+_AZURE_PR_SOURCE_CONFIRMATION_INTERVAL_SECONDS = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceInfo:
+    canonical_identity: str
+    canonical_url: str
+    display_name: str
+    provider: str
+    refresh_source: str
+    refresh_source_kind: str
+    username: str | None = None
+    password: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BranchProbeObservation:
+    branch: str
+    observed_sha: str | None
+    default_branch_identity: str | None = None
+    requires_full_refresh: bool = False
+
+
+def _is_same_or_descendant(path: str, ancestor: str) -> bool:
+    return path == ancestor or path.startswith(f"{ancestor}/")
+
+
+def _normalize_branch(value: str, *, field_name: str) -> str:
+    branch = str(value or "").strip()
+    for prefix in ("refs/heads/", "refs/head/", "refs/evander/"):
+        if branch.startswith(prefix):
+            branch = branch[len(prefix) :]
+            break
+    if not branch:
+        raise ValueError(f"{field_name} is required")
+    result = subprocess.run(
+        ["git", "check-ref-format", f"refs/heads/{branch}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"{field_name} is not a valid Git branch name: {branch}")
+    return branch
+
+
+def _normalize_commit_identity_value(value: str, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    if any(character in normalized for character in ("\0", "\r", "\n", "<", ">")):
+        raise ValueError(f"{field_name} contains characters Git does not permit in an identity")
+    return normalized
+
+
+def _normalize_commit_subject(value: str, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    if any(character in normalized for character in ("\0", "\r", "\n")):
+        raise ValueError(f"{field_name} must be a single-line Git commit subject")
+    return normalized
+
+
+def _safe_checkout_name(value: object, *, fallback: str) -> str:
+    candidate = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    candidate = candidate[:-4] if candidate.casefold().endswith(".git") else candidate
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", candidate).strip(".-")
+    return candidate or fallback
+
+
+def _manifest_path_names(entries: list[str]) -> set[str]:
+    paths: set[str] = set()
+    for entry in entries:
+        parts = [part.strip() for part in str(entry).split("\t") if part.strip()]
+        if not parts:
+            continue
+        paths.update(parts[1:] if len(parts) > 1 else parts)
+    return paths
+
+
+class AzurePrRequestError(RuntimeError):
+    def __init__(self, status_code: int | None = None):
+        self.status_code = status_code
+        super().__init__(f"Azure DevOps PR request failed with HTTP {status_code}" if status_code else "Azure DevOps PR request failed")
+
+
+class AzurePrCreationUncertain(RuntimeError):
+    pass
+
+
+class ManagedGitAdminService:
+    """Owns Evander-managed bare repositories and their transient worktrees.
+
+    The public methods deliberately return registry identities and Git refs only. Internal
+    bare-repository and worktree paths remain private implementation details.
+    """
+
+    def __init__(self, config: Any, runtime: Any, project_dir: str | Path) -> None:
+        self.config = config
+        self.runtime = runtime
+        self.project_dir = Path(project_dir).expanduser().resolve(strict=False)
+        runtime_dir = Path(getattr(config, "runtime_dir", "runtime")).expanduser()
+        if not runtime_dir.is_absolute():
+            runtime_dir = self.project_dir / runtime_dir
+        self.runtime_dir = runtime_dir.resolve(strict=False)
+        self.ado_user_connections = AdoUserConnectionService(self.runtime_dir, config=config)
+        self._feedback_bindings = PrFeedbackBindingService(
+            PrFeedbackBindingDependencies(
+                pr_map_store=lambda: PrMapStore(self._pr_map_path()),
+                resolve_session=lambda session_id: self._resolve_pr_tracking_session(session_id),
+                github_slug=lambda url: self._github_slug(url),
+                azure_repository_parts=lambda url: self._azure_repository_parts(url),
+            )
+        )
+        self._publication = PrPublicationService(
+            PrPublicationDependencies(
+                require_scoped_record=lambda repo_id, directory: self._require_scoped_record(
+                    repo_id, directory
+                ),
+                normalize_branch=lambda value, **kwargs: _normalize_branch(value, **kwargs),
+                resolve_publication=lambda *args, **kwargs: (
+                    self.ado_user_connections.resolve_publication(*args, **kwargs)
+                ),
+                azure_repository_parts=lambda url: self._azure_repository_parts(url),
+                resolve_pr_tracking_session=lambda sid: self._resolve_pr_tracking_session(sid),
+                azure_work_item_id=lambda explicit, sid: self._azure_work_item_id(explicit, sid),
+                target_lock=lambda repo_id, target: self._target_lock(repo_id, target),
+                push_branch=lambda *args, **kwargs: self.push_branch(*args, **kwargs),
+                create_or_reuse_github_pr=lambda *args, **kwargs: (
+                    self._create_or_reuse_github_pr(*args, **kwargs)
+                ),
+                create_or_reuse_azure_pr=lambda *args, **kwargs: (
+                    self._create_or_reuse_azure_pr(*args, **kwargs)
+                ),
+                persist_pr_tracking=lambda *args, **kwargs: self._persist_pr_tracking(
+                    *args, **kwargs
+                ),
+            )
+        )
+        self._managed_root = self.runtime_dir / "managed-git"
+        self._worktree_root = self.runtime_dir / "git-worktrees"
+        self._lock_root = self.runtime_dir / "managed-git-locks"
+        self._worktrees = ManagedGitWorktreeService(
+            ManagedGitWorktreeDependencies(
+                stale_worktree_seconds=float(
+                    getattr(
+                        config,
+                        "managed_git_worktree_stale_seconds",
+                        DEFAULT_STALE_WORKTREE_SECONDS,
+                    )
+                ),
+                runtime_dir=self.runtime_dir,
+                managed_root=self._managed_root,
+                worktree_root=self._worktree_root,
+                require_record=lambda managed_repo_id: self._require_record(managed_repo_id),
+                read_registry=lambda: self._read_registry(),
+                repo_lock=lambda managed_repo_id, *, exclusive: self._repo_lock(
+                    managed_repo_id,
+                    exclusive=exclusive,
+                ),
+                run_git=lambda command, **kwargs: self._run_git(command, **kwargs),
+            )
+        )
+        self._registry_path = self.runtime_dir / REGISTRY_FILENAME
+        self._registry: JsonObjectStore[dict[str, Any]] | None = None
+        if self._registry_path.exists():
+            self._validate_registry(self._registry_store().read_object())
+
+    @staticmethod
+    def _new_registry() -> dict[str, Any]:
+        now = _utc_now()
+        return {
+            "schema": REGISTRY_SCHEMA,
+            "schema_version": 1,
+            "created_at": now,
+            "updated_at": now,
+            "repositories": {},
+        }
+
+    @staticmethod
+    def _validate_registry(payload: Mapping[str, Any]) -> None:
+        marker = payload.get("schema")
+        if marker != REGISTRY_SCHEMA:
+            raise ValueError("Managed Git registry has an unsupported or missing schema marker")
+        if not isinstance(payload.get("repositories"), dict):
+            raise ValueError("Managed Git registry repositories must be an object")
+
+    def _read_registry(self) -> dict[str, Any]:
+        payload = self._registry_store().read_object()
+        self._validate_registry(payload)
+        return payload
+
+    def _update_registry(self, updater):
+        def update(payload: dict[str, Any]):
+            self._validate_registry(payload)
+            result = updater(payload)
+            payload["updated_at"] = _utc_now()
+            return result
+
+        return self._registry_store().update_object(update)
+
+    def _registry_store(self) -> JsonObjectStore[dict[str, Any]]:
+        if self._registry is None:
+            self._ensure_runtime_layout()
+            self._registry = JsonObjectStore[dict[str, Any]](
+                self._registry_path,
+                self._new_registry(),
+                file_mode=0o600,
+                empty_file_factory=self._new_registry,
+            )
+        return self._registry
+
+    def _ensure_runtime_layout(self) -> None:
+        self.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for directory in (
+            self._managed_root,
+            self._worktree_root,
+            self._lock_root,
+        ):
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            directory.chmod(0o700)
+
+    def _normalize_directory_path(self, value: str) -> str:
+        normalized = DirectoryPath(segments=str(value or "").strip()).as_posix()
+        directories = getattr(self.runtime, "directories", None)
+        validate_path = getattr(directories, "validate_path", None)
+        if callable(validate_path):
+            normalized = validate_path(normalized)
+        return normalized
+
+    @staticmethod
+    def _managed_repo_id(directory_path: str, canonical_identity: str) -> str:
+        digest = hashlib.sha256(
+            f"{directory_path}\0{canonical_identity}".encode("utf-8")
+        ).hexdigest()[:20]
+        return f"mr_{digest}"
+
+    @staticmethod
+    def _strip_dot_git(value: str) -> str:
+        stripped = value.rstrip("/")
+        return stripped[:-4] if stripped.casefold().endswith(".git") else stripped
+
+    def _source_info(self, repo_source: str) -> _SourceInfo:
+        source = str(repo_source or "").strip()
+        if not source:
+            raise ValueError("repo_source is required")
+
+        local_path = self._resolve_local_source(source)
+        if local_path is None:
+            return self._remote_source_info(source)
+
+        self._require_git_repository(local_path)
+        origin = self._git_output(
+            ["git", "-C", str(local_path), "remote", "get-url", "origin"],
+            check=False,
+        ).strip()
+        if origin:
+            origin_info = self._remote_source_info(origin, relative_to=local_path)
+            return _SourceInfo(
+                canonical_identity=origin_info.canonical_identity,
+                canonical_url=origin_info.canonical_url,
+                display_name=origin_info.display_name,
+                provider=origin_info.provider,
+                refresh_source=str(local_path),
+                refresh_source_kind="local",
+            )
+
+        display_name = self._strip_dot_git(local_path.name) or "repository"
+        canonical_path = str(local_path)
+        return _SourceInfo(
+            canonical_identity=f"local:{canonical_path}",
+            canonical_url=canonical_path,
+            display_name=display_name,
+            provider="local",
+            refresh_source=canonical_path,
+            refresh_source_kind="local",
+        )
+
+    def _resolve_local_source(self, source: str) -> Path | None:
+        if source.startswith("file://"):
+            parsed = urlsplit(source)
+            if parsed.netloc not in {"", "localhost"}:
+                raise ValueError("file repo_source must refer to the local host")
+            path = Path(unquote(parsed.path)).expanduser()
+        elif re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", source):
+            return None
+        elif re.match(r"^[^/@:\s]+@[^:\s]+:.+", source):
+            return None
+        else:
+            path = Path(source).expanduser()
+        if not path.is_absolute():
+            path = self.project_dir / path
+        try:
+            return path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError("Local repo_source does not exist") from exc
+
+    def _remote_source_info(
+        self,
+        source: str,
+        *,
+        relative_to: Path | None = None,
+    ) -> _SourceInfo:
+        text = str(source or "").strip()
+        if not text:
+            raise ValueError("repository URL is empty")
+
+        if text.startswith("file://"):
+            parsed_file = urlsplit(text)
+            if parsed_file.netloc not in {"", "localhost"}:
+                raise ValueError("file repository URL must refer to the local host")
+            local = Path(unquote(parsed_file.path)).expanduser()
+            if not local.is_absolute() and relative_to is not None:
+                local = relative_to / local
+            try:
+                local = local.resolve(strict=True)
+            except FileNotFoundError as exc:
+                raise ValueError("Repository origin does not exist") from exc
+            display_name = self._strip_dot_git(local.name) or "repository"
+            return _SourceInfo(
+                canonical_identity=f"local:{local}",
+                canonical_url=str(local),
+                display_name=display_name,
+                provider="local",
+                refresh_source=str(local),
+                refresh_source_kind="local",
+            )
+
+        if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", text):
+            scp_match = re.fullmatch(
+                r"(?:(?P<user>[^/@:\s]+)@)?(?P<host>[^:\s]+):(?P<path>.+)", text
+            )
+            if scp_match:
+                user = scp_match.group("user") or ""
+                host = scp_match.group("host")
+                path = scp_match.group("path")
+                authority = f"{user}@{host}" if user else host
+                text = f"ssh://{authority}/{path.lstrip('/')}"
+            else:
+                local = Path(text).expanduser()
+                if not local.is_absolute() and relative_to is not None:
+                    local = relative_to / local
+                try:
+                    local = local.resolve(strict=True)
+                except FileNotFoundError as exc:
+                    raise ValueError("Repository origin does not exist") from exc
+                display_name = self._strip_dot_git(local.name) or "repository"
+                return _SourceInfo(
+                    canonical_identity=f"local:{local}",
+                    canonical_url=str(local),
+                    display_name=display_name,
+                    provider="local",
+                    refresh_source=str(local),
+                    refresh_source_kind="local",
+                )
+
+        parsed = urlsplit(text)
+        if not parsed.scheme or not parsed.hostname:
+            raise ValueError("Unsupported repository URL")
+        scheme = parsed.scheme.casefold()
+        host = parsed.hostname.casefold()
+        username = unquote(parsed.username) if parsed.username else None
+        password = unquote(parsed.password) if parsed.password else None
+        decoded_parts = [unquote(part) for part in PurePosixPath(parsed.path).parts if part != "/"]
+
+        if host == "github.com" and len(decoded_parts) >= 2:
+            owner = decoded_parts[-2]
+            repo = self._strip_dot_git(decoded_parts[-1])
+            if not owner or not repo:
+                raise ValueError("Unsupported GitHub repository URL")
+            display = f"{owner}/{repo}"
+            canonical = f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}.git"
+            refresh_source = canonical
+            if scheme == "ssh":
+                ssh_user = quote(username or "git", safe="")
+                refresh_source = (
+                    f"ssh://{ssh_user}@github.com/{quote(owner, safe='')}/"
+                    f"{quote(repo, safe='')}.git"
+                )
+            return _SourceInfo(
+                canonical_identity=f"github:{owner.casefold()}/{repo.casefold()}",
+                canonical_url=canonical,
+                display_name=display,
+                provider="github",
+                refresh_source=refresh_source,
+                refresh_source_kind="remote",
+                username=username,
+                password=password,
+            )
+
+        azure_parts: tuple[str, str, str] | None = None
+        if host == "ssh.dev.azure.com" and len(decoded_parts) >= 4 and decoded_parts[0] == "v3":
+            azure_parts = (
+                decoded_parts[1],
+                decoded_parts[2],
+                self._strip_dot_git(decoded_parts[3]),
+            )
+        elif (
+            host == "dev.azure.com"
+            and len(decoded_parts) >= 4
+            and decoded_parts[2].casefold() == "_git"
+        ):
+            azure_parts = (
+                decoded_parts[0],
+                decoded_parts[1],
+                self._strip_dot_git(decoded_parts[3]),
+            )
+        elif (
+            host.endswith(".visualstudio.com")
+            and len(decoded_parts) >= 3
+            and decoded_parts[1].casefold() == "_git"
+        ):
+            azure_parts = (
+                host[: -len(".visualstudio.com")],
+                decoded_parts[0],
+                self._strip_dot_git(decoded_parts[2]),
+            )
+        if azure_parts is not None:
+            organization, project, repo = azure_parts
+            if not all((organization, project, repo)):
+                raise ValueError("Unsupported Azure DevOps repository URL")
+            canonical = (
+                f"https://dev.azure.com/{quote(organization, safe='')}/"
+                f"{quote(project, safe='')}/_git/{quote(repo, safe='')}"
+            )
+            refresh_source = canonical
+            if scheme == "ssh":
+                ssh_user = quote(username or "git", safe="")
+                refresh_source = (
+                    f"ssh://{ssh_user}@ssh.dev.azure.com/v3/"
+                    f"{quote(organization, safe='')}/{quote(project, safe='')}/"
+                    f"{quote(repo, safe='')}"
+                )
+            return _SourceInfo(
+                canonical_identity=(
+                    f"azure_devops:{organization.casefold()}/{project.casefold()}/{repo.casefold()}"
+                ),
+                canonical_url=canonical,
+                display_name=f"{organization}/{project}/{repo}",
+                provider="azure_devops",
+                refresh_source=refresh_source,
+                refresh_source_kind="remote",
+                username=username,
+                password=password,
+            )
+
+        clean_path = self._strip_dot_git("/" + "/".join(decoded_parts))
+        if not clean_path or clean_path == "/":
+            raise ValueError("Repository URL has no repository path")
+        port = parsed.port
+        default_port = (
+            (scheme == "https" and port == 443)
+            or (scheme == "http" and port == 80)
+            or (scheme == "ssh" and port == 22)
+        )
+        host_port = host if port is None or default_port else f"{host}:{port}"
+        safe_path = "/".join(quote(part, safe="!$&'()*+,;=:@") for part in clean_path.split("/"))
+        safe_user = username if scheme == "ssh" else None
+        netloc = f"{quote(safe_user, safe='')}@{host_port}" if safe_user else host_port
+        canonical = urlunsplit((scheme, netloc, safe_path, "", ""))
+        display_name = self._strip_dot_git(decoded_parts[-1]) or host
+        return _SourceInfo(
+            canonical_identity=f"generic:{scheme}://{host_port}{clean_path}",
+            canonical_url=canonical,
+            display_name=display_name,
+            provider="generic",
+            refresh_source=canonical,
+            refresh_source_kind="remote",
+            username=username,
+            password=password,
+        )
+
+    def register_repository(
+        self,
+        directory_path: str,
+        repo_source: str,
+        default_branch: str | None = None,
+        refresh: bool = True,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+        _canonical_source: str | None = None,
+        authorize_existing_owner: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        directory = self._normalize_directory_path(directory_path)
+        refresh_source = self._source_info(repo_source)
+        if _canonical_source:
+            canonical_source = self._source_info(_canonical_source)
+            source = _SourceInfo(
+                canonical_identity=canonical_source.canonical_identity,
+                canonical_url=canonical_source.canonical_url,
+                display_name=canonical_source.display_name,
+                provider=canonical_source.provider,
+                refresh_source=refresh_source.refresh_source,
+                refresh_source_kind=refresh_source.refresh_source_kind,
+                username=refresh_source.username,
+                password=refresh_source.password,
+            )
+        else:
+            source = refresh_source
+        requested_default = (
+            _normalize_branch(default_branch, field_name="default_branch")
+            if default_branch
+            else None
+        )
+        # Serialize registrations for one canonical upstream across directory paths. The
+        # registry visibility check still isolates siblings, while an ancestor registration
+        # that wins the race can be reused by a concurrent descendant registration.
+        identity_lock = hashlib.sha256(source.canonical_identity.encode("utf-8")).hexdigest()
+
+        with self._file_lock(self._lock_root / f"registration-{identity_lock}.lock"):
+            existing = self._find_accessible_identity(directory, source.canonical_identity)
+            if existing is not None:
+                override_changed = bool(
+                    requested_default
+                    and (
+                        existing.get("default_branch") != requested_default
+                        or existing.get("default_branch_source") != "override"
+                    )
+                )
+                if override_changed:
+                    existing_owner = str(existing["directory_path"])
+                    if authorize_existing_owner is not None and existing_owner != directory:
+                        authorize_existing_owner(existing_owner)
+                    if refresh:
+                        return self._refresh_repository_with_override(
+                            str(existing["managed_repo_id"]),
+                            requested_default,
+                            reuse_if_refreshed_after=reuse_if_refreshed_after,
+                        )
+                    self._update_record_fields(
+                        existing["managed_repo_id"],
+                        default_branch=requested_default,
+                        default_branch_source="override",
+                    )
+                    self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={self._bare_path(existing)}",
+                            "config",
+                            "evander.baseBranch",
+                            requested_default,
+                        ]
+                    )
+                if refresh:
+                    return self.refresh_repository(
+                        existing["managed_repo_id"],
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
+                    )
+                return self.get_repository(existing["managed_repo_id"], directory)
+
+            descendant = self._find_descendant_identity(
+                directory,
+                source.canonical_identity,
+            )
+            if descendant is not None:
+                descendant = self._promote_descendant_registration(
+                    descendant,
+                    directory_path=directory,
+                    source=source,
+                )
+                override_changed = bool(
+                    requested_default
+                    and (
+                        descendant.get("default_branch") != requested_default
+                        or descendant.get("default_branch_source") != "override"
+                    )
+                )
+                if override_changed:
+                    if refresh:
+                        return self._refresh_repository_with_override(
+                            str(descendant["managed_repo_id"]),
+                            requested_default,
+                            reuse_if_refreshed_after=reuse_if_refreshed_after,
+                        )
+                    self._update_record_fields(
+                        descendant["managed_repo_id"],
+                        default_branch=requested_default,
+                        default_branch_source="override",
+                    )
+                    self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={self._bare_path(descendant)}",
+                            "config",
+                            "evander.baseBranch",
+                            requested_default,
+                        ]
+                    )
+                if refresh:
+                    return self.refresh_repository(
+                        str(descendant["managed_repo_id"]),
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
+                    )
+                return self.get_repository(str(descendant["managed_repo_id"]), directory)
+
+            managed_repo_id = self._managed_repo_id(directory, source.canonical_identity)
+            existing_by_id = self._record_or_none(managed_repo_id)
+            if existing_by_id is not None:
+                if (
+                    existing_by_id.get("directory_path") != directory
+                    or existing_by_id.get("canonical_repository_identity")
+                    != source.canonical_identity
+                ):
+                    raise ManagedGitConflictError(
+                        f"Managed repository ID collision for {managed_repo_id}"
+                    )
+                if refresh:
+                    return self.refresh_repository(
+                        managed_repo_id,
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
+                    )
+                return self.get_repository(managed_repo_id, directory)
+
+            bare_path = self._managed_root / f"{managed_repo_id}.git"
+            created_at = _utc_now()
+            record: dict[str, Any] = {
+                "managed_repo_id": managed_repo_id,
+                "directory_path": directory,
+                "canonical_repository_identity": source.canonical_identity,
+                "canonical_repository_url": source.canonical_url,
+                "provider": source.provider,
+                "display_name": source.display_name,
+                "default_branch": requested_default or "main",
+                "default_branch_source": "override" if requested_default else "upstream",
+                "refresh_source": source.refresh_source,
+                "refresh_source_kind": source.refresh_source_kind,
+                "internal_bare_path": str(bare_path),
+                "host_commit_identity": self._commit_identity_for_directory(directory),
+                "bindings": [],
+                "created_at": created_at,
+                "updated_at": created_at,
+                "refreshed_at": None,
+                "maintenance_at": None,
+            }
+
+            with self._repo_lock(managed_repo_id, exclusive=True):
+                try:
+                    self._initialize_bare_repository(record)
+                    if refresh:
+                        refresh_result = self._refresh_record(
+                            record,
+                            credential_override=(source.username, source.password),
+                        )
+                        record["refreshed_at"] = refresh_result["refreshed_at"]
+                        if not requested_default and refresh_result.get("default_branch"):
+                            record["default_branch"] = refresh_result["default_branch"]
+                    self._put_new_record(record)
+                except BaseException:
+                    if bare_path.exists():
+                        shutil.rmtree(bare_path, ignore_errors=True)
+                    raise
+            return self._public_record(record)
+
+    def list_repositories(
+        self,
+        directory_path: str | None = None,
+        include_descendants: bool = True,
+    ) -> list[dict[str, Any]]:
+        records = list(self._read_registry()["repositories"].values())
+        if directory_path is not None:
+            directory = self._normalize_directory_path(directory_path)
+            records = [
+                record
+                for record in records
+                if _is_same_or_descendant(directory, str(record["directory_path"]))
+                or (
+                    include_descendants
+                    and _is_same_or_descendant(str(record["directory_path"]), directory)
+                )
+            ]
+        return [
+            self._public_record(record)
+            for record in sorted(
+                records,
+                key=lambda item: (
+                    str(item.get("directory_path", "")),
+                    str(item.get("display_name", "")).casefold(),
+                    str(item.get("managed_repo_id", "")),
+                ),
+            )
+        ]
+
+    def get_repository(
+        self,
+        managed_repo_id: str,
+        directory_path: str | None = None,
+    ) -> dict[str, Any]:
+        record = (
+            self._require_scoped_record(managed_repo_id, directory_path)
+            if directory_path is not None
+            else self._require_record(managed_repo_id)
+        )
+        return self._public_record(record)
+
+    def resolve_branch_commit(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+    ) -> str | None:
+        """Resolve a directory-authorized branch through the managed bare repository."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        _normalize_branch(branch, field_name="branch")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            return self._resolve_ref(
+                bare_path,
+                managed_branch_ref(branch),
+            )
+
+    def resolve_merge_base(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        target_branch: str,
+        candidate_commit_sha: str,
+    ) -> dict[str, str]:
+        """Pin a fresh target branch tip and resolve its merge base with a candidate."""
+
+        directory = self._normalize_directory_path(directory_path)
+        normalized_target_branch = _normalize_branch(
+            target_branch,
+            field_name="target_branch",
+        )
+        candidate_commit = _normalize_object_id(
+            candidate_commit_sha,
+            field_name="candidate_commit_sha",
+        )
+        self.refresh_repository_if_branch_changed(
+            managed_repo_id,
+            branch=normalized_target_branch,
+            directory_path=directory,
+        )
+
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            target_commit = self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_target_branch}",
+            )
+            if target_commit is None:
+                raise ValueError(
+                    f"managed Git target branch {normalized_target_branch!r} does not exist"
+                )
+            self._require_commit(bare_path, target_commit)
+            self._require_commit(bare_path, candidate_commit)
+            merge_base_result = self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "merge-base",
+                    "--all",
+                    target_commit,
+                    candidate_commit,
+                ],
+                check=False,
+            )
+            merge_base_commit = merge_base_result.stdout.strip().casefold()
+            if merge_base_result.returncode != 0 or not _HEX_OBJECT_ID.fullmatch(merge_base_commit):
+                raise ValueError(
+                    f"target branch {normalized_target_branch!r} and candidate "
+                    f"{candidate_commit} have no unique merge base"
+                )
+
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "target_branch": normalized_target_branch,
+            "target_commit_sha": target_commit,
+            "candidate_commit_sha": candidate_commit,
+            "merge_base_commit_sha": merge_base_commit,
+        }
+
+    def resolve_team_review_commit(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        pinned_ref: str,
+    ) -> str | None:
+        """Resolve one immutable Team review ref without consulting its source branch."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_ref = _normalize_ref(pinned_ref, field_name="pinned_ref")
+        if not normalized_ref.startswith("refs/evander/team-reviews/"):
+            raise ValueError("pinned_ref must be an immutable Team review ref")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            return self._resolve_ref(bare_path, normalized_ref)
+
+    def reduce_commit_frontier(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        base_commit_sha: str,
+        sources: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any]:
+        """Return the deterministic ancestry frontier for immutable source commits."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        base_commit = _normalize_object_id(base_commit_sha, field_name="base_commit_sha")
+        normalized_sources = [
+            {
+                "deliverable_id": str(source.get("deliverable_id") or "").strip(),
+                "commit_sha": _normalize_object_id(
+                    source.get("commit_sha"),
+                    field_name="sources.commit_sha",
+                ),
+            }
+            for source in sources
+        ]
+        if any(not source["deliverable_id"] for source in normalized_sources):
+            raise ValueError("sources.deliverable_id must be a non-empty string")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            self._require_commit(bare_path, base_commit)
+            for source in normalized_sources:
+                self._require_commit(bare_path, source["commit_sha"])
+            frontier: list[str] = []
+            reduced_ids: list[str] = []
+            seen_commits: set[str] = set()
+            for source in normalized_sources:
+                commit = source["commit_sha"]
+                if commit in seen_commits or self._is_ancestor(bare_path, commit, base_commit):
+                    reduced_ids.append(source["deliverable_id"])
+                    continue
+                if any(
+                    commit != other["commit_sha"]
+                    and self._is_ancestor(bare_path, commit, other["commit_sha"])
+                    for other in normalized_sources
+                ):
+                    reduced_ids.append(source["deliverable_id"])
+                    continue
+                frontier.append(commit)
+                seen_commits.add(commit)
+            base_tree = self._git_output(
+                ["git", f"--git-dir={bare_path}", "rev-parse", f"{base_commit}^{{tree}}"]
+            ).strip()
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "base_commit_sha": base_commit,
+            "base_tree_hash": base_tree,
+            "frontier_commit_shas": frontier,
+            "reduced_source_deliverable_ids": reduced_ids,
+        }
+
+    def verify_contribution_bases(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        base_commit_sha: str,
+        sources: Sequence[Mapping[str, str]],
+    ) -> None:
+        """Verify selected contributions and their exact reviewed predecessor chains.
+
+        Only immutable object IDs are consulted. A newer live branch tip cannot
+        authorize additional source history for an already pinned integration.
+        A correction may start at another selected contribution's reviewed commit
+        when that predecessor's chain is anchored in the pinned integration base.
+        """
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        base_commit = _normalize_object_id(base_commit_sha, field_name="base_commit_sha")
+        normalized_sources = [
+            (
+                str(source.get("deliverable_id") or "").strip(),
+                _normalize_object_id(source.get("commit_sha"), field_name="sources.commit_sha"),
+                _normalize_object_id(
+                    source.get("base_commit_sha"), field_name="sources.base_commit_sha"
+                ),
+            )
+            for source in sources
+        ]
+        if any(not source_id for source_id, _, _ in normalized_sources):
+            raise ValueError("sources.deliverable_id must be a non-empty string")
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            self._require_commit(bare_path, base_commit)
+            verified_commits = {base_commit}
+            pending_sources = []
+            for source_id, commit, source_base in normalized_sources:
+                self._require_commit(bare_path, commit)
+                self._require_commit(bare_path, source_base)
+                if not self._is_ancestor(bare_path, source_base, commit):
+                    raise GitPreparationFailure(
+                        f"contribution {source_id} commit {commit} does not contain "
+                        f"its recorded base {source_base}", cause="contradictory_provenance",
+                        evidence={"source_id": source_id, "source_commit": commit, "source_base": source_base},
+                    )
+                if self._is_ancestor(bare_path, source_base, base_commit):
+                    verified_commits.add(commit)
+                else:
+                    pending_sources.append((source_id, commit, source_base))
+            while pending_sources:
+                remaining = []
+                for source_id, commit, source_base in pending_sources:
+                    if source_base in verified_commits:
+                        verified_commits.add(commit)
+                    else:
+                        remaining.append((source_id, commit, source_base))
+                if len(remaining) == len(pending_sources):
+                    source_id, _commit, source_base = remaining[0]
+                    raise GitPreparationFailure(
+                        f"contribution {source_id} was prepared from {source_base}, "
+                        f"which is outside pinned integration base {base_commit}; "
+                        "create a reviewed replacement on the pinned base or a new "
+                        "explicit integration boundary", cause="incompatible_source_base",
+                        evidence={"source_id": source_id, "source_base": source_base, "expected_base": base_commit},
+                    )
+                pending_sources = remaining
+
+    def verify_excluded_ancestors(self, managed_repo_id: str, *, directory_path: str,
+                                  commit_shas: Sequence[str], excluded_ancestor_shas: Sequence[str]) -> None:
+        commits = [_normalize_object_id(value, field_name="commit_shas") for value in commit_shas]
+        excluded = [_normalize_object_id(value, field_name="excluded_ancestor_shas") for value in excluded_ancestor_shas]
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            for commit in commits:
+                self._require_commit(bare_path, commit)
+                for ancestor in excluded:
+                    self._require_commit(bare_path, ancestor)
+                    if self._is_ancestor(bare_path, ancestor, commit):
+                        raise GitPreparationFailure(f"Candidate {commit} contains excluded ancestor {ancestor}",
+                                                    cause="policy_conflict", evidence={"candidate": commit, "excluded_ancestor": ancestor})
+
+    def verify_branch_commit_ancestry(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+        commit_sha: str,
+        required_ancestor_shas: Sequence[str],
+    ) -> dict[str, Any]:
+        """Verify one exact branch tip contains every immutable required commit."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        expected_commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        required = list(
+            dict.fromkeys(
+                _normalize_object_id(value, field_name="required_ancestor_shas")
+                for value in required_ancestor_shas
+            )
+        )
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            actual_commit = self._resolve_ref(
+                bare_path,
+                managed_branch_ref(branch),
+            )
+            if actual_commit is None:
+                raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
+            if actual_commit.casefold() != expected_commit:
+                raise ValueError(
+                    f"managed Git branch {normalized_branch!r} moved: expected "
+                    f"{expected_commit}, found {actual_commit}"
+                )
+            self._require_commit(bare_path, expected_commit)
+            for ancestor in required:
+                self._require_commit(bare_path, ancestor)
+                if not self._is_ancestor(bare_path, ancestor, expected_commit):
+                    raise ValueError(
+                        f"commit {expected_commit} does not contain required ancestor {ancestor}"
+                    )
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "branch": normalized_branch,
+            "commit_sha": expected_commit,
+            "required_ancestor_shas": required,
+        }
+
+    def verify_reference_repo_commit_transition(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+        cached_branch_commit_sha: str,
+        trusted_commit_sha: str,
+        current_commit_sha: str,
+    ) -> dict[str, Any]:
+        """Verify a worker checkout and any concurrent cache advance stay on one history."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        cached_branch_commit = _normalize_object_id(
+            cached_branch_commit_sha,
+            field_name="cached_branch_commit_sha",
+        )
+        trusted_commit = _normalize_object_id(
+            trusted_commit_sha,
+            field_name="trusted_commit_sha",
+        )
+        current_commit = _normalize_object_id(
+            current_commit_sha,
+            field_name="current_commit_sha",
+        )
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            branch_tip_commit = self._resolve_ref(
+                bare_path,
+                managed_branch_ref(branch),
+            )
+            if branch_tip_commit is None:
+                raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
+            branch_tip_commit = branch_tip_commit.casefold()
+            for commit_sha in (
+                cached_branch_commit,
+                trusted_commit,
+                current_commit,
+                branch_tip_commit,
+            ):
+                self._require_commit(bare_path, commit_sha)
+            if cached_branch_commit != branch_tip_commit and not self._is_ancestor(
+                bare_path,
+                cached_branch_commit,
+                branch_tip_commit,
+            ):
+                raise ValueError(
+                    f"managed Git branch {normalized_branch!r} moved outside the cached "
+                    f"history: observed {cached_branch_commit}, found {branch_tip_commit}"
+                )
+            if not self._is_ancestor(bare_path, trusted_commit, current_commit):
+                raise ValueError(
+                    f"reference checkout commit {current_commit} does not descend from "
+                    f"trusted commit {trusted_commit}"
+                )
+            if not self._is_ancestor(bare_path, current_commit, branch_tip_commit):
+                raise ValueError(
+                    f"reference checkout commit {current_commit} is not in the history of "
+                    f"configured branch {normalized_branch!r} at {branch_tip_commit}"
+                )
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "branch": normalized_branch,
+            "cached_branch_commit_sha": cached_branch_commit,
+            "verified_branch_tip_sha": branch_tip_commit,
+            "trusted_commit_sha": trusted_commit,
+            "current_commit_sha": current_commit,
+        }
+
+    def set_host_commit_identity(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        identity = {
+            "name": _normalize_commit_identity_value(
+                name,
+                field_name="name",
+            ),
+            "email": _normalize_commit_identity_value(
+                email,
+                field_name="email",
+            ),
+        }
+        self._require_scoped_record(managed_repo_id, directory_path)
+        with self._repo_lock(managed_repo_id, exclusive=True):
+            self._require_scoped_record(managed_repo_id, directory_path)
+            now = _utc_now()
+
+            def update(payload: dict[str, Any]) -> dict[str, Any]:
+                current = payload["repositories"].get(managed_repo_id)
+                if not isinstance(current, dict):
+                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+                current["host_commit_identity"] = dict(identity)
+                current["updated_at"] = now
+                return dict(current)
+
+            updated = self._update_registry(update)
+        return self._public_record(updated)
+
+    def refresh_repository(
+        self,
+        managed_repo_id: str,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        return self._refresh_repository_with_override(
+            managed_repo_id,
+            None,
+            reuse_if_refreshed_after=reuse_if_refreshed_after,
+        )
+
+    def refresh_repository_if_branch_changed(
+        self,
+        managed_repo_id: str,
+        *,
+        branch: str | None = None,
+        directory_path: str,
+        reuse_if_verified_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Probe one upstream branch and run a full refresh only when it changed."""
+
+        explicit_branch = str(branch or "").strip() or None
+        normalized_explicit_branch = (
+            _normalize_branch(explicit_branch, field_name="branch")
+            if explicit_branch is not None
+            else None
+        )
+        self._require_scoped_record(managed_repo_id, directory_path)
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, "canonical-refresh"),
+        ):
+            current = self._require_scoped_record(managed_repo_id, directory_path)
+            probe_default = (
+                normalized_explicit_branch is None
+                and current.get("default_branch_source") != "override"
+            )
+            requested_branch = normalized_explicit_branch or _normalize_branch(
+                str(current.get("default_branch") or ""),
+                field_name="default_branch",
+            )
+            verification_key = "default" if probe_default else f"branch:{requested_branch}"
+            verification = self._coalesced_branch_probe_verification(
+                current,
+                verification_key=verification_key,
+                reuse_if_verified_after=reuse_if_verified_after,
+            )
+            if verification is not None:
+                return self._branch_probe_result(
+                    current,
+                    verification,
+                    probe_performed=False,
+                    probe_reused=True,
+                    refresh_performed=False,
+                )
+
+            local = self._local_branch_probe_observation(
+                current,
+                branch=requested_branch,
+                probe_default=probe_default,
+            )
+            initialized = (
+                _parse_optional_utc_datetime(current.get("refreshed_at")) is not None
+                and local.observed_sha is not None
+            )
+            probe_performed = False
+            refresh_performed = False
+            if initialized:
+                observed = self._probe_upstream_branch(
+                    current,
+                    branch=requested_branch,
+                    probe_default=probe_default,
+                )
+                if normalized_explicit_branch is None and not probe_default:
+                    observed = _BranchProbeObservation(
+                        branch=observed.branch,
+                        observed_sha=observed.observed_sha,
+                        default_branch_identity=requested_branch,
+                    )
+                probe_performed = True
+                branch_changed = (
+                    observed.requires_full_refresh
+                    or observed.observed_sha is None
+                    or observed.observed_sha != local.observed_sha
+                    or (
+                        probe_default
+                        and observed.default_branch_identity != local.default_branch_identity
+                    )
+                )
+            else:
+                observed = local
+                branch_changed = True
+
+            if branch_changed:
+                self._refresh_repository_under_target_lock(managed_repo_id, None)
+                refresh_performed = True
+                current = self._require_scoped_record(managed_repo_id, directory_path)
+                refreshed_branch = observed.branch if probe_performed else requested_branch
+                refreshed = self._local_branch_probe_observation(
+                    current,
+                    branch=refreshed_branch,
+                    probe_default=probe_default,
+                )
+                if (
+                    observed.observed_sha is None
+                    and probe_performed
+                    and not observed.requires_full_refresh
+                ):
+                    raise ManagedGitNotFoundError(
+                        f"Upstream branch {observed.branch!r} does not exist"
+                    )
+                if refreshed.observed_sha is None:
+                    raise ManagedGitNotFoundError(
+                        f"Upstream branch {refreshed_branch!r} does not exist"
+                    )
+                if (
+                    probe_performed
+                    and not observed.requires_full_refresh
+                    and (
+                        refreshed.observed_sha != observed.observed_sha
+                        or (
+                            probe_default
+                            and refreshed.default_branch_identity
+                            != observed.default_branch_identity
+                        )
+                    )
+                ):
+                    raise ManagedGitConflictError(
+                        "Upstream branch advertisement changed during managed Git refresh"
+                    )
+                observed = refreshed
+
+            verification = self._record_branch_probe_verification(
+                managed_repo_id,
+                verification_key=verification_key,
+                observation=observed,
+            )
+            current = self._require_scoped_record(managed_repo_id, directory_path)
+            return self._branch_probe_result(
+                current,
+                verification,
+                probe_performed=probe_performed,
+                probe_reused=False,
+                refresh_performed=refresh_performed,
+            )
+
+    def _refresh_repository_with_override(
+        self,
+        managed_repo_id: str,
+        default_branch_override: str | None,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, "canonical-refresh"),
+        ):
+            return self._refresh_repository_under_target_lock(
+                managed_repo_id,
+                default_branch_override,
+                reuse_if_refreshed_after=reuse_if_refreshed_after,
+            )
+
+    def _refresh_repository_under_target_lock(
+        self,
+        managed_repo_id: str,
+        default_branch_override: str | None,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        current = self._require_record(managed_repo_id)
+        if reuse_if_refreshed_after is not None:
+            refreshed_at = _parse_optional_utc_datetime(current.get("refreshed_at"))
+            requested_at = _parse_optional_utc_datetime(reuse_if_refreshed_after)
+            if (
+                refreshed_at is not None
+                and requested_at is not None
+                and refreshed_at >= requested_at
+            ):
+                return {**self._public_record(current), "refresh_reused": True}
+        effective_record = dict(current)
+        if default_branch_override is not None:
+            effective_record["default_branch"] = default_branch_override
+            effective_record["default_branch_source"] = "override"
+        result = self._refresh_record(effective_record)
+        now = result["refreshed_at"]
+
+        def update(payload: dict[str, Any]):
+            stored = payload["repositories"].get(managed_repo_id)
+            if not isinstance(stored, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            stored["refreshed_at"] = now
+            stored["updated_at"] = now
+            if default_branch_override is not None:
+                stored["default_branch"] = default_branch_override
+                stored["default_branch_source"] = "override"
+            elif stored.get("default_branch_source") != "override" and result.get("default_branch"):
+                stored["default_branch"] = result["default_branch"]
+            return dict(stored)
+
+        updated = self._update_registry(update)
+        return {**self._public_record(updated), "refresh_reused": False}
+
+    @staticmethod
+    def _coalesced_branch_probe_verification(
+        record: Mapping[str, Any],
+        *,
+        verification_key: str,
+        reuse_if_verified_after: datetime | str | None,
+    ) -> dict[str, Any] | None:
+        requested_at = _parse_optional_utc_datetime(reuse_if_verified_after)
+        if requested_at is None:
+            return None
+        verifications = record.get("branch_probe_verifications")
+        if not isinstance(verifications, Mapping):
+            return None
+        verification = verifications.get(verification_key)
+        if not isinstance(verification, Mapping):
+            return None
+        verified_at = _parse_optional_utc_datetime(verification.get("verified_at"))
+        if verified_at is None or verified_at < requested_at:
+            return None
+        branch = str(verification.get("branch") or "").strip()
+        observed_sha = str(verification.get("observed_sha") or "").strip().lower()
+        if not branch or not _HEX_OBJECT_ID.fullmatch(observed_sha):
+            return None
+        return dict(verification)
+
+    def _local_branch_probe_observation(
+        self,
+        record: Mapping[str, Any],
+        *,
+        branch: str,
+        probe_default: bool,
+    ) -> _BranchProbeObservation:
+        bare_path = self._bare_path(record)
+        if probe_default:
+            symbolic = self._run_git(
+                ["git", f"--git-dir={bare_path}", "symbolic-ref", "--short", "HEAD"],
+                check=False,
+            )
+            default_branch = str(symbolic.stdout or "").strip()
+            if default_branch.startswith("refs/heads/"):
+                default_branch = default_branch[len("refs/heads/") :]
+            try:
+                normalized_default = _normalize_branch(
+                    default_branch,
+                    field_name="managed repository default branch",
+                )
+            except ValueError:
+                normalized_default = branch
+                default_identity = None
+            else:
+                default_identity = normalized_default
+            return _BranchProbeObservation(
+                branch=normalized_default,
+                observed_sha=self._resolve_ref(
+                    bare_path,
+                    f"refs/heads/{normalized_default}",
+                ),
+                default_branch_identity=default_identity,
+            )
+        return _BranchProbeObservation(
+            branch=branch,
+            observed_sha=self._resolve_ref(bare_path, f"refs/heads/{branch}"),
+            default_branch_identity=(
+                branch if record.get("default_branch_source") == "override" else None
+            ),
+        )
+
+    def _probe_upstream_branch(
+        self,
+        record: Mapping[str, Any],
+        *,
+        branch: str,
+        probe_default: bool,
+    ) -> _BranchProbeObservation:
+        source = str(record["refresh_source"])
+        env = self._git_environment(record)
+        if probe_default:
+            result = self._run_git(
+                ["git", "ls-remote", "--symref", source, "HEAD"],
+                env=env,
+            )
+            return self._parse_default_branch_advertisement(
+                result.stdout,
+                fallback_branch=branch,
+            )
+        result = self._run_git(
+            ["git", "ls-remote", "--refs", source, f"refs/heads/{branch}"],
+            env=env,
+        )
+        return self._parse_explicit_branch_advertisement(result.stdout, branch=branch)
+
+    @staticmethod
+    def _parse_explicit_branch_advertisement(
+        output: str,
+        *,
+        branch: str,
+    ) -> _BranchProbeObservation:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return _BranchProbeObservation(branch=branch, observed_sha=None)
+        expected_ref = f"refs/heads/{branch}"
+        if len(lines) != 1:
+            raise ManagedGitConflictError(f"Malformed upstream advertisement for branch {branch!r}")
+        fields = lines[0].split()
+        if len(fields) != 2 or fields[1] != expected_ref or not _HEX_OBJECT_ID.fullmatch(fields[0]):
+            raise ManagedGitConflictError(f"Malformed upstream advertisement for branch {branch!r}")
+        return _BranchProbeObservation(branch=branch, observed_sha=fields[0].lower())
+
+    @staticmethod
+    def _parse_default_branch_advertisement(
+        output: str,
+        *,
+        fallback_branch: str,
+    ) -> _BranchProbeObservation:
+        default_branch: str | None = None
+        observed_sha: str | None = None
+        for line in (line.strip() for line in output.splitlines() if line.strip()):
+            fields = line.split()
+            if len(fields) == 3 and fields[0] == "ref:" and fields[2] == "HEAD":
+                if default_branch is not None or not fields[1].startswith("refs/heads/"):
+                    raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+                default_branch = fields[1][len("refs/heads/") :]
+                continue
+            if len(fields) == 2 and fields[1] == "HEAD" and _HEX_OBJECT_ID.fullmatch(fields[0]):
+                if observed_sha is not None:
+                    raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+                observed_sha = fields[0].lower()
+                continue
+            raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+        if default_branch is None and observed_sha is not None:
+            return _BranchProbeObservation(
+                branch=fallback_branch,
+                observed_sha=observed_sha,
+                requires_full_refresh=True,
+            )
+        if default_branch is None:
+            raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+        normalized_branch = _normalize_branch(
+            default_branch,
+            field_name="upstream default branch",
+        )
+        return _BranchProbeObservation(
+            branch=normalized_branch,
+            observed_sha=observed_sha,
+            default_branch_identity=normalized_branch,
+        )
+
+    def _record_branch_probe_verification(
+        self,
+        managed_repo_id: str,
+        *,
+        verification_key: str,
+        observation: _BranchProbeObservation,
+    ) -> dict[str, Any]:
+        if observation.observed_sha is None:
+            raise ManagedGitNotFoundError(f"Upstream branch {observation.branch!r} does not exist")
+        verified_at = _utc_now()
+        verification = {
+            "branch": observation.branch,
+            "observed_sha": observation.observed_sha,
+            "default_branch_identity": observation.default_branch_identity,
+            "verified_at": verified_at,
+        }
+
+        def update(payload: dict[str, Any]) -> None:
+            current = payload["repositories"].get(managed_repo_id)
+            if not isinstance(current, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            existing = current.get("branch_probe_verifications")
+            verifications = dict(existing) if isinstance(existing, Mapping) else {}
+            verifications[verification_key] = dict(verification)
+            current["branch_probe_verifications"] = verifications
+            current["updated_at"] = verified_at
+
+        self._update_registry(update)
+        return verification
+
+    def _branch_probe_result(
+        self,
+        record: Mapping[str, Any],
+        verification: Mapping[str, Any],
+        *,
+        probe_performed: bool,
+        probe_reused: bool,
+        refresh_performed: bool,
+    ) -> dict[str, Any]:
+        return {
+            **self._public_record(record),
+            "branch": verification.get("branch"),
+            "observed_sha": verification.get("observed_sha"),
+            "default_branch_identity": verification.get("default_branch_identity"),
+            "verified_at": verification.get("verified_at"),
+            "probe_performed": probe_performed,
+            "probe_reused": probe_reused,
+            "refresh_performed": refresh_performed,
+        }
+
+    def delete_repository(self, managed_repo_id: str) -> dict[str, Any]:
+        initial = self._require_record(managed_repo_id)
+        if self._has_registered_worktrees(initial):
+            raise ManagedGitConflictError(
+                f"Managed repository {managed_repo_id} still has active or unreconciled worktrees"
+            )
+        with self._repo_lock(managed_repo_id, exclusive=True):
+            current = self._require_record(managed_repo_id)
+            bindings = list(current.get("bindings") or [])
+            if bindings:
+                raise ManagedGitConflictError(
+                    f"Managed repository {managed_repo_id} still has active bindings",
+                    details={
+                        "bindings": [
+                            f"{item.get('kind')}:{item.get('binding_id')}"
+                            for item in bindings
+                            if isinstance(item, dict)
+                        ]
+                    },
+                )
+            if self._has_registered_worktrees(current):
+                raise ManagedGitConflictError(
+                    f"Managed repository {managed_repo_id} still has active or unreconciled worktrees"
+                )
+            if self._has_authorized_key_for_repository(current):
+                raise ManagedGitConflictError(
+                    f"Managed repository {managed_repo_id} still has authorized SSH keys"
+                )
+            bare_path = self._bare_path(current)
+            if bare_path.exists():
+                shutil.rmtree(bare_path)
+
+            def remove(payload: dict[str, Any]):
+                removed = payload["repositories"].pop(managed_repo_id, None)
+                if removed is None:
+                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+
+            self._update_registry(remove)
+        return {"success": True, "managed_repo_id": managed_repo_id, "deleted": True}
+
+    def maintenance(self, managed_repo_id: str | None = None) -> dict[str, Any]:
+        reconciliation = self.reconcile_stale_worktrees(managed_repo_id)
+        records = (
+            [self._require_record(managed_repo_id)]
+            if managed_repo_id
+            else list(self._read_registry()["repositories"].values())
+        )
+        maintained: list[str] = []
+        failures: list[dict[str, str]] = []
+        for record in records:
+            repo_id = str(record["managed_repo_id"])
+            try:
+                with self._repo_lock(repo_id, exclusive=True):
+                    bare_path = self._bare_path(record)
+                    self._run_git(
+                        ["git", f"--git-dir={bare_path}", "worktree", "prune", "--expire", "now"]
+                    )
+                    maintenance = self._run_git(
+                        ["git", f"--git-dir={bare_path}", "maintenance", "run", "--auto"],
+                        check=False,
+                    )
+                    if maintenance.returncode != 0:
+                        self._run_git(["git", f"--git-dir={bare_path}", "gc", "--auto"])
+                maintained.append(repo_id)
+                self._update_record_fields(repo_id, maintenance_at=_utc_now())
+            except Exception as exc:
+                failures.append({"managed_repo_id": repo_id, "error": str(exc)})
+        return {
+            "success": not failures,
+            "maintained_repository_ids": maintained,
+            "failures": failures,
+            "worktree_reconciliation": reconciliation,
+        }
+
+    def clone_info(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_session = str(session_id or "").strip() or None
+        if normalized_session is not None:
+            if "/" in normalized_session or normalized_session in {".", ".."}:
+                raise ValueError("session_id must be one non-empty Git ref path component")
+        alias = os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip() or "evander-git-host"
+        result: dict[str, Any] = {
+            "managed_repo_id": managed_repo_id,
+            "clone_url": f"ssh://{alias}{self._managed_root}/{managed_repo_id}.git",
+            "display_name": record.get("display_name") or managed_repo_id,
+            "repo_name": _safe_checkout_name(record.get("display_name"), fallback=managed_repo_id),
+            "default_branch": record.get("default_branch"),
+            "directory_path": directory,
+        }
+        if normalized_session is not None:
+            result.update(
+                {
+                    "session_id": normalized_session,
+                    "agent_ref_prefix": f"refs/evander/agents/{normalized_session}/",
+                    "notes_ref": agent_pr_notes_ref_for_session(normalized_session),
+                }
+            )
+        return result
+
+    def resolve_internal_repository(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> tuple[Path, Path]:
+        """Resolve a repository for trusted host plumbing without exposing it to workflows."""
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = self._bare_path(record)
+        return bare_path, self._managed_root
+
+    def resolve_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+        tree_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve and verify an immutable commit/tree used by a consumer."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = self._bare_path(record)
+        requested_ref = str(source_ref or "").strip()
+        if not requested_ref and not commit_sha:
+            default_branch = str(record.get("default_branch") or "").strip()
+            requested_ref = f"refs/heads/{default_branch}" if default_branch else ""
+            if not requested_ref:
+                raise ValueError(
+                    "source_ref or commit_sha is required because the managed repository "
+                    "has no default branch"
+                )
+        normalized_ref = (
+            _normalize_ref(managed_branch_ref(requested_ref), field_name="source_ref") if requested_ref else None
+        )
+        expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        expected_tree = (
+            _normalize_object_id(tree_hash, field_name="tree_hash") if tree_hash else None
+        )
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            normalized_ref = resolve_pinned_source_ref(self._run_git, bare_path, normalized_ref, expected)
+            resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
+            if resolved is None:
+                raise ManagedGitNotFoundError(
+                    f"Unknown source ref {normalized_ref} in {managed_repo_id}"
+                )
+            if expected is not None and resolved != expected:
+                raise ManagedGitConflictError(
+                    f"Source ref {normalized_ref} resolves to {resolved}, not {expected}",
+                    details={
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_ref,
+                        "expected_commit_sha": expected,
+                        "current_commit_sha": resolved,
+                    },
+                )
+            self._require_commit(bare_path, resolved)
+            resolved_tree = (
+                self._git_output(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(bare_path),
+                        "rev-parse",
+                        f"{resolved}^{{tree}}",
+                    ]
+                )
+                .strip()
+                .lower()
+            )
+            if expected_tree is not None and resolved_tree != expected_tree:
+                raise ManagedGitConflictError(
+                    f"Source commit {resolved} has tree {resolved_tree}, "
+                    f"not the pinned tree {expected_tree}",
+                    details={
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_ref,
+                        "commit_sha": resolved,
+                        "expected_tree_hash": expected_tree,
+                        "current_tree_hash": resolved_tree,
+                    },
+                )
+        result = {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "source_ref": normalized_ref,
+            "commit_sha": resolved,
+        }
+        if expected_tree is not None:
+            result["tree_hash"] = resolved_tree
+        return result
+
+    def materialize_candidate_checkout(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        target_dir: str | Path,
+        purpose: str = "operator-release-review",
+    ) -> dict[str, Any]:
+        """Create a fresh detached checkout without exposing managed repository paths."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_ref = _normalize_ref(source_ref, field_name="source_ref")
+        expected_commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        expected_tree = _normalize_object_id(tree_hash, field_name="tree_hash")
+        target = Path(target_dir).expanduser().resolve(strict=False)
+        if target == Path(target.anchor) or target.is_relative_to(self.runtime_dir):
+            raise ValueError(
+                "target_dir must be a new operator-owned path outside the Evander runtime directory"
+            )
+        if target.exists() or target.is_symlink():
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            )
+        parent = target.parent
+        if not parent.exists() or not parent.is_dir():
+            raise ValueError("target_dir parent must already exist and be a directory")
+
+        try:
+            target.mkdir(mode=0o700)
+        except FileExistsError:
+            raise ManagedGitConflictError(
+                "target_dir already exists; candidate checkout never overwrites an existing path"
+            ) from None
+
+        try:
+            with self.temporary_worktree(
+                managed_repo_id,
+                source_ref=normalized_ref,
+                commit_sha=expected_commit,
+                purpose=purpose,
+            ) as source_worktree:
+                safe_env = self._safe_worktree_environment()
+                actual_tree = (
+                    self._git_output(
+                        [
+                            "git",
+                            "-C",
+                            str(source_worktree),
+                            "rev-parse",
+                            f"{expected_commit}^{{tree}}",
+                        ]
+                    )
+                    .strip()
+                    .lower()
+                )
+                if actual_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        f"Candidate tree is {actual_tree}, not the pinned tree {expected_tree}"
+                    )
+                self._run_git(
+                    ["git", "init", "--quiet", str(target)],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--no-write-fetch-head",
+                        "--no-recurse-submodules",
+                        str(source_worktree),
+                        "HEAD",
+                    ],
+                    env=safe_env,
+                )
+                self._run_git(
+                    [
+                        "git",
+                        "-C",
+                        str(target),
+                        "checkout",
+                        "--quiet",
+                        "--detach",
+                        expected_commit,
+                        "--",
+                    ],
+                    env=safe_env,
+                )
+                canonical_url = str(record.get("canonical_repository_url") or "").strip()
+                if canonical_url:
+                    self._run_git(
+                        [
+                            "git",
+                            "-C",
+                            str(target),
+                            "remote",
+                            "add",
+                            "origin",
+                            canonical_url,
+                        ],
+                        env=safe_env,
+                    )
+                checked_out_commit = (
+                    self._git_output(["git", "-C", str(target), "rev-parse", "HEAD"])
+                    .strip()
+                    .lower()
+                )
+                checked_out_tree = (
+                    self._git_output(["git", "-C", str(target), "rev-parse", "HEAD^{tree}"])
+                    .strip()
+                    .lower()
+                )
+                if checked_out_commit != expected_commit or checked_out_tree != expected_tree:
+                    raise ManagedGitConflictError(
+                        "Materialized checkout does not match the pinned candidate"
+                    )
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "canonical_repository_identity": record.get("canonical_repository_identity"),
+            "source_ref": normalized_ref,
+            "commit_sha": expected_commit,
+            "tree_hash": expected_tree,
+            "target_dir": str(target),
+            "detached": True,
+        }
+
+    def export_pinned_source_archive(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str,
+        commit_sha: str,
+        tree_hash: str,
+        archive_path: str | Path,
+    ) -> dict[str, Any]:
+        """Write a source-only ZIP for one verified immutable Git snapshot.
+
+        The caller owns the destination and is responsible for cleaning it up.
+        Resolving the ref before archiving deliberately fails closed if a mutable
+        release ref no longer denotes the recorded candidate.
+        """
+
+        snapshot = self.resolve_snapshot(
+            managed_repo_id,
+            directory_path,
+            source_ref=source_ref,
+            commit_sha=commit_sha,
+            tree_hash=tree_hash,
+        )
+        record = self._require_scoped_record(
+            managed_repo_id,
+            snapshot["directory_path"],
+        )
+        target = Path(archive_path)
+        if target.is_symlink():
+            raise ValueError("archive_path must not be a symlink")
+        if not target.parent.is_dir():
+            raise ValueError("archive_path parent must be an existing directory")
+
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            self._run_git(
+                [
+                    "git",
+                    "--git-dir",
+                    str(self._bare_path(record)),
+                    "archive",
+                    "--format=zip",
+                    f"--output={target}",
+                    str(snapshot["commit_sha"]),
+                ],
+                env=self._safe_worktree_environment(),
+            )
+        if not target.is_file():
+            raise RuntimeError("Git did not create the requested source archive")
+        return snapshot
+
+    def pin_retained_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        binding_kind: str,
+        binding_id: str,
+        pin_ref: str,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a snapshot and retain it under a caller-owned immutable ref.
+
+        The ref and binding are deliberately supplied together so durable
+        features can share one fail-closed implementation without pretending
+        their retention lifecycles are identical.
+        """
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_kind = str(binding_kind or "").strip().casefold()
+        normalized_binding_id = str(binding_id or "").strip()
+        normalized_pin_ref = _normalize_ref(pin_ref, field_name="pin_ref")
+        if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
+            raise ValueError("binding_kind must be a non-empty lowercase identifier")
+        if not normalized_binding_id:
+            raise ValueError("binding_id is required")
+        binding_preexisting = any(
+            isinstance(item, dict)
+            and item.get("kind") == normalized_kind
+            and item.get("binding_id") == normalized_binding_id
+            for item in record.get("bindings") or []
+        )
+        bare_path = self._bare_path(record)
+        requested_ref = str(source_ref or "").strip()
+        if not requested_ref and not commit_sha:
+            default_branch = str(record.get("default_branch") or "").strip()
+            requested_ref = f"refs/heads/{default_branch}" if default_branch else ""
+            if not requested_ref:
+                raise ValueError(
+                    "source_ref or commit_sha is required because the managed repository "
+                    "has no default branch"
+                )
+        normalized_ref = (
+            _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
+        )
+        expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        self.bind(managed_repo_id, normalized_kind, normalized_binding_id)
+        try:
+            with (
+                self._repo_lock(managed_repo_id, exclusive=False),
+                self._target_lock(managed_repo_id, normalized_pin_ref),
+            ):
+                normalized_ref = resolve_pinned_source_ref(self._run_git, bare_path, normalized_ref, expected)
+                existing_pin = self._resolve_ref(bare_path, normalized_pin_ref)
+                if existing_pin is not None:
+                    if expected is not None and existing_pin != expected:
+                        raise ManagedGitConflictError(
+                            f"Retained snapshot {normalized_pin_ref} is already pinned to {existing_pin}, "
+                            f"not {expected}"
+                        )
+                    self._require_commit(bare_path, existing_pin)
+                    resolved = existing_pin
+                else:
+                    resolved = (
+                        self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
+                    )
+                    if resolved is None:
+                        raise ManagedGitNotFoundError(
+                            f"Unknown source ref {normalized_ref} in {managed_repo_id}"
+                        )
+                    if expected is not None and resolved != expected:
+                        raise ManagedGitConflictError(
+                            f"Source ref {normalized_ref} resolves to {resolved}, not {expected}",
+                            details={
+                                "managed_repo_id": managed_repo_id,
+                                "source_ref": normalized_ref,
+                                "expected_commit_sha": expected,
+                                "current_commit_sha": resolved,
+                            },
+                        )
+                    self._require_commit(bare_path, resolved)
+                    commands = [f"create {normalized_pin_ref} {resolved}"]
+                    if normalized_ref is not None:
+                        commands.insert(0, f"verify {normalized_ref} {resolved}")
+                    try:
+                        self._run_update_ref_transaction(bare_path, commands)
+                    except RuntimeError as exc:
+                        current_source = (
+                            self._resolve_ref(bare_path, normalized_ref)
+                            if normalized_ref is not None
+                            else None
+                        )
+                        if normalized_ref is not None and current_source != resolved:
+                            raise ManagedGitConflictError(
+                                f"Source ref {normalized_ref} moved while pinning the retained snapshot",
+                                details={
+                                    "managed_repo_id": managed_repo_id,
+                                    "source_ref": normalized_ref,
+                                    "expected_commit_sha": resolved,
+                                    "current_commit_sha": current_source,
+                                },
+                            ) from exc
+                        raise
+        except Exception as exc:
+            if not binding_preexisting:
+                try:
+                    self.unbind(managed_repo_id, normalized_kind, normalized_binding_id)
+                except Exception as rollback_exc:
+                    exc.add_note(f"retained snapshot binding rollback failed: {rollback_exc}")
+            raise
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "source_ref": normalized_ref,
+            "commit_sha": resolved,
+            "pin_ref": normalized_pin_ref,
+        }
+
+    def pin_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        consultation_id: str,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a snapshot and retain its commit under a consultation-scoped ref."""
+
+        return self.pin_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="consultations",
+            binding_id=consultation_id,
+            pin_ref=consultation_snapshot_ref(consultation_id),
+            source_ref=source_ref,
+            commit_sha=commit_sha,
+        )
+
+    def pin_team_review_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        review_id: str,
+        commit_sha: str,
+        source_ref: str | None = None,
+        pinned_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Retain the exact source for one Team review indefinitely.
+
+        ``source_ref`` is returned for audit only.  A Team review's authority
+        is its recorded object ID, never a mutable branch label.
+        """
+
+        expected_ref = team_review_snapshot_ref(review_id)
+        if pinned_ref is not None and _normalize_ref(pinned_ref, field_name="pinned_ref") != expected_ref:
+            raise ManagedGitConflictError(
+                f"Team review {review_id} has unexpected pinned ref {pinned_ref}",
+                details={"review_id": review_id, "expected_pinned_ref": expected_ref},
+            )
+        pinned = self.pin_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="team_reviews",
+            binding_id=review_id,
+            pin_ref=expected_ref,
+            commit_sha=commit_sha,
+        )
+        return {**pinned, "source_ref": source_ref}
+
+    def release_snapshot_pin(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        consultation_id: str,
+        expected_commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Idempotently release a consultation snapshot ref after worker cleanup."""
+
+        return self.release_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="consultations",
+            binding_id=consultation_id,
+            pin_ref=consultation_snapshot_ref(consultation_id),
+            expected_commit_sha=expected_commit_sha,
+        ) | {"consultation_id": consultation_id}
+
+    def release_retained_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        binding_kind: str,
+        binding_id: str,
+        pin_ref: str,
+        expected_commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Release a caller-owned pin with an expected commit and binding."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = self._bare_path(record)
+        pin_ref = _normalize_ref(pin_ref, field_name="pin_ref")
+        expected = (
+            _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+            if expected_commit_sha
+            else None
+        )
+        released = False
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, pin_ref),
+        ):
+            current = self._resolve_ref(bare_path, pin_ref)
+            if current is not None:
+                if expected is not None and current != expected:
+                    raise ManagedGitConflictError(
+                        f"Retained snapshot {pin_ref} points to {current}, not {expected}"
+                    )
+                self._delete_ref_cas(bare_path, pin_ref, current)
+                remaining = self._resolve_ref(bare_path, pin_ref)
+                if remaining is not None:
+                    raise ManagedGitConflictError(
+                        f"Retained snapshot {pin_ref} could not be released"
+                    )
+                released = True
+        self.unbind(managed_repo_id, binding_kind, binding_id)
+        return {
+            "managed_repo_id": managed_repo_id,
+            "binding_kind": binding_kind,
+            "binding_id": binding_id,
+            "pin_ref": pin_ref,
+            "released": released,
+        }
+
+    def validate_snapshot_evidence(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        commit_sha: str,
+        evidence: list[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Validate cited paths and one-based line ranges against a pinned commit."""
+
+        snapshot = self.resolve_snapshot(
+            managed_repo_id,
+            directory_path,
+            commit_sha=commit_sha,
+        )
+        record = self._require_scoped_record(managed_repo_id, snapshot["directory_path"])
+        bare_path = self._bare_path(record)
+        validated: list[dict[str, Any]] = []
+        for item in evidence:
+            raw_path = str(item.get("path") or "").strip().replace("\\", "/")
+            relative = PurePosixPath(raw_path)
+            if (
+                not raw_path
+                or relative.is_absolute()
+                or raw_path.startswith("./")
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ValueError(f"evidence path must be repository-relative: {raw_path!r}")
+            line_start = int(item.get("line_start") or 0)
+            line_end = int(item.get("line_end") or 0)
+            object_spec = f"{snapshot['commit_sha']}:{relative.as_posix()}"
+            object_type = self._run_git(
+                ["git", f"--git-dir={bare_path}", "cat-file", "-t", object_spec],
+                check=False,
+            )
+            if object_type.returncode != 0 or object_type.stdout.strip() != "blob":
+                raise ValueError(
+                    f"evidence path is not a file at {snapshot['commit_sha']}: "
+                    f"{relative.as_posix()}"
+                )
+            object_size = self._run_git(
+                ["git", f"--git-dir={bare_path}", "cat-file", "-s", object_spec],
+                check=False,
+            )
+            try:
+                blob_size = int(object_size.stdout.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"could not determine evidence file size: {relative.as_posix()}"
+                ) from exc
+            if blob_size > _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES:
+                raise ValueError(
+                    f"evidence file exceeds the 5 MiB validation limit: {relative.as_posix()}"
+                )
+            blob = self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "show",
+                    object_spec,
+                ],
+                check=False,
+            )
+            if blob.returncode != 0:
+                raise ValueError(
+                    f"evidence path does not exist at {snapshot['commit_sha']}: "
+                    f"{relative.as_posix()}"
+                )
+            line_count = len(blob.stdout.splitlines())
+            if line_start < 1 or line_end < line_start or line_end > line_count:
+                raise ValueError(
+                    f"evidence range {line_start}-{line_end} is outside "
+                    f"{relative.as_posix()} (1-{line_count})"
+                )
+            validated.append(
+                {
+                    "path": relative.as_posix(),
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "explanation": str(item.get("explanation") or "").strip(),
+                }
+            )
+        return validated
+
+    def bind(self, managed_repo_id: str, kind: str, binding_id: str) -> dict[str, Any]:
+        normalized_kind = str(kind or "").strip().casefold()
+        normalized_id = str(binding_id or "").strip()
+        if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
+            raise ValueError("kind must be a non-empty lowercase identifier")
+        if not normalized_id:
+            raise ValueError("binding_id is required")
+        now = _utc_now()
+
+        def update(payload: dict[str, Any]):
+            record = payload["repositories"].get(managed_repo_id)
+            if not isinstance(record, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            bindings = list(record.get("bindings") or [])
+            if not any(
+                item.get("kind") == normalized_kind and item.get("binding_id") == normalized_id
+                for item in bindings
+                if isinstance(item, dict)
+            ):
+                bindings.append(
+                    {"kind": normalized_kind, "binding_id": normalized_id, "bound_at": now}
+                )
+                bindings.sort(key=lambda item: (item["kind"], item["binding_id"]))
+                record["bindings"] = bindings
+                record["updated_at"] = now
+            return dict(record)
+
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            return self._public_record(self._update_registry(update))
+
+    def unbind(self, managed_repo_id: str, kind: str, binding_id: str) -> dict[str, Any]:
+        normalized_kind = str(kind or "").strip().casefold()
+        normalized_id = str(binding_id or "").strip()
+        if not normalized_kind or not normalized_id:
+            raise ValueError("kind and binding_id are required")
+
+        def update(payload: dict[str, Any]):
+            record = payload["repositories"].get(managed_repo_id)
+            if not isinstance(record, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            bindings = [
+                item
+                for item in list(record.get("bindings") or [])
+                if not (
+                    isinstance(item, dict)
+                    and item.get("kind") == normalized_kind
+                    and item.get("binding_id") == normalized_id
+                )
+            ]
+            if len(bindings) != len(record.get("bindings") or []):
+                record["bindings"] = bindings
+                record["updated_at"] = _utc_now()
+            return dict(record)
+
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            return self._public_record(self._update_registry(update))
+
+    def unbind_all(self, kind: str, binding_id: str) -> list[str]:
+        normalized_kind = str(kind or "").strip().casefold()
+        normalized_id = str(binding_id or "").strip()
+        if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
+            raise ValueError("kind must be a non-empty lowercase identifier")
+        if not normalized_id:
+            raise ValueError("binding_id is required")
+
+        def update(payload: dict[str, Any]) -> list[str]:
+            changed: list[str] = []
+            for repo_id, record in payload["repositories"].items():
+                if not isinstance(record, dict):
+                    continue
+                existing = list(record.get("bindings") or [])
+                kept = [
+                    item
+                    for item in existing
+                    if not (
+                        isinstance(item, dict)
+                        and item.get("kind") == normalized_kind
+                        and item.get("binding_id") == normalized_id
+                    )
+                ]
+                if len(kept) == len(existing):
+                    continue
+                record["bindings"] = kept
+                record["updated_at"] = _utc_now()
+                changed.append(str(repo_id))
+            return sorted(changed)
+
+        return self._update_registry(update)
+
+    def promote_agent_branch(
+        self,
+        managed_repo_id: str,
+        agent_branch: str,
+        target_branch: str,
+        expected_commit_sha: str,
+        directory_path: str,
+    ) -> dict[str, Any]:
+        source_branch = _normalize_branch(agent_branch, field_name="agent_branch")
+        target = _normalize_branch(target_branch, field_name="target_branch")
+        expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+        if not source_branch.startswith("agents/"):
+            raise ValueError("agent_branch must be inside the agents/ namespace")
+        if not target.startswith(("review/", "team/")):
+            raise ValueError("target_branch must be inside the review/ or team/ namespace")
+        source_ref = private_branch_ref(source_branch)
+        target_ref = private_branch_ref(target)
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        bare_path = self._bare_path(record)
+        operation_id = uuid4().hex
+        operation_ref = f"refs/evander/promotions/{operation_id}"
+
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, target_ref),
+        ):
+            current_source = self._resolve_ref(bare_path, source_ref)
+            if current_source != expected:
+                return {
+                    "success": False,
+                    "reason": "source_ref_moved",
+                    "managed_repo_id": managed_repo_id,
+                    "source_ref": source_ref,
+                    "target_ref": target_ref,
+                    "expected_commit_sha": expected,
+                    "current_commit_sha": current_source,
+                }
+            self._require_commit(bare_path, expected)
+            try:
+                self._run_update_ref_transaction(
+                    bare_path,
+                    [
+                        f"verify {source_ref} {expected}",
+                        f"create {operation_ref} {expected}",
+                    ],
+                )
+            except RuntimeError:
+                moved_to = self._resolve_ref(bare_path, source_ref)
+                if moved_to != expected:
+                    return {
+                        "success": False,
+                        "reason": "source_ref_moved",
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": source_ref,
+                        "target_ref": target_ref,
+                        "expected_commit_sha": expected,
+                        "current_commit_sha": moved_to,
+                    }
+                raise
+            try:
+                previous = self._resolve_ref(bare_path, target_ref)
+                if previous and previous != expected:
+                    if self._is_ancestor(bare_path, expected, previous):
+                        return {
+                            "success": False,
+                            "reason": "target_already_ahead",
+                            "managed_repo_id": managed_repo_id,
+                            "source_ref": source_ref,
+                            "target_ref": target_ref,
+                            "expected_commit_sha": expected,
+                            "current_commit_sha": previous,
+                        }
+                    if not self._is_ancestor(bare_path, previous, expected):
+                        raise ManagedGitConflictError(
+                            f"Target ref {target_ref} has diverged from the approved commit"
+                        )
+                if previous == expected:
+                    changed = False
+                elif previous:
+                    self._run_update_ref_transaction(
+                        bare_path, [f"update {target_ref} {expected} {previous}"]
+                    )
+                    changed = True
+                else:
+                    self._run_update_ref_transaction(bare_path, [f"create {target_ref} {expected}"])
+                    changed = True
+            finally:
+                self._delete_ref_cas(bare_path, operation_ref, expected)
+        return {
+            "success": True,
+            "managed_repo_id": managed_repo_id,
+            "source_ref": source_ref,
+            "target_ref": target_ref,
+            "previous_commit_sha": previous,
+            "commit_sha": expected,
+            "changed": changed,
+        }
+
+    def read_pr_note(
+        self,
+        managed_repo_id: str,
+        commit_sha: str,
+        notes_ref: str,
+        directory_path: str,
+    ) -> dict[str, Any]:
+        commit = _normalize_object_id(commit_sha, field_name="commit_sha")
+        normalized_notes = _normalize_ref(notes_ref, field_name="notes_ref")
+        if not normalized_notes.startswith("refs/notes/"):
+            raise ValueError("notes_ref must be inside refs/notes/")
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        bare_path = self._bare_path(record)
+        self._require_commit(bare_path, commit)
+        result = self._run_git(
+            [
+                "git",
+                f"--git-dir={bare_path}",
+                "notes",
+                f"--ref={normalized_notes}",
+                "show",
+                commit,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            return {
+                "managed_repo_id": managed_repo_id,
+                "commit_sha": commit,
+                "notes_ref": normalized_notes,
+                "has_note": False,
+                "body": None,
+            }
+        return {
+            "managed_repo_id": managed_repo_id,
+            "commit_sha": commit,
+            "notes_ref": normalized_notes,
+            "has_note": True,
+            "body": result.stdout,
+        }
+
+    def push_branch(
+        self,
+        managed_repo_id: str,
+        source_ref: str,
+        expected_commit_sha: str,
+        destination_branch: str,
+        directory_path: str,
+        *,
+        expected_destination_commit_sha: str | None = None,
+        _target_lock_held: bool = False,
+    ) -> dict[str, Any]:
+        normalized_source = _normalize_ref(private_branch_ref(source_ref), field_name="source_ref")
+        if not normalized_source.startswith(("refs/evander/review/", "refs/evander/team/")):
+            raise ValueError("source_ref must be a host-owned review or Team ref")
+        destination = _normalize_branch(destination_branch, field_name="destination_branch")
+        expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+        expected_destination = (
+            _normalize_object_id(
+                expected_destination_commit_sha,
+                field_name="expected_destination_commit_sha",
+            )
+            if expected_destination_commit_sha is not None
+            else None
+        )
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        bare_path = self._bare_path(record)
+        destination_ref = f"refs/heads/{destination}"
+        operation_id = uuid4().hex
+        source_operation_ref = f"refs/evander/publication/{operation_id}/source"
+        destination_operation_ref = f"refs/evander/publication/{operation_id}/destination"
+        # Refresh may intentionally read from a trusted local checkout, but publication must
+        # always address the canonical upstream recorded for the managed repository.
+        remote_url = str(record["canonical_repository_url"])
+        auth_env = self._git_environment(record)
+
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            nullcontext()
+            if _target_lock_held
+            else self._target_lock(managed_repo_id, f"upstream:{destination_ref}"),
+        ):
+            current_source = self._resolve_ref(bare_path, normalized_source)
+            if current_source != expected:
+                return {
+                    "success": False,
+                    "reason": "source_ref_moved",
+                    "managed_repo_id": managed_repo_id,
+                    "source_ref": normalized_source,
+                    "destination_ref": destination_ref,
+                    "expected_commit_sha": expected,
+                    "current_commit_sha": current_source,
+                }
+            self._require_commit(bare_path, expected)
+            try:
+                self._run_update_ref_transaction(
+                    bare_path,
+                    [
+                        f"verify {normalized_source} {expected}",
+                        f"create {source_operation_ref} {expected}",
+                    ],
+                )
+            except RuntimeError:
+                moved_to = self._resolve_ref(bare_path, normalized_source)
+                if moved_to != expected:
+                    return {
+                        "success": False,
+                        "reason": "source_ref_moved",
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_source,
+                        "destination_ref": destination_ref,
+                        "expected_commit_sha": expected,
+                        "current_commit_sha": moved_to,
+                    }
+                raise
+            destination_commit: str | None = None
+            try:
+                fetch = self._run_git(
+                    [
+                        "git",
+                        f"--git-dir={bare_path}",
+                        "fetch",
+                        "--no-tags",
+                        "--no-write-fetch-head",
+                        remote_url,
+                        f"+{destination_ref}:{destination_operation_ref}",
+                    ],
+                    env=auth_env,
+                    check=False,
+                )
+                if fetch.returncode == 0:
+                    destination_commit = self._resolve_ref(bare_path, destination_operation_ref)
+                else:
+                    advertised = self._ls_remote_branch(remote_url, destination_ref, env=auth_env)
+                    if advertised is not None:
+                        self._raise_git_failure(fetch)
+                if expected_destination is not None:
+                    if destination_commit is None:
+                        self._require_commit(bare_path, expected_destination)
+                        if not self._is_ancestor(
+                            bare_path,
+                            expected_destination,
+                            expected,
+                        ):
+                            return {
+                                "success": False,
+                                "preflight_success": False,
+                                "reason": "destination_base_mismatch",
+                                "message": (
+                                    f"Approved commit does not contain the reviewed base "
+                                    f"required to create destination branch {destination}."
+                                ),
+                                "managed_repo_id": managed_repo_id,
+                                "source_ref": normalized_source,
+                                "destination_branch": destination,
+                                "destination_ref": destination_ref,
+                                "expected_commit_sha": expected,
+                                "expected_destination_commit_sha": expected_destination,
+                                "destination_commit": None,
+                                "local_commit": expected,
+                            }
+                    elif destination_commit != expected_destination:
+                        return {
+                            "success": False,
+                            "preflight_success": False,
+                            "reason": "destination_base_mismatch",
+                            "message": (
+                                f"Destination branch {destination} is not at the release base "
+                                "commit reviewed for canonical publication."
+                            ),
+                            "managed_repo_id": managed_repo_id,
+                            "source_ref": normalized_source,
+                            "destination_branch": destination,
+                            "destination_ref": destination_ref,
+                            "expected_commit_sha": expected,
+                            "expected_destination_commit_sha": expected_destination,
+                            "destination_commit": destination_commit,
+                            "local_commit": expected,
+                        }
+                if destination_commit and not self._is_ancestor(
+                    bare_path, destination_commit, expected
+                ):
+                    counts = self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-list",
+                            "--left-right",
+                            "--count",
+                            f"{destination_operation_ref}...{source_operation_ref}",
+                        ],
+                        check=False,
+                    )
+                    destination_ahead_count = 0
+                    source_ahead_count = 0
+                    if counts.returncode == 0:
+                        parts = counts.stdout.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                destination_ahead_count = int(parts[0])
+                                source_ahead_count = int(parts[1])
+                            except ValueError:
+                                pass
+                    return {
+                        "success": False,
+                        "preflight_success": False,
+                        "reason": "destination_branch_ahead",
+                        "message": (
+                            f"Destination branch {destination} has commits that are not "
+                            "contained in the approved commit; merge the destination branch "
+                            "before publishing."
+                        ),
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_source,
+                        "destination_branch": destination,
+                        "destination_ref": destination_ref,
+                        "expected_commit_sha": expected,
+                        "destination_commit": destination_commit,
+                        "local_commit": expected,
+                        "destination_ahead_count": destination_ahead_count,
+                        "local_ahead_count": source_ahead_count,
+                    }
+                lease = (
+                    f"--force-with-lease={destination_ref}:{destination_commit}"
+                    if destination_commit
+                    else f"--force-with-lease={destination_ref}:"
+                )
+                self._push_branch_with_transient_retry(
+                    bare_path=bare_path,
+                    remote_url=remote_url,
+                    env=auth_env,
+                    lease=lease,
+                    expected_commit_sha=expected,
+                    destination_ref=destination_ref,
+                    expected_destination_commit_sha=destination_commit,
+                )
+            finally:
+                if destination_commit:
+                    self._delete_ref_cas(bare_path, destination_operation_ref, destination_commit)
+                self._delete_ref_cas(bare_path, source_operation_ref, expected)
+        result = {
+            "success": True,
+            "managed_repo_id": managed_repo_id,
+            "source_ref": normalized_source,
+            "destination_ref": destination_ref,
+            "previous_commit_sha": destination_commit,
+            "destination_commit": destination_commit,
+            "commit_sha": expected,
+        }
+        if expected_destination is not None:
+            result["expected_destination_commit_sha"] = expected_destination
+        return result
+
+    def pr_create(
+        self,
+        *,
+        managed_repo_id: str,
+        source_ref: str,
+        expected_commit_sha: str,
+        destination_branch: str,
+        directory_path: str,
+        base_branch: str | None = None,
+        session_id: str | None = None,
+        work_item_id: str | None = None,
+        title: str | None = None,
+        body: str | None = None,
+        draft: bool | None = None,
+        fill: bool = True,
+        publication_context_id: str | None = None,
+        publication_policy: str = "allow_bot_fallback",
+    ) -> dict[str, Any]:
+        return self._publication.create(
+            managed_repo_id=managed_repo_id,
+            source_ref=source_ref,
+            expected_commit_sha=expected_commit_sha,
+            destination_branch=destination_branch,
+            directory_path=directory_path,
+            base_branch=base_branch,
+            session_id=session_id,
+            work_item_id=work_item_id,
+            title=title,
+            body=body,
+            draft=draft,
+            fill=fill,
+            publication_context_id=publication_context_id,
+            publication_policy=publication_policy,
+        )
+
+    def _create_or_reuse_github_pr(
+        self,
+        record: Mapping[str, Any],
+        *,
+        destination_branch: str,
+        base_branch: str,
+        expected_commit_sha: str,
+        title: str,
+        body: str,
+        draft: bool,
+        fill: bool,
+    ) -> dict[str, Any]:
+        slug = self._github_slug(str(record["canonical_repository_url"]))
+        env = self._git_environment(record)
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
+        _username, token = self._provider_credentials(record)
+        if not token:
+            raise RuntimeError("GitHub PR credentials are unavailable for this directory")
+        env["GH_TOKEN"] = token
+        listed = self._run_git(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                slug,
+                "--head",
+                destination_branch,
+                "--base",
+                base_branch,
+                "--state",
+                "open",
+                "--limit",
+                "1",
+                "--json",
+                "number,url,title,headRefOid",
+            ],
+            env=env,
+        )
+        existing = json.loads(listed.stdout or "[]")
+        if existing:
+            item = existing[0]
+            if not isinstance(item, Mapping):
+                raise RuntimeError("GitHub PR API returned an invalid response")
+            self._verify_provider_pr_source_commit(
+                provider="GitHub",
+                expected_commit_sha=expected_commit_sha,
+                actual_commit_sha=item.get("headRefOid"),
+            )
+            return {
+                "provider": "github",
+                "pr_id": str(item.get("number") or ""),
+                "pr_url": item.get("url"),
+                "created": False,
+            }
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".md", delete=False
+        ) as handle:
+            handle.write(body)
+            body_path = Path(handle.name)
+        try:
+            command = [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                slug,
+                "--head",
+                destination_branch,
+                "--base",
+                base_branch,
+                "--title",
+                title,
+                "--body-file",
+                str(body_path),
+            ]
+            if draft:
+                command.append("--draft")
+            created = self._run_git(command, env=env)
+        finally:
+            body_path.unlink(missing_ok=True)
+        url = next(
+            (line.strip() for line in created.stdout.splitlines() if line.startswith("http")),
+            None,
+        )
+        confirmed = self._run_git(
+            [
+                "gh",
+                "pr",
+                "view",
+                url or destination_branch,
+                "--repo",
+                slug,
+                "--json",
+                "number,url,headRefOid",
+            ],
+            env=env,
+        )
+        confirmed_item = json.loads(confirmed.stdout or "{}")
+        if not isinstance(confirmed_item, Mapping):
+            raise RuntimeError("GitHub PR API returned an invalid response")
+        try:
+            self._verify_provider_pr_source_commit(
+                provider="GitHub",
+                expected_commit_sha=expected_commit_sha,
+                actual_commit_sha=confirmed_item.get("headRefOid"),
+            )
+        except ManagedGitConflictError as mismatch:
+            created_identifier = str(
+                confirmed_item.get("number") or confirmed_item.get("url") or url or ""
+            ).strip()
+            cleanup = self._run_git(
+                [
+                    "gh",
+                    "pr",
+                    "close",
+                    created_identifier,
+                    "--repo",
+                    slug,
+                ],
+                env=env,
+                check=False,
+            )
+            if not created_identifier or cleanup.returncode != 0:
+                raise ManagedGitConflictError(
+                    "GitHub pull request source moved and the newly created pull request "
+                    "could not be closed",
+                    details={**mismatch.details, "cleanup_failed": True},
+                ) from mismatch
+            raise
+        return {
+            "provider": "github",
+            "pr_id": str(confirmed_item.get("number") or "") or None,
+            "pr_url": confirmed_item.get("url") or url,
+            "created": True,
+        }
+
+    def _create_or_reuse_azure_pr(
+        self,
+        record: Mapping[str, Any],
+        *,
+        destination_branch: str,
+        base_branch: str,
+        expected_commit_sha: str,
+        title: str,
+        body: str,
+        draft: bool,
+        title_explicit: bool = True,
+        work_item_id: str = "",
+        publication_context_id: str | None = None,
+        publication_directory_path: str | None = None,
+        publication_policy: str = "allow_bot_fallback",
+        preflight_only: bool = False,
+    ) -> dict[str, Any]:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", self.config)
+        return module._create_or_reuse_azure_pr(self, record=record, destination_branch=destination_branch, base_branch=base_branch, expected_commit_sha=expected_commit_sha, title=title, body=body, draft=draft, title_explicit=title_explicit, work_item_id=work_item_id, publication_context_id=publication_context_id, publication_directory_path=publication_directory_path, publication_policy=publication_policy, preflight_only=preflight_only)
+
+    def _create_or_reuse_azure_pr_using_auth(
+        self,
+        record: Mapping[str, Any],
+        *,
+        auth: str,
+        destination_branch: str,
+        base_branch: str,
+        expected_commit_sha: str,
+        title: str,
+        body: str,
+        draft: bool,
+        title_explicit: bool = True,
+        work_item_id: str = "",
+        work_item_ids: list[str] | None = None,
+        required_creator_id: str | None = None,
+        preflight_only: bool = False,
+    ) -> dict[str, Any]:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", self.config)
+        return module._create_or_reuse_azure_pr_using_auth(self, record=record, auth=auth, destination_branch=destination_branch, base_branch=base_branch, expected_commit_sha=expected_commit_sha, title=title, body=body, draft=draft, title_explicit=title_explicit, work_item_id=work_item_id, work_item_ids=work_item_ids, required_creator_id=required_creator_id, preflight_only=preflight_only)
+
+    @staticmethod
+    def _azure_pr_creator(pr: Mapping[str, Any]) -> dict[str, Any]:
+        identity = pr.get("createdBy") or {}
+        return {"id": identity.get("id"), "display_name": identity.get("displayName"),
+                "unique_name": identity.get("uniqueName")}
+
+    def _confirm_existing_azure_pr_source_commit(
+        self,
+        *,
+        api_root: str,
+        pr: Mapping[str, Any],
+        expected_commit_sha: str,
+        auth: str,
+    ) -> None:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", self.config)
+        return module._confirm_existing_azure_pr_source_commit(self, api_root=api_root, pr=pr, expected_commit_sha=expected_commit_sha, auth=auth)
+
+    @staticmethod
+    def _latest_azure_pr_iteration_source_commit(
+        iterations: Mapping[str, Any],
+    ) -> str | None:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", None)
+        return module._latest_azure_pr_iteration_source_commit(iterations=iterations)
+
+    @staticmethod
+    def _bounded_azure_pr_description(body: str) -> tuple[str, dict[str, Any]]:
+        original_length = len(body)
+        truncated = original_length > _AZURE_PR_DESCRIPTION_MAX_CHARS
+        bounded = body[:_AZURE_PR_DESCRIPTION_MAX_CHARS] if truncated else body
+        return bounded, {
+            "description_truncated": truncated,
+            "description_original_length": original_length,
+            "description_length": len(bounded),
+        }
+
+    @staticmethod
+    def _azure_pr_web_url(pr: Mapping[str, Any]) -> Any:
+        links = pr.get("_links")
+        web = links.get("web") if isinstance(links, Mapping) else None
+        href = web.get("href") if isinstance(web, Mapping) else None
+        return href or pr.get("url")
+
+    @staticmethod
+    def _azure_work_item_id(explicit: str, session_id: str) -> str:
+        for candidate in (explicit, session_id):
+            normalized = str(candidate or "").strip()
+            if normalized.isdigit():
+                return normalized
+            match = re.match(r"^(?:vm-|issue-)([0-9]+)(?:-|$)", normalized)
+            if match:
+                return match.group(1)
+        return ""
+
+    def _ensure_azure_work_item_links(
+        self,
+        pr: Mapping[str, Any],
+        *,
+        organization: str,
+        project: str,
+        work_item_id: str,
+        work_item_ids: list[str] | None,
+        auth: str,
+    ) -> dict[str, Any]:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", self.config)
+        return module._ensure_azure_work_item_links(self, pr=pr, organization=organization, project=project, work_item_id=work_item_id, work_item_ids=work_item_ids, auth=auth)
+
+    def _ensure_azure_work_item_link(
+        self,
+        pr: Mapping[str, Any],
+        *,
+        organization: str,
+        project: str,
+        work_item_id: str,
+        auth: str,
+    ) -> dict[str, Any]:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", self.config)
+        return module._ensure_azure_work_item_link(self, pr=pr, organization=organization, project=project, work_item_id=work_item_id, auth=auth)
+
+    def _persist_pr_tracking(
+        self,
+        record: Mapping[str, Any],
+        *,
+        pr: Mapping[str, Any],
+        source_branch: str,
+        target_branch: str,
+        session_id: str,
+        directory_path: str,
+        tracking_session: tuple[Any, Any] | None = None,
+    ) -> None:
+        self._feedback_bindings.bind(
+            record,
+            pr=pr,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            session_id=session_id,
+            directory_path=directory_path,
+            tracking_session=tracking_session,
+        )
+
+    def _resolve_pr_tracking_session(self, session_id: str) -> tuple[Any, Any] | None:
+        if not session_id:
+            return None
+        repository = getattr(self.runtime, "session_repository", None)
+        if repository is None:
+            repository = JsonSessionManifestRepository(self._session_store_path())
+        manifest = repository.get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session for PR feedback tracking: {session_id}")
+        return repository, manifest
+
+    def _session_store_path(self) -> Path:
+        configured = getattr(self.config, "session_store_path", None)
+        if configured:
+            path = Path(configured).expanduser()
+            if not path.is_absolute():
+                path = self.project_dir / path
+            return path.resolve(strict=False)
+        return (self.runtime_dir / "sessions.json").resolve(strict=False)
+
+    def _pr_map_path(self) -> Path:
+        configured = getattr(self.config, "pr_map_path", None)
+        if configured:
+            path = Path(configured).expanduser()
+            if not path.is_absolute():
+                path = self.project_dir / path
+            return path.resolve(strict=False)
+        return (self.runtime_dir / "pr-map.json").resolve(strict=False)
+
+    @staticmethod
+    def _verify_provider_pr_source_commit(
+        *,
+        provider: str,
+        expected_commit_sha: str,
+        actual_commit_sha: Any,
+    ) -> None:
+        expected = _normalize_object_id(
+            expected_commit_sha,
+            field_name="expected_commit_sha",
+        )
+        try:
+            actual = _normalize_object_id(
+                str(actual_commit_sha or ""),
+                field_name="provider_pr_source_commit_sha",
+            )
+        except ValueError:
+            raise ManagedGitConflictError(
+                f"{provider} pull request source commit could not be verified",
+                details={
+                    "reason": "provider_pr_source_commit_unverified",
+                    "provider": provider,
+                    "expected_commit_sha": expected,
+                    "current_commit_sha": None,
+                },
+            ) from None
+        if actual != expected:
+            raise ManagedGitConflictError(
+                f"{provider} pull request source branch moved before confirmation",
+                details={
+                    "reason": "source_ref_moved",
+                    "provider": provider,
+                    "expected_commit_sha": expected,
+                    "current_commit_sha": actual,
+                },
+            )
+
+    @staticmethod
+    def _azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
+        method: str | None = None,
+        content_type: str = "application/json",
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        from evander.optional_integrations import require_azure_devops_module
+        module = require_azure_devops_module("evander_azure_devops_addon.managed_git", None)
+        return module._azure_request_json(url=url, auth=auth, payload=payload, method=method, content_type=content_type, timeout_seconds=timeout_seconds)
+
+    @staticmethod
+    def _github_slug(url: str) -> str:
+        match = re.match(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$", url) or re.match(
+            r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?$", url
+        )
+        if not match:
+            raise ValueError("Managed GitHub repository URL is invalid")
+        return match.group(1)
+
+    @staticmethod
+    def _azure_repository_parts(url: str) -> tuple[str, str, str]:
+        match = (
+            re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", url)
+            or re.match(
+                r"^https://(?:[^@/]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)$",
+                url,
+            )
+            or re.match(
+                r"^https://(?:[^@/]+@)?([^.]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)$",
+                url,
+            )
+        )
+        if not match:
+            raise ValueError("Managed Azure DevOps repository URL is invalid")
+        organization, project, repository = (unquote(part) for part in match.groups())
+        return organization, project, repository
+
+    def consolidate_branches(
+        self,
+        managed_repo_id: str,
+        source_branches: list[str],
+        target_branch: str,
+        *,
+        directory_path: str,
+        base_branch: str | None = None,
+        base_commit_sha: str | None = None,
+        required_source_ancestor_commit_sha: str | None = None,
+        expected_source_commits: Mapping[str, str] | None = None,
+        allowed_changed_paths: list[str] | None = None,
+        commit_message: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_sources = [
+            _normalize_branch(branch, field_name="source_branches") for branch in source_branches
+        ]
+        source_refs = {
+            normalized: managed_branch_ref(original)
+            for normalized, original in zip(normalized_sources, source_branches, strict=True)
+        }
+        if not normalized_sources:
+            raise ValueError("source_branches is required")
+        if len(set(normalized_sources)) != len(normalized_sources):
+            raise ValueError("source_branches cannot contain duplicates")
+        target = _normalize_branch(target_branch, field_name="target_branch")
+        if not target.startswith(("review/", "team/")):
+            raise ValueError("target_branch must be inside the review/ or team/ namespace")
+        commit_subject = _normalize_commit_subject(
+            commit_message or f"Integrate Team branches into {target}",
+            field_name="commit_message",
+        )
+        supplied_expected = dict(expected_source_commits or {})
+        if set(supplied_expected) != set(normalized_sources):
+            raise ValueError(
+                "expected_source_commits must contain every source branch exactly once"
+            )
+        expected = {
+            branch: _normalize_object_id(
+                supplied_expected[branch],
+                field_name=f"expected_source_commits.{branch}",
+            )
+            for branch in normalized_sources
+        }
+        normalized_base = (
+            _normalize_branch(base_branch, field_name="base_branch") if base_branch else None
+        )
+        normalized_base_commit = (
+            _normalize_object_id(
+                base_commit_sha,
+                field_name="base_commit_sha",
+            )
+            if base_commit_sha
+            else None
+        )
+        normalized_required_source_ancestor = (
+            _normalize_object_id(
+                required_source_ancestor_commit_sha,
+                field_name="required_source_ancestor_commit_sha",
+            )
+            if required_source_ancestor_commit_sha
+            else None
+        )
+        allowed_paths = (
+            _manifest_path_names(allowed_changed_paths)
+            if allowed_changed_paths is not None
+            else None
+        )
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        bare_path = self._bare_path(record)
+        target_ref = private_branch_ref(target)
+        operation_id = uuid4().hex
+        operation_root = f"refs/evander/consolidations/{operation_id}"
+        merged: list[str] = []
+        merge_output: list[str] = []
+
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, target_ref),
+        ):
+            previous_target = self._resolve_ref(bare_path, target_ref)
+            if normalized_base_commit:
+                self._require_commit(bare_path, normalized_base_commit)
+                base_ref = normalized_base_commit
+                base_commit = normalized_base_commit
+            elif normalized_base:
+                base_ref = managed_branch_ref(base_branch)
+                base_commit = self._resolve_ref(bare_path, base_ref)
+            elif previous_target:
+                base_ref = target_ref
+                base_commit = self._resolve_ref(bare_path, base_ref)
+            else:
+                base_ref = f"refs/heads/{record['default_branch']}"
+                base_commit = self._resolve_ref(bare_path, base_ref)
+            if base_commit is None:
+                raise ManagedGitNotFoundError(
+                    f"Unknown consolidation base ref {base_ref} in {managed_repo_id}"
+                )
+            current_sources = {
+                branch: self._resolve_ref(bare_path, source_refs[branch])
+                for branch in normalized_sources
+            }
+            moved = [
+                branch
+                for branch in normalized_sources
+                if current_sources[branch] != expected[branch]
+            ]
+            if moved:
+                unexpected = sorted(
+                    {
+                        current
+                        for branch in moved
+                        if (current := current_sources[branch]) is not None
+                    }
+                )
+                return {
+                    "success": False,
+                    "managed_repo_id": managed_repo_id,
+                    "target_branch": target,
+                    "merged_branches": [],
+                    "commit_sha": None,
+                    "conflict_branch": None,
+                    "output": None,
+                    "error": "One or more source branches moved after review",
+                    "error_code": "scope_mismatch",
+                    "unexpected_commit_shas": unexpected,
+                    "moved_source_branches": moved,
+                    "base_commit_sha": base_commit,
+                    "source_manifests": {},
+                    "tree_hash": None,
+                }
+            for commit in expected.values():
+                self._require_commit(bare_path, commit)
+            if normalized_required_source_ancestor is not None:
+                self._require_commit(bare_path, normalized_required_source_ancestor)
+                non_descendant_sources = [
+                    branch
+                    for branch in normalized_sources
+                    if not self._is_ancestor(
+                        bare_path,
+                        normalized_required_source_ancestor,
+                        expected[branch],
+                    )
+                ]
+                if non_descendant_sources:
+                    return {
+                        "success": False,
+                        "managed_repo_id": managed_repo_id,
+                        "target_branch": target,
+                        "merged_branches": [],
+                        "commit_sha": None,
+                        "conflict_branch": None,
+                        "output": None,
+                        "error": (
+                            "One or more correction sources do not descend from "
+                            "the required rejected candidate"
+                        ),
+                        "error_code": "scope_mismatch",
+                        "unexpected_commit_shas": sorted(
+                            expected[branch] for branch in non_descendant_sources
+                        ),
+                        "non_descendant_source_branches": non_descendant_sources,
+                        "required_source_ancestor_commit_sha": (
+                            normalized_required_source_ancestor
+                        ),
+                        "base_commit_sha": base_commit,
+                        "source_manifests": {},
+                        "tree_hash": None,
+                    }
+
+            base_operation_ref = f"{operation_root}/base"
+            pin_commands = []
+            if normalized_base_commit is None:
+                pin_commands.append(f"verify {base_ref} {base_commit}")
+            pin_commands.append(f"create {base_operation_ref} {base_commit}")
+            source_operation_refs: dict[str, str] = {}
+            for index, branch in enumerate(normalized_sources):
+                source_ref = source_refs[branch]
+                operation_ref = f"{operation_root}/sources/{index}"
+                source_operation_refs[branch] = operation_ref
+                pin_commands.extend(
+                    [
+                        f"verify {source_ref} {expected[branch]}",
+                        f"create {operation_ref} {expected[branch]}",
+                    ]
+                )
+            try:
+                self._run_update_ref_transaction(bare_path, pin_commands)
+            except RuntimeError:
+                repinned_sources = {
+                    branch: self._resolve_ref(bare_path, source_refs[branch])
+                    for branch in normalized_sources
+                }
+                moved_during_pin = [
+                    branch
+                    for branch in normalized_sources
+                    if repinned_sources[branch] != expected[branch]
+                ]
+                current_base = self._resolve_ref(bare_path, base_ref)
+                if moved_during_pin or current_base != base_commit:
+                    return {
+                        "success": False,
+                        "managed_repo_id": managed_repo_id,
+                        "target_branch": target,
+                        "merged_branches": [],
+                        "commit_sha": None,
+                        "conflict_branch": None,
+                        "output": None,
+                        "error": "The consolidation base or a source branch moved while pinning",
+                        "error_code": "scope_mismatch",
+                        "unexpected_commit_shas": sorted(
+                            {
+                                current
+                                for branch in moved_during_pin
+                                if (current := repinned_sources[branch]) is not None
+                            }
+                        ),
+                        "moved_source_branches": moved_during_pin,
+                        "base_ref_moved": current_base != base_commit,
+                        "base_commit_sha": base_commit,
+                        "source_manifests": {},
+                        "tree_hash": None,
+                    }
+                raise
+            try:
+                source_manifests: dict[str, dict[str, Any]] = {}
+                for branch in normalized_sources:
+                    commits = self._git_output(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-list",
+                            "--reverse",
+                            f"{base_commit}..{expected[branch]}",
+                        ]
+                    )
+                    changed_paths = self._git_output(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "diff",
+                            "--name-status",
+                            f"{base_commit}...{expected[branch]}",
+                            "--",
+                        ]
+                    )
+                    source_tree = self._git_output(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-parse",
+                            f"{expected[branch]}^{{tree}}",
+                        ]
+                    ).strip()
+                    source_manifests[branch] = {
+                        "base_commit_sha": base_commit,
+                        "reviewed_commit_sha": expected[branch],
+                        "tree_hash": source_tree,
+                        "commit_shas": [line for line in commits.splitlines() if line],
+                        "changed_paths": [line for line in changed_paths.splitlines() if line],
+                    }
+                if allowed_paths is not None:
+                    manifest_paths: set[str] = set()
+                    for manifest in source_manifests.values():
+                        manifest_paths.update(_manifest_path_names(manifest["changed_paths"]))
+                    unexpected_paths = sorted(manifest_paths - allowed_paths)
+                    if unexpected_paths:
+                        return {
+                            "success": False,
+                            "managed_repo_id": managed_repo_id,
+                            "target_branch": target,
+                            "merged_branches": [],
+                            "commit_sha": None,
+                            "conflict_branch": None,
+                            "output": None,
+                            "error": "Consolidation changes paths outside the reviewed manifest",
+                            "error_code": "scope_mismatch",
+                            "unexpected_paths": unexpected_paths,
+                            "unexpected_commit_shas": [],
+                            "base_commit_sha": base_commit,
+                            "source_manifests": source_manifests,
+                            "tree_hash": None,
+                        }
+                frontier_branches: list[str] = []
+                seen_frontier_commits: set[str] = set()
+                for branch in normalized_sources:
+                    commit = expected[branch]
+                    if commit in seen_frontier_commits or self._is_ancestor(
+                        bare_path, commit, base_commit
+                    ):
+                        continue
+                    if any(
+                        commit != other_commit
+                        and self._is_ancestor(bare_path, commit, other_commit)
+                        for other_commit in expected.values()
+                    ):
+                        continue
+                    frontier_branches.append(branch)
+                    seen_frontier_commits.add(commit)
+
+                identity = dict(record.get("host_commit_identity") or {})
+                merge_env = self._safe_worktree_environment()
+                merge_env.update(
+                    {
+                        "GIT_AUTHOR_NAME": str(identity.get("name") or DEFAULT_HOST_COMMIT_NAME),
+                        "GIT_AUTHOR_EMAIL": str(identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL),
+                        "GIT_COMMITTER_NAME": str(identity.get("name") or DEFAULT_HOST_COMMIT_NAME),
+                        "GIT_COMMITTER_EMAIL": str(
+                            identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
+                        ),
+                        "GIT_MERGE_AUTOEDIT": "no",
+                    }
+                )
+                if not frontier_branches:
+                    result_commit = base_commit
+                    result_tree_hash = self._git_output(
+                        ["git", f"--git-dir={bare_path}", "rev-parse", f"{base_commit}^{{tree}}"]
+                    ).strip()
+                elif len(frontier_branches) == 1 and self._is_ancestor(
+                    bare_path, base_commit, expected[frontier_branches[0]]
+                ):
+                    result_commit = expected[frontier_branches[0]]
+                    result_tree_hash = self._git_output(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-parse",
+                            f"{result_commit}^{{tree}}",
+                        ]
+                    ).strip()
+                else:
+                    with self.temporary_worktree(
+                        managed_repo_id,
+                        source_ref=base_operation_ref,
+                        commit_sha=base_commit,
+                        operation_id=f"consolidate-{operation_id}",
+                        purpose="team-release-consolidation",
+                    ) as worktree:
+                        for branch in frontier_branches:
+                            merge = self._run_git(
+                                [
+                                    "git",
+                                    "-C",
+                                    str(worktree),
+                                    "merge",
+                                    "--no-ff",
+                                    "-m",
+                                    f"Temporary Team integration of {branch}",
+                                    source_operation_refs[branch],
+                                ],
+                                env=merge_env,
+                                check=False,
+                            )
+                            merge_output.append((merge.stdout or "") + (merge.stderr or ""))
+                            if merge.returncode != 0:
+                                self._run_git(
+                                    ["git", "-C", str(worktree), "merge", "--abort"],
+                                    env=merge_env,
+                                    check=False,
+                                )
+                                return {
+                                    "success": False,
+                                    "managed_repo_id": managed_repo_id,
+                                    "target_branch": target,
+                                    "merged_branches": merged,
+                                    "commit_sha": None,
+                                    "conflict_branch": branch,
+                                    "output": self._sanitize_managed_worktree_error(
+                                        "".join(merge_output).strip(),
+                                        operation_dir=worktree.parent,
+                                    )
+                                    or None,
+                                    "error": f"Merge conflict while consolidating {branch}",
+                                    "error_code": "merge_conflict",
+                                    "base_commit_sha": base_commit,
+                                    "source_manifests": source_manifests,
+                                    "tree_hash": None,
+                                }
+                            merged.append(branch)
+                        result_tree_hash = self._git_output(
+                            ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"]
+                        ).strip()
+                        commit_command = [
+                            "git",
+                            "-C",
+                            str(worktree),
+                            "commit-tree",
+                            result_tree_hash,
+                            "-p",
+                            base_commit,
+                        ]
+                        for branch in frontier_branches:
+                            commit_command.extend(("-p", expected[branch]))
+                        commit_command.extend(("-m", commit_subject))
+                        result_commit = self._run_git(
+                            commit_command,
+                            env=merge_env,
+                        ).stdout.strip()
+                merged = list(normalized_sources)
+                self._require_commit(bare_path, result_commit)
+                current_target = self._resolve_ref(bare_path, target_ref)
+                if current_target != previous_target:
+                    raise ManagedGitConflictError(
+                        f"Target ref {target_ref} moved during consolidation"
+                    )
+                if previous_target and not self._is_ancestor(
+                    bare_path, previous_target, result_commit
+                ):
+                    raise ManagedGitConflictError(
+                        f"Consolidation would regress or rewrite target ref {target_ref}"
+                    )
+                if previous_target:
+                    self._run_update_ref_transaction(
+                        bare_path,
+                        [f"update {target_ref} {result_commit} {previous_target}"],
+                    )
+                else:
+                    self._run_update_ref_transaction(
+                        bare_path, [f"create {target_ref} {result_commit}"]
+                    )
+                sanitized_merge_output = (
+                    self._sanitize_managed_worktree_error(
+                        "".join(merge_output).strip(),
+                        operation_dir=worktree.parent,
+                    )
+                    if merge_output
+                    else ""
+                )
+                return {
+                    "success": True,
+                    "managed_repo_id": managed_repo_id,
+                    "target_branch": target,
+                    "merged_branches": merged,
+                    "commit_sha": result_commit,
+                    "conflict_branch": None,
+                    "output": sanitized_merge_output or None,
+                    "error": None,
+                    "error_code": None,
+                    "base_commit_sha": base_commit,
+                    "source_manifests": source_manifests,
+                    "tree_hash": result_tree_hash,
+                }
+            finally:
+                self._delete_namespace(bare_path, operation_root)
+
+    @contextmanager
+    def temporary_worktree(
+        self,
+        managed_repo_id: str,
+        *,
+        commit_sha: str | None = None,
+        source_ref: str | None = None,
+        operation_id: str | None = None,
+        purpose: str = "managed-git-operation",
+    ) -> Iterator[Path]:
+        # Complete the one-time migration before the worktree service resolves
+        # its input ref. Its own lock then protects the pinned operation.
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_record(managed_repo_id)
+            source_ref = resolve_pinned_source_ref(
+                self._run_git, self._bare_path(record),
+                _normalize_ref(source_ref, field_name="source_ref") if source_ref else None,
+                _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None,
+            )
+        with self._worktrees.temporary_worktree(
+            managed_repo_id,
+            commit_sha=commit_sha,
+            source_ref=source_ref,
+            operation_id=operation_id,
+            purpose=purpose,
+        ) as worktree:
+            yield worktree
+
+    def cleanup_active_worktrees(self) -> dict[str, int]:
+        return self._worktrees.cleanup_active_worktrees()
+
+    def reconcile_stale_worktrees(
+        self,
+        managed_repo_id: str | None = None,
+        *,
+        older_than_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return self._worktrees.reconcile_stale_worktrees(
+            managed_repo_id,
+            older_than_seconds=older_than_seconds,
+        )
+
+    def _find_accessible_identity(
+        self, directory_path: str, canonical_identity: str
+    ) -> dict[str, Any] | None:
+        records = self._read_registry()["repositories"].values()
+        matches = [
+            record
+            for record in records
+            if record.get("canonical_repository_identity") == canonical_identity
+            and _is_same_or_descendant(directory_path, str(record.get("directory_path", "")))
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda record: len(str(record["directory_path"]).split("/")))
+
+    def _find_descendant_identity(
+        self,
+        directory_path: str,
+        canonical_identity: str,
+    ) -> dict[str, Any] | None:
+        matches = [
+            dict(record)
+            for record in self._read_registry()["repositories"].values()
+            if record.get("canonical_repository_identity") == canonical_identity
+            and str(record.get("directory_path") or "") != directory_path
+            and _is_same_or_descendant(
+                str(record.get("directory_path") or ""),
+                directory_path,
+            )
+        ]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise ManagedGitConflictError(
+                "The upstream is already registered in multiple descendant trust boundaries; "
+                "delete those registrations before registering their ancestor",
+                details={
+                    "managed_repo_ids": sorted(str(record["managed_repo_id"]) for record in matches)
+                },
+            )
+        return matches[0]
+
+    def _promote_descendant_registration(
+        self,
+        record: Mapping[str, Any],
+        *,
+        directory_path: str,
+        source: _SourceInfo,
+    ) -> dict[str, Any]:
+        """Move an unused child registration to its newly requested ancestor owner.
+
+        The registry ID is derived from its owning directory, so widening a trust boundary
+        requires an atomic re-home rather than silently retaining an ID whose hash no longer
+        describes its owner. Registrations that have acquired any capability-bearing state are
+        deliberately refused until an operator removes those capabilities and re-registers it.
+        """
+
+        old_id = str(record["managed_repo_id"])
+        new_id = self._managed_repo_id(directory_path, source.canonical_identity)
+        if new_id == old_id:
+            return dict(record)
+        with self._repo_lock(old_id, exclusive=True):
+            current = self._require_record(old_id)
+            if current.get("bindings"):
+                raise ManagedGitConflictError(
+                    "The descendant managed repository has active bindings and cannot be "
+                    "moved to an ancestor trust boundary",
+                    details={"managed_repo_id": old_id},
+                )
+            if self._has_registered_worktrees(current):
+                raise ManagedGitConflictError(
+                    "The descendant managed repository has active or unreconciled worktrees",
+                    details={"managed_repo_id": old_id},
+                )
+            bare_path = self._bare_path(current)
+            capability_refs = self._list_refs(
+                bare_path,
+                (
+                    "refs/notes",
+                    "refs/evander",
+                ),
+            )
+            capability_refs.pop(LAYOUT_MARKER, None)
+            if capability_refs:
+                raise ManagedGitConflictError(
+                    "The descendant managed repository contains unpublished or operation refs "
+                    "and cannot be moved to an ancestor trust boundary",
+                    details={"managed_repo_id": old_id},
+                )
+            if self._record_or_none(new_id) is not None:
+                raise ManagedGitConflictError(f"Managed repository ID collision for {new_id}")
+
+            new_bare_path = self._managed_root / f"{new_id}.git"
+            updated = dict(current)
+            updated.update(
+                {
+                    "managed_repo_id": new_id,
+                    "directory_path": directory_path,
+                    "canonical_repository_identity": source.canonical_identity,
+                    "canonical_repository_url": source.canonical_url,
+                    "provider": source.provider,
+                    "display_name": source.display_name,
+                    "refresh_source": source.refresh_source,
+                    "refresh_source_kind": source.refresh_source_kind,
+                    "internal_bare_path": str(new_bare_path),
+                    "host_commit_identity": self._commit_identity_for_directory(directory_path),
+                    "updated_at": _utc_now(),
+                }
+            )
+            bare_path.rename(new_bare_path)
+            try:
+                self._run_git(
+                    [
+                        "git",
+                        f"--git-dir={new_bare_path}",
+                        "config",
+                        "evander.managedRepoId",
+                        new_id,
+                    ]
+                )
+                self._run_git(
+                    [
+                        "git",
+                        f"--git-dir={new_bare_path}",
+                        "config",
+                        "evander.directoryPath",
+                        directory_path,
+                    ]
+                )
+
+                def replace(payload: dict[str, Any]):
+                    stored = payload["repositories"].get(old_id)
+                    if not isinstance(stored, dict) or stored != current:
+                        raise ManagedGitConflictError(
+                            f"Managed repository {old_id} changed during registration"
+                        )
+                    if new_id in payload["repositories"]:
+                        raise ManagedGitConflictError(
+                            f"Managed repository ID collision for {new_id}"
+                        )
+                    del payload["repositories"][old_id]
+                    payload["repositories"][new_id] = dict(updated)
+
+                self._update_registry(replace)
+            except BaseException:
+                try:
+                    self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={new_bare_path}",
+                            "config",
+                            "evander.managedRepoId",
+                            old_id,
+                        ],
+                        check=False,
+                    )
+                    self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={new_bare_path}",
+                            "config",
+                            "evander.directoryPath",
+                            str(current["directory_path"]),
+                        ],
+                        check=False,
+                    )
+                finally:
+                    if new_bare_path.exists() and not bare_path.exists():
+                        new_bare_path.rename(bare_path)
+                raise
+        return updated
+
+    def _record_or_none(self, managed_repo_id: str) -> dict[str, Any] | None:
+        record = self._read_registry()["repositories"].get(str(managed_repo_id or "").strip())
+        return dict(record) if isinstance(record, dict) else None
+
+    def _require_record(self, managed_repo_id: str) -> dict[str, Any]:
+        normalized = str(managed_repo_id or "").strip()
+        record = self._record_or_none(normalized)
+        if record is None:
+            raise ManagedGitNotFoundError(f"Unknown managed repository: {normalized}")
+        return record
+
+    def _require_scoped_record(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> dict[str, Any]:
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_record(managed_repo_id)
+        owner = str(record["directory_path"])
+        if not _is_same_or_descendant(directory, owner):
+            # Preserve not-found semantics so a sibling trust boundary cannot use
+            # this check to enumerate managed repository IDs.
+            raise ManagedGitNotFoundError(
+                f"Managed repository {managed_repo_id!r} is not available to {directory!r}"
+            )
+        return record
+
+    def _put_new_record(self, record: dict[str, Any]) -> None:
+        repo_id = str(record["managed_repo_id"])
+
+        def put(payload: dict[str, Any]):
+            existing = payload["repositories"].get(repo_id)
+            if existing is not None and existing != record:
+                raise ManagedGitConflictError(
+                    f"Managed repository {repo_id} was registered concurrently"
+                )
+            payload["repositories"][repo_id] = dict(record)
+
+        self._update_registry(put)
+
+    def _update_record_fields(self, managed_repo_id: str, **fields: Any) -> None:
+        def update(payload: dict[str, Any]):
+            record = payload["repositories"].get(managed_repo_id)
+            if not isinstance(record, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            record.update(fields)
+            record["updated_at"] = _utc_now()
+
+        self._update_registry(update)
+
+    @staticmethod
+    def _public_record(record: Mapping[str, Any]) -> dict[str, Any]:
+        bindings = [dict(item) for item in record.get("bindings") or [] if isinstance(item, dict)]
+        bindings_by_kind: dict[str, list[str]] = {}
+        for binding in bindings:
+            bindings_by_kind.setdefault(str(binding["kind"]), []).append(str(binding["binding_id"]))
+        return {
+            "managed_repo_id": record.get("managed_repo_id"),
+            "directory_path": record.get("directory_path"),
+            "canonical_repository_identity": record.get("canonical_repository_identity"),
+            "canonical_repository_url": record.get("canonical_repository_url"),
+            "provider": record.get("provider"),
+            "display_name": record.get("display_name"),
+            "default_branch": record.get("default_branch"),
+            "host_commit_identity": dict(record.get("host_commit_identity") or {}),
+            "created_at": record.get("created_at"),
+            "updated_at": record.get("updated_at"),
+            "refreshed_at": record.get("refreshed_at"),
+            "maintenance_at": record.get("maintenance_at"),
+            "bindings": bindings,
+            "bindings_by_kind": bindings_by_kind,
+        }
+
+    def _commit_identity_for_directory(self, directory_path: str) -> dict[str, str]:
+        resolved_config = self.config
+        resolver = getattr(self.runtime, "provider_config", None)
+        resolve = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve):
+            try:
+                resolved_config = resolve(directory_path)
+            except Exception:
+                resolved_config = self.config
+        name = (
+            str(
+                getattr(resolved_config, "managed_git_commit_name", "")
+                or getattr(resolved_config, "git_committer_name", "")
+                or DEFAULT_HOST_COMMIT_NAME
+            ).strip()
+            or DEFAULT_HOST_COMMIT_NAME
+        )
+        email = (
+            str(
+                getattr(resolved_config, "managed_git_commit_email", "")
+                or getattr(resolved_config, "git_committer_email", "")
+                or DEFAULT_HOST_COMMIT_EMAIL
+            ).strip()
+            or DEFAULT_HOST_COMMIT_EMAIL
+        )
+        return {"name": name, "email": email}
+
+    def _initialize_bare_repository(self, record: Mapping[str, Any]) -> None:
+        bare_path = self._bare_path(record)
+        script = self.project_dir / "scripts" / "create_git_remote.sh"
+        if script.exists():
+            env = os.environ.copy()
+            env["EVANDER_GIT_ROOT"] = str(self._managed_root)
+            env["EVANDER_RUNTIME_DIR"] = str(self.runtime_dir)
+            self._run_git([str(script), str(record["managed_repo_id"]), "agents"], env=env)
+        else:
+            self._run_git(["git", "init", "--bare", str(bare_path)])
+        if not (bare_path / "HEAD").exists():
+            raise RuntimeError("Managed bare repository initialization did not create HEAD")
+        self._run_git(
+            [
+                "git",
+                f"--git-dir={bare_path}",
+                "config",
+                "evander.managedRepoId",
+                str(record["managed_repo_id"]),
+            ]
+        )
+        self._run_git(
+            [
+                "git",
+                f"--git-dir={bare_path}",
+                "config",
+                "evander.directoryPath",
+                str(record["directory_path"]),
+            ]
+        )
+        self._run_git(
+            [
+                "git",
+                f"--git-dir={bare_path}",
+                "config",
+                "evander.baseBranch",
+                str(record["default_branch"]),
+            ]
+        )
+        self._assert_secret_free_bare_config(bare_path)
+
+    def _refresh_record(
+        self,
+        record: Mapping[str, Any],
+        *,
+        credential_override: tuple[str | None, str | None] | None = None,
+    ) -> dict[str, Any]:
+        bare_path = self._bare_path(record)
+        source = str(record["refresh_source"])
+        operation_id = uuid4().hex
+        stage_root = f"refs/evander/refresh/{operation_id}"
+        stage_heads = f"{stage_root}/heads"
+        stage_tags = f"{stage_root}/tags"
+        env = self._git_environment(record, credential_override=credential_override)
+        if not private_ref_layout_ready(self._run_git, bare_path):
+            migrate_private_refs(self._run_git, bare_path)
+        try:
+            self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "fetch",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    source,
+                    f"+refs/heads/*:{stage_heads}/*",
+                    f"+refs/tags/*:{stage_tags}/*",
+                ],
+                env=env,
+            )
+            staged = self._list_refs(bare_path, (stage_heads, stage_tags))
+            desired: dict[str, str] = {}
+            for ref, oid in staged.items():
+                if ref.startswith(f"{stage_heads}/"):
+                    live_ref = f"refs/heads/{ref[len(stage_heads) + 1 :]}"
+                elif ref.startswith(f"{stage_tags}/"):
+                    live_ref = f"refs/tags/{ref[len(stage_tags) + 1 :]}"
+                else:
+                    continue
+                desired[live_ref] = oid
+            current_all = self._list_refs(bare_path, ("refs/heads", "refs/tags"))
+            current = current_all
+            discovered_default = self._discover_default_branch(source, env=env)
+            if not discovered_default:
+                discovered_default = self._fallback_default_branch(desired)
+            default_branch = (
+                str(record.get("default_branch") or "").strip()
+                if record.get("default_branch_source") == "override"
+                else discovered_default
+            )
+            if (
+                record.get("default_branch_source") == "override"
+                and default_branch
+                and f"refs/heads/{default_branch}" not in desired
+            ):
+                raise ManagedGitConflictError(
+                    f"Configured default branch {default_branch!r} is not present upstream"
+                )
+            updates: list[str] = []
+            for ref in sorted(current.keys() - desired.keys()):
+                updates.append(f"delete {ref} {current[ref]}")
+            for ref in sorted(desired):
+                if current.get(ref) == desired[ref]:
+                    continue
+                if ref in current:
+                    updates.append(f"update {ref} {desired[ref]} {current[ref]}")
+                else:
+                    updates.append(f"create {ref} {desired[ref]}")
+            if updates:
+                self._run_update_ref_transaction(bare_path, updates)
+            if default_branch and f"refs/heads/{default_branch}" in desired:
+                self._run_git(
+                    [
+                        "git",
+                        f"--git-dir={bare_path}",
+                        "symbolic-ref",
+                        "HEAD",
+                        f"refs/heads/{default_branch}",
+                    ]
+                )
+                self._run_git(
+                    [
+                        "git",
+                        f"--git-dir={bare_path}",
+                        "config",
+                        "evander.baseBranch",
+                        default_branch,
+                    ]
+                )
+            refreshed_at = _utc_now()
+            return {
+                "managed_repo_id": record["managed_repo_id"],
+                "refreshed_at": refreshed_at,
+                "default_branch": default_branch,
+                "updated_ref_count": len(updates),
+            }
+        finally:
+            self._delete_namespace(bare_path, stage_root)
+
+    def _discover_default_branch(self, source: str, *, env: Mapping[str, str]) -> str | None:
+        result = self._run_git(
+            ["git", "ls-remote", "--symref", source, "HEAD"],
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            match = re.match(r"^ref:\s+refs/heads/(\S+)\s+HEAD$", line.strip())
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def _fallback_default_branch(desired: Mapping[str, str]) -> str | None:
+        for candidate in ("main", "master"):
+            if f"refs/heads/{candidate}" in desired:
+                return candidate
+        branches = sorted(
+            ref[len("refs/heads/") :] for ref in desired if ref.startswith("refs/heads/")
+        )
+        return branches[0] if branches else None
+
+    def _git_environment(
+        self,
+        record: Mapping[str, Any],
+        *,
+        credential_override: tuple[str | None, str | None] | None = None,
+    ) -> dict[str, str]:
+        env = os.environ.copy()
+        env.pop("EVANDER_GIT_USERNAME", None)
+        env.pop("EVANDER_GIT_PASSWORD", None)
+        env.update(
+            {
+                "GIT_TERMINAL_PROMPT": "0",
+                "GCM_INTERACTIVE": "never",
+                "GIT_ASKPASS": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+            }
+        )
+        username, password = credential_override or (None, None)
+        resolved_username, resolved_password = self._provider_credentials(record)
+        username = username or resolved_username
+        password = password or resolved_password
+        if username:
+            env["EVANDER_GIT_USERNAME"] = username
+        if password:
+            env["EVANDER_GIT_PASSWORD"] = password
+        git_config = {
+            "credential.helper": "",
+            "core.askPass": str(self.project_dir / "scripts" / "managed_git_askpass.sh"),
+        }
+        refresh_source = str(record.get("refresh_source") or "").strip()
+        canonical_url = str(record.get("canonical_repository_url") or "").strip()
+        if (
+            str(record.get("provider") or "").casefold()
+            in {"azure_devops", "github"}
+            and password
+            and urlsplit(refresh_source).scheme.casefold() == "ssh"
+            and urlsplit(canonical_url).scheme.casefold() == "https"
+        ):
+            git_config[f"url.{canonical_url}.insteadOf"] = refresh_source
+        return self._with_git_config_environment(
+            env,
+            git_config,
+        )
+
+    def _resolved_config_for_record(self, record: Mapping[str, Any]) -> Any:
+        resolved_config = self.config
+        resolver = getattr(self.runtime, "provider_config", None)
+        resolve = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve):
+            resolved_config = resolve(str(record["directory_path"]))
+        return resolved_config
+
+    def _provider_credentials(
+        self,
+        record: Mapping[str, Any],
+    ) -> tuple[str | None, str | None]:
+        provider = str(record.get("provider") or "generic")
+        resolved_config = self._resolved_config_for_record(record)
+        username: str | None = None
+        password: str | None = None
+        if provider == "github":
+            token_env = str(getattr(resolved_config, "github_token_env", "") or "GITHUB_TOKEN")
+            password = os.environ.get(token_env) or os.environ.get("GH_TOKEN")
+            username = "x-access-token"
+        elif provider == "azure_devops":
+            token_envs = [
+                str(getattr(resolved_config, field_name, "") or "").strip()
+                for field_name in (
+                    "azure_devops_pr_pat_env",
+                    "azure_devops_pat_env",
+                )
+            ]
+            if not any(token_envs):
+                token_envs.append("AZURE_DEVOPS_PR_PAT")
+            for token_env in token_envs:
+                if token_env and (token := os.environ.get(token_env)):
+                    password = token
+                    break
+            username = "evander"
+        return username, password
+
+    def _safe_worktree_environment(self) -> dict[str, str]:
+        return self._worktrees.safe_environment()
+
+    @staticmethod
+    def _with_git_config_environment(
+        env: Mapping[str, str], config: Mapping[str, str]
+    ) -> dict[str, str]:
+        return _with_git_config_environment(env, config)
+
+    def _sanitize_managed_worktree_error(
+        self,
+        message: str,
+        *,
+        operation_dir: Path,
+    ) -> str:
+        return self._worktrees.sanitize_error(message, operation_dir=operation_dir)
+
+    def _has_registered_worktrees(self, record: Mapping[str, Any]) -> bool:
+        return self._worktrees.has_registered_worktrees(record)
+
+    def _managed_authorized_keys_paths(self) -> set[Path]:
+        paths: set[Path] = set()
+
+        repository = getattr(self.runtime, "session_repository", None)
+        if repository is None:
+            repository = JsonSessionManifestRepository(self._session_store_path())
+        read_all_safe = getattr(repository, "read_all_safe", None)
+        if callable(read_all_safe):
+            sessions = list(read_all_safe().values())
+        else:
+            list_sessions = getattr(repository, "list_sessions", None)
+            sessions = list_sessions() if callable(list_sessions) else []
+        for session in sessions:
+            metadata = (
+                session.get("metadata")
+                if isinstance(session, Mapping)
+                else getattr(session, "metadata", None)
+            )
+            for grant in managed_git_grants_from_metadata(metadata).values():
+                raw_path = str(grant.get("authorized_keys_path") or "").strip()
+                if raw_path:
+                    paths.add(Path(raw_path).expanduser().resolve(strict=False))
+
+        for raw_path in (
+            getattr(self.config, "git_authorized_keys_path", None),
+            os.environ.get("EVANDER_GIT_AUTHORIZED_KEYS_PATH"),
+        ):
+            normalized = str(raw_path or "").strip()
+            if not normalized:
+                continue
+            path = Path(normalized).expanduser()
+            if not path.is_absolute():
+                path = self.project_dir / path
+            paths.add(path.resolve(strict=False))
+        return paths
+
+    def _has_authorized_key_for_repository(self, record: Mapping[str, Any]) -> bool:
+        bare_path = self._bare_path(record).resolve(strict=False)
+        marker = "EVANDER_GIT_AUTH_REPO_B64=" + base64.b64encode(
+            str(bare_path).encode("utf-8")
+        ).decode("ascii")
+        for path in self._managed_authorized_keys_paths():
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            if any(marker in line for line in lines):
+                return True
+        return False
+
+    def _bare_path(self, record: Mapping[str, Any]) -> Path:
+        return _managed_bare_path(self._managed_root, record)
+
+    def _resolve_ref(self, bare_path: Path, ref_name: str) -> str | None:
+        return _resolve_managed_ref(self._run_git, bare_path, ref_name)
+
+    def _require_commit(self, bare_path: Path, object_id: str) -> None:
+        _require_managed_commit(self._run_git, bare_path, object_id)
+
+    def _is_ancestor(self, bare_path: Path, ancestor: str, descendant: str) -> bool:
+        return (
+            self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "merge-base",
+                    "--is-ancestor",
+                    ancestor,
+                    descendant,
+                ],
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    def _list_refs(self, bare_path: Path, prefixes: tuple[str, ...]) -> dict[str, str]:
+        result = self._run_git(
+            [
+                "git",
+                f"--git-dir={bare_path}",
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                *prefixes,
+            ]
+        )
+        refs: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            ref, separator, object_id = line.partition(" ")
+            if separator and ref and _HEX_OBJECT_ID.fullmatch(object_id):
+                refs[ref] = object_id.lower()
+        return refs
+
+    def _run_update_ref_transaction(self, bare_path: Path, commands: list[str]) -> None:
+        _run_managed_update_ref_transaction(self._run_git, bare_path, commands)
+
+    def _delete_ref_cas(self, bare_path: Path, ref_name: str, object_id: str) -> None:
+        _delete_managed_ref_cas(self._run_git, bare_path, ref_name, object_id)
+
+    def _delete_namespace(self, bare_path: Path, prefix: str) -> None:
+        refs = self._list_refs(bare_path, (prefix,)) if bare_path.exists() else {}
+        if not refs:
+            return
+        self._run_update_ref_transaction(
+            bare_path, [f"delete {ref} {oid}" for ref, oid in sorted(refs.items())]
+        )
+
+    def _ls_remote_branch(
+        self,
+        remote_url: str,
+        ref_name: str,
+        *,
+        env: Mapping[str, str],
+    ) -> str | None:
+        result = self._run_git(["git", "ls-remote", "--refs", remote_url, ref_name], env=env)
+        for line in result.stdout.splitlines():
+            object_id, separator, advertised_ref = line.partition("\t")
+            if separator and advertised_ref == ref_name and _HEX_OBJECT_ID.fullmatch(object_id):
+                return object_id.lower()
+        return None
+
+    def _push_branch_with_transient_retry(
+        self,
+        *,
+        bare_path: Path,
+        remote_url: str,
+        env: Mapping[str, str],
+        lease: str,
+        expected_commit_sha: str,
+        destination_ref: str,
+        expected_destination_commit_sha: str | None,
+    ) -> None:
+        """Push an immutable source with bounded retries for transport failures only.
+
+        A lost response can leave a push committed remotely.  Before deciding to retry or
+        fail, reconcile the exact destination ref: the expected approved commit is success;
+        any other observed movement remains a hard, non-retryable failure.  The original
+        force-with-lease protects every retry from publishing over a changed destination.
+        """
+
+        command = [
+            "git",
+            f"--git-dir={bare_path}",
+            "push",
+            lease,
+            remote_url,
+            f"{expected_commit_sha}:{destination_ref}",
+        ]
+        for attempt in range(1, _MANAGED_GIT_PUSH_MAX_ATTEMPTS + 1):
+            result = self._run_git(command, env=env, check=False)
+            if result.returncode == 0:
+                return
+
+            # A connection can fail after the remote accepts the update.  Treat only the
+            # exact approved SHA as success; a different observed value is never retried.
+            try:
+                advertised_commit = self._ls_remote_branch(
+                    remote_url,
+                    destination_ref,
+                    env=env,
+                )
+            except RuntimeError as probe_error:
+                if not self._is_transient_git_transport_message(str(probe_error)):
+                    raise
+                advertised_commit = None
+            else:
+                if advertised_commit == expected_commit_sha:
+                    return
+                if advertised_commit != expected_destination_commit_sha:
+                    self._raise_git_failure(result)
+
+            if not self._is_transient_git_transport_failure(result):
+                self._raise_git_failure(result)
+            if attempt >= _MANAGED_GIT_PUSH_MAX_ATTEMPTS:
+                self._raise_git_failure(result)
+
+            # If reconciliation failed too, a subsequent leased attempt is still safe: it
+            # can only write while the destination remains at the reviewed base.
+            delay_seconds = min(
+                _MANAGED_GIT_PUSH_INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+                _MANAGED_GIT_PUSH_MAX_BACKOFF_SECONDS,
+            )
+            _managed_git_push_sleep(delay_seconds)
+
+    @staticmethod
+    def _is_transient_git_transport_failure(result: subprocess.CompletedProcess[str]) -> bool:
+        return ManagedGitAdminService._is_transient_git_transport_message(
+            result.stderr or result.stdout or ""
+        )
+
+    @staticmethod
+    def _is_transient_git_transport_message(message: str) -> bool:
+        normalized_message = str(message or "").casefold()
+        transient_markers = (
+            "connection reset",
+            "connection timed out",
+            "could not resolve host",
+            "temporary failure",
+            "failed to connect",
+            "network is unreachable",
+            "connection refused",
+            "recv failure",
+            "send failure",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+        return any(marker in normalized_message for marker in transient_markers)
+
+    def _assert_secret_free_bare_config(self, bare_path: Path) -> None:
+        result = self._run_git(["git", f"--git-dir={bare_path}", "config", "--local", "--list"])
+        forbidden = ("credential.helper", "http.extraheader", "remote.")
+        for line in result.stdout.splitlines():
+            key = line.split("=", 1)[0].casefold()
+            if key.startswith(forbidden):
+                raise ManagedGitConflictError(
+                    "Managed bare repository config contains persistent remote or credential configuration"
+                )
+
+    @contextmanager
+    def _file_lock(self, path: Path, *, shared: bool = False):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+            try:
+                yield handle
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _repo_lock(self, managed_repo_id: str, *, exclusive: bool):
+        with self._file_lock(
+            self._lock_root / f"repo-{managed_repo_id}.lock", shared=not exclusive
+        ) as handle:
+            record = self._record_or_none(managed_repo_id)
+            bare_path = self._bare_path(record) if record is not None else None
+            if bare_path is not None and (bare_path / "HEAD").exists():
+                if not private_ref_layout_ready(self._run_git, bare_path):
+                    if not exclusive:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    if not private_ref_migration_plan(self._run_git, bare_path)["already_migrated"]:
+                        if (self.project_dir / "scripts" / "create_git_remote.sh").exists():
+                            self._initialize_bare_repository(record)
+                        migrate_private_refs(self._run_git, bare_path)
+                    if not exclusive:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            yield
+
+    def migrate_ref_namespace(self, managed_repo_id: str, *, apply: bool = False) -> dict[str, Any]:
+        """Preview or apply an atomic migration without contacting the upstream."""
+        with self._file_lock(self._lock_root / f"repo-{managed_repo_id}.lock"):
+            record = self._require_record(managed_repo_id)
+            bare_path = self._bare_path(record)
+            plan = private_ref_migration_plan(self._run_git, bare_path)
+            if apply and not plan["already_migrated"]:
+                if (self.project_dir / "scripts" / "create_git_remote.sh").exists():
+                    self._initialize_bare_repository(record)
+                plan = migrate_private_refs(self._run_git, bare_path)
+            return {"managed_repo_id": managed_repo_id, "applied": apply, **plan}
+
+    def _target_lock(self, managed_repo_id: str, target: str):
+        target_hash = hashlib.sha256(target.encode("utf-8")).hexdigest()[:20]
+        return self._file_lock(self._lock_root / f"target-{managed_repo_id}-{target_hash}.lock")
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
+        _write_json_atomic(path, payload, mode=mode)
+
+    @staticmethod
+    def _require_git_repository(path: Path) -> None:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--git-dir"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"repo_source is not a Git repository: {path}")
+
+    def _git_output(self, command: list[str], *, check: bool = True) -> str:
+        return self._run_git(command, check=check).stdout
+
+    def _run_git(
+        self,
+        command: list[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        timeout_seconds = float(
+            getattr(
+                self.config,
+                "managed_git_operation_timeout_seconds",
+                DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS,
+            )
+        )
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                input=input_text,
+                env=dict(env) if env is not None else None,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            raise ManagedGitConflictError(
+                f"Managed Git operation timed out after {timeout_seconds:g} seconds"
+            ) from None
+        if check and result.returncode != 0:
+            self._raise_git_failure(result)
+        return result
+
+    @staticmethod
+    def _raise_git_failure(result: subprocess.CompletedProcess[str]) -> None:
+        message = (result.stderr or result.stdout or "Git operation failed").strip()
+        raise RuntimeError(message)

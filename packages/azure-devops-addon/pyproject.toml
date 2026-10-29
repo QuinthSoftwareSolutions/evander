@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+name = "evander-azure-devops-addon"
+version = "0.2.0"
+description = "Optional Azure DevOps integration and issue-to-merge workflows for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.124.0", "httpx>=0.28.1", "cryptography>=50.0.0"]
+
+[project.entry-points."evander.addons"]
+azure_devops = "evander_azure_devops_addon:register_addon"
+
+[project.scripts]
+evander-ado-worker = "evander_azure_devops_addon.workers.pr_events:main"
+evander-proxy-issue-sync = "evander_azure_devops_addon.workers.proxy_sync:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_azure_devops_addon*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+evander_azure_devops_addon = ["addon.json", "assets/systemd/*", "assets/config/*/*.example"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

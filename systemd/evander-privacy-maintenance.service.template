@@ -1,0 +1,16 @@
+[Unit]
+Description=Evander bounded privacy maintenance
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+Group=__GIT_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+UMask=0077
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-cli privacy maintenance --config __PROJECT_DIR__/runtime --limit 50
+TimeoutStartSec=55
+
+[Install]
+WantedBy=multi-user.target

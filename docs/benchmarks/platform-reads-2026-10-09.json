@@ -1,0 +1,284 @@
+{
+  "after": {
+    "history": 5000,
+    "nodes": 150,
+    "python": "3.12.13",
+    "samples": {
+      "binding_ancestors": {
+        "edge_field_reads": {
+          "allow_cycle": 150,
+          "source_id": 300,
+          "target_id": 300
+        },
+        "median_warm_read_ms": 2.627993992064148,
+        "output_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "binding_dominators": {
+        "median_warm_read_ms": 3.1644770060665905,
+        "output_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "python_line_events": 4349
+      },
+      "model_usage_context": {
+        "median_warm_read_ms": 0.30978000722825527,
+        "output_digest": "f0420f8fbdd423959d9a20823b7471701a7259d963fcd8b27e7c25e961e85f94",
+        "payload_rows": {
+          "model_usage_correlation_contexts": 1
+        },
+        "rows": {
+          "model_usage_correlation_contexts": 1
+        },
+        "selects": {
+          "model_usage_correlation_contexts": 1
+        },
+        "sqlite_vm_steps": 342
+      },
+      "output_schema_derivation": {
+        "edge_field_reads": {
+          "source_id": 150,
+          "target_id": 150
+        },
+        "median_warm_read_ms": 0.3313720226287842,
+        "output_digest": "4f2567fea730d0efb8b6e0eda69797a1654fa4f93e1fa067e9d0ee48af9190df"
+      },
+      "subscription_profiles": {
+        "median_warm_read_ms": 0.16873597633093596,
+        "output_digest": "1bd8ecb245f66d73468fba66af07f84efc653ef7e17daab63acf43a91d105eda",
+        "payload_rows": {
+          "worker_jobs": 8
+        },
+        "rows": {
+          "worker_jobs": 8
+        },
+        "selects": {
+          "worker_jobs": 1
+        },
+        "sqlite_vm_steps": 254
+      },
+      "teams_message_lookup": {
+        "median_warm_read_ms": 0.12401799904182553,
+        "output_digest": "5c5f4837d533868206bc2721972f7ef82a2af4c17439b3e0f361cc9c8fcbc574",
+        "payload_rows": {
+          "teams_inbox_messages": 1
+        },
+        "rows": {
+          "teams_inbox_messages": 1
+        },
+        "selects": {
+          "teams_inbox_messages": 1
+        },
+        "sqlite_vm_steps": 253
+      },
+      "wake_dispatch_lookup": {
+        "median_warm_read_ms": 0.1375179854221642,
+        "output_digest": "6bf249d812c1788dfbff2e0a51e4e855038c49ac4df97743fdafdee1d7bc09ab",
+        "payload_rows": {
+          "wake_dispatches": 1
+        },
+        "rows": {
+          "wake_dispatches": 1
+        },
+        "selects": {
+          "wake_dispatches": 1
+        },
+        "sqlite_vm_steps": 156
+      },
+      "wake_ledger_page": {
+        "median_warm_read_ms": 0.35023101372644305,
+        "output_digest": "873f1b4cb27a72eed0f6e836cd83d3f27c77d29546af1cccfca81d1212677632",
+        "payload_rows": {
+          "wake_dispatches": 0,
+          "wake_requests": 10
+        },
+        "rows": {
+          "wake_dispatches": 0,
+          "wake_requests": 10
+        },
+        "selects": {
+          "wake_dispatches": 1,
+          "wake_requests": 1
+        },
+        "sqlite_vm_steps": 367
+      },
+      "worker_restart": {
+        "output_digest": "cd9686c2533f182e382737c3862bce2ee560b0cbb6994b009e634d4310493d0c",
+        "payload_rows": {
+          "worker_jobs": 5
+        },
+        "rows": {
+          "worker_jobs": 5
+        },
+        "selects": {
+          "worker_jobs": 1
+        },
+        "sqlite_vm_steps": 991
+      },
+      "worker_telemetry": {
+        "median_warm_read_ms": 0.4415889852680266,
+        "output_digest": "789264f5cfd455c89afd1aa3e239abd668baa41ebe18f939689d6fbfc23d6b5a",
+        "payload_rows": {},
+        "rows": {
+          "worker_jobs": 3
+        },
+        "selects": {
+          "worker_jobs": 1
+        },
+        "sqlite_vm_steps": 85163
+      }
+    },
+    "sqlite": "3.50.4",
+    "timing_repeats": 5
+  },
+  "baseline_commit": "81b241c6f18501f20211594236ff17fd0049d5e6",
+  "before": {
+    "history": 5000,
+    "nodes": 150,
+    "python": "3.12.13",
+    "samples": {
+      "binding_ancestors": {
+        "edge_field_reads": {
+          "allow_cycle": 150,
+          "source_id": 45150,
+          "target_id": 45150
+        },
+        "median_warm_read_ms": 11.834910023026168,
+        "output_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "binding_dominators": {
+        "median_warm_read_ms": 71.1826549959369,
+        "output_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "python_line_events": 202797
+      },
+      "model_usage_context": {
+        "median_warm_read_ms": 2.4751919554546475,
+        "output_digest": "f0420f8fbdd423959d9a20823b7471701a7259d963fcd8b27e7c25e961e85f94",
+        "payload_rows": {
+          "model_usage_correlation_contexts": 1
+        },
+        "rows": {
+          "model_usage_correlation_contexts": 1
+        },
+        "selects": {
+          "model_usage_correlation_contexts": 1
+        },
+        "sqlite_vm_steps": 65341
+      },
+      "output_schema_derivation": {
+        "edge_field_reads": {
+          "source_id": 22500,
+          "target_id": 22500
+        },
+        "median_warm_read_ms": 3.299791947938502,
+        "output_digest": "4f2567fea730d0efb8b6e0eda69797a1654fa4f93e1fa067e9d0ee48af9190df"
+      },
+      "subscription_profiles": {
+        "median_warm_read_ms": 965.2911329758354,
+        "output_digest": "1bd8ecb245f66d73468fba66af07f84efc653ef7e17daab63acf43a91d105eda",
+        "payload_rows": {
+          "worker_jobs": 100160
+        },
+        "rows": {
+          "worker_jobs": 100160
+        },
+        "selects": {
+          "worker_jobs": 20
+        },
+        "sqlite_vm_steps": 1503760
+      },
+      "teams_message_lookup": {
+        "median_warm_read_ms": 1.2155529693700373,
+        "output_digest": "5c5f4837d533868206bc2721972f7ef82a2af4c17439b3e0f361cc9c8fcbc574",
+        "payload_rows": {
+          "teams_inbox_messages": 1
+        },
+        "rows": {
+          "teams_inbox_messages": 1
+        },
+        "selects": {
+          "teams_inbox_messages": 1
+        },
+        "sqlite_vm_steps": 25234
+      },
+      "wake_dispatch_lookup": {
+        "median_warm_read_ms": 15.793151047546417,
+        "output_digest": "6bf249d812c1788dfbff2e0a51e4e855038c49ac4df97743fdafdee1d7bc09ab",
+        "payload_rows": {
+          "wake_dispatches": 5001
+        },
+        "rows": {
+          "wake_dispatches": 5001
+        },
+        "selects": {
+          "wake_dispatches": 1
+        },
+        "sqlite_vm_steps": 125145
+      },
+      "wake_ledger_page": {
+        "median_warm_read_ms": 8.461707038804889,
+        "output_digest": "873f1b4cb27a72eed0f6e836cd83d3f27c77d29546af1cccfca81d1212677632",
+        "payload_rows": {
+          "wake_dispatches": 0,
+          "wake_requests": 5000
+        },
+        "rows": {
+          "wake_dispatches": 0,
+          "wake_requests": 5000
+        },
+        "selects": {
+          "wake_dispatches": 1,
+          "wake_requests": 1
+        },
+        "sqlite_vm_steps": 50235
+      },
+      "worker_restart": {
+        "output_digest": "cd9686c2533f182e382737c3862bce2ee560b0cbb6994b009e634d4310493d0c",
+        "payload_rows": {
+          "worker_jobs": 5005
+        },
+        "rows": {
+          "worker_jobs": 5005
+        },
+        "selects": {
+          "worker_jobs": 1
+        },
+        "sqlite_vm_steps": 75851
+      },
+      "worker_telemetry": {
+        "median_warm_read_ms": 42.04635799396783,
+        "output_digest": "789264f5cfd455c89afd1aa3e239abd668baa41ebe18f939689d6fbfc23d6b5a",
+        "payload_rows": {
+          "worker_jobs": 5002
+        },
+        "rows": {
+          "worker_jobs": 5002
+        },
+        "selects": {
+          "worker_jobs": 1
+        },
+        "sqlite_vm_steps": 75098
+      }
+    },
+    "sqlite": "3.50.4",
+    "timing_repeats": 5
+  },
+  "branch": "fix/platform-performance-20261009",
+  "changed_version": "0.86.5",
+  "checked_output_digests_match": [
+    "binding_ancestors",
+    "binding_dominators",
+    "model_usage_context",
+    "output_schema_derivation",
+    "subscription_profiles",
+    "teams_message_lookup",
+    "wake_dispatch_lookup",
+    "wake_ledger_page",
+    "worker_restart",
+    "worker_telemetry"
+  ],
+  "date": "2026-10-09",
+  "graph_equivalence": {
+    "compared_graphs": 1000,
+    "schemas_and_diagnostics_match": true,
+    "seed": 20261009
+  },
+  "scope": "Sequential temporary synthetic workloads; counts are instrumented, median warm timings use five uninstrumented reads. Startup is measured only through work counts because it mutates jobs."
+}

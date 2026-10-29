@@ -1,0 +1,28 @@
+[Unit]
+Description=Evander Restricted Codex Egress Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS=127.0.0.1/32
+EnvironmentFile=-__PROJECT_DIR__/config/codex-egress-proxy.env
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-codex-egress-proxy --runtime-dir __PROJECT_DIR__/runtime
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

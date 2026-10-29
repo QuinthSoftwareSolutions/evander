@@ -1,0 +1,2694 @@
+{
+  "provenance": "Synthetic sanitized examples; no historical token replay or billing data.",
+  "fixtures": [
+    {
+      "name": "coding",
+      "lease": {
+        "agent": {
+          "id": "coder",
+          "role_name": "Coder",
+          "role_description": "Implement the assigned specification and submit it for independent review.",
+          "effective_role_permissions": [],
+          "project_ids": [
+            "project-export"
+          ]
+        },
+        "runtime": {
+          "context_clearing_policy": "off",
+          "context_rotation_pending": false,
+          "work_lineage_thread_ids": {}
+        },
+        "has_prior_successful_wake": true,
+        "reason": "scheduled",
+        "tasks": [
+          {
+            "id": "task-0",
+            "project_id": "project-export",
+            "owner_agent_id": "coder",
+            "title": "Export requirement 0",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 1,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-1",
+            "project_id": "project-export",
+            "owner_agent_id": "coder",
+            "title": "Export requirement 1",
+            "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "priority": 2,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-2",
+            "project_id": "project-export",
+            "owner_agent_id": "coder",
+            "title": "Export requirement 2",
+            "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+            "priority": 3,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-3",
+            "project_id": "project-export",
+            "owner_agent_id": "coder",
+            "title": "Export requirement 3",
+            "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+            "priority": 4,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          }
+        ],
+        "inbox": [],
+        "blockers": [],
+        "reviews": [],
+        "dispatch": {
+          "id": "dispatch-example",
+          "agent_id": "coder",
+          "session_id": "session-coder",
+          "cause_kind": "scheduled",
+          "work_lineage_id": "lineage-0",
+          "task_ids": [
+            "task-0",
+            "task-1",
+            "task-2",
+            "task-3"
+          ],
+          "project_ids": [
+            "project-export"
+          ],
+          "inbox_item_ids": [],
+          "blocker_ids": [],
+          "review_request_ids": [],
+          "managed_repo_ids": [
+            "managed-export"
+          ],
+          "source_evidence_snapshot_ids": [
+            "evidence-0",
+            "evidence-1"
+          ]
+        },
+        "projects": [
+          {
+            "id": "project-export",
+            "name": "Export service",
+            "team_id": "team-export",
+            "status": "active",
+            "goals": [
+              {
+                "id": "goal-export",
+                "state": "active",
+                "description": "Deliver a reproducible export with independent review."
+              }
+            ]
+          }
+        ],
+        "external_source_evidence_snapshots": [
+          {
+            "id": "evidence-0",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "1",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          },
+          {
+            "id": "evidence-1",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "2",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          }
+        ],
+        "operator_chat_participants": [
+          {
+            "operator_user_id": "operator-example",
+            "conversation_ids": [
+              "chat-export"
+            ]
+          }
+        ],
+        "superior_agent_id": "trudy",
+        "subordinates": [],
+        "release_packages": {},
+        "project_repo": {
+          "prepared": true,
+          "project_id": "project-export",
+          "managed_repo_id": "managed-export",
+          "target_dir": "/home/agent/repos/export",
+          "git_work_contexts": [
+            {
+              "id": "context-0",
+              "branch_context_id": "context-0",
+              "agent_id": "coder",
+              "task_id": "task-0",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000001",
+              "agent_branch": "agents/session-coder/task-0",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-0",
+              "state": "active"
+            },
+            {
+              "id": "context-1",
+              "branch_context_id": "context-1",
+              "agent_id": "coder",
+              "task_id": "task-1",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000002",
+              "agent_branch": "agents/session-coder/task-1",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-1",
+              "state": "active"
+            },
+            {
+              "id": "context-2",
+              "branch_context_id": "context-2",
+              "agent_id": "coder",
+              "task_id": "task-2",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000003",
+              "agent_branch": "agents/session-coder/task-2",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-2",
+              "state": "active"
+            },
+            {
+              "id": "context-3",
+              "branch_context_id": "context-3",
+              "agent_id": "coder",
+              "task_id": "task-3",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000004",
+              "agent_branch": "agents/session-coder/task-3",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-3",
+              "state": "active"
+            }
+          ]
+        },
+        "project_repos": [
+          {
+            "prepared": true,
+            "project_id": "project-export",
+            "managed_repo_id": "managed-export",
+            "target_dir": "/home/agent/repos/export",
+            "git_work_contexts": [
+              {
+                "id": "context-0",
+                "branch_context_id": "context-0",
+                "agent_id": "coder",
+                "task_id": "task-0",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000001",
+                "agent_branch": "agents/session-coder/task-0",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-0",
+                "state": "active"
+              },
+              {
+                "id": "context-1",
+                "branch_context_id": "context-1",
+                "agent_id": "coder",
+                "task_id": "task-1",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000002",
+                "agent_branch": "agents/session-coder/task-1",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-1",
+                "state": "active"
+              },
+              {
+                "id": "context-2",
+                "branch_context_id": "context-2",
+                "agent_id": "coder",
+                "task_id": "task-2",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000003",
+                "agent_branch": "agents/session-coder/task-2",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-2",
+                "state": "active"
+              },
+              {
+                "id": "context-3",
+                "branch_context_id": "context-3",
+                "agent_id": "coder",
+                "task_id": "task-3",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000004",
+                "agent_branch": "agents/session-coder/task-3",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-3",
+                "state": "active"
+              }
+            ]
+          }
+        ]
+      },
+      "targeted_reads": [
+        {
+          "collection": "tasks",
+          "id": "task-0"
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0"
+        }
+      ]
+    },
+    {
+      "name": "independent-review",
+      "lease": {
+        "agent": {
+          "id": "reviewer",
+          "role_name": "Reviewer",
+          "role_description": "Independently verify the specification, provenance, and regression coverage.",
+          "effective_role_permissions": [],
+          "project_ids": [
+            "project-export"
+          ]
+        },
+        "runtime": {
+          "context_clearing_policy": "off",
+          "context_rotation_pending": false,
+          "work_lineage_thread_ids": {}
+        },
+        "has_prior_successful_wake": true,
+        "reason": "review",
+        "tasks": [
+          {
+            "id": "task-0",
+            "project_id": "project-export",
+            "owner_agent_id": "reviewer",
+            "title": "Export requirement 0",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 1,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-1",
+            "project_id": "project-export",
+            "owner_agent_id": "reviewer",
+            "title": "Export requirement 1",
+            "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "priority": 2,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-2",
+            "project_id": "project-export",
+            "owner_agent_id": "reviewer",
+            "title": "Export requirement 2",
+            "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+            "priority": 3,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          }
+        ],
+        "inbox": [],
+        "blockers": [],
+        "reviews": [
+          {
+            "id": "review-0",
+            "deliverable_id": "deliverable-0",
+            "reviewer_agent_id": "reviewer",
+            "state": "pending",
+            "candidate_commit_sha": "0000000000000000000000000000000000000014",
+            "instructions": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "repository_snapshot": {
+              "managed_repo_id": "managed-export",
+              "directory_path": "root",
+              "commit_sha": "0000000000000000000000000000000000000014",
+              "pinned_ref": "refs/team/reviews/review-0",
+              "source_kind": "deliverable",
+              "source_ref": "deliverable-0"
+            }
+          },
+          {
+            "id": "review-1",
+            "deliverable_id": "deliverable-1",
+            "reviewer_agent_id": "reviewer",
+            "state": "pending",
+            "candidate_commit_sha": "0000000000000000000000000000000000000015",
+            "instructions": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "repository_snapshot": {
+              "managed_repo_id": "managed-export",
+              "directory_path": "root",
+              "commit_sha": "0000000000000000000000000000000000000015",
+              "pinned_ref": "refs/team/reviews/review-1",
+              "source_kind": "deliverable",
+              "source_ref": "deliverable-1"
+            }
+          },
+          {
+            "id": "review-2",
+            "deliverable_id": "deliverable-2",
+            "reviewer_agent_id": "reviewer",
+            "state": "pending",
+            "candidate_commit_sha": "0000000000000000000000000000000000000016",
+            "instructions": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+            "repository_snapshot": {
+              "managed_repo_id": "managed-export",
+              "directory_path": "root",
+              "commit_sha": "0000000000000000000000000000000000000016",
+              "pinned_ref": "refs/team/reviews/review-2",
+              "source_kind": "deliverable",
+              "source_ref": "deliverable-2"
+            }
+          }
+        ],
+        "dispatch": {
+          "id": "dispatch-example",
+          "agent_id": "reviewer",
+          "session_id": "session-reviewer",
+          "cause_kind": "review",
+          "work_lineage_id": "lineage-0",
+          "task_ids": [
+            "task-0",
+            "task-1",
+            "task-2"
+          ],
+          "project_ids": [
+            "project-export"
+          ],
+          "inbox_item_ids": [],
+          "blocker_ids": [],
+          "review_request_ids": [
+            "review-0",
+            "review-1",
+            "review-2"
+          ],
+          "managed_repo_ids": [
+            "managed-export"
+          ],
+          "source_evidence_snapshot_ids": [
+            "evidence-0",
+            "evidence-1"
+          ]
+        },
+        "projects": [
+          {
+            "id": "project-export",
+            "name": "Export service",
+            "team_id": "team-export",
+            "status": "active",
+            "goals": [
+              {
+                "id": "goal-export",
+                "state": "active",
+                "description": "Deliver a reproducible export with independent review."
+              }
+            ]
+          }
+        ],
+        "external_source_evidence_snapshots": [
+          {
+            "id": "evidence-0",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "1",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          },
+          {
+            "id": "evidence-1",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "2",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          }
+        ],
+        "operator_chat_participants": [
+          {
+            "operator_user_id": "operator-example",
+            "conversation_ids": [
+              "chat-export"
+            ]
+          }
+        ],
+        "superior_agent_id": "evander",
+        "subordinates": [],
+        "release_packages": {},
+        "project_repo": {
+          "prepared": true,
+          "project_id": "project-export",
+          "managed_repo_id": "managed-export",
+          "target_dir": "/home/agent/repos/export",
+          "git_work_contexts": [
+            {
+              "id": "context-0",
+              "branch_context_id": "context-0",
+              "agent_id": "reviewer",
+              "task_id": "task-0",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000001",
+              "agent_branch": "agents/session-reviewer/task-0",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-0",
+              "state": "active"
+            },
+            {
+              "id": "context-1",
+              "branch_context_id": "context-1",
+              "agent_id": "reviewer",
+              "task_id": "task-1",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000002",
+              "agent_branch": "agents/session-reviewer/task-1",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-1",
+              "state": "active"
+            },
+            {
+              "id": "context-2",
+              "branch_context_id": "context-2",
+              "agent_id": "reviewer",
+              "task_id": "task-2",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000003",
+              "agent_branch": "agents/session-reviewer/task-2",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-2",
+              "state": "active"
+            }
+          ]
+        },
+        "project_repos": [
+          {
+            "prepared": true,
+            "project_id": "project-export",
+            "managed_repo_id": "managed-export",
+            "target_dir": "/home/agent/repos/export",
+            "git_work_contexts": [
+              {
+                "id": "context-0",
+                "branch_context_id": "context-0",
+                "agent_id": "reviewer",
+                "task_id": "task-0",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000001",
+                "agent_branch": "agents/session-reviewer/task-0",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-0",
+                "state": "active"
+              },
+              {
+                "id": "context-1",
+                "branch_context_id": "context-1",
+                "agent_id": "reviewer",
+                "task_id": "task-1",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000002",
+                "agent_branch": "agents/session-reviewer/task-1",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-1",
+                "state": "active"
+              },
+              {
+                "id": "context-2",
+                "branch_context_id": "context-2",
+                "agent_id": "reviewer",
+                "task_id": "task-2",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000003",
+                "agent_branch": "agents/session-reviewer/task-2",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-2",
+                "state": "active"
+              }
+            ],
+            "review_repository_snapshots": [
+              {
+                "managed_repo_id": "managed-export",
+                "directory_path": "root",
+                "commit_sha": "0000000000000000000000000000000000000014",
+                "pinned_ref": "refs/team/reviews/review-0",
+                "source_kind": "deliverable",
+                "source_ref": "deliverable-0",
+                "review_request_id": "review-0"
+              },
+              {
+                "managed_repo_id": "managed-export",
+                "directory_path": "root",
+                "commit_sha": "0000000000000000000000000000000000000015",
+                "pinned_ref": "refs/team/reviews/review-1",
+                "source_kind": "deliverable",
+                "source_ref": "deliverable-1",
+                "review_request_id": "review-1"
+              },
+              {
+                "managed_repo_id": "managed-export",
+                "directory_path": "root",
+                "commit_sha": "0000000000000000000000000000000000000016",
+                "pinned_ref": "refs/team/reviews/review-2",
+                "source_kind": "deliverable",
+                "source_ref": "deliverable-2",
+                "review_request_id": "review-2"
+              }
+            ]
+          }
+        ]
+      },
+      "targeted_reads": [
+        {
+          "collection": "tasks",
+          "id": "task-0"
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0"
+        }
+      ]
+    },
+    {
+      "name": "Evander-management",
+      "lease": {
+        "agent": {
+          "id": "evander",
+          "role_name": "Evander",
+          "role_description": "Plan, delegate, and supervise reviewed delivery.",
+          "effective_role_permissions": [
+            "create_root_task"
+          ],
+          "project_ids": [
+            "project-export"
+          ]
+        },
+        "runtime": {
+          "context_clearing_policy": "work_lineage",
+          "context_rotation_pending": false,
+          "work_lineage_thread_ids": {}
+        },
+        "has_prior_successful_wake": true,
+        "reason": "manager_fallback",
+        "tasks": [
+          {
+            "id": "task-0",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 0",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 1,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-1",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 1",
+            "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "priority": 2,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-2",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 2",
+            "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+            "priority": 3,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-3",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 3",
+            "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+            "priority": 4,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-4",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 4",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 5,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-2",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-5",
+            "project_id": "project-export",
+            "owner_agent_id": "evander",
+            "title": "Export requirement 5",
+            "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "priority": 6,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-2",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          }
+        ],
+        "inbox": [],
+        "blockers": [],
+        "reviews": [],
+        "dispatch": {
+          "id": "dispatch-example",
+          "agent_id": "evander",
+          "session_id": "session-evander",
+          "cause_kind": "manager_fallback",
+          "work_lineage_id": "lineage-0",
+          "task_ids": [
+            "task-0",
+            "task-1",
+            "task-2",
+            "task-3",
+            "task-4",
+            "task-5"
+          ],
+          "project_ids": [
+            "project-export"
+          ],
+          "inbox_item_ids": [],
+          "blocker_ids": [],
+          "review_request_ids": [],
+          "managed_repo_ids": [
+            "managed-export"
+          ],
+          "source_evidence_snapshot_ids": [
+            "evidence-0",
+            "evidence-1"
+          ]
+        },
+        "projects": [
+          {
+            "id": "project-export",
+            "name": "Export service",
+            "team_id": "team-export",
+            "status": "active",
+            "goals": [
+              {
+                "id": "goal-export",
+                "state": "active",
+                "description": "Deliver a reproducible export with independent review."
+              }
+            ]
+          }
+        ],
+        "external_source_evidence_snapshots": [
+          {
+            "id": "evidence-0",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "1",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          },
+          {
+            "id": "evidence-1",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "2",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          }
+        ],
+        "operator_chat_participants": [
+          {
+            "operator_user_id": "operator-example",
+            "conversation_ids": [
+              "chat-export"
+            ]
+          }
+        ],
+        "superior_agent_id": "evander",
+        "subordinates": [],
+        "release_packages": {
+          "release-0": {
+            "id": "release-0",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "000000000000000000000000000000000000001e",
+            "approved_commit_sha": "000000000000000000000000000000000000001d",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          },
+          "release-1": {
+            "id": "release-1",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "000000000000000000000000000000000000001f",
+            "approved_commit_sha": "000000000000000000000000000000000000001e",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          },
+          "release-2": {
+            "id": "release-2",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "0000000000000000000000000000000000000020",
+            "approved_commit_sha": "000000000000000000000000000000000000001f",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          }
+        },
+        "project_repo": {
+          "prepared": true,
+          "project_id": "project-export",
+          "managed_repo_id": "managed-export",
+          "target_dir": "/home/agent/repos/export",
+          "git_work_contexts": [
+            {
+              "id": "context-0",
+              "branch_context_id": "context-0",
+              "agent_id": "evander",
+              "task_id": "task-0",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000001",
+              "agent_branch": "agents/session-evander/task-0",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-0",
+              "state": "active"
+            },
+            {
+              "id": "context-1",
+              "branch_context_id": "context-1",
+              "agent_id": "evander",
+              "task_id": "task-1",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000002",
+              "agent_branch": "agents/session-evander/task-1",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-1",
+              "state": "active"
+            },
+            {
+              "id": "context-2",
+              "branch_context_id": "context-2",
+              "agent_id": "evander",
+              "task_id": "task-2",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000003",
+              "agent_branch": "agents/session-evander/task-2",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-2",
+              "state": "active"
+            },
+            {
+              "id": "context-3",
+              "branch_context_id": "context-3",
+              "agent_id": "evander",
+              "task_id": "task-3",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000004",
+              "agent_branch": "agents/session-evander/task-3",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-3",
+              "state": "active"
+            },
+            {
+              "id": "context-4",
+              "branch_context_id": "context-4",
+              "agent_id": "evander",
+              "task_id": "task-4",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000005",
+              "agent_branch": "agents/session-evander/task-4",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-4",
+              "state": "active"
+            },
+            {
+              "id": "context-5",
+              "branch_context_id": "context-5",
+              "agent_id": "evander",
+              "task_id": "task-5",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000006",
+              "agent_branch": "agents/session-evander/task-5",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-5",
+              "state": "active"
+            }
+          ]
+        },
+        "project_repos": [
+          {
+            "prepared": true,
+            "project_id": "project-export",
+            "managed_repo_id": "managed-export",
+            "target_dir": "/home/agent/repos/export",
+            "git_work_contexts": [
+              {
+                "id": "context-0",
+                "branch_context_id": "context-0",
+                "agent_id": "evander",
+                "task_id": "task-0",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000001",
+                "agent_branch": "agents/session-evander/task-0",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-0",
+                "state": "active"
+              },
+              {
+                "id": "context-1",
+                "branch_context_id": "context-1",
+                "agent_id": "evander",
+                "task_id": "task-1",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000002",
+                "agent_branch": "agents/session-evander/task-1",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-1",
+                "state": "active"
+              },
+              {
+                "id": "context-2",
+                "branch_context_id": "context-2",
+                "agent_id": "evander",
+                "task_id": "task-2",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000003",
+                "agent_branch": "agents/session-evander/task-2",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-2",
+                "state": "active"
+              },
+              {
+                "id": "context-3",
+                "branch_context_id": "context-3",
+                "agent_id": "evander",
+                "task_id": "task-3",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000004",
+                "agent_branch": "agents/session-evander/task-3",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-3",
+                "state": "active"
+              },
+              {
+                "id": "context-4",
+                "branch_context_id": "context-4",
+                "agent_id": "evander",
+                "task_id": "task-4",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000005",
+                "agent_branch": "agents/session-evander/task-4",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-4",
+                "state": "active"
+              },
+              {
+                "id": "context-5",
+                "branch_context_id": "context-5",
+                "agent_id": "evander",
+                "task_id": "task-5",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000006",
+                "agent_branch": "agents/session-evander/task-5",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-5",
+                "state": "active"
+              }
+            ]
+          }
+        ],
+        "manager_fallback_summary": {
+          "reason": "no_team_member_wakeable",
+          "projects": [
+            {
+              "id": "project-export",
+              "name": "Export service",
+              "team_id": "team-export",
+              "status": "active",
+              "goals": [
+                {
+                  "id": "goal-export",
+                  "state": "active",
+                  "description": "Deliver a reproducible export with independent review."
+                }
+              ]
+            }
+          ],
+          "open_work": [
+            {
+              "id": "task-0",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 0",
+              "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+              "priority": 1,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-0",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-1",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 1",
+              "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+              "priority": 2,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-0",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-1"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-2",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 2",
+              "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+              "priority": 3,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-1",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-3",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 3",
+              "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+              "priority": 4,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-1",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-1"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-4",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 4",
+              "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+              "priority": 5,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-2",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-5",
+              "project_id": "project-export",
+              "owner_agent_id": "evander",
+              "title": "Export requirement 5",
+              "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+              "priority": 6,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-2",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-1"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            }
+          ],
+          "agents": [],
+          "pending_inbox": [],
+          "review_requests": [],
+          "summary_counts": {
+            "open_task_count": 6
+          },
+          "pending_initial_release_decisions": [],
+          "routing_gaps": []
+        },
+        "supervisory_overview": {
+          "read_only": true,
+          "execution_scope": "current_dispatch",
+          "project_count": 1,
+          "projects": [
+            {
+              "id": "project-export",
+              "status": "active",
+              "task_counts": {
+                "in_progress": 6,
+                "pending": 5
+              },
+              "open_blocker_count": 2,
+              "release_counts": {
+                "blocked": 3
+              }
+            }
+          ],
+          "retrieval": {
+            "tasks": {
+              "tool": "team_list_tasks",
+              "paginate": true
+            }
+          }
+        }
+      },
+      "targeted_reads": [
+        {
+          "collection": "tasks",
+          "id": "task-0"
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0"
+        }
+      ]
+    },
+    {
+      "name": "Trudy-coordination",
+      "lease": {
+        "agent": {
+          "id": "trudy",
+          "role_name": "Trudy",
+          "role_description": "Plan, delegate, and supervise reviewed delivery.",
+          "effective_role_permissions": [
+            "create_root_task"
+          ],
+          "project_ids": [
+            "project-export"
+          ]
+        },
+        "runtime": {
+          "context_clearing_policy": "work_lineage",
+          "context_rotation_pending": false,
+          "work_lineage_thread_ids": {}
+        },
+        "has_prior_successful_wake": true,
+        "reason": "scheduled",
+        "tasks": [
+          {
+            "id": "task-0",
+            "project_id": "project-export",
+            "owner_agent_id": "trudy",
+            "title": "Export requirement 0",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 1,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-1",
+            "project_id": "project-export",
+            "owner_agent_id": "trudy",
+            "title": "Export requirement 1",
+            "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+            "priority": 2,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-0",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-2",
+            "project_id": "project-export",
+            "owner_agent_id": "trudy",
+            "title": "Export requirement 2",
+            "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+            "priority": 3,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-3",
+            "project_id": "project-export",
+            "owner_agent_id": "trudy",
+            "title": "Export requirement 3",
+            "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+            "priority": 4,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-1",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-1"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          },
+          {
+            "id": "task-4",
+            "project_id": "project-export",
+            "owner_agent_id": "trudy",
+            "title": "Export requirement 4",
+            "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+            "priority": 5,
+            "state": "in_progress",
+            "work_lineage_id": "lineage-2",
+            "dependency_status": "satisfied",
+            "child_task_ids": [],
+            "blocked_by_task_ids": [],
+            "deliverable_ids": [],
+            "source_evidence_snapshot_ids": [
+              "evidence-0"
+            ],
+            "outcome_contract": {
+              "allowed_dispositions": [
+                "delivered",
+                "evidenced_noop"
+              ]
+            },
+            "deliverable_contract": {
+              "require_git_provenance": true,
+              "required_contribution_task_ids": []
+            },
+            "assessment": {
+              "readiness": "ready",
+              "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+            },
+            "created_at": "2026-09-01T12:00:00Z",
+            "updated_at": "2026-09-01T12:00:00Z"
+          }
+        ],
+        "inbox": [],
+        "blockers": [],
+        "reviews": [],
+        "dispatch": {
+          "id": "dispatch-example",
+          "agent_id": "trudy",
+          "session_id": "session-trudy",
+          "cause_kind": "scheduled",
+          "work_lineage_id": "lineage-0",
+          "task_ids": [
+            "task-0",
+            "task-1",
+            "task-2",
+            "task-3",
+            "task-4"
+          ],
+          "project_ids": [
+            "project-export"
+          ],
+          "inbox_item_ids": [],
+          "blocker_ids": [],
+          "review_request_ids": [],
+          "managed_repo_ids": [
+            "managed-export"
+          ],
+          "source_evidence_snapshot_ids": [
+            "evidence-0",
+            "evidence-1"
+          ]
+        },
+        "projects": [
+          {
+            "id": "project-export",
+            "name": "Export service",
+            "team_id": "team-export",
+            "status": "active",
+            "goals": [
+              {
+                "id": "goal-export",
+                "state": "active",
+                "description": "Deliver a reproducible export with independent review."
+              }
+            ]
+          }
+        ],
+        "external_source_evidence_snapshots": [
+          {
+            "id": "evidence-0",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "1",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          },
+          {
+            "id": "evidence-1",
+            "team_id": "team-export",
+            "project_id": "project-export",
+            "provider_type": "work-management",
+            "source_type": "specification",
+            "external_identifier": "SPEC-export",
+            "external_version": "2",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+            "fetched_at": "2026-09-01T12:00:00Z",
+            "effective_freshness_status": "current",
+            "access_classification": "internal",
+            "title": "Export acceptance requirements",
+            "body": {
+              "format": "markdown",
+              "content": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.\n\nThe report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.\n\nWhen retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.\n\nThe interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+            },
+            "acceptance_criteria": [
+              {
+                "external_id": "criterion-0",
+                "text": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-1",
+                "text": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-2",
+                "text": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+                "status": "active"
+              },
+              {
+                "external_id": "criterion-3",
+                "text": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+                "status": "active"
+              }
+            ],
+            "discussion": [
+              {
+                "external_id": "comment-0",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 0: The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              {
+                "external_id": "comment-1",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 1: The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              {
+                "external_id": "comment-2",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 2: When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              {
+                "external_id": "comment-3",
+                "author": "reviewer@example.invalid",
+                "occurred_at": "2026-09-01T12:00:00Z",
+                "body": "Review follow-up 3: The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              }
+            ],
+            "links": [
+              {
+                "url": "https://example.invalid/specification/export",
+                "relation": "source"
+              }
+            ]
+          }
+        ],
+        "operator_chat_participants": [
+          {
+            "operator_user_id": "operator-example",
+            "conversation_ids": [
+              "chat-export"
+            ]
+          }
+        ],
+        "superior_agent_id": "evander",
+        "subordinates": [],
+        "release_packages": {
+          "release-0": {
+            "id": "release-0",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "000000000000000000000000000000000000001e",
+            "approved_commit_sha": "000000000000000000000000000000000000001d",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          },
+          "release-1": {
+            "id": "release-1",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "000000000000000000000000000000000000001f",
+            "approved_commit_sha": "000000000000000000000000000000000000001e",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          },
+          "release-2": {
+            "id": "release-2",
+            "project_id": "project-export",
+            "state": "blocked",
+            "candidate_commit_sha": "0000000000000000000000000000000000000020",
+            "approved_commit_sha": "000000000000000000000000000000000000001f",
+            "next_action": "retry_release_gate",
+            "blocked_reason_code": "candidate_verification_failed",
+            "next_action_hint": "Inspect the failed candidate check; retry only after its cause is resolved."
+          }
+        },
+        "project_repo": {
+          "prepared": true,
+          "project_id": "project-export",
+          "managed_repo_id": "managed-export",
+          "target_dir": "/home/agent/repos/export",
+          "git_work_contexts": [
+            {
+              "id": "context-0",
+              "branch_context_id": "context-0",
+              "agent_id": "trudy",
+              "task_id": "task-0",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000001",
+              "agent_branch": "agents/session-trudy/task-0",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-0",
+              "state": "active"
+            },
+            {
+              "id": "context-1",
+              "branch_context_id": "context-1",
+              "agent_id": "trudy",
+              "task_id": "task-1",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000002",
+              "agent_branch": "agents/session-trudy/task-1",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-1",
+              "state": "active"
+            },
+            {
+              "id": "context-2",
+              "branch_context_id": "context-2",
+              "agent_id": "trudy",
+              "task_id": "task-2",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000003",
+              "agent_branch": "agents/session-trudy/task-2",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-2",
+              "state": "active"
+            },
+            {
+              "id": "context-3",
+              "branch_context_id": "context-3",
+              "agent_id": "trudy",
+              "task_id": "task-3",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000004",
+              "agent_branch": "agents/session-trudy/task-3",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-3",
+              "state": "active"
+            },
+            {
+              "id": "context-4",
+              "branch_context_id": "context-4",
+              "agent_id": "trudy",
+              "task_id": "task-4",
+              "base_branch": "main",
+              "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_sha": "0000000000000000000000000000000000000005",
+              "agent_branch": "agents/session-trudy/task-4",
+              "dispatch_id": "dispatch-example",
+              "worktree_path": "/home/agent/worktrees/export/task-4",
+              "state": "active"
+            }
+          ]
+        },
+        "project_repos": [
+          {
+            "prepared": true,
+            "project_id": "project-export",
+            "managed_repo_id": "managed-export",
+            "target_dir": "/home/agent/repos/export",
+            "git_work_contexts": [
+              {
+                "id": "context-0",
+                "branch_context_id": "context-0",
+                "agent_id": "trudy",
+                "task_id": "task-0",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000001",
+                "agent_branch": "agents/session-trudy/task-0",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-0",
+                "state": "active"
+              },
+              {
+                "id": "context-1",
+                "branch_context_id": "context-1",
+                "agent_id": "trudy",
+                "task_id": "task-1",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000002",
+                "agent_branch": "agents/session-trudy/task-1",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-1",
+                "state": "active"
+              },
+              {
+                "id": "context-2",
+                "branch_context_id": "context-2",
+                "agent_id": "trudy",
+                "task_id": "task-2",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000003",
+                "agent_branch": "agents/session-trudy/task-2",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-2",
+                "state": "active"
+              },
+              {
+                "id": "context-3",
+                "branch_context_id": "context-3",
+                "agent_id": "trudy",
+                "task_id": "task-3",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000004",
+                "agent_branch": "agents/session-trudy/task-3",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-3",
+                "state": "active"
+              },
+              {
+                "id": "context-4",
+                "branch_context_id": "context-4",
+                "agent_id": "trudy",
+                "task_id": "task-4",
+                "base_branch": "main",
+                "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "commit_sha": "0000000000000000000000000000000000000005",
+                "agent_branch": "agents/session-trudy/task-4",
+                "dispatch_id": "dispatch-example",
+                "worktree_path": "/home/agent/worktrees/export/task-4",
+                "state": "active"
+              }
+            ]
+          }
+        ],
+        "manager_fallback_summary": {
+          "reason": "no_team_member_wakeable",
+          "projects": [
+            {
+              "id": "project-export",
+              "name": "Export service",
+              "team_id": "team-export",
+              "status": "active",
+              "goals": [
+                {
+                  "id": "goal-export",
+                  "state": "active",
+                  "description": "Deliver a reproducible export with independent review."
+                }
+              ]
+            }
+          ],
+          "open_work": [
+            {
+              "id": "task-0",
+              "project_id": "project-export",
+              "owner_agent_id": "trudy",
+              "title": "Export requirement 0",
+              "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+              "priority": 1,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-0",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-1",
+              "project_id": "project-export",
+              "owner_agent_id": "trudy",
+              "title": "Export requirement 1",
+              "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
+              "priority": 2,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-0",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-1"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-2",
+              "project_id": "project-export",
+              "owner_agent_id": "trudy",
+              "title": "Export requirement 2",
+              "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
+              "priority": 3,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-1",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-3",
+              "project_id": "project-export",
+              "owner_agent_id": "trudy",
+              "title": "Export requirement 3",
+              "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
+              "priority": 4,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-1",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-1"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            },
+            {
+              "id": "task-4",
+              "project_id": "project-export",
+              "owner_agent_id": "trudy",
+              "title": "Export requirement 4",
+              "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
+              "priority": 5,
+              "state": "in_progress",
+              "work_lineage_id": "lineage-2",
+              "dependency_status": "satisfied",
+              "child_task_ids": [],
+              "blocked_by_task_ids": [],
+              "deliverable_ids": [],
+              "source_evidence_snapshot_ids": [
+                "evidence-0"
+              ],
+              "outcome_contract": {
+                "allowed_dispositions": [
+                  "delivered",
+                  "evidenced_noop"
+                ]
+              },
+              "deliverable_contract": {
+                "require_git_provenance": true,
+                "required_contribution_task_ids": []
+              },
+              "assessment": {
+                "readiness": "ready",
+                "verification_context": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply."
+              },
+              "created_at": "2026-09-01T12:00:00Z",
+              "updated_at": "2026-09-01T12:00:00Z"
+            }
+          ],
+          "agents": [],
+          "pending_inbox": [],
+          "review_requests": [],
+          "summary_counts": {
+            "open_task_count": 5
+          },
+          "pending_initial_release_decisions": [],
+          "routing_gaps": []
+        },
+        "supervisory_overview": {
+          "read_only": true,
+          "execution_scope": "current_dispatch",
+          "project_count": 1,
+          "projects": [
+            {
+              "id": "project-export",
+              "status": "active",
+              "task_counts": {
+                "in_progress": 5,
+                "pending": 5
+              },
+              "open_blocker_count": 2,
+              "release_counts": {
+                "blocked": 3
+              }
+            }
+          ],
+          "retrieval": {
+            "tasks": {
+              "tool": "team_list_tasks",
+              "paginate": true
+            }
+          }
+        }
+      },
+      "targeted_reads": [
+        {
+          "collection": "tasks",
+          "id": "task-0"
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0"
+        }
+      ]
+    }
+  ]
+}

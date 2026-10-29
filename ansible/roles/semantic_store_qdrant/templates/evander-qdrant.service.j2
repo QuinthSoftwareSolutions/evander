@@ -1,0 +1,17 @@
+[Unit]
+Description=Evander Qdrant Semantic Store
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f evander-qdrant
+ExecStart=/usr/bin/docker run --name evander-qdrant --rm --publish {{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}:6333 --volume {{ evander_qdrant_data_dir }}:/qdrant/storage {{ evander_qdrant_image }}
+ExecStop=/usr/bin/docker stop evander-qdrant
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

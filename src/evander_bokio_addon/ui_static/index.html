@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-admin-design data-addon="bokio">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bokio review</title>
+    <script>
+      (function () {
+        const storageKey = "admin-web:theme";
+        function applyTheme() {
+          let theme = null;
+          try { theme = window.localStorage.getItem(storageKey); } catch (_error) {}
+          if (theme !== "dark" && theme !== "light") {
+            theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        }
+        applyTheme();
+        window.addEventListener("storage", applyTheme);
+      })();
+    </script>
+    <link rel="stylesheet" href="admin-design.css" />
+    <script type="module" src="admin-design.js"></script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="toolbar">
+        <div>
+          <div class="eyebrow">Bookkeeping workspace</div>
+          <h1>Bokio</h1>
+          <p id="connection-summary">Loading connection state...</p>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </header>
+
+      <div id="notice" class="notice hidden" role="status"></div>
+      <div id="locked-notice" class="notice warning hidden">
+        Unlock privileged operations in Admin Web to approve, reject, execute, or retry actions.
+      </div>
+
+      <section class="summary-grid">
+        <article class="summary-card">
+          <span>Company</span>
+          <strong id="company-name">Not loaded</strong>
+          <small id="company-id">—</small>
+        </article>
+        <article class="summary-card">
+          <span>Awaiting review</span>
+          <strong id="pending-count">0</strong>
+          <small>Prepared actions</small>
+        </article>
+        <article class="summary-card">
+          <span>Needs attention</span>
+          <strong id="attention-count">0</strong>
+          <small>Reconcile before retrying</small>
+        </article>
+        <article class="summary-card">
+          <span>Autonomous writes</span>
+          <strong id="operation-count">0</strong>
+          <small>Recent supplier-invoice operations</small>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <aside class="queue panel">
+          <div class="panel-heading">
+            <div>
+              <div class="eyebrow">Human review</div>
+              <h2>Prepared actions</h2>
+            </div>
+          </div>
+          <div class="filters">
+            <input id="action-search" type="search" placeholder="Find action" aria-label="Find action" />
+            <select id="status-filter" aria-label="Filter by status">
+              <option value="open">Open actions</option>
+              <option value="all">All statuses</option>
+              <option value="pending_approval">Pending approval</option>
+              <option value="approved">Approved</option>
+              <option value="executing">Executing</option>
+              <option value="failed">Failed</option>
+              <option value="needs_attention">Needs attention</option>
+              <option value="executed">Executed</option>
+              <option value="rejected">Rejected</option>
+            </select>
+            <select id="kind-filter" aria-label="Filter by action type">
+              <option value="all">All action types</option>
+              <option value="supplier_invoice">Supplier invoices</option>
+              <option value="journal_entry">Journal entries</option>
+              <option value="invoice">Customer invoices</option>
+              <option value="bank_payment">Bank payments</option>
+            </select>
+          </div>
+          <div id="actions" class="action-list"></div>
+        </aside>
+
+        <article class="detail panel">
+          <div id="action-detail" class="empty-state">
+            Select a prepared action to review its payload and audit history.
+          </div>
+        </article>
+      </section>
+
+      <section class="panel operations-panel">
+        <div class="panel-heading">
+          <div>
+            <div class="eyebrow">Idempotency ledger</div>
+            <h2>Recent autonomous supplier-invoice operations</h2>
+          </div>
+          <p>Bank payments are not available as autonomous MCP writes.</p>
+        </div>
+        <div id="operations" class="operations"></div>
+      </section>
+    </main>
+    <script src="./bokio-ui.js"></script>
+  </body>
+</html>

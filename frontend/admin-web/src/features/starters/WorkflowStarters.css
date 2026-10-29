@@ -1,0 +1,59 @@
+.workflow-starters { max-width: 1240px; margin: 0 auto; padding: clamp(20px, 4vw, 48px); color: #203e45; }
+.starters-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+.starters-header h1 { font-size: clamp(28px, 3vw, 40px); margin: 10px 0; letter-spacing: -.04em; }
+.starters-header p { max-width: 560px; line-height: 1.6; }
+.starters-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: .14em; font-weight: 700; color: #376b64; }
+.workflow-starters a { color: #176c62; }
+.starters-editor-link, .starters-actions a { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.starters-steps { list-style: none; display: flex; flex-wrap: wrap; gap: 24px; border-block: 1px solid #73918b40; padding: 18px 0; margin: 0 0 30px; }
+.starters-steps li { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #647c7b; }
+.starters-steps span { display: grid; place-items: center; border: 1px solid #839d9850; border-radius: 50%; height: 25px; width: 25px; font-size: 11px; }
+.starters-steps .is-current { color: #176c62; font-weight: 600; }
+.starters-steps .is-current span { background: #176c62; border-color: #176c62; color: white; }
+.starters-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+.workflow-starters .starter-card { display: flex; flex-direction: column; text-align: left; gap: 12px; border-radius: 14px; padding: 26px; background: #f9fcfabd; border: 1px solid #7d9c944f; color: inherit; cursor: pointer; box-shadow: none; }
+.workflow-starters .starter-card:hover, .workflow-starters .starter-card.selected { border-color: #298875; background: #f7fffb; }
+.starter-card small { color: #577a70; font-size: 12px; }
+.starter-card h2 { margin: 0; font-size: 19px; line-height: 1.3; }
+.starter-card p { margin: 0; font-size: 14px; line-height: 1.6; font-weight: 400; }
+.starter-card > span { display: flex; align-items: center; gap: 8px; margin-top: auto; color: #176c62; font-size: 13px; }
+.starters-caption { font-size: 13px; color: #526e69; margin: 18px 0 28px; }
+.starters-workspace { display: grid; grid-template-columns: 1.1fr 1fr; gap: 22px; align-items: start; }
+.starters-panel { border: 1px solid #7d9c944f; border-radius: 14px; padding: 28px; background: #f9fcfad9; }
+.starters-panel h2 { margin: 10px 0 22px; font-size: 21px; overflow-wrap: anywhere; }
+.starters-panel p { font-size: 14px; line-height: 1.6; }
+.starters-field { display: flex; flex-direction: column; gap: 7px; margin: 18px 0; font-size: 13px; font-weight: 600; }
+.starters-field small { font-weight: 400; line-height: 1.5; color: #526e69; }
+.starters-field input, .starters-field select, .starters-field textarea { width: 100%; padding: 11px 12px; font: inherit; font-weight: 400; border: 1px solid #809f985c; border-radius: 7px; background: #fff; color: #203e45; }
+.starters-field textarea { resize: vertical; }
+.starters-panel button, .starters-recent button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 16px; border: 1px solid #327b6d; border-radius: 7px; background: #176c62; color: white; cursor: pointer; font: inherit; font-size: 13px; }
+.workflow-starters button:disabled { opacity: .5; cursor: not-allowed; }
+.workflow-starters button:focus-visible, .workflow-starters a:focus-visible { outline: 3px solid #54a790; outline-offset: 4px; }
+.starters-checks { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 12px; }
+.starters-checks li { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.starters-checks small, .starters-flow small { display: block; color: #526e69; font-size: 11px; margin-top: 4px; }
+.starter-check { height: 25px; width: 25px; display: grid; place-items: center; border-radius: 50%; background: #faecd3; }
+.starter-check.ready { background: #d9eee3; color: #176c62; }
+.starters-flow { padding-left: 20px; font-size: 14px; }
+.starters-flow li { padding: 8px 0; }
+.workflow-starters details { font-size: 13px; margin: 24px 0; }
+.workflow-starters pre { padding: 16px; font-size: 11px; max-height: 320px; overflow: auto; background: #12362a0a; }
+.starters-notice { padding: 16px 18px; border: 1px solid #b49c6050; border-radius: 9px; background: #fbf1d8a1; font-size: 14px; line-height: 1.6; margin: 18px 0; }
+.starters-notice.error { background: #fff0ed; border-color: #bf716a; color: #8b382d; }
+.starters-notice.success { background: #e0f3e8; border-color: #6caa89; }
+.starters-activated { max-width: 800px; margin: 0 auto; }
+.starters-activated > svg { color: #298875; }
+.starters-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 20px; }
+.starters-recent { margin-top: 36px; }
+.starters-recent h2 { font-size: 16px; }
+.starters-recent button { background: transparent; color: inherit; margin: 0 12px 12px 0; }
+:root[data-theme="dark"] .workflow-starters { color: #d8e9e7; }
+:root[data-theme="dark"] .workflow-starters .starter-card, :root[data-theme="dark"] .starters-panel { background: #142932; border-color: #698e8b50; }
+:root[data-theme="dark"] .workflow-starters .starter-card.selected, :root[data-theme="dark"] .workflow-starters .starter-card:hover { border-color: #75c8b1; background: #193a40; }
+:root[data-theme="dark"] .starters-field input, :root[data-theme="dark"] .starters-field select, :root[data-theme="dark"] .starters-field textarea { background: #0b2029; color: #d8e9e7; }
+:root[data-theme="dark"] .workflow-starters small, :root[data-theme="dark"] .starters-caption, :root[data-theme="dark"] .starters-eyebrow { color: #acc7c0; }
+:root[data-theme="dark"] .workflow-starters a, :root[data-theme="dark"] .starter-card > span, :root[data-theme="dark"] .starters-steps .is-current { color: #8ed7c1; }
+:root[data-theme="dark"] .starters-notice { background: #433b26; color: #f3e7c4; }
+:root[data-theme="dark"] .starters-notice.error { background: #472e30; color: #ffd4ca; }
+:root[data-theme="dark"] .starters-notice.success { background: #183b32; color: #c2ecd8; }
+@media (max-width: 800px) { .starters-header { align-items: flex-start; flex-direction: column; } .starters-workspace { grid-template-columns: 1fr; } .starters-panel { padding: 22px; } .starters-steps { gap: 14px; } }

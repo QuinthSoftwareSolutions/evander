@@ -1,0 +1,27 @@
+flowchart LR
+    operator[Operator\nAdmin Web and CLI]
+    provider[External providers\nADO, Teams, Discord, email]
+    control[Evander control plane\nHost-owned policy and state]
+    gateway[MCP gateway\nCapability boundary]
+    relay[Host relays\nModel, package, HTTP]
+    git[Managed Git\nBare repositories and refs]
+    guest[Disposable execution\nVM or worker container]
+    artifacts[Artifacts and reports\nHost-owned durable output]
+
+    operator --> control
+    provider <--> control
+    control --> gateway
+    control --> git
+    control --> guest
+    guest --> gateway
+    guest --> relay
+    guest <--> git
+    guest --> artifacts
+    control --> artifacts
+
+    classDef host fill:#e7f3f4,stroke:#29788c,color:#17313b;
+    classDef isolated fill:#f6efe2,stroke:#9a6b13,color:#3a3424;
+    classDef external fill:#edf2ee,stroke:#58736a,color:#17313b;
+    class control,gateway,relay,git,artifacts host;
+    class guest isolated;
+    class operator,provider external;

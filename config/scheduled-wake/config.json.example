@@ -1,0 +1,21 @@
+{
+  "runtime_dir": "runtime",
+  "directories": [],
+  "poll_interval_seconds": 30,
+  "jitter_seconds": 5,
+  "backoff_seconds": 60,
+  "cooldown_seconds": 60,
+  "late_threshold_seconds": 300,
+  "completion_confirmation_retry_max_attempts": 3,
+  "completion_confirmation_retry_window_seconds": 86400,
+  "completion_confirmation_retry_base_backoff_seconds": 60,
+  "completion_confirmation_retry_max_backoff_seconds": 600,
+  "lock_path": null,
+  "session_cooldown_path": null,
+  "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+  "resume_script_path": "scripts/resume_issue_agent.sh",
+  "wake_state_path": null,
+  "vm_user": "agent",
+  "resume_timeout_seconds": 1200,
+  "scheduled_wake_prefix_text": ""
+}

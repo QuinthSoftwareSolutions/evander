@@ -1,0 +1,7 @@
+test-output/
+.pytest_cache/
+*.egg-info/
+build/
+helper/bin/
+helper/obj/
+evander_browser_sessions_addon/ui_static/helper-*.zip

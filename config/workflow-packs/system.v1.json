@@ -1,0 +1,167 @@
+{
+  "pack_id": "system",
+  "pack_version": "v1",
+  "description": "Built-in hidden workflows required by the control plane.",
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "node": {
+          "id": "system.chat_assistant",
+          "display_name": "System Chat Assistant",
+          "type": "trigger:system:chat-assistant",
+          "config": {}
+        }
+      },
+      {
+        "node": {
+          "id": "system.chat_assistant.ensure_session",
+          "display_name": "Resolve chat assistant session",
+          "type": "effect:chat-assistant:ensure-session",
+          "config": {
+            "assistant_capability_mode": "${{system.chat_assistant.assistant_capability_mode}}",
+            "assistant_scope": "admin_chat",
+            "backend": "${{system.chat_assistant.backend}}",
+            "content": "${{system.chat_assistant.content}}",
+            "thread_id": "${{system.chat_assistant.thread_id}}",
+            "user_id": "${{system.chat_assistant.user_id}}",
+            "user_message_id": "${{system.chat_assistant.user_message_id}}"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.chat_assistant.enqueue_prompt",
+          "display_name": "Enqueue chat assistant prompt",
+          "type": "effect:agent:enqueue-prompt",
+          "config": {
+            "execution_backend": "${{system.chat_assistant.ensure_session.execution_backend}}",
+            "model": "${{system.chat_assistant.ensure_session.model}}",
+            "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+            "queue_key": "chat:${{system.chat_assistant.ensure_session.thread_id}}:${{system.chat_assistant.ensure_session.user_message_id}}",
+            "resume_thread_id": "${{system.chat_assistant.ensure_session.agent_thread_id}}",
+            "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+            "target": "${{system.chat_assistant.ensure_session.session_id}}",
+            "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
+            "vm_user": "agent"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.requested",
+          "display_name": "Code consultation requested",
+          "type": "trigger:event",
+          "config": {
+            "event_type": "agent.consultation.requested"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.prepare",
+          "display_name": "Prepare code consultation worker",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.requested.payload.consultation_id}}",
+            "operation": "prepare"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.prompt",
+          "display_name": "Run code consultation",
+          "type": "effect:agent:prompt",
+          "config": {
+            "model": "${{system.code_consultation.prepare.model ?? null}}",
+            "prompt": "${{system.code_consultation.prepare.prompt}}",
+            "session_id": "${{system.code_consultation.prepare.session_id}}",
+            "target": "${{system.code_consultation.prepare.session_id}}",
+            "vm_user": "agent"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.finalize_completed",
+          "display_name": "Finalize completed code consultation",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.prepare.consultation_id}}",
+            "operation": "finalize",
+            "outcome": "completed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.finalize_error",
+          "display_name": "Finalize failed code consultation",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.prepare.consultation_id}}",
+            "operation": "finalize",
+            "outcome": "error",
+            "reason": "${{system.code_consultation.prompt.failure_reason ?? system.code_consultation.prompt.error_message ?? 'consultation worker failed'}}"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.terminate_requested",
+          "display_name": "Code consultation termination requested",
+          "type": "trigger:event",
+          "config": {
+            "event_type": "agent.consultation.terminate"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.terminate",
+          "display_name": "Terminate code consultation worker",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.terminate_requested.payload.consultation_id}}",
+            "operation": "terminate",
+            "reason": "${{system.code_consultation.terminate_requested.payload.reason}}",
+            "status": "${{system.code_consultation.terminate_requested.payload.status}}"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "system.chat_assistant",
+        "target_id": "system.chat_assistant.ensure_session"
+      },
+      {
+        "source_id": "system.chat_assistant.ensure_session",
+        "target_id": "system.chat_assistant.enqueue_prompt"
+      },
+      {
+        "source_id": "system.code_consultation.requested",
+        "target_id": "system.code_consultation.prepare"
+      },
+      {
+        "source_id": "system.code_consultation.prepare",
+        "target_id": "system.code_consultation.prompt"
+      },
+      {
+        "source_id": "system.code_consultation.prompt",
+        "source_port": "completed",
+        "target_id": "system.code_consultation.finalize_completed"
+      },
+      {
+        "source_id": "system.code_consultation.prompt",
+        "source_port": "error",
+        "target_id": "system.code_consultation.finalize_error"
+      },
+      {
+        "source_id": "system.code_consultation.terminate_requested",
+        "target_id": "system.code_consultation.terminate"
+      }
+    ]
+  }
+}

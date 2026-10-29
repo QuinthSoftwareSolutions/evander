@@ -1,0 +1,72 @@
+/* Canonical Admin Web tokens. Add-on copies are produced by sync-design-assets.mjs. */
+:root {
+  color-scheme: light;
+  --ui-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ui-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --ui-canvas: #f7f8fa;
+  --ui-surface: #ffffff;
+  --ui-navigation: #f3f5f7;
+  --ui-subtle: #edf0f3;
+  --ui-text: #24323d;
+  --ui-muted: #62727e;
+  --ui-border: #dce2e7;
+  --ui-control-border: #b9c5ce;
+  --ui-accent: #17677a;
+  --ui-accent-hover: #115468;
+  --ui-on-accent: #ffffff;
+  --ui-selected: #e9f3f5;
+  --ui-success: #237251;
+  --ui-success-surface: #edf7f0;
+  --ui-warning: #925c0d;
+  --ui-warning-surface: #fff5df;
+  --ui-danger: #a53d45;
+  --ui-danger-surface: #fceef0;
+  --ui-overlay: rgb(16 29 42 / 35%);
+  --ui-shadow: 0 16px 48px rgb(16 29 42 / 18%);
+  /* Square surfaces and controls; pills, avatars, and circular indicators opt in. */
+  --ui-radius: 0;
+  --ui-dialog-radius: 0;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-6: 24px;
+  --ui-control-height: 32px;
+  --ui-row-height: 40px;
+  --ui-row-padding: 6px;
+  --ui-section-padding: 16px;
+  --ui-navigation-width: 208px;
+  --ui-inspector-width: 368px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ui-canvas: #151b22;
+  --ui-surface: #1b232c;
+  --ui-navigation: #171e26;
+  --ui-subtle: #26313d;
+  --ui-text: #e0e7ee;
+  --ui-muted: #a2afbd;
+  --ui-border: #35424e;
+  --ui-control-border: #61707e;
+  --ui-accent: #87cad9;
+  --ui-accent-hover: #a5deea;
+  --ui-on-accent: #10262e;
+  --ui-selected: #233d47;
+  --ui-success: #88cca7;
+  --ui-success-surface: #233b31;
+  --ui-warning: #e5bc73;
+  --ui-warning-surface: #3b3324;
+  --ui-danger: #eea0a8;
+  --ui-danger-surface: #422c35;
+  --ui-overlay: rgb(0 0 0 / 55%);
+  --ui-shadow: 0 16px 48px rgb(0 0 0 / 32%);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --ui-control-height: 44px;
+    --ui-row-height: 48px;
+    --ui-row-padding: 10px;
+  }
+}

@@ -1,0 +1,48 @@
+{{ evander_admin_web_caddy_hostname }} {
+{% if evander_teams_notifications_public_base_url | length > 0 and evander_teams_notifications_caddy_hostname == evander_admin_web_caddy_hostname %}
+	handle /msgraph/teams/* {
+		reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}
+	}
+
+{% endif %}
+{% if evander_admin_web_browser_relay_enabled | default(evander_admin_web_browser_relay_env.stat.exists) | bool %}
+	handle /_browser/* {
+		reverse_proxy {{ evander_admin_web_browser_relay_upstream_host }}:{{ evander_admin_web_browser_relay_upstream_port }}
+	}
+
+{% endif %}
+	handle /api/* {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
+	handle /public/* {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
+	handle /addons/* {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
+	handle /healthz {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
+	@admin_web_index path / /index.html
+	handle @admin_web_index {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
+	handle {
+		root * {{ evander_admin_web_frontend_dist_dir }}
+		try_files {path} =404
+		file_server
+	}
+}
+{% if evander_teams_notifications_public_base_url | length > 0 and evander_teams_notifications_caddy_hostname != evander_admin_web_caddy_hostname %}
+
+{{ evander_teams_notifications_caddy_hostname }} {
+	handle /msgraph/teams/* {
+		reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}
+	}
+}
+{% endif %}

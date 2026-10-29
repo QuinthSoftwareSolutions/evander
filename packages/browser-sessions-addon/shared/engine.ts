@@ -1,0 +1,251 @@
+import { accessibleElements, targetSignature, pageSignature } from "./observation.js";
+import {nativeControls, nativeIdentity, dateValue, selectOption, validDate, type NativeControl} from "./native-controls.js";
+import setNativeValueFunction from "./set-native-value.js.txt";
+export type Send = (method: string, params?: Record<string, unknown>) => Promise<any>;
+export type State = { id: string; controller: string | null; control_generation: number;
+  allowed_origins: string[]; expires_at: number };
+export class BrowserEngine {
+  private readonly pageId = crypto.randomUUID();
+  private observation = "";
+  private refs = new Map<string, number>();
+  private epoch = 0;
+  private signatures = new Map<string, string>();
+  private pageContext = "";
+  private native = new Map<number, NativeControl>();
+  constructor(private send: Send, private state: State, private emit: (event: any) => void) {}
+  update(state: State) {
+    if (state.id === this.state.id && state.control_generation >= this.state.control_generation) this.state = state;
+  }
+  navigate() { this.epoch += 1; this.observation = ""; this.refs.clear(); this.native.clear(); }
+  private async location() {
+    const tree = await this.send("Page.getFrameTree");
+    return tree.frameTree.frame.url as string;
+  }
+  private async tree() {
+    const tree=await this.send("Accessibility.getFullAXTree");
+    for (const node of tree.nodes ?? []) {
+      if (node.role?.value!=="Date" || !node.backendDOMNodeId) continue;
+      try {
+        const {node:element}=await this.send("DOM.describeNode",{backendNodeId:node.backendDOMNodeId});
+        const attributes=new Map<string,string>();
+        for (let i=0;i<(element.attributes?.length ?? 0);i+=2) attributes.set(element.attributes[i],element.attributes[i+1]);
+        if (element.nodeName!=="INPUT" || attributes.get("type")!=="date") continue;
+        const min=attributes.get("min"),max=attributes.get("max"),step=attributes.get("step"),base=attributes.get("value");
+        if (min && !validDate(min) || max && !validDate(max) || (step?.length ?? 0)>32) continue;
+        node.evanderInput={readonly:attributes.has("readonly"),min:min||undefined,max:max||undefined,
+          step:step?.toLowerCase()==="any"?"any":step&&Number.isFinite(Number(step))&&Number(step)>0?step:"1",
+          stepBase:min||base&&validDate(base)&&base||"1970-01-01"};
+      } catch { /* Unsupported endpoints retain observation, without advertising date fill. */ }
+    }
+    return tree;
+  }
+  private guard(command: any, actor: string, epoch?: number) {
+    if (command.deadline_at && Date.now()/1000 >= command.deadline_at) throw new Error("run_deadline");
+    if (Date.now() / 1000 >= this.state.expires_at) throw new Error("session_expired");
+    if (command.generation !== this.state.control_generation) throw new Error("stale_control");
+    if (!["observe", "highlight"].includes(command.action) && this.state.controller !== actor)
+      throw new Error("control_required");
+    if (epoch !== undefined && epoch !== this.epoch) throw new Error("stale_observation");
+  }
+  async execute(command: any, actor: string) {
+    const epoch = this.epoch;
+    // Async reads and focus can race navigation or a local revocation. Fence
+    // every input primitive against the same document and current authority.
+    const fence = async () => {
+      this.guard(command, actor, epoch);
+      const current = await this.location();
+      this.guard(command, actor, epoch);
+      if (!this.state.allowed_origins.includes(new URL(current).origin)) throw new Error("origin_denied");
+      return current;
+    };
+    let edited = false, mousePressed = false, inputStarted = false;
+    const control = this.native.get(this.refs.get(command.ref) ?? -1);
+    const nativeOperation = command.action==="select" || command.action==="fill" && control?.kind==="date";
+    const validateTarget = async () => {
+      if (!(command.revalidate || nativeOperation) || !command.ref) return;
+      const {nodes} = await this.tree();
+      const elements = accessibleElements(nodes ?? []).elements;
+      const fresh = elements.find(item => item.ref===command.ref);
+      const saved = this.signatures.get(command.ref);
+      if (!fresh || fresh.disabled || nativeOperation && fresh.readonly || !saved) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      if (nativeOperation && nativeIdentity(nativeControls(nodes).get(this.refs.get(command.ref)!))!==nativeIdentity(control))
+        throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      const before = JSON.parse(saved), after = JSON.parse(targetSignature(fresh));
+      // Mouse-down can expand/select its own control before mouse-up. Keep
+      // every other form control fenced while allowing that one transition.
+      const context = mousePressed ? elements.map(item=>item.ref===command.ref ? {
+        ...item,value:before.value,checked:before.checked,selected:before.selected,expanded:before.expanded
+      } : item) : elements;
+      if (!edited && pageSignature(context)!==this.pageContext) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+      // Key-down/text can change a field's mutable state as part of this command.
+      if (edited || mousePressed) for (const key of ["value","checked","selected","expanded","date_parts"]) { delete before[key]; delete after[key]; }
+      if (JSON.stringify(before)!==JSON.stringify(after)) throw new Error(inputStarted ? "outcome_unknown" : "stale_target");
+    };
+    const input = async (method: string, params: Record<string, unknown> = {}) => {
+      await validateTarget();
+      await fence();
+      this.guard(command, actor, epoch);
+      try {
+        inputStarted=true;
+        return await this.send(method, params);
+      } finally {
+        if (method === "Input.insertText" || method === "Input.dispatchKeyEvent" && params.type === "keyDown") edited=true;
+        if (method === "Input.dispatchMouseEvent" && params.type === "mousePressed") mousePressed=true;
+      }
+    };
+    const press = async (key: string, text?: string, code?: string, keyCode?: number) => {
+      const identity = { key, ...(code ? { code } : {}),
+        ...(keyCode ? { windowsVirtualKeyCode: keyCode } : {}) };
+      await input("Input.dispatchKeyEvent", { type: "keyDown", ...identity,
+        ...(text !== undefined ? { text, unmodifiedText: text } : {}) });
+      await input("Input.dispatchKeyEvent", { type: "keyUp", ...identity });
+    };
+    const url = await fence();
+    if (command.action === "observe") {
+      const before = this.epoch;
+      const tree = await this.tree();
+      const nodes = tree.nodes;
+      this.native=nativeControls(nodes ?? []);
+      this.refs.clear();
+      this.signatures.clear();
+      const {elements,truncated} = accessibleElements(nodes ?? []);
+      this.pageContext = pageSignature(elements);
+      for (const element of elements) {
+        this.refs.set(element.ref,Number(element.ref.slice(5)));
+        this.signatures.set(element.ref,targetSignature(element));
+      }
+      let screenshot: any;
+      for (let attempt = 0; command.include_image !== false && attempt < 3; attempt++) {
+        try {
+          screenshot = await this.send("Page.captureScreenshot", { format: "jpeg", quality: 65,
+            captureBeyondViewport: false });
+          break;
+        } catch (error) {
+          if (attempt === 2) throw error;
+          await new Promise(resolve => setTimeout(resolve, 75));
+        }
+      }
+      await fence();
+      if (before !== this.epoch) throw new Error("stale_observation");
+      const metrics = await this.send("Page.getLayoutMetrics");
+      const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
+      await fence();
+      this.observation = crypto.randomUUID();
+      return { observation_id: this.observation, page_id: this.pageId, page_epoch: String(this.epoch), url,
+        elements, text: tree.text ?? (nodes ?? []).filter((n: any)=>n.role?.value==="StaticText").map((n: any)=>n.name?.value ?? "").join(" ").slice(0,12000),
+        title: String(tree.title ?? (nodes ?? []).find((n: any)=>n.role?.value==="RootWebArea")?.name?.value ?? "").slice(0,400),
+        viewport:viewport ? {x:viewport.pageX ?? 0,y:viewport.pageY ?? 0} : undefined,
+        truncated:truncated || tree.truncated === true, ...(screenshot ? {image:screenshot.data,mime_type:"image/jpeg"} : {}) };
+    }
+    if (!["navigate", "reload"].includes(command.action) && command.observation_id !== this.observation)
+      throw new Error("stale_observation");
+    if (command.action === "navigate") {
+      if (!this.state.allowed_origins.includes(new URL(command.url).origin)) throw new Error("origin_denied");
+      await input("Page.navigate", { url: command.url });
+      this.navigate();
+      return { success: true };
+    }
+    if (command.action === "reload") {
+      await input("Page.reload"); this.navigate(); return { success: true };
+    }
+    await validateTarget();
+    let x = command.x, y = command.y;
+    if (command.ref && ["click", "hover", "highlight", "scroll"].includes(command.action)) {
+      const backendNodeId = this.refs.get(command.ref);
+      if (!backendNodeId) throw new Error("stale_observation");
+      if (!["highlight", "scroll"].includes(command.action)) {
+        await input("DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        await fence();
+      }
+      const { model } = await this.send("DOM.getBoxModel", { backendNodeId });
+      x = (model.content[0] + model.content[4]) / 2;
+      y = (model.content[1] + model.content[5]) / 2;
+    }
+    const metrics = await this.send("Page.getLayoutMetrics");
+    const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
+    if (["click", "hover", "highlight"].includes(command.action)) {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 ||
+          x > viewport.clientWidth || y > viewport.clientHeight) throw new Error("invalid_coordinates");
+      await fence();
+      this.emit({ kind: "pointer", x, y, action: command.action });
+      if (command.action === "highlight") return { success: true };
+      this.guard(command, actor);
+      await input("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      if (command.action === "click") {
+        this.guard(command, actor);
+        await input("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+        await input("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+      }
+    } else if (nativeOperation) {
+      const text=command.text ?? "";
+      if (!control || command.action==="select" && control.kind!=="select") throw new Error("unsupported_target");
+      if (control.kind==="date") {
+        if (!control.verified || control.readonly) throw new Error("unsupported_target");
+        if (text && (!validDate(text) || control.min && text<control.min || control.max && text>control.max)) throw new Error("invalid_date");
+      } else {
+        selectOption(control,text);
+        if (JSON.parse(this.signatures.get(command.ref) ?? "{}").expanded===true) throw new Error("unsupported_target");
+      }
+      const {frameTree}=await this.send("Page.getFrameTree");
+      const {executionContextId}=await this.send("Page.createIsolatedWorld",{frameId:frameTree.frame.id,worldName:"evander-native-controls"});
+      await fence();
+      const {object}=await this.send("DOM.resolveNode",{backendNodeId:this.refs.get(command.ref),executionContextId});
+      if (!object?.objectId) throw new Error("stale_target");
+      try {
+        const result=await input("Runtime.callFunctionOn",{objectId:object.objectId,functionDeclaration:setNativeValueFunction.replace(/\r\n/g,"\n"),
+          arguments:[{value:control.kind},{value:text},{value:new URL(url).origin},{value:Math.min(command.deadline_at ?? Infinity,Date.now()/1000+5,this.state.expires_at)}],returnByValue:true});
+        if (result.exceptionDetails) throw new Error("outcome_unknown");
+        if (result.result?.value?.error) throw new Error(result.result.value.error);
+        if (!result.result?.value?.ok) throw new Error("outcome_unknown");
+      } finally {
+        await this.send("Runtime.releaseObject",{objectId:object.objectId}).catch(()=>{});
+      }
+      const tree=await this.tree();
+      const fresh=nativeControls(tree.nodes ?? []).get(this.refs.get(command.ref)!);
+      await fence();
+      if (nativeIdentity(fresh,true)!==nativeIdentity(control,true)) throw new Error("outcome_unknown");
+      if (fresh?.kind==="date") {
+        if (dateValue(fresh.parts)!==text || !text && fresh.parts.some(p=>p.value!==0)) throw new Error("outcome_unknown");
+      } else {
+        const element=accessibleElements(tree.nodes ?? []).elements.find(e=>e.ref===command.ref);
+        if (!element || element.value!==text || element.expanded===true) throw new Error("outcome_unknown");
+      }
+    } else if (command.action === "fill") {
+      const backendNodeId = this.refs.get(command.ref);
+      if (!backendNodeId) throw new Error("stale_observation");
+      await input("DOM.focus", { backendNodeId });
+      this.guard(command, actor);
+      await input("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65 });
+      await input("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65 });
+      this.guard(command, actor);
+      await input("Input.insertText", { text: command.text ?? "" });
+    } else if (command.action === "type") {
+      if (command.revalidate && command.ref) await input("DOM.focus", {backendNodeId:this.refs.get(command.ref)});
+      // Character key events also reach page-level shortcuts and scanner listeners.
+      // fill deliberately retains direct text insertion for editing a specific field.
+      for (const character of (command.text ?? "").replace(/\r\n/g, "\n")) {
+        const newline = character === "\n" || character === "\r";
+        await press(newline ? "Enter" : character, newline ? "\r" : character,
+          newline ? "Enter" : character === " " ? "Space" : undefined,
+          newline ? 13 : character === " " ? 32 : undefined);
+      }
+    } else if (command.action === "key") {
+      if (command.revalidate && command.ref) await input("DOM.focus", {backendNodeId:this.refs.get(command.ref)});
+      const keys: Record<string, number> = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8,
+        Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Space: 32 };
+      const key = command.text;
+      if (!keys[key]) throw new Error("unsupported_key");
+      await press(key === "Space" ? " " : key,
+        key === "Enter" ? "\r" : key === "Space" ? " " : undefined,
+        key, keys[key]);
+    } else if (command.action === "scroll") {
+      this.guard(command, actor);
+      await input("Input.dispatchMouseEvent", { type: "mouseWheel", x: x ?? 10, y: y ?? 10,
+        deltaX: command.delta_x ?? 0, deltaY: command.delta_y ?? 0 });
+    } else if (command.action === "dialog") {
+      this.guard(command, actor);
+      await input("Page.handleJavaScriptDialog", { accept: command.accept === true });
+    } else { throw new Error("unsupported_action"); }
+    return { success: true, url: await this.location() };
+  }
+}

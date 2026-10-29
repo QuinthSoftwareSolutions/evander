@@ -1,0 +1,58 @@
+---
+- name: Remove managed worker apt proxy when disabled
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ evander_worker_apt_proxy_config_path }}"
+  when: not (evander_worker_use_apt_proxy | bool)
+
+- name: Configure worker apt proxy
+  when: evander_worker_use_apt_proxy | bool
+  block:
+    - name: Assert worker apt proxy URL is configured
+      ansible.builtin.assert:
+        that:
+          - (evander_worker_apt_proxy_url | default('') | string | length) > 0
+        fail_msg: >-
+          evander_worker_apt_proxy_url must be configured when
+          evander_worker_use_apt_proxy is true.
+        success_msg: Worker apt proxy URL is configured.
+
+    - name: Ensure worker apt proxy config directory exists
+      ansible.builtin.file:
+        path: "{{ evander_worker_apt_proxy_config_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Render worker apt proxy config
+      ansible.builtin.template:
+        src: 01evander-proxy.j2
+        dest: "{{ evander_worker_apt_proxy_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Find existing worker apt source files
+      ansible.builtin.find:
+        paths:
+          - /etc/apt
+          - /etc/apt/sources.list.d
+        patterns:
+          - "*.list"
+          - "*.sources"
+        file_type: file
+        recurse: false
+        follow: false
+      register: evander_worker_apt_source_files
+
+    - name: Use HTTPS for Docker apt sources before the first refresh
+      ansible.builtin.replace:
+        path: "{{ item.path }}"
+        regexp: '(?m)^([ \t]*(?:URIs:[ \t]+|deb(?:-src)?[ \t]+(?:\[[^\]\n]*\][ \t]+)?))http://download\.docker\.com(?=/linux/)'
+        replace: '\1https://download.docker.com'
+      loop: "{{ evander_worker_apt_source_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"

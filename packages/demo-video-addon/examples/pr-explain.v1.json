@@ -1,0 +1,2000 @@
+{
+  "pack_id": "demo-video-example",
+  "pack_version": "v1",
+  "description": "Source-review example only. Import and adapt through the revision-gated editor after source approval; do not enable unchanged.",
+  "graphs": [
+    {
+      "id": "demo-video-example",
+      "name": "Explain a reviewed PR",
+      "directory_path": "root/example",
+      "node_ids": [
+        "explain-feedback",
+        "explain-human",
+        "explain-route",
+        "explain-standard",
+        "explain-dedupe",
+        "explain-parse",
+        "explain-dns",
+        "explain-valid-name",
+        "explain-valid-name-rejected",
+        "explain-login",
+        "explain-login-ready",
+        "explain-login-ready-rejected",
+        "explain-sessions",
+        "explain-one-session",
+        "explain-one-session-rejected",
+        "explain-pr",
+        "explain-active",
+        "explain-active-rejected",
+        "explain-branch",
+        "explain-builds",
+        "explain-found",
+        "explain-found-rejected",
+        "explain-build-state",
+        "explain-ack-ready",
+        "explain-ack-wait",
+        "explain-build-failed",
+        "explain-acknowledged",
+        "explain-wait",
+        "explain-renew",
+        "explain-copy-tools",
+        "explain-install-tools",
+        "explain-skills",
+        "explain-session",
+        "explain-conversation",
+        "explain-conversation-rejected",
+        "explain-preflight",
+        "explain-read-ready",
+        "explain-media-ready",
+        "explain-media-ready-rejected",
+        "explain-current-pr",
+        "explain-unchanged",
+        "explain-unchanged-rejected",
+        "explain-deploy",
+        "explain-targets",
+        "explain-prompt",
+        "explain-finished",
+        "explain-preflight-failure",
+        "explain-preflight-failure-queued",
+        "explain-preflight-failure-failed",
+        "explain-prompt-failure",
+        "explain-prompt-failure-queued",
+        "explain-prompt-failure-failed",
+        "explain-dedupe-error",
+        "explain-parse-error",
+        "explain-dns-error",
+        "explain-valid-name-error",
+        "explain-login-error",
+        "explain-login-ready-error",
+        "explain-sessions-error",
+        "explain-one-session-error",
+        "explain-pr-error",
+        "explain-active-error",
+        "explain-branch-error",
+        "explain-builds-error",
+        "explain-found-error",
+        "explain-build-state-error",
+        "explain-acknowledged-error",
+        "explain-wait-error",
+        "explain-renew-error",
+        "explain-copy-tools-error",
+        "explain-install-tools-error",
+        "explain-skills-error",
+        "explain-session-error",
+        "explain-conversation-error",
+        "explain-read-ready-error",
+        "explain-media-ready-error",
+        "explain-current-pr-error",
+        "explain-unchanged-error",
+        "explain-deploy-error",
+        "explain-targets-error",
+        "explain-finished-error",
+        "explain-preflight-failure-error",
+        "explain-prompt-failure-error"
+      ]
+    }
+  ],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "node": {
+          "id": "explain-feedback",
+          "display_name": "feedback",
+          "type": "trigger:pull-request:new-feedback",
+          "config": {
+            "provider": "ado",
+            "directory_path": "root/example",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+            "repo": "sample-app",
+            "status": "active",
+            "tags": "review-agent or review-in-progress",
+            "agent_author_names": [
+              "Review Bot"
+            ],
+            "agent_mention_names": [
+              "Review Bot"
+            ],
+            "suppress_agent_authored_feedback": true,
+            "top": 50
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-human",
+          "display_name": "human",
+          "type": "gate:filter",
+          "config": {
+            "when": {
+              "all": [
+                {
+                  "left": "${{explain-feedback.feedback.metadata.agent_directed_author_self ?? false}}",
+                  "not_equals": true
+                },
+                {
+                  "left": "${{explain-feedback.feedback.author}}",
+                  "not_equals": "Review Bot"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-route",
+          "display_name": "route",
+          "type": "gate:switch",
+          "config": {
+            "cases": [
+              {
+                "label": "Explain",
+                "port": "explain",
+                "when": {
+                  "left": "${{explain-feedback.feedback.body}}",
+                  "matches_regex": "(?is)^\\s*(?:@<[^>]+>|<a\\b[^>]*data-vss-mention[^>]*>.*?</a>|@[^!\\r\\n]+)?\\s*!EXPLAIN\\b[\\s\\S]*"
+                }
+              }
+            ],
+            "default_port": "standard"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-standard",
+          "display_name": "standard",
+          "type": "effect:event:emit",
+          "config": {
+            "event_type": "example.pr_feedback.standard",
+            "payload": {
+              "feedback_id": "${{explain-feedback.feedback.feedback_id}}"
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-dedupe",
+          "display_name": "dedupe",
+          "type": "gate:dedupe",
+          "config": {
+            "key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.feedback_id}}",
+            "ttl": "P365D"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-parse",
+          "display_name": "parse",
+          "type": "query:text:regex",
+          "config": {
+            "text": "${{explain-feedback.feedback.body}}",
+            "pattern": "(?is:^\\s*(?:@<[^>]+>|<a\\b[^>]*data-vss-mention[^>]*>.*?</a>|@[^!\\r\\n]+)?\\s*!EXPLAIN\\b)\\s+(?P<target>[a-z](?:[a-z0-9-]{0,18}[a-z0-9])?)\\s*",
+            "require_match": true
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-dns",
+          "display_name": "dns",
+          "type": "query:text:regex",
+          "config": {
+            "text": "${{explain-parse.groups.target}}",
+            "operation": "replace",
+            "pattern": "-",
+            "replacement": ""
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-valid-name",
+          "display_name": "valid name",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-valid-name",
+                "message": "Use `!EXPLAIN <target>` with an existing lowercase demo name. No deployment was queued.",
+                "when": {
+                  "left": "${{explain-dns.value}}",
+                  "matches_regex": "\\A[a-z0-9]{3,20}\\Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-valid-name-rejected",
+          "display_name": "valid name rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Use `!EXPLAIN <target>` with an existing lowercase demo name. No deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-valid-name-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-login",
+          "display_name": "login",
+          "type": "query:website-session:resolve-profile",
+          "config": {
+            "browser_origin": "https://${{explain-dns.value}}.demo.example.test:8443",
+            "login_origin": "https://${{explain-dns.value}}.demo.example.test:5001"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-login-ready",
+          "display_name": "login ready",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-login-ready",
+                "message": "The target has no ready managed website login. Ask the operator to configure and test it; no deployment was queued.",
+                "when": {
+                  "left": "${{explain-login.ready}}",
+                  "equals": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-login-ready-rejected",
+          "display_name": "login ready rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The target has no ready managed website login. Ask the operator to configure and test it; no deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-login-ready-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-sessions",
+          "display_name": "sessions",
+          "type": "query:session:list",
+          "config": {
+            "directory_path": "root/example",
+            "active_only": false,
+            "limit": 2,
+            "metadata_equals": {
+              "workflow": "pr-review",
+              "pr_monitoring": true,
+              "pr_repo": "${{explain-feedback.feedback.repo}}",
+              "pr_id": "${{explain-feedback.feedback.pr_id}}"
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-one-session",
+          "display_name": "one session",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-one-session",
+                "message": "Exactly one existing PR review session is required. Ask the operator to resolve missing or duplicate sessions; no deployment was queued.",
+                "when": {
+                  "left": "${{explain-sessions.count}}",
+                  "equals": 1
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-one-session-rejected",
+          "display_name": "one session rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Exactly one existing PR review session is required. Ask the operator to resolve missing or duplicate sessions; no deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-one-session-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-pr",
+          "display_name": "pr",
+          "type": "query:pull-request:get",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "include_commits": false,
+            "include_reviewers": false
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-active",
+          "display_name": "active",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-active",
+                "message": "The PR is closed or has no readable source revision. No deployment was queued.",
+                "when": {
+                  "all": [
+                    {
+                      "left": "${{explain-pr.status}}",
+                      "equals": "active"
+                    },
+                    {
+                      "left": "${{explain-pr.source_commit}}",
+                      "is_not_null": true
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-active-rejected",
+          "display_name": "active rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The PR is closed or has no readable source revision. No deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-active-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-branch",
+          "display_name": "branch",
+          "type": "query:text:regex",
+          "config": {
+            "text": "${{explain-pr.source_branch}}",
+            "operation": "replace",
+            "pattern": "^refs/heads/",
+            "replacement": ""
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-builds",
+          "display_name": "builds",
+          "type": "query:ado:builds",
+          "config": {
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "pipeline_id": 101,
+            "repository_id": "${{explain-pr.raw.repository.id}}",
+            "limit": 1,
+            "filters": [
+              {
+                "branch": "${{explain-pr.source_branch}}",
+                "source_version": "${{explain-pr.source_commit}}"
+              },
+              {
+                "branch": "refs/pull/${{explain-feedback.feedback.pr_id}}/merge",
+                "source_version": "${{explain-pr.raw.lastMergeCommit.commitId ?? null}}"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-found",
+          "display_name": "found",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-found",
+                "message": "No build exists for the current PR revision. Queue a build, then post a new `!EXPLAIN <target>` comment.",
+                "when": {
+                  "left": "${{explain-builds.count}}",
+                  "greater_than": 0
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-found-rejected",
+          "display_name": "found rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "No build exists for the current PR revision. Queue a build, then post a new `!EXPLAIN <target>` comment.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-found-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-build-state",
+          "display_name": "build state",
+          "type": "gate:switch",
+          "config": {
+            "cases": [
+              {
+                "label": "Successful",
+                "port": "ready",
+                "when": {
+                  "left": "${{explain-builds.builds.0.success}}",
+                  "equals": true
+                }
+              },
+              {
+                "label": "Wait",
+                "port": "wait",
+                "when": {
+                  "left": "${{explain-builds.builds.0.status}}",
+                  "in": [
+                    "notstarted",
+                    "inprogress",
+                    "postponed",
+                    "cancelling"
+                  ]
+                }
+              }
+            ],
+            "default_port": "failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-ack-ready",
+          "display_name": "ack ready",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Accepted `!EXPLAIN ${{explain-parse.groups.target}}`. I will check the matching build and media tools, redeploy the demo, then produce a narrated explanation. Please coordinate use of the target while this runs.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-ack-ready"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-ack-wait",
+          "display_name": "ack wait",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Accepted `!EXPLAIN ${{explain-parse.groups.target}}`. I will check the matching build and media tools, redeploy the demo, then produce a narrated explanation. Please coordinate use of the target while this runs.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-ack-wait"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-build-failed",
+          "display_name": "build failed",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The newest matching build did not succeed. Queue a new build and post a new `!EXPLAIN <target>` comment; no deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-build-failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-acknowledged",
+          "display_name": "acknowledged",
+          "type": "gate:merge",
+          "config": {}
+        }
+      },
+      {
+        "node": {
+          "id": "explain-wait",
+          "display_name": "wait",
+          "type": "effect:ado:build-wait",
+          "config": {
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "run_id": "${{explain-builds.builds.0.run_id}}",
+            "poll_interval_seconds": 10,
+            "timeout_seconds": 3600
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-renew",
+          "display_name": "renew",
+          "type": "effect:session:renew-if-expired",
+          "config": {
+            "directory_path": "root/example",
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "extend_by": "8h",
+            "renew_if_expires_within": "8h"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-copy-tools",
+          "display_name": "copy tools",
+          "type": "effect:agent:copy-files",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "vm_user": "agent",
+            "files": [
+              {
+                "source_path": "/srv/evander/demo-video/toolchain.tar.gz",
+                "destination_path": "/home/agent/.evander/demo-video-toolchain.tar.gz",
+                "overwrite": true
+              },
+              {
+                "source_path": "/srv/evander/demo-video/worker.py",
+                "destination_path": "/home/agent/.evander/demo-video-bootstrap.py",
+                "overwrite": true
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-install-tools",
+          "display_name": "install tools",
+          "type": "effect:agent:exec",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "vm_user": "agent",
+            "command": "python3 /home/agent/.evander/demo-video-bootstrap.py install --archive /home/agent/.evander/demo-video-toolchain.tar.gz --root /home/agent/.evander/demo-video",
+            "timeout_seconds": 120,
+            "check": true
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-skills",
+          "display_name": "skills",
+          "type": "effect:agent:install-skills",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "vm_user": "agent",
+            "codex_skills": [
+              "demo-video"
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-session",
+          "display_name": "session",
+          "type": "query:session-context",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-conversation",
+          "display_name": "conversation",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-conversation",
+                "message": "The existing review conversation is unavailable. Ask the operator to restore it; no deployment was queued.",
+                "when": {
+                  "all": [
+                    {
+                      "left": "${{explain-session.metadata.agent_thread_id ?? null}}",
+                      "is_not_null": true
+                    },
+                    {
+                      "left": "${{explain-session.metadata.agent_thread_id ?? \"\"}}",
+                      "not_equals": ""
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-conversation-rejected",
+          "display_name": "conversation rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The existing review conversation is unavailable. Ask the operator to restore it; no deployment was queued.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-conversation-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-preflight",
+          "display_name": "preflight",
+          "type": "effect:agent:enqueue-prompt",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "vm_user": "agent",
+            "resume_mode": "same_context",
+            "resume_thread_id": "${{explain-session.metadata.agent_thread_id}}",
+            "queue_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:preflight",
+            "prompt": "Perform only the demo-video readiness procedure. Do not access or change the target application. Use the demo-video skill: call the granted demo-narration.synthesize connector with text 'Narration is ready.', copy its WAV artifact to this workspace, run capture.mjs preflightCapture on an empty local page, then worker.py preflight with that --audio and --recording. Only after all checks pass write the readiness receipt with --receipt /artifacts/demo-video/preflight/${{explain-feedback.feedback.thread_id}}-${{explain-feedback.feedback.comment_id}}.txt --request-key ${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:${{explain-builds.builds.0.run_id}}. The toolchain is /home/agent/.evander/demo-video/current. Preserve existing approval rules. If a grant, approval, narration config or tool is unavailable, report the issue and leave no readiness receipt. Deployment has not started."
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-read-ready",
+          "display_name": "read ready",
+          "type": "query:agent:artifact-text",
+          "config": {
+            "session_id": "${{explain-sessions.sessions.0.session_id}}",
+            "path": "demo-video/preflight/${{explain-feedback.feedback.thread_id}}-${{explain-feedback.feedback.comment_id}}.txt",
+            "vm_user": "agent"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-media-ready",
+          "display_name": "media ready",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-media-ready",
+                "message": "Media or narration readiness did not pass. No deployment was queued; ask the operator to inspect this request.",
+                "when": {
+                  "left": "${{explain-read-ready.content}}",
+                  "equals": "ready:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:${{explain-builds.builds.0.run_id}}\n"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-media-ready-rejected",
+          "display_name": "media ready rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Media or narration readiness did not pass. No deployment was queued; ask the operator to inspect this request.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-media-ready-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-current-pr",
+          "display_name": "current pr",
+          "type": "query:pull-request:get",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "include_commits": false,
+            "include_reviewers": false
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-unchanged",
+          "display_name": "unchanged",
+          "type": "gate:validate",
+          "config": {
+            "checks": [
+              {
+                "code": "explain-unchanged",
+                "message": "The PR changed or closed during preparation. No deployment was queued; post a new command for its new revision.",
+                "when": {
+                  "all": [
+                    {
+                      "left": "${{explain-current-pr.status}}",
+                      "equals": "active"
+                    },
+                    {
+                      "left": "${{explain-current-pr.source_commit}}",
+                      "equals": "${{explain-pr.source_commit}}"
+                    },
+                    {
+                      "left": "${{explain-current-pr.raw.lastMergeCommit.commitId ?? \"\"}}",
+                      "equals": "${{explain-pr.raw.lastMergeCommit.commitId ?? \"\"}}"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-unchanged-rejected",
+          "display_name": "unchanged rejected",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The PR changed or closed during preparation. No deployment was queued; post a new command for its new revision.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-unchanged-rejected"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-deploy",
+          "display_name": "deploy",
+          "type": "effect:ado:pipeline-run",
+          "config": {
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "pipeline_id": 102,
+            "branch": "main",
+            "poll_interval_seconds": 10,
+            "timeout_seconds": 3600,
+            "check": true,
+            "reject_running_parameters": {
+              "resourceBaseName": "${{explain-parse.groups.target}}"
+            },
+            "template_parameters": {
+              "operation": "redeploy",
+              "resourceBaseName": "${{explain-parse.groups.target}}",
+              "databaseAction": "preserve",
+              "seedKind": "none",
+              "configurationKind": "minimal",
+              "buildBranchName": "${{explain-branch.value}}",
+              "buildRunId": "${{explain-builds.builds.0.run_id}}",
+              "buildNumber": "${{explain-builds.builds.0.build_number}}",
+              "buildPullRequestId": "${{explain-feedback.feedback.pr_id}}"
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-targets",
+          "display_name": "targets",
+          "type": "effect:session:update-metadata",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "metadata": {
+              "http_targets": {
+                "targets": {
+                  "demo-ui": {
+                    "base_url": "https://${{explain-dns.value}}.demo.example.test"
+                  },
+                  "demo-admin": {
+                    "base_url": "https://${{explain-dns.value}}.demo.example.test:8443",
+                    "managed_website_session": "${{explain-login.profile_id}}"
+                  },
+                  "demo-api": {
+                    "base_url": "https://${{explain-dns.value}}.demo.example.test:5001"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-prompt",
+          "display_name": "prompt",
+          "type": "effect:agent:enqueue-prompt",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "vm_user": "agent",
+            "resume_mode": "same_context",
+            "resume_thread_id": "${{explain-session.metadata.agent_thread_id}}",
+            "queue_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:video",
+            "prompt": "Use the installed demo-video skill as the authoritative guidance for preparation, presentation, narration, verification and publication. Produce an English explanation of this pinned PR using the supplied request context. The host has already deployed the build. Do not redeploy, reset the database, modify application source or push commits. Preserve unrelated data and local work; coordinate target use manually.\n\nRepository: ${{explain-feedback.feedback.repo}}\nPR: ${{explain-feedback.feedback.pr_id}}\nFeedback: ${{explain-feedback.feedback.feedback_id}}\nThread: ${{explain-feedback.feedback.thread_id}}\nComment: ${{explain-feedback.feedback.comment_id}}\nTarget: ${{explain-parse.groups.target}}\nSource commit: ${{explain-pr.source_commit}}\nBuild revision: ${{explain-builds.builds.0.source_version}}\nBuild run: ${{explain-builds.builds.0.run_id}}\nBuild number: ${{explain-builds.builds.0.build_number}}\nBuild URL: ${{explain-builds.builds.0.run_url}}\nDeployment: ${{explain-deploy.run_url}}\nPublic UI: https://${{explain-dns.value}}.demo.example.test\nBrowser target: demo-admin (managed website login). Use the seeded helper; never print or persist authentication state. Keep the original PR title in the manifest.\n\nUse post_pr_feedback_reply(provider=azure_devops) for the supplied thread/comment. Follow the skill's publication receipts and idempotency key, preserve file approvals, and report any demonstration or review gaps honestly."
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-finished",
+          "display_name": "finished",
+          "type": "effect:session:update-metadata",
+          "config": {
+            "target": "${{explain-sessions.sessions.0.session_id}}",
+            "metadata": {
+              "demo_video": {
+                "agent_completed": true,
+                "feedback_id": "${{explain-feedback.feedback.feedback_id}}",
+                "build_run_id": "${{explain-builds.builds.0.run_id}}"
+              }
+            }
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-preflight-failure",
+          "display_name": "preflight failure",
+          "type": "gate:switch",
+          "config": {
+            "cases": [
+              {
+                "label": "Queued",
+                "port": "queued",
+                "when": {
+                  "left": "${{explain-preflight.queued ?? false}}",
+                  "equals": true
+                }
+              }
+            ],
+            "default_port": "failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-preflight-failure-queued",
+          "display_name": "preflight failure queued",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation request remains queued for automatic retry. Please do not post a second command while it is pending; ask the operator to inspect the queue if it does not resume.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-preflight-failure-queued"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-preflight-failure-failed",
+          "display_name": "preflight failure failed",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation agent failed or timed out. Completed media may be recoverable; the operator should resume that stage. Deployment or prepared data may remain installed. Check this request before retrying.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-preflight-failure-failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-prompt-failure",
+          "display_name": "prompt failure",
+          "type": "gate:switch",
+          "config": {
+            "cases": [
+              {
+                "label": "Queued",
+                "port": "queued",
+                "when": {
+                  "left": "${{explain-prompt.queued ?? false}}",
+                  "equals": true
+                }
+              }
+            ],
+            "default_port": "failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-prompt-failure-queued",
+          "display_name": "prompt failure queued",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation request remains queued for automatic retry. Please do not post a second command while it is pending; ask the operator to inspect the queue if it does not resume.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-prompt-failure-queued"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-prompt-failure-failed",
+          "display_name": "prompt failure failed",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation agent failed or timed out. Completed media may be recoverable; the operator should resume that stage. Deployment or prepared data may remain installed. Check this request before retrying.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-prompt-failure-failed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-dedupe-error",
+          "display_name": "dedupe error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at dedupe. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-dedupe-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-parse-error",
+          "display_name": "parse error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at parse. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-parse-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-dns-error",
+          "display_name": "dns error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at dns. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-dns-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-valid-name-error",
+          "display_name": "valid name error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at valid name. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-valid-name-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-login-error",
+          "display_name": "login error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at login. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-login-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-login-ready-error",
+          "display_name": "login ready error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at login ready. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-login-ready-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-sessions-error",
+          "display_name": "sessions error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at sessions. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-sessions-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-one-session-error",
+          "display_name": "one session error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at one session. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-one-session-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-pr-error",
+          "display_name": "pr error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at pr. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-pr-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-active-error",
+          "display_name": "active error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at active. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-active-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-branch-error",
+          "display_name": "branch error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at branch. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-branch-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-builds-error",
+          "display_name": "builds error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at builds. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-builds-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-found-error",
+          "display_name": "found error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at found. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-found-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-build-state-error",
+          "display_name": "build state error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at build state. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-build-state-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-acknowledged-error",
+          "display_name": "acknowledged error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at acknowledged. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-acknowledged-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-wait-error",
+          "display_name": "wait error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at wait. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-wait-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-renew-error",
+          "display_name": "renew error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at renew. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-renew-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-copy-tools-error",
+          "display_name": "copy tools error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at copy tools. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-copy-tools-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-install-tools-error",
+          "display_name": "install tools error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at install tools. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-install-tools-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-skills-error",
+          "display_name": "skills error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at skills. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-skills-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-session-error",
+          "display_name": "session error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at session. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-session-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-conversation-error",
+          "display_name": "conversation error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at conversation. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-conversation-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-read-ready-error",
+          "display_name": "read ready error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at read ready. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-read-ready-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-media-ready-error",
+          "display_name": "media ready error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at media ready. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-media-ready-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-current-pr-error",
+          "display_name": "current pr error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at current pr. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-current-pr-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-unchanged-error",
+          "display_name": "unchanged error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at unchanged. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-unchanged-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-deploy-error",
+          "display_name": "deploy error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "Redeployment was blocked by an active deployment, failed or timed out. The environment may be partially updated; video preparation has not started. Check the deployment run before retrying.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-deploy-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-targets-error",
+          "display_name": "targets error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at targets. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-targets-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-finished-error",
+          "display_name": "finished error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation agent completed, but its workflow completion metadata could not be saved. Check the PR thread and artifacts before retrying.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-finished-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-preflight-failure-error",
+          "display_name": "preflight failure error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at preflight failure. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-preflight-failure-error"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "explain-prompt-failure-error",
+          "display_name": "prompt failure error",
+          "type": "effect:pull-request:reply",
+          "config": {
+            "provider": "azure_devops",
+            "directory_path": "root/example",
+            "project": "Example Project",
+            "repo": "${{explain-feedback.feedback.repo}}",
+            "pr_id": "${{explain-feedback.feedback.pr_id}}",
+            "thread_id": "${{explain-feedback.feedback.thread_id}}",
+            "comment_id": "${{explain-feedback.feedback.comment_id}}",
+            "body_text": "The explanation could not continue at prompt failure. No video is ready. Check this request before posting a new command.",
+            "idempotency_key": "pr-explain:${{explain-feedback.feedback.repo}}:${{explain-feedback.feedback.pr_id}}:${{explain-feedback.feedback.thread_id}}:${{explain-feedback.feedback.comment_id}}:explain-prompt-failure-error"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "explain-feedback",
+        "target_id": "explain-human"
+      },
+      {
+        "source_id": "explain-human",
+        "target_id": "explain-route"
+      },
+      {
+        "source_id": "explain-route",
+        "target_id": "explain-standard",
+        "source_port": "standard"
+      },
+      {
+        "source_id": "explain-route",
+        "target_id": "explain-dedupe",
+        "source_port": "explain"
+      },
+      {
+        "source_id": "explain-dedupe",
+        "target_id": "explain-parse"
+      },
+      {
+        "source_id": "explain-parse",
+        "target_id": "explain-dns"
+      },
+      {
+        "source_id": "explain-dns",
+        "target_id": "explain-valid-name"
+      },
+      {
+        "source_id": "explain-valid-name",
+        "target_id": "explain-valid-name-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-valid-name",
+        "target_id": "explain-login",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-login",
+        "target_id": "explain-login-ready"
+      },
+      {
+        "source_id": "explain-login-ready",
+        "target_id": "explain-login-ready-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-login-ready",
+        "target_id": "explain-sessions",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-sessions",
+        "target_id": "explain-one-session"
+      },
+      {
+        "source_id": "explain-one-session",
+        "target_id": "explain-one-session-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-one-session",
+        "target_id": "explain-pr",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-pr",
+        "target_id": "explain-active"
+      },
+      {
+        "source_id": "explain-active",
+        "target_id": "explain-active-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-active",
+        "target_id": "explain-branch",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-branch",
+        "target_id": "explain-builds"
+      },
+      {
+        "source_id": "explain-builds",
+        "target_id": "explain-found"
+      },
+      {
+        "source_id": "explain-found",
+        "target_id": "explain-found-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-found",
+        "target_id": "explain-build-state",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-build-state",
+        "target_id": "explain-ack-ready",
+        "source_port": "ready"
+      },
+      {
+        "source_id": "explain-build-state",
+        "target_id": "explain-ack-wait",
+        "source_port": "wait"
+      },
+      {
+        "source_id": "explain-build-state",
+        "target_id": "explain-build-failed",
+        "source_port": "failed"
+      },
+      {
+        "source_id": "explain-ack-ready",
+        "target_id": "explain-acknowledged"
+      },
+      {
+        "source_id": "explain-ack-wait",
+        "target_id": "explain-acknowledged"
+      },
+      {
+        "source_id": "explain-acknowledged",
+        "target_id": "explain-wait"
+      },
+      {
+        "source_id": "explain-wait",
+        "target_id": "explain-renew"
+      },
+      {
+        "source_id": "explain-renew",
+        "target_id": "explain-copy-tools"
+      },
+      {
+        "source_id": "explain-copy-tools",
+        "target_id": "explain-install-tools"
+      },
+      {
+        "source_id": "explain-install-tools",
+        "target_id": "explain-skills"
+      },
+      {
+        "source_id": "explain-skills",
+        "target_id": "explain-session"
+      },
+      {
+        "source_id": "explain-session",
+        "target_id": "explain-conversation"
+      },
+      {
+        "source_id": "explain-conversation",
+        "target_id": "explain-conversation-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-conversation",
+        "target_id": "explain-preflight",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-preflight",
+        "target_id": "explain-read-ready",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "explain-read-ready",
+        "target_id": "explain-media-ready"
+      },
+      {
+        "source_id": "explain-media-ready",
+        "target_id": "explain-media-ready-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-media-ready",
+        "target_id": "explain-current-pr",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-current-pr",
+        "target_id": "explain-unchanged"
+      },
+      {
+        "source_id": "explain-unchanged",
+        "target_id": "explain-unchanged-rejected",
+        "source_port": "invalid"
+      },
+      {
+        "source_id": "explain-unchanged",
+        "target_id": "explain-deploy",
+        "source_port": "valid"
+      },
+      {
+        "source_id": "explain-deploy",
+        "target_id": "explain-targets"
+      },
+      {
+        "source_id": "explain-targets",
+        "target_id": "explain-prompt"
+      },
+      {
+        "source_id": "explain-prompt",
+        "target_id": "explain-finished",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "explain-preflight",
+        "target_id": "explain-preflight-failure",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-preflight-failure",
+        "target_id": "explain-preflight-failure-queued",
+        "source_port": "queued"
+      },
+      {
+        "source_id": "explain-preflight-failure",
+        "target_id": "explain-preflight-failure-failed",
+        "source_port": "failed"
+      },
+      {
+        "source_id": "explain-prompt",
+        "target_id": "explain-prompt-failure",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-prompt-failure",
+        "target_id": "explain-prompt-failure-queued",
+        "source_port": "queued"
+      },
+      {
+        "source_id": "explain-prompt-failure",
+        "target_id": "explain-prompt-failure-failed",
+        "source_port": "failed"
+      },
+      {
+        "source_id": "explain-dedupe",
+        "target_id": "explain-dedupe-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-parse",
+        "target_id": "explain-parse-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-dns",
+        "target_id": "explain-dns-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-valid-name",
+        "target_id": "explain-valid-name-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-login",
+        "target_id": "explain-login-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-login-ready",
+        "target_id": "explain-login-ready-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-sessions",
+        "target_id": "explain-sessions-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-one-session",
+        "target_id": "explain-one-session-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-pr",
+        "target_id": "explain-pr-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-active",
+        "target_id": "explain-active-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-branch",
+        "target_id": "explain-branch-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-builds",
+        "target_id": "explain-builds-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-found",
+        "target_id": "explain-found-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-build-state",
+        "target_id": "explain-build-state-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-acknowledged",
+        "target_id": "explain-acknowledged-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-wait",
+        "target_id": "explain-wait-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-renew",
+        "target_id": "explain-renew-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-copy-tools",
+        "target_id": "explain-copy-tools-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-install-tools",
+        "target_id": "explain-install-tools-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-skills",
+        "target_id": "explain-skills-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-session",
+        "target_id": "explain-session-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-conversation",
+        "target_id": "explain-conversation-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-read-ready",
+        "target_id": "explain-read-ready-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-media-ready",
+        "target_id": "explain-media-ready-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-current-pr",
+        "target_id": "explain-current-pr-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-unchanged",
+        "target_id": "explain-unchanged-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-deploy",
+        "target_id": "explain-deploy-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-targets",
+        "target_id": "explain-targets-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-finished",
+        "target_id": "explain-finished-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-preflight-failure",
+        "target_id": "explain-preflight-failure-error",
+        "source_port": "error"
+      },
+      {
+        "source_id": "explain-prompt-failure",
+        "target_id": "explain-prompt-failure-error",
+        "source_port": "error"
+      }
+    ]
+  }
+}

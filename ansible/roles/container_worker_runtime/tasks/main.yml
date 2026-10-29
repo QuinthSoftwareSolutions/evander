@@ -1,0 +1,159 @@
+---
+- name: Ensure Docker service is enabled and running
+  ansible.builtin.systemd:
+    name: docker.service
+    enabled: true
+    state: started
+
+- name: Ensure worker runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(evander_run_user) }}"
+    group: "{{ item.group | default(evander_run_user) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ evander_deploy_path }}/config"
+      mode: "0750"
+    - path: "{{ evander_worker_root }}"
+      mode: "0750"
+    - path: "{{ evander_worker_root }}/sessions"
+      mode: "0750"
+    - path: "{{ evander_worker_runtime_dir }}"
+      mode: "0750"
+    - path: "{{ evander_worker_root }}/images"
+      mode: "0750"
+    - path: "{{ evander_worker_toolchain_cache_root }}"
+      mode: "0755"
+    - path: "{{ evander_worker_node_cache_path }}"
+      mode: "0755"
+    - path: "{{ evander_worker_playwright_runtime_cache_path }}"
+      mode: "0755"
+    - path: "{{ evander_worker_playwright_browsers_cache_path }}"
+      mode: "0755"
+    - path: "{{ evander_worker_nuget_fallback_cache_path }}"
+      mode: "0755"
+    - path: "{{ evander_worker_mssql_client_cache_path }}"
+      mode: "0755"
+
+- name: Resolve worker service user uid
+  ansible.builtin.command:
+    argv:
+      - id
+      - -u
+      - "{{ evander_run_user }}"
+  register: evander_worker_user_uid_result
+  changed_when: false
+
+- name: Resolve worker service user gid
+  ansible.builtin.command:
+    argv:
+      - id
+      - -g
+      - "{{ evander_run_user }}"
+  register: evander_worker_user_gid_result
+  changed_when: false
+
+- name: Resolve effective worker container user
+  ansible.builtin.set_fact:
+    evander_effective_worker_container_user: >-
+      {{
+        evander_worker_container_user
+        if (evander_worker_container_user | default('') | string | trim | length) > 0
+        else (
+          evander_worker_user_uid_result.stdout
+          ~ ':'
+          ~ evander_worker_user_gid_result.stdout
+        )
+      }}
+
+- name: Check local runner image archives
+  ansible.builtin.stat:
+    path: "{{ item.archive_path }}"
+  delegate_to: localhost
+  become: false
+  loop: "{{ evander_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
+  register: evander_runner_image_archive_stats
+
+- name: Assert local runner image archives exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg | default(false)
+    fail_msg: >-
+      Build the runner image archive first with
+      {{ item.item.build_command | default('scripts/build_evander_runner_image.sh') }}. Expected archive:
+      {{ item.item.archive_path }}
+    success_msg: >-
+      Runner image archive for {{ item.item.image_name }} is present on the
+      Ansible control machine.
+  loop: "{{ evander_runner_image_archive_stats.results }}"
+  loop_control:
+    label: "{{ item.item.image_name }}"
+
+- name: Copy runner image archives to worker
+  ansible.builtin.copy:
+    src: "{{ item.archive_path }}"
+    dest: "{{ item.remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  loop: "{{ evander_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
+  register: evander_runner_image_archive_copies
+
+- name: Load runner image archives into Docker
+  ansible.builtin.command:
+    argv:
+      - docker
+      - load
+      - --input
+      - "{{ item.item.remote_archive_path }}"
+  loop: "{{ evander_runner_image_archive_copies.results }}"
+  loop_control:
+    label: "{{ item.item.image_name }}"
+  register: evander_runner_image_load
+  changed_when: item.changed
+
+- name: Verify runner images exist locally
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "{{ item.image_name }}"
+  loop: "{{ evander_runner_image_archives }}"
+  loop_control:
+    label: "{{ item.image_name }}"
+  changed_when: false
+
+- name: Verify Codex runner runtime executables
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - --entrypoint
+      - /bin/sh
+      - "{{ evander_runner_image_name }}"
+      - -c
+      - >-
+        test -x /usr/local/bin/codex &&
+        test -x /usr/local/bin/codex-code-mode-host
+  changed_when: false
+
+- name: Preload configured worker images
+  ansible.builtin.command:
+    argv:
+      - docker
+      - pull
+      - "{{ item }}"
+  loop: "{{ evander_worker_preload_images }}"
+  register: evander_worker_image_pull
+  changed_when: "'Image is up to date' not in evander_worker_image_pull.stdout"
+  when: (evander_worker_preload_images | length) > 0

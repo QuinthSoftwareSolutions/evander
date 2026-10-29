@@ -1,0 +1,2453 @@
+from __future__ import annotations
+
+from config_helpers import canonical_worker_config
+
+import json
+import logging
+import subprocess
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import TypeAdapter
+
+from evander.config import GatewayConfig, MailboxConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.email.providers import EmailMessageSummary
+from evander.models import (
+    DiscordMessageEnvelope,
+    EmailMessage,
+    LocalIssueRecord,
+    PrFeedbackItem,
+)
+from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.provider_config import ProviderConfigResolver
+from evander.provider_runtime.adapters import trigger_provider_config_blob
+from evander.services import pr_feedback_scope_key, pr_reply_state_namespace
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.cron import CronTriggerProvider
+from evander.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
+from evander.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
+from evander.triggers.providers.git_push import GitPushTriggerProvider
+from evander.triggers.providers.pull_request_new_feedback import (
+    PullRequestNewFeedbackTriggerProvider,
+)
+from evander.triggers.providers.pull_request_completed import (
+    PullRequestCompletedTriggerProvider,
+)
+from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from evander.triggers.providers.ticket_created import TicketCreatedTriggerProvider
+from evander.triggers.queue import SqliteTriggerEventQueue
+from config_helpers import canonical_workflow_node, canonical_workflow_payload
+
+
+from conformance_support import MATRICES, build_report, write_report
+
+
+def _worker_config(payload: dict[str, object]) -> TriggerOrchestratorWorkerGlobalConfig:
+    return canonical_worker_config(canonical_workflow_payload(payload))
+
+
+def _record_result(
+    report: dict[str, Any],
+    *,
+    requirement_id: str,
+    trigger_type: str,
+    status: str,
+    coverage: list[str],
+    details: str,
+    remediation: str = "",
+) -> None:
+    report["requirements"].append(
+        {
+            "requirement_id": requirement_id,
+            "trigger_type": trigger_type,
+            "status": status,
+            "coverage": coverage,
+            "details": details,
+            "remediation": remediation,
+        }
+    )
+
+
+def _build_runtime_context(
+    runtime_dir: Path, *, env: dict[str, str] | None = None
+) -> TriggerRuntimeContext:
+    return TriggerRuntimeContext(
+        resolved_config=GatewayConfig(runtime_dir=runtime_dir), env=env or {}
+    )
+
+
+class _MaterializingTriggerAdapter:
+    def __init__(self) -> None:
+        self._adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    def validate_python(self, payload: object) -> object:
+        assert isinstance(payload, dict)
+        return materialize_node_definition(
+            self._adapter.validate_python(canonical_workflow_node(payload))
+        )
+
+
+def _trigger_adapter() -> _MaterializingTriggerAdapter:
+    return _MaterializingTriggerAdapter()
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_type", "required_field"),
+    [
+        (
+            {
+                "id": "cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            },
+            "trigger:cron",
+            "expression",
+        ),
+        (
+            {
+                "id": "ticket-created",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": ["root/team-a"],
+            },
+            "trigger:ticket:created",
+            "directories",
+        ),
+        (
+            {
+                "id": "ticket-changed",
+                "display_name": "Ticket changed",
+                "type": "trigger:ticket:changed",
+                "directories": ["root/team-a"],
+            },
+            "trigger:ticket:changed",
+            "directories",
+        ),
+        (
+            {
+                "id": "script-run-request",
+                "display_name": "Script run request",
+                "type": "trigger:script-run-request",
+            },
+            "trigger:script-run-request",
+            "id",
+        ),
+        (
+            {
+                "id": "ado-comment",
+                "display_name": "ADO work item comment",
+                "type": "trigger:ado:work-item-comment-created",
+                "directory_path": "root/team-a",
+                "states": ["New"],
+                "tags_any": ["spec"],
+                "comment_contains": "@SpecAssistant",
+                "comment_author_exclude_names": ["SpecAssistant"],
+            },
+            "trigger:ado:work-item-comment-created",
+            "comment_contains",
+        ),
+        (
+            {
+                "id": "comm",
+                "display_name": "Communication",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["team-a/channel-1", "discord:chan-2"],
+                "directory_path": "root/team-a",
+                "author_ids": ["user-a"],
+                "content_contains": "hello",
+            },
+            "trigger:communication:new-message",
+            "communication_target_ids",
+        ),
+        (
+            {
+                "id": "discord",
+                "display_name": "Discord",
+                "type": "trigger:discord:new-message",
+                "discord_bot_token_env": "DISCORD_BOT_TOKEN",
+                "channel_ids": ["chan-a"],
+                "user_ids": ["user-a"],
+            },
+            "trigger:discord:new-message",
+            "discord_bot_token_env",
+        ),
+        (
+            {
+                "id": "email",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "json_store",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["default"],
+                "auth_secret_refs": {"access_token": "EMAIL_TOKEN"},
+            },
+            "trigger:email:new-message",
+            "provider",
+        ),
+        (
+            {
+                "id": "teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            },
+            "trigger:teams:new-message",
+            "targets",
+        ),
+        (
+            {
+                "id": "teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
+                "sender_user_ids": ["user-a"],
+            },
+            "trigger:teams:direct-message",
+            "sender_user_ids",
+        ),
+        (
+            {
+                "id": "pr",
+                "display_name": "PR",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "ado",
+                "repo": "repo-1",
+                "directory_path": "root/team-a",
+                "organization_url": "https://dev.azure.com/example",
+                "project": "Sandbox",
+                "status": "active",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "created",
+                "include_links": True,
+                "max_comment_length": 0,
+                "tags": "needs-review",
+                "top": 25,
+                "skip": 5,
+                "cursor": "cursor-1",
+            },
+            "trigger:pull-request:new-feedback",
+            "provider",
+        ),
+        (
+            {
+                "id": "pr-completed",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "ado",
+                "repo": "repo-1",
+                "directory_path": "root/team-a",
+                "organization_url": "https://dev.azure.com/example",
+                "project": "Sandbox",
+                "status": "completed",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "completed",
+                "include_links": False,
+                "max_comment_length": 0,
+                "tags": "needs-review",
+                "top": 25,
+                "skip": 5,
+                "cursor": "cursor-1",
+            },
+            "trigger:pull-request:completed",
+            "provider",
+        ),
+        (
+            {
+                "id": "ci",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github-actions",
+                "repo": " owner/repo ",
+                "workflow": " build.yml ",
+                "branches": [" main "],
+                "conclusions": [" succeeded ", "canceled", "timedOut"],
+            },
+            "trigger:ci:run:completed",
+            "repo",
+        ),
+        (
+            {
+                "id": "review-request",
+                "display_name": "Review request",
+                "type": "trigger:review:new-request",
+            },
+            "trigger:review:new-request",
+            "id",
+        ),
+        (
+            {
+                "id": "approval-pending",
+                "display_name": "Pending approval",
+                "type": "trigger:approval:pending-created",
+                "directory_path": " root/team-a ",
+                "action_types": [" approve ", "deny"],
+                "tool_names": [" email_send_approved "],
+            },
+            "trigger:approval:pending-created",
+            "directory_path",
+        ),
+        (
+            {
+                "id": "git",
+                "display_name": "Git",
+                "type": "trigger:git:push",
+                "managed_repo_id_glob": "mr_*",
+            },
+            "trigger:git:push",
+            "managed_repo_id_glob",
+        ),
+        (
+            {
+                "id": "agent-prompt",
+                "display_name": "Agent prompt",
+                "type": "trigger:agent:prompt:new",
+            },
+            "trigger:agent:prompt:new",
+            "id",
+        ),
+    ],
+)
+def test_conformance_schema_accepts_required_trigger_shapes(
+    payload: dict[str, Any],
+    expected_type: str,
+    required_field: str,
+    report_collector: dict[str, Any],
+) -> None:
+    trigger = _trigger_adapter().validate_python(payload)
+
+    assert trigger.type == expected_type
+    assert getattr(trigger, required_field) is not None
+    if expected_type == "trigger:ci:run:completed":
+        assert trigger.provider == "github_actions"
+        assert trigger.branches == ["main"]
+        assert trigger.conclusions == ["success", "cancelled", "timed_out"]
+    if expected_type == "trigger:approval:pending-created":
+        assert trigger.directory_path == "root/team-a"
+        assert trigger.action_types == ["approve", "deny"]
+        assert trigger.tool_names == ["email_send_approved"]
+    _record_result(
+        report_collector,
+        requirement_id=f"schema:{expected_type}",
+        trigger_type=expected_type,
+        status="pass",
+        coverage=["configuration/schema conformance"],
+        details=f"Accepted valid config and required field `{required_field}`.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_match", "trigger_type"),
+    [
+        (
+            {"id": "cron-bad", "display_name": "Cron", "type": "trigger:cron"},
+            "expression",
+            "trigger:cron",
+        ),
+        (
+            {
+                "id": "discord-bad",
+                "display_name": "Discord",
+                "type": "trigger:discord:new-message",
+            },
+            "discord_bot_token_env",
+            "trigger:discord:new-message",
+        ),
+        (
+            {
+                "id": "comm-bad",
+                "display_name": "Communication",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["  ", ""],
+            },
+            "communication_target_ids",
+            "trigger:communication:new-message",
+        ),
+        (
+            {
+                "id": "email-bad",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+            },
+            "mailbox_ids",
+            "trigger:email:new-message",
+        ),
+        (
+            {
+                "id": "teams-bad",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+            },
+            "targets",
+            "trigger:teams:new-message",
+        ),
+        (
+            {
+                "id": "teams-dm-bad",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+            },
+            "sender_user_ids",
+            "trigger:teams:direct-message",
+        ),
+        (
+            {
+                "id": "pr-bad",
+                "display_name": "PR",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "ado",
+                "tags": ["needs-review"],
+            },
+            "tags must be a string",
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            {
+                "id": "pr-completed-bad",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "ado",
+                "tags": ["needs-review"],
+            },
+            "tags must be a string",
+            "trigger:pull-request:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-github",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+            },
+            "repo is required",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-conclusion",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "conclusions": ["unknown"],
+            },
+            "Unsupported CI conclusion",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-top",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "top": 0,
+            },
+            "greater than or equal to 1",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "repo": "owner/repo",
+            },
+            "provider",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "git-bad",
+                "display_name": "Git",
+                "type": "trigger:git:push",
+            },
+            "managed_repo_id or managed_repo_id_glob",
+            "trigger:git:push",
+        ),
+    ],
+)
+def test_conformance_schema_rejects_invalid_configs_with_explicit_errors(
+    payload: dict[str, Any],
+    error_match: str,
+    trigger_type: str,
+    report_collector: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match=error_match):
+        _trigger_adapter().validate_python(payload)
+
+    _record_result(
+        report_collector,
+        requirement_id=f"schema:invalid:{trigger_type}",
+        trigger_type=trigger_type,
+        status="pass",
+        coverage=["configuration/schema conformance"],
+        details=f"Invalid config emits explicit error containing `{error_match}`.",
+    )
+
+
+def test_conformance_schema_rejects_duplicate_trigger_ids(report_collector: dict[str, Any]) -> None:
+    with pytest.raises(
+        ValueError,
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries",
+    ):
+        _worker_config(
+            {
+                "runtime_dir": "runtime",
+                "triggers": [
+                    {
+                        "id": "dup-id",
+                        "display_name": "Cron A",
+                        "type": "trigger:cron",
+                        "expression": "*/5 * * * *",
+                    },
+                    {
+                        "id": "dup-id",
+                        "display_name": "Cron B",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                ],
+            }
+        )
+
+    _record_result(
+        report_collector,
+        requirement_id="schema:duplicate-ids",
+        trigger_type="all",
+        status="pass",
+        coverage=["configuration/schema conformance"],
+        details="Duplicate trigger IDs are rejected.",
+    )
+
+
+def test_conformance_provider_payload_contracts_and_secret_redaction(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    report_collector: dict[str, Any],
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+
+    now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    issue_store = runtime_dir / "local-issues.json"
+    issue_store.write_text(
+        json.dumps(
+            {
+                "i-1": LocalIssueRecord(
+                    issue_id="i-1",
+                    issue_number="1",
+                    title="Issue one",
+                    body="Body",
+                    yaml_path="root/team-a/issue-1.yaml",
+                    directory_path="root/team-a",
+                    created_at=now - timedelta(minutes=2),
+                    updated_at=now - timedelta(minutes=1),
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    DiscordInboxStore(runtime_dir / "discord-inbox-store.db").add_message_if_new(
+        DiscordMessageEnvelope(
+            message_id="d-1",
+            channel_id="chan-a",
+            author_id="user-a",
+            author_name="Alice",
+            content="hello",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    email_path = runtime_dir / "emails.json"
+    email_path.write_text(
+        json.dumps(
+            {
+                "m-1": EmailMessage(
+                    message_id="m-1",
+                    mailbox_id="default",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="ops@example.com",
+                    recipients=["dev@example.com"],
+                    subject="Subject",
+                    body_text="Body",
+                    unread=True,
+                    received_at=now,
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    teams_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="hello from Teams",
+            created_at=now,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="chat:dm-chat/msg-1",
+            message_id="dm-msg-1",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="dm-chat",
+            content="hello from Teams DM",
+            created_at=now,
+            metadata={
+                "source": "teams_graph_api",
+                "target": "chat:dm-chat",
+                "target_type": "direct_message",
+                "chat_type": "oneOnOne",
+            },
+        )
+    )
+    (runtime_dir / "trigger-cursors-teams.json").write_text(
+        json.dumps(
+            {
+                "teams-dm": {
+                    "last_created_at": (now - timedelta(seconds=1))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "recent_cursors": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pr_feedback_path = runtime_dir / "pr-feedback-store.json"
+    pr_feedback_path.write_text(
+        json.dumps(
+            {
+                "feedback": {
+                    "f-1": PrFeedbackItem(
+                        feedback_id="f-1",
+                        provider="local",
+                        repo="org/repo",
+                        pr_id="12",
+                        author="reviewer",
+                        body="Needs changes",
+                        created_at=now,
+                    ).model_dump(mode="json")
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = GatewayConfig(runtime_dir=runtime_dir, email_store_path=email_path)
+
+    ticket_created = TicketCreatedTriggerProvider()
+    ticket_created.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "ticket-created",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": ["root/team-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    ticket_changed = TicketChangedTriggerProvider()
+    ticket_changed.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "ticket-changed",
+                "display_name": "Ticket changed",
+                "type": "trigger:ticket:changed",
+                "directories": ["root/team-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    discord = DiscordNewMessageTriggerProvider()
+    discord.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "discord",
+                "display_name": "Discord",
+                "type": "trigger:discord:new-message",
+                "discord_bot_token_env": "DISCORD_BOT_TOKEN",
+                "channel_ids": ["chan-a"],
+                "user_ids": ["user-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    email = EmailNewMessageTriggerProvider()
+    email.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "json_store",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["default"],
+                "auth_secret_refs": {"access_token": "EMAIL_TOKEN"},
+            }
+        ),
+        TriggerRuntimeContext(
+            resolved_config=config,
+            env={"EMAIL_TOKEN": "super-secret-value"},
+        ),
+    )
+    teams = TeamsNewMessageTriggerProvider()
+    teams.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+    teams_dm = TeamsDirectMessageTriggerProvider()
+    teams_dm.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
+                "sender_user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+    pr = PullRequestNewFeedbackTriggerProvider()
+    pr.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    caplog.set_level(logging.DEBUG)
+    ticket_created_events = ticket_created.poll()
+    ticket_changed_events = ticket_changed.poll()
+    discord_events = discord.poll()
+    email_events = email.poll()
+    teams_events = teams.poll()
+    teams_dm_events = teams_dm.poll()
+    pr_events = pr.poll()
+
+    assert list(ticket_created_events[0].payload.keys()) == ["ticket"]
+    assert list(ticket_changed_events[0].payload.keys()) == ["ticket"]
+    assert list(discord_events[0].payload.keys()) == ["message"]
+    assert list(email_events[0].payload.keys()) == ["message"]
+    assert teams_events[0].payload["channel_target"] == "team-a/channel-1"
+    assert teams_events[0].payload["message"]["message_id"] == "msg-1"
+    assert teams_dm_events[0].payload["target_type"] == "direct_message"
+    assert teams_dm_events[0].payload["message"]["message_id"] == "dm-msg-1"
+    assert set(pr_events[0].payload.keys()) == {"pr", "feedback"}
+
+    for line in caplog.messages:
+        assert "super-secret-value" not in line
+
+    _record_result(
+        report_collector,
+        requirement_id="event-contract:provider-payload-shape",
+        trigger_type="all",
+        status="pass",
+        coverage=["event/output contract verification", "provider behavior correctness"],
+        details="Trigger payload contracts match their schemas and no secret values leak to logs.",
+    )
+
+
+def test_conformance_email_new_message_acknowledges_after_publish(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="json_store",
+                account_identifier="ops@example.com",
+            )
+        ],
+    )
+    received_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    config.email_store_path.write_text(
+        json.dumps(
+            {
+                "msg-1": EmailMessage(
+                    message_id="msg-1",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="First",
+                    body_text="first",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json"),
+                "msg-2": EmailMessage(
+                    message_id="msg-2",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Second",
+                    body_text="second",
+                    unread=True,
+                    received_at=received_at,
+                ).model_dump(mode="json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={"GMAIL_ACCESS_TOKEN": "secret"}),
+    )
+
+    first_events = provider.poll()
+    cursor_path = runtime_dir / "trigger-cursors-email.json"
+
+    assert [event.payload["message"]["message_id"] for event in first_events] == [
+        "msg-1",
+        "msg-2",
+    ]
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(first_events[0])
+    acknowledged_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert acknowledged_payload["email-gmail"]["last_received_at"] == "2026-04-03T12:00:00Z"
+    assert acknowledged_payload["email-gmail"]["recent_message_ids"] == ["msg-1"]
+
+    second_events = provider.poll()
+    assert [event.payload["message"]["message_id"] for event in second_events] == ["msg-2"]
+
+    provider.acknowledge_published_event(second_events[0])
+    final_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert final_payload["email-gmail"]["recent_message_ids"] == ["msg-1", "msg-2"]
+
+
+def test_email_new_message_resolves_full_mailbox_config_without_provider_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="gmail",
+                account_identifier="me",
+                auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+            )
+        ],
+    )
+    resolver = ProviderConfigResolver(config)
+    captured: dict[str, object] = {}
+
+    class FakeEmailProvider:
+        def list_unread(
+            self, mailbox_id: str, folder: str, limit: int
+        ) -> list[EmailMessageSummary]:
+            captured["list_unread"] = {
+                "mailbox_id": mailbox_id,
+                "folder": folder,
+                "limit": limit,
+            }
+            return [
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder=folder,
+                    message_id="gmail-msg-1",
+                    thread_id="thread-1",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                    unread=True,
+                    body_snippet="hello",
+                )
+            ]
+
+    def fake_build_email_provider(config_arg, emails, drafts, email_cursors):
+        captured["mailbox_ids"] = [mailbox.mailbox_id for mailbox in config_arg.email_mailboxes]
+        captured["mailbox_providers"] = [mailbox.provider for mailbox in config_arg.email_mailboxes]
+        captured["email_cursors"] = email_cursors
+        return FakeEmailProvider()
+
+    monkeypatch.setattr(
+        "evander.triggers.providers.email_new_message._build_email_provider",
+        fake_build_email_provider,
+    )
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "me",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        TriggerRuntimeContext(
+            provider_config=trigger_provider_config_blob(
+                resolver.resolve_trigger_provider_config("root")
+            ),
+            provider_config_resolver=resolver,
+            env={"GMAIL_ACCESS_TOKEN": "secret"},
+            metadata={"directory_path": "root"},
+        ),
+    )
+
+    events = provider.poll()
+
+    assert captured["mailbox_ids"] == ["mailbox-1"]
+    assert captured["mailbox_providers"] == ["gmail"]
+    assert captured["email_cursors"] is None
+    assert captured["list_unread"] == {
+        "mailbox_id": "mailbox-1",
+        "folder": "inbox",
+        "limit": 200,
+    }
+    assert events[0].payload["message"]["mailbox_id"] == "mailbox-1"
+
+
+def test_email_new_message_skips_messages_older_than_cursor(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="mailbox-1",
+                provider="json_store",
+                account_identifier="ops@example.com",
+            )
+        ],
+    )
+    cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    config.email_store_path.write_text(
+        json.dumps(
+            {
+                "old-unseen": EmailMessage(
+                    message_id="old-unseen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Old",
+                    body_text="old",
+                    unread=True,
+                    received_at=cursor_at - timedelta(minutes=1),
+                ).model_dump(mode="json"),
+                "equal-seen": EmailMessage(
+                    message_id="equal-seen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Seen",
+                    body_text="seen",
+                    unread=True,
+                    received_at=cursor_at,
+                ).model_dump(mode="json"),
+                "equal-unseen": EmailMessage(
+                    message_id="equal-unseen",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="Same timestamp",
+                    body_text="same timestamp",
+                    unread=True,
+                    received_at=cursor_at,
+                ).model_dump(mode="json"),
+                "newer": EmailMessage(
+                    message_id="newer",
+                    mailbox_id="mailbox-1",
+                    provider="json_store",
+                    folder="inbox",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    subject="New",
+                    body_text="new",
+                    unread=True,
+                    received_at=cursor_at + timedelta(minutes=1),
+                ).model_dump(mode="json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={"GMAIL_ACCESS_TOKEN": "secret"}),
+    )
+    (runtime_dir / "trigger-cursors-email.json").write_text(
+        json.dumps(
+            {
+                "email-gmail": {
+                    "last_received_at": "2026-04-03T12:00:00Z",
+                    "recent_message_ids": ["equal-seen"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = provider.poll()
+
+    assert [event.payload["message"]["message_id"] for event in events] == [
+        "equal-unseen",
+        "newer",
+    ]
+
+
+def test_conformance_pr_feedback_acknowledges_after_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:11": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "11",
+                        "session_id": "session-11",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-github",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:issue_comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer-1",
+                    body="first",
+                    created_at=created_at,
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:issue_comment:2",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer-2",
+                    body="second",
+                    created_at=created_at,
+                ),
+            ]
+            self.next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+
+    first_events = provider.poll()
+    cursor_path = runtime_dir / "trigger-cursors-pr-feedback.json"
+
+    assert [event.payload["feedback"]["feedback_id"] for event in first_events] == [
+        "github:issue_comment:1",
+        "github:issue_comment:2",
+    ]
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(first_events[0])
+    acknowledged_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert acknowledged_payload["pr-github"]["stream_cursors"]["github:org/repo:11"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert acknowledged_payload["pr-github"]["recent_feedback_ids"]["github:org/repo:11"] == [
+        "github:issue_comment:1"
+    ]
+
+    second_events = provider.poll()
+    assert [event.payload["feedback"]["feedback_id"] for event in second_events] == [
+        "github:issue_comment:2"
+    ]
+
+    provider.acknowledge_published_event(second_events[0])
+    final_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert final_payload["pr-github"]["recent_feedback_ids"]["github:org/repo:11"] == [
+        "github:issue_comment:1",
+        "github:issue_comment:2",
+    ]
+
+
+@pytest.mark.parametrize("trigger_provider", ["github", "local"])
+def test_pr_feedback_trigger_suppresses_scoped_effect_reply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trigger_provider: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    feedback_id = "github:review_comment:201"
+    created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    item = PrFeedbackItem(
+        feedback_id=feedback_id,
+        provider="github",
+        repo="org/repo",
+        pr_id="11",
+        comment_id="201",
+        author="automation",
+        body="Handled.",
+        created_at=created_at,
+    )
+    namespace = pr_reply_state_namespace(provider="github", directory_path="root")
+    scope_key = pr_feedback_scope_key(
+        state_namespace=namespace,
+        provider="github",
+        repo="org/repo",
+        pr_id="11",
+    )
+    (runtime_dir / "ignored-feedback-ids.json").write_text(
+        json.dumps(
+            {
+                "feedback_ids": [
+                    {
+                        "feedback_id": feedback_id,
+                        "scope_key": scope_key,
+                        "ignored_at": "2099-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    if trigger_provider == "github":
+        (runtime_dir / "pr-map.json").write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "github:org/repo:11": {
+                            "provider": "github",
+                            "repo": "org/repo",
+                            "pr_id": "11",
+                            "directory_path": "root",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        (runtime_dir / "pr-feedback-store.json").write_text(
+            json.dumps(
+                {
+                    "cursors": {},
+                    "feedback": {feedback_id: item.model_dump(mode="json")},
+                    "session_reads": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": f"pr-{trigger_provider}",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": trigger_provider,
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        feedback = [item]
+        next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    if trigger_provider == "github":
+        monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+
+    assert provider.poll() == []
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload[f"pr-{trigger_provider}"]["recent_feedback_ids"][
+        "github:org/repo:11"
+    ] == [feedback_id]
+
+
+def test_pr_feedback_skips_feedback_older_than_stream_cursor(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    items = [
+        PrFeedbackItem(
+            feedback_id="old-unseen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="old",
+            created_at=cursor_at - timedelta(minutes=1),
+        ),
+        PrFeedbackItem(
+            feedback_id="equal-seen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="seen",
+            created_at=cursor_at,
+        ),
+        PrFeedbackItem(
+            feedback_id="equal-unseen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="same timestamp",
+            created_at=cursor_at,
+        ),
+        PrFeedbackItem(
+            feedback_id="newer",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="new",
+            created_at=cursor_at + timedelta(minutes=1),
+        ),
+    ]
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps(
+            {"feedback": {item.feedback_id: item.model_dump(mode="json") for item in items}}
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "trigger-cursors-pr-feedback.json").write_text(
+        json.dumps(
+            {
+                "pr-local": {
+                    "stream_cursors": {"local:org/repo:11": "2026-04-03T12:00:00Z"},
+                    "recent_feedback_ids": {"local:org/repo:11": ["equal-seen"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = provider.poll()
+
+    assert [event.payload["feedback"]["feedback_id"] for event in events] == [
+        "equal-unseen",
+        "newer",
+    ]
+
+
+def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+                "agent_author_names": ["Evander Bot"],
+                "suppress_agent_authored_feedback": True,
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    item = PrFeedbackItem(
+        feedback_id="local:self-authored:1",
+        provider="local",
+        repo="org/repo",
+        pr_id="11",
+        author="Evander Bot",
+        body="I handled this.",
+        created_at=created_at,
+    )
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps({"feedback": {item.feedback_id: item.model_dump(mode="json")}}),
+        encoding="utf-8",
+    )
+
+    assert provider.poll() == []
+
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload["pr-local"]["stream_cursors"]["local:org/repo:11"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert cursor_payload["pr-local"]["recent_feedback_ids"]["local:org/repo:11"] == [
+        "local:self-authored:1"
+    ]
+    assert provider.poll() == []
+
+
+def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-github",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+                "agent_author_names": ["Evander Bot"],
+                "suppress_agent_authored_feedback": True,
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+    poll_cursors: list[str | None] = []
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:self-authored:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="Evander Bot",
+                    body="I handled this.",
+                    created_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                )
+            ]
+            self.next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **kwargs):
+            poll_cursors.append(kwargs.get("cursor"))
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+
+    assert provider.poll() == []
+    assert provider.poll() == []
+
+    assert poll_cursors == [None, "2026-04-03T12:00:00Z"]
+
+
+def test_conformance_cron_due_and_cursor_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-every-minute-range",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "* * * * 0-6",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    first_events = provider.poll()
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
+    )
+
+    assert first_events
+    assert first_events[0].occurred_at == frozen_now
+    assert first_events[0].payload["scheduled_for"] == "2026-04-03T12:00:00Z"
+    assert cursor_payload["cron-every-minute-range"]["pending_scheduled_for"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "last_fired_at" not in cursor_payload["cron-every-minute-range"]
+
+    provider.acknowledge_published_event(first_events[0])
+    acked_cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
+    )
+    assert acked_cursor_payload["cron-every-minute-range"]["last_fired_at"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-every-minute-range"]
+    assert provider.poll() == []
+    _record_result(
+        report_collector,
+        requirement_id="provider:cron:cursor",
+        trigger_type="trigger:cron",
+        status="pass",
+        coverage=["provider behavior correctness"],
+        details="Cron emits when due, stages pending_scheduled_for until acknowledgement, and then persists last_fired_at.",
+    )
+
+
+def test_conformance_cron_uses_iana_timezone_and_reports_local_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 3, 29, 6, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-stockholm-morning",
+                "display_name": "Stockholm morning",
+                "type": "trigger:cron",
+                "expression": "0 8 * * *",
+                "timezone": "Europe/Stockholm",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload == {
+        "scheduled_for": "2026-03-29T06:00:00Z",
+        "scheduled_for_local": "2026-03-29T08:00:00+02:00",
+        "timezone": "Europe/Stockholm",
+    }
+
+
+def test_conformance_cron_never_publishes_a_future_fallback_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 10, 25, 0, 59, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        current = frozen_now
+
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return cls.current.replace(tzinfo=None)
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-stockholm-fallback",
+                "display_name": "Stockholm fallback",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+                "timezone": "Europe/Stockholm",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload["scheduled_for"] == "2026-10-25T00:59:00Z"
+    assert events[0].payload["scheduled_for_local"] == "2026-10-25T02:59:00+02:00"
+
+    provider.acknowledge_published_event(events[0])
+    _FrozenDatetime.current = datetime(2026, 10, 25, 1, 0, tzinfo=timezone.utc)
+
+    next_events = provider.poll()
+
+    assert len(next_events) == 1
+    assert next_events[0].occurred_at == _FrozenDatetime.current
+    assert next_events[0].payload["scheduled_for"] == "2026-10-25T01:00:00Z"
+    assert next_events[0].payload["scheduled_for_local"] == "2026-10-25T02:00:00+01:00"
+
+
+def test_conformance_cron_high_frequency_edit_skips_backlog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    cursor_path = runtime_dir / "trigger-cursors-cron.json"
+    cursor_path.write_text(
+        json.dumps(
+            {
+                "cron-edited": {
+                    "last_fired_at": "2026-04-03T10:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    frozen_now = datetime(2026, 4, 3, 12, 10, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-edited",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload["scheduled_for"] == "2026-04-03T12:10:00Z"
+    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T10:00:00Z"
+    assert cursor_payload["cron-edited"]["pending_scheduled_for"] == "2026-04-03T12:10:00Z"
+
+    provider.acknowledge_published_event(events[0])
+    acked_cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert acked_cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-edited"]
+    assert provider.poll() == []
+
+    _record_result(
+        report_collector,
+        requirement_id="provider:cron:no-retroactive-catch-up",
+        trigger_type="trigger:cron",
+        status="pass",
+        coverage=["provider behavior correctness"],
+        details="Edited high-frequency cron schedules emit the latest due occurrence, keep it pending until acknowledgement, and then advance last_fired_at past older missed times.",
+    )
+
+
+def test_conformance_directory_and_filter_scoping(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+
+    (runtime_dir / "local-issues.json").write_text(
+        json.dumps(
+            {
+                "i-a": LocalIssueRecord(
+                    issue_id="i-a",
+                    issue_number="1",
+                    title="A",
+                    body="A",
+                    yaml_path="root/team-a/a.yaml",
+                    directory_path="root/team-a",
+                    created_at=now,
+                    updated_at=now,
+                ).model_dump(mode="json"),
+                "i-b": LocalIssueRecord(
+                    issue_id="i-b",
+                    issue_number="2",
+                    title="B",
+                    body="B",
+                    yaml_path="root/team-b/b.yaml",
+                    directory_path="root/team-b",
+                    created_at=now,
+                    updated_at=now,
+                ).model_dump(mode="json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    discord_now = datetime.now(timezone.utc)
+    DiscordInboxStore(runtime_dir / "discord-inbox-store.db").add_messages_if_new(
+        [
+            DiscordMessageEnvelope(
+                message_id="a",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="A",
+                content="a",
+                created_at=discord_now,
+            ),
+            DiscordMessageEnvelope(
+                message_id="b",
+                channel_id="chan-b",
+                author_id="user-b",
+                author_name="B",
+                content="b",
+                created_at=discord_now + timedelta(seconds=1),
+            ),
+        ]
+    )
+    teams_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="allowed",
+            created_at=now,
+            metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+        )
+    )
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-b/channel-9/msg-9",
+            message_id="msg-9",
+            author_id="user-b",
+            author_name="User B",
+            team_id="team-b",
+            channel_id="channel-9",
+            thread_id="msg-9",
+            content="blocked",
+            created_at=now + timedelta(seconds=2),
+            metadata={"source": "teams_graph_api", "team_id": "team-b", "channel_id": "channel-9"},
+        )
+    )
+
+    ticket_provider = TicketCreatedTriggerProvider()
+    ticket_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "ticket-filtered",
+                "display_name": "Ticket",
+                "type": "trigger:ticket:created",
+                "directories": ["root/team-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    discord_provider = DiscordNewMessageTriggerProvider()
+    discord_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "discord-filtered",
+                "display_name": "Discord",
+                "type": "trigger:discord:new-message",
+                "discord_bot_token_env": "DISCORD_BOT_TOKEN",
+                "channel_ids": ["chan-a"],
+                "user_ids": ["user-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    teams_provider = TeamsNewMessageTriggerProvider()
+    teams_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams-filtered",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    ticket_events = ticket_provider.poll()
+    discord_events = discord_provider.poll()
+    teams_events = teams_provider.poll()
+
+    assert len(ticket_events) == 1
+    assert ticket_events[0].payload["ticket"]["directory_path"] == "root/team-a"
+    assert len(discord_events) == 1
+    assert discord_events[0].payload["message"]["channel_id"] == "chan-a"
+    assert len(teams_events) == 1
+    assert teams_events[0].payload["channel_target"] == "team-a/channel-1"
+    assert teams_events[0].payload["message"]["message_id"] == "msg-1"
+
+    _record_result(
+        report_collector,
+        requirement_id="provider:directory-and-filter-scoping",
+        trigger_type="trigger:ticket:created,trigger:discord:new-message,trigger:teams:new-message",
+        status="pass",
+        coverage=["provider behavior correctness"],
+        details="Ticket directory scope and Discord/Teams message filters are enforced.",
+    )
+
+
+def test_conformance_pr_provider_modes_and_git_push_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    report_collector: dict[str, Any],
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+
+    pr_provider = PullRequestNewFeedbackTriggerProvider()
+    pr_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR Local",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps(
+            {
+                "feedback": {
+                    "fb-1": PrFeedbackItem(
+                        feedback_id="fb-1",
+                        provider="local",
+                        repo="org/repo",
+                        pr_id="10",
+                        author="dev",
+                        body="nit",
+                        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                    ).model_dump(mode="json")
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = pr_provider.poll()
+    assert len(events) == 1
+    assert set(events[0].payload.keys()) == {"pr", "feedback"}
+
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "local:org/repo:10": {
+                        "provider": "local",
+                        "repo": "org/repo",
+                        "pr_id": "10",
+                        "session_id": "session-10",
+                        "directory_path": "root",
+                        "status": "completed",
+                        "merged": True,
+                        "completed_at": "2026-04-03T12:00:00Z",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pr_provider_with_mapping = PullRequestNewFeedbackTriggerProvider()
+    pr_provider_with_mapping.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local-mapped",
+                "display_name": "PR Local Mapped",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    mapped_events = pr_provider_with_mapping.poll()
+    assert len(mapped_events) == 1
+    assert mapped_events[0].payload["session_id"] == "session-10"
+
+    pr_completed = PullRequestCompletedTriggerProvider()
+    pr_completed.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-local",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    completed_events = pr_completed.poll()
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["session_id"] == "session-10"
+    assert completed_events[0].payload["pr"]["status"] == "completed"
+    assert completed_events[0].payload["pr"]["merged"] is True
+    pr_completed.acknowledge_published_event(completed_events[0])
+    assert pr_completed.poll() == []
+
+    repo = tmp_path / "repo.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={repo}",
+            "config",
+            "evander.managedRepoId",
+            "mr_0123456789abcdefabcd",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo}", "config", "evander.baseBranch", "main"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo}", "config", "evander.directoryPath", "root"],
+        check=True,
+    )
+    git_provider = GitPushTriggerProvider()
+    git_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "git-trigger",
+                "display_name": "Git",
+                "type": "trigger:git:push",
+                "managed_repo_id_glob": "mr_012345*",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    git_event = git_provider.handle_ref_update(
+        repo_path=str(repo),
+        old_rev="0" * 40,
+        new_rev="a" * 40,
+        ref_name="refs/heads/main",
+    )
+    assert git_event is not None
+    assert git_event.payload["branch_name"] == "main"
+    assert git_event.payload["commit_hash"] == "a" * 40
+    assert git_event.payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert git_event.payload["default_branch"] == "main"
+    assert not any("path" in key for key in git_event.payload)
+
+    # Non-local provider mode should use adapter path; patch adapter/streams to avoid network.
+    pr_remote = PullRequestNewFeedbackTriggerProvider()
+    pr_remote.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-gh",
+                "display_name": "PR GitHub",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = []
+            self.next_cursor = "2026-04-08T05:33:41.433000Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch.setattr(pr_remote, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        pr_remote,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+    assert pr_remote.poll() == []
+
+    _record_result(
+        report_collector,
+        requirement_id="provider:pr-modes-and-git-push",
+        trigger_type="trigger:pull-request:new-feedback,trigger:pull-request:completed,trigger:git:push",
+        status="pass",
+        coverage=["provider behavior correctness", "event/output contract verification"],
+        details="PR feedback and completion triggers exercise local/github modes; git push emits branch/hash contract.",
+    )
+
+
+def test_pr_feedback_trigger_local_missing_store_creates_empty_store_and_emits_no_events(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR Local",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+    store_path = runtime_dir / "pr-feedback-store.json"
+
+    assert events == []
+    assert store_path.exists()
+    assert json.loads(store_path.read_text(encoding="utf-8")) == {
+        "cursors": {},
+        "feedback": {},
+        "session_reads": {},
+    }
+
+
+def test_pr_feedback_trigger_local_malformed_store_raises_like_shared_store(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "pr-feedback-store.json").write_text("{not json", encoding="utf-8")
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR Local",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        provider.poll()
+
+
+
+
+def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-gh",
+                "display_name": "PR GitHub",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="Needs changes",
+                    created_at=datetime(2026, 4, 8, 5, 33, 41, 433000, tzinfo=timezone.utc),
+                )
+            ]
+            self.next_cursor = "2026-04-08T05:33:41.433000Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+    try:
+        events = provider.poll()
+    finally:
+        monkeypatch.undo()
+
+    assert len(events) == 1
+    assert events[0].payload["pr"] == {"provider": "github", "repo": "org/repo", "pr_id": "11"}
+    assert events[0].payload["feedback"]["feedback_id"] == "github:comment:1"
+
+
+def test_pr_feedback_trigger_marks_agent_directed_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-gh",
+                "display_name": "PR GitHub",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+                "agent_author_names": ["Evander Bot"],
+                "agent_mention_names": ["Evander Bot"],
+                "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="Can you make this change?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 41, tzinfo=timezone.utc),
+                    metadata={"prior_thread_comment_author_names": ["Evander Bot"]},
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:2",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="@Evander Bot can you take this?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 42, tzinfo=timezone.utc),
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:3",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="For human reviewers only.",
+                    created_at=datetime(2026, 4, 8, 5, 33, 43, tzinfo=timezone.utc),
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:4",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="@<C74221CB-EE08-6A83-9055-AF01C3333112> can you take this?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 44, tzinfo=timezone.utc),
+                    metadata={"mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"]},
+                ),
+            ]
+            self.next_cursor = "2026-04-08T05:33:44Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+
+    events = provider.poll()
+
+    metadata_by_id = {
+        event.payload["feedback"]["feedback_id"]: event.payload["feedback"]["metadata"]
+        for event in events
+    }
+    assert metadata_by_id["github:comment:1"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:1"]["agent_directed_same_thread"] is True
+    assert metadata_by_id["github:comment:1"]["agent_directed_reason"] == "same_thread"
+    assert metadata_by_id["github:comment:2"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:2"]["agent_directed_mentioned"] is True
+    assert metadata_by_id["github:comment:2"]["agent_directed_reason"] == "mention"
+    assert metadata_by_id["github:comment:3"]["agent_directed"] is False
+    assert metadata_by_id["github:comment:3"]["agent_directed_reason"] == "not_agent_directed"
+    assert metadata_by_id["github:comment:4"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_mentioned"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_reason"] == "mention"
+
+
+def test_pr_completed_trigger_github_refreshes_status_before_emitting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:11": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "11",
+                        "session_id": "session-11",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = PullRequestCompletedTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-gh",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret-token"}),
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_fetch_github_pull_request(**kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(kwargs))
+        return {
+            "title": "Feature PR",
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-05-15T10:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/11",
+            "head": {"ref": "feature/11", "sha": "abc123"},
+            "base": {"ref": "main", "sha": "def456"},
+        }
+
+    monkeypatch.setattr(provider, "_fetch_github_pull_request", fake_fetch_github_pull_request)
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert calls[0]["repo"] == "org/repo"
+    assert calls[0]["pr_id"] == "11"
+    assert calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert events[0].payload["session_id"] == "session-11"
+    assert events[0].payload["status"] == "merged"
+    assert events[0].payload["merged"] is True
+    assert events[0].payload["completed_at"] == "2026-05-15T10:00:00Z"
+    assert events[0].payload["pr"]["target_branch"] == "main"
+
+    pr_map_payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map_payload["entries"]["github:org/repo:11"]
+    assert entry["status"] == "merged"
+    assert entry["merged"] is True
+    assert entry["completed_at"] == "2026-05-15T10:00:00Z"
+
+    provider.acknowledge_published_event(events[0])
+    assert provider.poll() == []
+
+
+def test_pr_completed_trigger_github_emits_closed_unmerged_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:12": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "12",
+                        "session_id": "session-12",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = PullRequestCompletedTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-gh",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret-token"}),
+    )
+
+    def fake_fetch_github_pull_request(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "title": "Closed PR",
+            "state": "closed",
+            "merged": False,
+            "closed_at": "2026-05-15T11:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/12",
+            "head": {"ref": "feature/12", "sha": "abc123"},
+            "base": {"ref": "main", "sha": "def456"},
+        }
+
+    monkeypatch.setattr(provider, "_fetch_github_pull_request", fake_fetch_github_pull_request)
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].payload["session_id"] == "session-12"
+    assert events[0].payload["status"] == "closed"
+    assert events[0].payload["merged"] is False
+    assert events[0].payload["completed_at"] == "2026-05-15T11:00:00Z"
+
+    pr_map_payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map_payload["entries"]["github:org/repo:12"]
+    assert entry["status"] == "closed"
+    assert entry["merged"] is False
+    assert entry["completed_at"] == "2026-05-15T11:00:00Z"
+
+
+def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    report_collector: dict[str, Any],
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = _worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 2,
+            "jitter_seconds": 3,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Cron",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    frozen_event_time = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    event_payload = {
+        "event_id": "cron-1:2026-04-03T12:00:00+00:00",
+        "trigger_id": "cron-1",
+        "trigger_type": "trigger:cron",
+        "occurred_at": frozen_event_time,
+        "payload": {"scheduled_for": "2026-04-03T12:00:00Z"},
+    }
+
+    class _Provider:
+        def poll(self):
+            from evander.events.models import TriggerEvent
+
+            return [TriggerEvent.model_validate(event_payload)]
+
+    worker.provider_factory.build = lambda _trigger, **_: _Provider()  # type: ignore[assignment]
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.events_published == 1
+    assert second.events_published == 0
+
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(value: float) -> None:
+        sleep_calls.append(value)
+        raise RuntimeError("stop-loop")
+
+    monkeypatch.setattr(worker._kernel._sleeper, "sleep", _fake_sleep)
+    monkeypatch.setattr("evander.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25)
+
+    with pytest.raises(RuntimeError, match="stop-loop"):
+        worker.run_forever()
+
+    assert sleep_calls
+    assert abs(sleep_calls[0] - 3.25) < 1e-6
+
+    queue = SqliteTriggerEventQueue(worker_config.orchestration_store_path)
+    assert len(queue.list_pending()) == 1
+
+    _record_result(
+        report_collector,
+        requirement_id="orchestrator:integration-idempotency-loop",
+        trigger_type="all",
+        status="pass",
+        coverage=["orchestrator integration checks"],
+        details="Worker loads trigger providers, dedupes duplicate events, and applies poll+jitter sleep.",
+    )
+
+
+def test_conformance_traceability_matrix_and_report(tmp_path: Path) -> None:
+    # Report formatting is independent of execution order. The pytest reporter checks
+    # this same matrix against actual passed cases at the end of a complete suite.
+    matrix = MATRICES["trigger"]
+    requirements = [
+        {
+            "requirement_id": requirement_id,
+            "status": "pass",
+            "coverage": [task],
+            "details": "Formatter input",
+        }
+        for task, required in matrix.items()
+        for requirement_id in required
+    ]
+    summary = build_report(requirements, matrix)
+    report_path = tmp_path / "trigger-conformance-report.json"
+    write_report(report_path, summary)
+
+    assert not summary["missing_coverage"]
+    assert summary["status"] == "pass"
+    assert report_path.exists()
+    assert json.loads(report_path.read_text(encoding="utf-8")) == summary

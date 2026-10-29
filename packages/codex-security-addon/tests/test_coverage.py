@@ -1,0 +1,1047 @@
+from copy import deepcopy
+from contextlib import closing, contextmanager
+from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+import subprocess
+import tracemalloc
+from types import SimpleNamespace
+
+import pytest
+
+from evander.security_scans import SecurityScanRequest
+from evander_codex_security_addon import coverage as c
+
+
+def entry(path, *, kind="text", size=20, mode="100644"):
+    return {
+        "path": path,
+        "kind": kind,
+        "oid": hashlib.sha1(path.encode()).hexdigest(),
+        "size": size,
+        "mode": mode,
+    }
+
+
+def request(**kwargs):
+    return SecurityScanRequest(
+        session_id="scan-session",
+        repo_path="/home/agent/repo",
+        coverage_policy="all_tracked_files",
+        managed_repo_id="managed-example",
+        **kwargs,
+    )
+
+
+def state(paths=("src/a.py", "src/b.py", "tests/a.py"), *, file_size=20):
+    return c.make_state(
+        "a" * 32,
+        request(),
+        "root/project",
+        {"revision": "d" * 40, "entries": [entry(p, size=file_size) for p in paths]},
+        {"model": "example"},
+    )
+
+
+def subscription_route(profile="subscription-a"):
+    return {
+        "model": "security-model", "reasoning_effort": "high",
+        "model_provider_mode": "openai_public", "auth_mode": "chatgpt_subscription",
+        "subscription_profile_id": profile, "cyber_access_program": "daybreak_blue",
+        "image": "security-runner:pinned", "image_alias": "security-scan",
+    }
+
+
+def receipt(s, item, *, closed=True, **kwargs):
+    return {
+        "kind": item["kind"],
+        "paths": item["paths"],
+        "revision": s["revision"],
+        "sdk_version": c.SDK_VERSION,
+        "coverage": "complete" if closed else "partial",
+        "deferred": [],
+        "exclusions": [],
+        "needs_follow_up": False,
+        **kwargs,
+    }
+
+
+def proof(identifier="native-1", findings=None):
+    return {
+        "archive_key": "archive-" + identifier,
+        "archive_sha256": "f" * 64,
+        "provider_scan_id": identifier,
+        "target_id": "target-1",
+        "findings": findings or [],
+    }
+
+
+def finish(s, item, *, at=None, closed=True, **kwargs):
+    at = at or c.now()
+    a = c.begin(s, item, at=at)
+    c.accept(
+        s, item, a["scan_id"], receipt(s, item, closed=closed, **kwargs), proof(a["scan_id"]), at=at
+    )
+    a["cleanup_confirmed"] = True
+
+
+def mapping(s):
+    item = next(x for x in s["tasks"].values() if x["kind"] == "architecture")
+    finish(
+        s,
+        item,
+        closed=False,
+        architecture={"paths": list(s["files"]), "threat_model": {"assets": ["application state"]}},
+    )
+
+
+def test_scopes_split_without_crediting_partial_or_late_results_and_keep_findings():
+    s = state(file_size=400_000)
+    mapping(s)
+    assert c.progress(s)["files_reviewed"] == 0
+    first, second = c.pending(s)
+    a = c.begin(s, first)
+    c.begin(s, second)
+    assert c.pending(s) == []
+    finding = {"findingId": "finding-1", "title": "Unchecked input", "severity": {"level": "high"}}
+    old_receipt = receipt(s, first, closed=False)
+    assert c.accept(s, first, a["scan_id"], old_receipt, proof(findings=[finding]))
+    assert first["status"] == "split"
+    assert c.progress(s)["files_reviewed"] == 0
+    assert not c.accept(s, first, a["scan_id"], receipt(s, first), proof())
+    for child in [x for x in s["tasks"].values() if x.get("parent") == first["id"]]:
+        finish(s, child)
+    assert c.progress(s)["files_reviewed"] == 2
+    assert c.aggregate(s)[1]["high"] == 1
+    assert not c.complete(s)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"revision": "e" * 40},
+        {"paths": ["different.py"]},
+        {"sdk_version": "unknown"},
+        {"kind": "boundary"},
+    ],
+)
+def test_wrong_target_or_scope_never_earns_coverage(change):
+    s = state()
+    mapping(s)
+    item = c.pending(s)[0]
+    a = c.begin(s, item)
+    before = deepcopy(s["proofs"])
+    with pytest.raises(ValueError):
+        c.accept(s, item, a["scan_id"], {**receipt(s, item), **change}, proof())
+    assert s["proofs"] == before
+    assert c.progress(s)["files_reviewed"] == 0
+
+
+def test_binary_requires_explicit_disposition_and_three_attempts_block_it():
+    s = c.make_state(
+        "a" * 32,
+        request(),
+        "root/project",
+        {"revision": "d" * 40, "entries": [entry("logo.png", kind="binary")]},
+        {},
+    )
+    mapping(s)
+    item = c.pending(s)[0]
+    for _ in range(3):
+        finish(s, item)
+    assert item["status"] == "blocked"
+    assert c.progress(s)["files_blocked"] == 1
+    assert c.progress(s)["files_not_applicable"] == 0
+    assert not c.complete(s)
+
+
+def test_binary_disposition_and_boundary_closure_are_both_required():
+    s = c.make_state(
+        "a" * 32,
+        request(),
+        "root/project",
+        {"revision": "d" * 40, "entries": [entry("logo.png", kind="binary")]},
+        {},
+    )
+    mapping(s)
+    finish(
+        s,
+        c.pending(s)[0],
+        dispositions={
+            "logo.png": {
+                "disposition": "not_applicable",
+                "reason": "Reviewed image metadata; no executable source content",
+            }
+        },
+        open_questions=[{"question": "Is the image used by an external application?"}],
+    )
+    c.plan_boundaries(s)
+    assert not c.complete(s)
+    finish(s, c.pending(s)[0])
+    assert c.complete(s)
+    assert c.progress(s)["files_not_applicable"] == 1
+    assert len(s["open_questions"]) == 1
+
+
+@pytest.mark.parametrize(
+    "unfinished",
+    [
+        {"closed": False},
+        {"deferred": [{"id": "source", "reason": "Review the remaining call site"}]},
+        {"exclusions": [{"path": "src/a.py"}]},
+        {"needs_follow_up": True},
+    ],
+)
+def test_advisory_questions_never_override_unfinished_static_work(unfinished):
+    s = state(("src/a.py",))
+    mapping(s)
+    item = c.pending(s)[0]
+    finish(
+        s,
+        item,
+        open_questions=[{"question": "How is the application deployed?"}],
+        **unfinished,
+    )
+    assert item["status"] == "pending"
+    assert c.progress(s)["files_reviewed"] == 0
+    assert len(s["open_questions"]) == 1
+    assert not c.complete(s)
+
+
+def test_advisory_questions_and_accepted_coverage_survive_resume_without_becoming_work():
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
+    mapping(s)
+    question = {
+        "question": "Which external application calls this?",
+        "followUpPrompt": "Review its deployment when available.",
+    }
+    finish(s, c.pending(s)[0], open_questions=[question])
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    before = deepcopy(s)
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"]),
+        s["directory_path"],
+        {"revision": s["revision"], "entries": s["inventory"]},
+        s["route"],
+        previous=s,
+    )
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert resumed["open_questions"] == s["open_questions"]
+    assert not resumed["deferred"]
+    finish(resumed, c.pending(resumed)[0])
+    c.plan_boundaries(resumed)
+    for item in c.pending(resumed):
+        finish(resumed, item, open_questions=[question])
+    assert c.complete(resumed)
+    assert len(resumed["open_questions"]) == 3
+    assert s == before
+
+
+def test_deferred_validation_cannot_vanish_when_later_review_claims_complete():
+    s = state(("src/a.py",))
+    mapping(s)
+    s["deferred"]["native-1:pending"] = {
+        "paths": ["src/a.py"],
+        "reason": "Parent validation pending",
+        "resolution": None,
+    }
+    finish(s, c.pending(s)[0])
+    c.plan_boundaries(s)
+    item = c.pending(s)[0]
+    finish(s, item)
+    assert not c.complete(s)
+    assert item["status"] == "pending"
+    finish(
+        s,
+        item,
+        resolutions={
+            "native-1:pending": {
+                "disposition": "rejected",
+                "reason": "The source enforces the required authorization before the sink",
+            }
+        },
+    )
+    assert c.complete(s)
+
+
+def test_parallel_boundaries_close_independently_and_keep_global_work_until_resolved(tmp_path):
+    s = state(("a/a.py", "b/b.py"), file_size=600_000)
+    mapping(s)
+    for item in list(c.pending(s)):
+        finish(s, item)
+    s["deferred"] = {
+        "native:a": {"paths": ["a/a.py"], "resolution": None},
+        "native:b": {"paths": ["b/b.py"], "resolution": None},
+        "native:question": {
+            "reason": "Verify the shared authentication boundary",
+            "resolution": None,
+        },
+    }
+    c.plan_boundaries(s)
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    s = c.CoverageStore(tmp_path).get(s["scan_id"], "root/project")
+    first, second = c.pending(s)
+    slow = c.begin(s, second)
+    finish(
+        s,
+        first,
+        resolutions={
+            key: {"disposition": "no_issue_found", "reason": "Source authorization verified"}
+            for key in ("native:a", "native:question")
+        },
+    )
+    assert first["status"] == "completed"
+    assert first["deferred_keys"] == ["native:a", "native:question"]
+    assert second["deferred_keys"] == ["native:b"]
+    assert len(first["attempts"]) == 1
+    assert not c.complete(s)
+    assert s["deferred"]["native:b"]["resolution"] is None
+    c.accept(
+        s,
+        second,
+        slow["scan_id"],
+        receipt(
+            s,
+            second,
+            resolutions={
+                "native:b": {
+                    "disposition": "reported",
+                    "reason": "Validated boundary finding retained",
+                }
+            },
+        ),
+        proof(slow["scan_id"]),
+    )
+    slow["cleanup_confirmed"] = True
+    assert c.complete(s)
+
+
+def test_partial_boundary_splits_keep_each_outstanding_item_assigned_once():
+    s = state(("src/a.py", "src/b.py"))
+    mapping(s)
+    finish(s, c.pending(s)[0])
+    s["deferred"] = {
+        "native:a": {"paths": ["src/a.py"], "resolution": None},
+        "native:b": {"paths": ["src/b.py"], "resolution": None},
+    }
+    c.plan_boundaries(s)
+    parent = c.pending(s)[0]
+    finish(
+        s,
+        parent,
+        closed=False,
+        deferred=[{"id": "followup", "paths": ["src/b.py"], "reason": "Additional source review"}],
+    )
+    children = c.pending(s)
+    assert len(children) == 2
+    assigned = [key for item in children for key in item["deferred_keys"]]
+    assert len(assigned) == len(set(assigned)) == 3
+    assert set(assigned) == set(s["deferred"])
+    for item in children:
+        finish(
+            s,
+            item,
+            resolutions={
+                key: {"disposition": "no_issue_found", "reason": "Source reviewed"}
+                for key in item["deferred_keys"]
+            },
+        )
+    assert c.complete(s)
+
+
+def test_absolute_budget_and_two_review_cap_survive_journal_restart(tmp_path):
+    s = state(("a/a.py", "b/a.py", "c/a.py"), file_size=600_000)
+    mapping(s)
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    for item in c.pending(s):
+        c.begin(s, item)
+    store.save(s)
+    loaded = c.CoverageStore(tmp_path).get(s["scan_id"], "root/project")
+    assert len([x for x in loaded["tasks"].values() if x["status"] == "running"]) == 2
+    assert c.pending(loaded) == []
+    assert loaded["deadline_at"] == s["deadline_at"]
+    after_deadline = c.now() + timedelta(hours=7)
+    assert c.pending(loaded, at=after_deadline) == []
+
+
+def test_explicit_resume_reuses_only_accepted_work_and_original_snapshot():
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
+    mapping(s)
+    finish(s, c.pending(s)[0])
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    inventory = {"revision": s["revision"], "entries": s["inventory"]}
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"]),
+        "root/project",
+        inventory,
+        s["route"],
+        previous=s,
+    )
+    assert resumed["scan_id"] != s["scan_id"]
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert resumed["lineage"] == [s["scan_id"]]
+    assert resumed["deadline_at"] > s["deadline_at"]
+    assert s["finished_at"] is not None
+    with pytest.raises(ValueError, match="incompatible"):
+        c.make_state(
+            "c" * 32,
+            request(),
+            "root/project",
+            {**inventory, "revision": "e" * 40},
+            s["route"],
+            previous=s,
+        )
+    with pytest.raises(ValueError, match="incompatible"):
+        c.make_state(
+            "c" * 32, request(), "root/project", inventory, {"model": "another"}, previous=s
+        )
+
+
+@pytest.mark.parametrize("destination", ["subscription-a", "subscription-b"])
+def test_subscription_handoff_retains_credit_findings_and_immutable_source(destination):
+    s = state(("a/a.py", "b/a.py"), file_size=600_000)
+    s["route"] = subscription_route()
+    mapping(s)
+    item = c.pending(s)[0]
+    attempt = c.begin(s, item)
+    finding = {"findingId": "native-finding", "title": "Unchecked input", "severity": {"level": "high"}}
+    c.accept(s, item, attempt["scan_id"], receipt(s, item), proof(findings=[finding]))
+    attempt["cleanup_confirmed"] = True
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True, stop_reason="Quota exhausted")
+    before = deepcopy(s)
+    resumed = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=destination),
+        "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+        subscription_route(destination), previous=s,
+    )
+    assert c.progress(resumed)["files_reviewed"] == 1
+    assert c.progress(resumed)["files_pending"] == 1
+    assert c.aggregate(resumed)[1]["high"] == 1
+    assert resumed["proofs"] == s["proofs"]
+    assert resumed["inventory_digest"] == s["inventory_digest"]
+    assert resumed["architecture"] == s["architecture"]
+    assert resumed["subscription_handoff"] == {
+        "source_scan_id": s["scan_id"],
+        "source_subscription_profile_id": "subscription-a",
+        "destination_subscription_profile_id": destination,
+    }
+    assert resumed["stop_reason"] is None and resumed["lineage"] == [s["scan_id"]]
+    assert s == before
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("change", [
+    {"model": "different-model"}, {"reasoning_effort": "low"},
+    {"cyber_access_program": None}, {"image": "different:image"}, {"image_alias": "different"},
+    {"model_provider_mode": "azure"}, {"auth_mode": "api_key"},
+    {"future_access_setting": "different"},
+])
+def test_resume_preserves_every_other_route_setting(explicit, change):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    profile = "subscription-b" if explicit else "subscription-a"
+    with pytest.raises(ValueError, match="configuration|subscription routes"):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=profile if explicit else None),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            {**subscription_route(profile), **change}, previous=s,
+        )
+
+
+@pytest.mark.parametrize("source_change, destination, explicit", [
+    ({}, "subscription-b", None),  # The default remains strict.
+    ({}, "subscription-c", "subscription-b"),
+    ({"auth_mode": "api_key"}, "subscription-b", "subscription-b"),
+    ({"model_provider_mode": "azure"}, "subscription-b", "subscription-b"),
+    ({"subscription_profile_id": None}, "subscription-b", "subscription-b"),
+])
+def test_resume_cannot_select_an_unrequested_profile_or_convert_api_billing(source_change, destination, explicit):
+    s = state()
+    s.update(
+        route={**subscription_route(), **source_change},
+        finished_at=c.now().isoformat(), cleanup_confirmed=True,
+    )
+    before = deepcopy(s)
+    with pytest.raises(ValueError):
+        c.make_state(
+            "b" * 32,
+            request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id=explicit),
+            "root/project", {"revision": s["revision"], "entries": s["inventory"]},
+            subscription_route(destination), previous=s,
+        )
+    assert s == before
+
+
+@pytest.mark.parametrize("condition", [
+    "active", "expired", "cleanup", "complete", "revision", "inventory", "directory", "repository", "sdk", "policy",
+])
+def test_handoff_cannot_bypass_snapshot_access_policy_or_cleanup_validation(condition):
+    s = state()
+    s.update(route=subscription_route(), finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    inventory = {"revision": s["revision"], "entries": s["inventory"]}
+    directory, repo = "root/project", s["managed_repo_id"]
+    if condition == "revision":
+        inventory = {**inventory, "revision": "e" * 40}
+    elif condition == "inventory":
+        inventory = {**inventory, "entries": [entry("changed.py")]}
+    elif condition == "directory":
+        directory = "root/other"
+    elif condition == "repository":
+        repo = "other-repository"
+    elif condition == "sdk":
+        s["sdk_version"] = "incompatible"
+    elif condition == "policy":
+        s["version"] += 1
+    elif condition == "complete":
+        mapping(s)
+        for _ in range(5):
+            for item in c.pending(s):
+                finish(s, item)
+            c.plan_boundaries(s)
+        assert c.complete(s)
+    elif condition == "active":
+        s["finished_at"] = None
+    elif condition == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    else:
+        s["cleanup_confirmed"] = False
+    inputs = request(resume_from_scan_id=s["scan_id"], resume_subscription_profile_id="subscription-b")
+    inputs = inputs.model_copy(update={"managed_repo_id": repo})
+    with pytest.raises(ValueError):
+        c.make_state("b" * 32, inputs, directory, inventory, subscription_route("subscription-b"), previous=s)
+
+
+@pytest.mark.parametrize("condition", ["active", "expired", "cleanup"])
+def test_resume_rejects_active_expired_and_uncertain_cleanup(condition):
+    s = state()
+    s.update(finished_at=c.now().isoformat(), cleanup_confirmed=True)
+    if condition == "active":
+        s["finished_at"] = None
+    elif condition == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    else:
+        s["cleanup_confirmed"] = False
+    with pytest.raises(ValueError, match="active, complete, expired"):
+        c.make_state(
+            "b" * 32,
+            request(),
+            "root/project",
+            {"revision": s["revision"], "entries": s["inventory"]},
+            s["route"],
+            previous=s,
+        )
+
+
+def test_repository_claim_is_atomic_and_directory_scoped(tmp_path):
+    store = c.CoverageStore(tmp_path)
+
+    def claim(number):
+        value = state()
+        value["scan_id"] = f"{number:032x}"
+        try:
+            return store.create(value)["scan_id"]
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(claim, range(1, 5)))
+    assert sum(x is not None for x in results) == 1
+    with pytest.raises(ValueError, match="this directory"):
+        store.get(next(x for x in results if x), "root/other")
+
+
+def test_exact_root_controls_deduplicate_across_sdk_checkouts_but_siblings_survive():
+    s = state()
+    base = {
+        "findingId": "one",
+        "ruleId": "authorization.missing-check",
+        "identity": {"anchor": "request-authorization"},
+        "title": "Missing guard",
+        "severity": {"level": "high"},
+        "locations": [{"path": "src/a.py", "role": "root_control", "startLine": 8, "endLine": 10}],
+    }
+    same = {**deepcopy(base), "findingId": "two"}
+    sibling = {
+        **deepcopy(base),
+        "findingId": "three",
+        "locations": [{"path": "src/b.py", "role": "root_control", "startLine": 8, "endLine": 10}],
+    }
+    s["proofs"] = [
+        proof("one", [base]),
+        {**proof("two", [same]), "target_id": "different-checkout"},
+        proof("three", [sibling]),
+    ]
+    findings, counts, _ = c.aggregate(s)
+    assert counts["high"] == 2
+    assert len(findings[0]["sources"]) == 2
+
+
+def test_real_git_inventory_preserves_tracked_ignored_generated_and_nontext_paths(
+    tmp_path, monkeypatch
+):
+    runtime = Path(__file__).parents[1] / "evander_codex_security_addon"
+    monkeypatch.syspath_prepend(str(runtime))
+    from coverage_runner import inventory
+    import runner
+
+    monkeypatch.setattr(runner, "HOME", tmp_path)
+    repo = tmp_path / "repository"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True)
+
+    git("init", "-q")
+    for name, body in {
+        ".gitignore": b"generated/\n",
+        "docs/note.md": b"docs",
+        "generated/code.js": b"export const a=1",
+        "vendor/lib.py": b"x=1",
+        "space and\nnewline.txt": b"text",
+        "logo.png": b"\x89PNG\x00\xff",
+    }.items():
+        p = repo / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(body)
+    (repo / "external-link").symlink_to("/outside/this/repository")
+    git("add", "--all", "--force")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "inventory",
+    )
+    (repo / "late-binary.bin").write_bytes(b"x" * 9000 + b"\0")
+    (repo / "large-unicode.txt").write_bytes(b"x" * (1024 * 1024 - 1) + "é".encode())
+    git("add", "--all", "--force")
+    commit = git("rev-parse", "HEAD").stdout.decode().strip()
+    git("update-index", "--add", "--cacheinfo", "160000," + commit + ",vendor/module")
+    (repo / "vendor/module").mkdir()
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "nontext entries",
+    )
+    result = inventory({"repo_path": str(repo)})
+    rows = {x["path"]: x for x in result["entries"]}
+    assert len(rows) == 10
+    assert rows["vendor/module"]["mode"] == "160000"
+    assert rows["vendor/module"]["kind"] == "gitlink"
+    assert rows["late-binary.bin"]["kind"] == "binary"
+    assert rows["large-unicode.txt"]["kind"] == "text"
+    assert rows["generated/code.js"]["kind"] == "text"
+    assert rows["logo.png"]["kind"] == "binary"
+    assert rows["external-link"]["kind"] == "symlink"
+    assert "space and\nnewline.txt" in rows
+    assert len(c.inventory_digest(result["entries"])) == 64
+    assert not (repo / "outside").exists()
+
+
+def test_inventory_batch_caps_and_no_silent_omissions():
+    entries = [entry(f"src/{i:03}.py", size=8000) for i in range(110)] + [
+        entry("large.py", size=2_000_000)
+    ]
+    chunks = list(c.batches(entries))
+    assert sorted(p for chunk in chunks for p in chunk) == sorted(x["path"] for x in entries)
+    assert all(len(chunk) <= 100 for chunk in chunks)
+    assert ["large.py"] in chunks
+    assert all(
+        sum(next(x["size"] for x in entries if x["path"] == p) for p in chunk) <= 1_048_576
+        for chunk in chunks
+        if chunk != ["large.py"]
+    )
+
+
+def test_text_cannot_be_dismissed_and_unavailable_content_remains_blocked():
+    for kind in ("text", "unavailable"):
+        s = c.make_state(
+            "a" * 32,
+            request(),
+            "root/project",
+            {"revision": "d" * 40, "entries": [entry("source.py", kind=kind)]},
+            {},
+        )
+        mapping(s)
+        item = c.pending(s)[0]
+        for _ in range(3):
+            finish(
+                s,
+                item,
+                dispositions={
+                    "source.py": {
+                        "disposition": "not_applicable",
+                        "reason": "Unsupported source format",
+                    }
+                },
+            )
+        assert c.progress(s)["files_blocked"] == 1
+        assert not c.complete(s)
+
+
+def test_retention_protects_source_pins_until_latest_continuation_expires(tmp_path):
+    clock = c.now()
+    at = clock - timedelta(days=9)
+    s = c.make_state(
+        "a" * 32,
+        request(),
+        "root/project",
+        {"revision": "d" * 40, "entries": [entry("a.py")]},
+        {},
+        at=at,
+    )
+    s.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    child = c.make_state(
+        "b" * 32,
+        request(resume_from_scan_id=s["scan_id"]),
+        "root/project",
+        {"revision": s["revision"], "entries": s["inventory"]},
+        {},
+        previous=s,
+        at=clock - timedelta(days=7),
+    )
+    child.update(finished_at=(clock - timedelta(days=6)).isoformat())
+    store.create(child)
+    store.save(child)
+    assert store.expired(at=clock) == []
+    assert c.resumable(s, at=clock, until=store.retained_until(s))
+    assert {x["scan_id"] for x in store.expired(at=clock + timedelta(days=2))} == {
+        s["scan_id"],
+        child["scan_id"],
+    }
+
+
+def test_repository_claim_is_shared_across_directory_scopes(tmp_path):
+    store = c.CoverageStore(tmp_path)
+    store.create(state())
+    other = state()
+    other.update(scan_id="b" * 32, directory_path="root/another")
+    with pytest.raises(ValueError, match="active scan"):
+        store.create(other)
+
+
+def test_uncertain_descendant_protects_ancestors_and_retention_starts_after_cleanup(tmp_path):
+    clock = c.now()
+    store = c.CoverageStore(tmp_path)
+    source = state()
+    source.update(finished_at=(clock - timedelta(days=20)).isoformat())
+    store.create(source)
+    store.save(source)
+    child = state()
+    child.update(
+        scan_id="b" * 32,
+        lineage=[source["scan_id"]],
+        finished_at=(clock - timedelta(days=10)).isoformat(),
+        cleanup_confirmed=False,
+    )
+    store.create(child)
+    store.save(child)
+    assert store.expired(at=clock) == []
+    child.update(cleanup_confirmed=True, cleanup_finished_at=clock.isoformat())
+    store.save(child)
+    assert store.expired(at=clock + timedelta(days=6)) == []
+    assert store.retained_until(source) == clock + timedelta(days=7)
+    assert {s["scan_id"] for s in store.expired(at=clock + timedelta(days=8))} == {
+        source["scan_id"],
+        child["scan_id"],
+    }
+
+
+def test_review_progress_can_commit_while_a_legacy_journal_reader_is_open(tmp_path):
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    store.create(s)
+    with sqlite3.connect(store.path) as legacy:
+        legacy.execute("PRAGMA journal_mode=DELETE")
+    store = c.CoverageStore(tmp_path)
+    advanced = deepcopy(s)
+    c.begin(advanced, next(iter(advanced["tasks"].values())))
+    with closing(sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)) as reader, ThreadPoolExecutor(max_workers=1) as pool:
+        reader.execute("PRAGMA query_only=ON")
+        reader.execute("BEGIN")
+        original = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+        writer = pool.submit(store.save, advanced)
+        try:
+            writer.result(timeout=2)
+            snapshot = reader.execute("SELECT payload FROM campaigns WHERE scan_id=?", (s["scan_id"],)).fetchone()[0]
+            assert snapshot == original
+            assert sum(len(t["attempts"]) for t in store.get(s["scan_id"], s["directory_path"])["tasks"].values()) == 1
+        finally:
+            reader.rollback()
+
+
+def test_retention_lookup_does_not_read_completed_journal_payloads(tmp_path, monkeypatch):
+    clock = c.now()
+    store = c.CoverageStore(tmp_path)
+    s = state()
+    s.update(finished_at=clock.isoformat(), cleanup_confirmed=True)
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    store.create(s)
+    store.save(s)
+    store = c.CoverageStore(tmp_path)
+    connect = store.connect
+
+    @contextmanager
+    def metadata_only():
+        with connect() as connection:
+            connection.set_authorizer(
+                lambda action, table, column, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and table == "campaigns" and column == "payload"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(store, "connect", metadata_only)
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+
+
+def legacy_journal(tmp_path, states):
+    path = tmp_path / "codex-security-coverage/journal.sqlite3"
+    path.parent.mkdir()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """CREATE TABLE campaigns (scan_id TEXT PRIMARY KEY, directory TEXT NOT NULL,
+            repository TEXT NOT NULL, active INTEGER NOT NULL, payload TEXT NOT NULL)"""
+        )
+        for s in states:
+            connection.execute(
+                "INSERT INTO campaigns VALUES(?,?,?,?,?)",
+                (s["scan_id"], s["directory_path"], s["managed_repo_id"],
+                 int(not s["finished_at"] or not s["cleanup_confirmed"]), json.dumps(s, indent=2)),
+            )
+    return path
+
+
+def test_legacy_retention_backfill_preserves_journals_and_latest_cleanup(tmp_path):
+    clock = c.now()
+    source = state()
+    source.update(finished_at=(clock - timedelta(days=10)).isoformat())
+    child = state()
+    child.update(scan_id="b" * 32, lineage=[source["scan_id"]],
+                 finished_at=(clock - timedelta(days=8)).isoformat(),
+                 cleanup_finished_at=clock.isoformat())
+    path = legacy_journal(tmp_path, [source, child])
+    with closing(sqlite3.connect(path)) as connection:
+        before = connection.execute("SELECT scan_id,payload FROM campaigns ORDER BY scan_id").fetchall()
+    store = c.CoverageStore(tmp_path)
+    assert store.retained_until(source) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT scan_id,payload FROM campaigns ORDER BY scan_id").fetchall() == before
+
+
+def test_legacy_retention_backfill_skips_large_finding_objects(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    path = legacy_journal(tmp_path, [s])
+    store = c.CoverageStore(tmp_path)
+    tracemalloc.start()
+    try:
+        assert store.retained_until(s) == clock + c.RETENTION
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # One raw SQLite text result is unavoidable on first use. Finding dictionaries
+    # and their decoded copies must not coexist with that input during backfill.
+    assert peak < path.stat().st_size + 1024 * 1024
+
+
+def test_legacy_writer_invalidates_cached_summary_and_retention(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    s.update(cleanup_finished_at=clock.isoformat(), cleanup_confirmed=False)
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("UPDATE campaigns SET active=1,payload=? WHERE scan_id=?",
+                           (json.dumps(s), s["scan_id"]))
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.get_description(s["scan_id"], s["directory_path"])["cleanup_confirmed"] is False
+    assert store.expired(at=clock) == []
+
+
+def test_concurrent_legacy_write_cannot_publish_stale_retention(tmp_path, monkeypatch):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    legacy_journal(tmp_path, [s])
+    store = c.CoverageStore(tmp_path)
+    save = store._save_retention
+    raced = False
+
+    def concurrent_write(connection, fields, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            s.update(cleanup_finished_at=clock.isoformat())
+            with closing(sqlite3.connect(store.path)) as writer, writer:
+                writer.execute("UPDATE campaigns SET payload=? WHERE scan_id=?",
+                               (json.dumps(s), s["scan_id"]))
+        return save(connection, fields, **kwargs)
+
+    monkeypatch.setattr(store, "_save_retention", concurrent_write)
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.expired(at=clock) == []
+
+
+def test_wrong_directory_save_cannot_change_cached_metadata(tmp_path):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    wrong_directory = deepcopy(s)
+    wrong_directory.update(directory_path="root/elsewhere", cleanup_confirmed=False,
+                           cleanup_finished_at=(clock + timedelta(days=1)).isoformat())
+    store.save(wrong_directory)
+    assert store.get(s["scan_id"], s["directory_path"]) == s
+    assert store.retained_until(s) == clock + c.RETENTION
+    assert store.get_description(s["scan_id"], s["directory_path"])["cleanup_confirmed"] is True
+    with pytest.raises(ValueError, match="this directory"):
+        store.get_description(s["scan_id"], "root/elsewhere")
+
+
+def test_failed_metadata_update_rolls_back_journal_and_projection(tmp_path, monkeypatch):
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    changed = deepcopy(s)
+    changed.update(cleanup_finished_at=(clock + timedelta(days=1)).isoformat())
+
+    def interrupted(*_args, **_kwargs):
+        raise RuntimeError("Interrupted metadata write")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_save_retention", interrupted)
+        with pytest.raises(RuntimeError, match="Interrupted metadata write"):
+            store.save(changed)
+    assert store.get(s["scan_id"], s["directory_path"]) == s
+    assert store.retained_until(s) == clock + c.RETENTION
+
+
+def test_deleted_descendant_no_longer_extends_source_retention(tmp_path):
+    clock = c.now()
+    source = state()
+    source.update(finished_at=(clock - timedelta(days=8)).isoformat())
+    child = state()
+    child.update(scan_id="b" * 32, lineage=[source["scan_id"]], finished_at=clock.isoformat())
+    store = c.CoverageStore(tmp_path)
+    for s in (source, child):
+        store.create(s)
+        store.save(s)
+    assert store.expired(at=clock) == []
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("DELETE FROM campaigns WHERE scan_id=?", (child["scan_id"],))
+    assert [s["scan_id"] for s in store.expired(at=clock)] == [source["scan_id"]]
+
+
+def test_provider_description_uses_only_compact_metadata_after_reopen(tmp_path, monkeypatch):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    clock = c.now()
+    s = state()
+    s.update(finished_at=clock.isoformat(), route=subscription_route())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    store = c.CoverageStore(tmp_path)
+    store.create(s)
+    store.save(s)
+    connect = c.CoverageStore.connect
+
+    @contextmanager
+    def metadata_only(self):
+        with connect(self) as connection:
+            connection.set_authorizer(
+                lambda action, table, column, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and table == "campaigns" and column == "payload"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(c.CoverageStore, "connect", metadata_only)
+    result = describe(SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"]), tmp_path)
+    assert result["resumable"] is True
+    assert result["resumable_until"] == (clock + c.RETENTION).isoformat()
+    assert result["execution_configuration"] == subscription_route()
+    assert result["to_commit"] == "d" * 40
+    assert result["coverage_progress"]["files_pending"] == 3
+    assert result["pinned_ref"] == "refs/evander/security-scans/" + s["scan_id"]
+
+
+def test_legacy_description_backfill_keeps_incomplete_source_resumable(tmp_path):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    s = state()
+    s.update(finished_at=c.now().isoformat())
+    s["proofs"] = [proof(findings=[{"description": "x" * 12000} for _ in range(500)])]
+    path = legacy_journal(tmp_path, [s])
+    with closing(sqlite3.connect(path)) as connection:
+        before = connection.execute("SELECT payload FROM campaigns").fetchone()[0]
+    record = SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"])
+    tracemalloc.start()
+    try:
+        assert describe(record, tmp_path)["resumable"] is True
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < path.stat().st_size + 1024 * 1024
+    assert describe(record, tmp_path)["coverage_progress"]["files_pending"] == 3
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT payload FROM campaigns").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("complete", False), ("excluded", True), ("cleanup_uncertain", False), ("expired", False),
+])
+def test_legacy_description_preserves_resume_guards(tmp_path, scenario, expected):
+    from evander_codex_security_addon.coverage_provider import describe
+
+    s = state()
+    s.update(finished_at=c.now().isoformat())
+    if scenario in {"complete", "excluded"}:
+        s.update(architecture={"paths": []}, boundary_planned=True)
+        for value in s["files"].values():
+            value["disposition"] = "reviewed"
+        for value in s["tasks"].values():
+            value["status"] = "completed"
+    if scenario == "excluded":
+        s["exclude_paths"] = ["src/a.py"]
+        s["files"]["src/a.py"]["disposition"] = "excluded"
+    elif scenario == "cleanup_uncertain":
+        s["cleanup_confirmed"] = False
+    elif scenario == "expired":
+        s["finished_at"] = (c.now() - timedelta(days=8)).isoformat()
+    legacy_journal(tmp_path, [s])
+    record = SimpleNamespace(scan_id=s["scan_id"], directory_path=s["directory_path"])
+    assert describe(record, tmp_path)["resumable"] is expected

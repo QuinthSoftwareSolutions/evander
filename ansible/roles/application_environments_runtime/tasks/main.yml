@@ -1,0 +1,14 @@
+---
+- name: Refresh existing running Application Environments service
+  when:
+    - evander_application_environments_package_install is defined
+    - not (evander_application_environments_package_install.skipped | default(false) | bool)
+    - (evander_application_environments_package_install.rc | default(1)) == 0
+  block:
+    - name: Discover installed Application Environments service
+      ansible.builtin.service_facts:
+    - name: Restart the running application worker
+      ansible.builtin.systemd:
+        name: evander-application-environment-worker.service
+        state: restarted
+      when: ansible_facts.services.get('evander-application-environment-worker.service', {}).get('state') == 'running'

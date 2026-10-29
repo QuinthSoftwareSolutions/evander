@@ -1,0 +1,32 @@
+---
+- name: Manage control-plane system log rotation
+  when: evander_manage_system_log_rotation | bool
+  block:
+    - name: Check system log archive retention
+      ansible.builtin.assert:
+        that:
+          - (evander_system_log_rotate_count | int) > 0
+        fail_msg: evander_system_log_rotate_count must be a positive archive count.
+
+    - name: Install system logging and rotation packages
+      ansible.builtin.apt:
+        name:
+          - rsyslog
+          - logrotate
+        state: present
+
+    - name: Configure daily rsyslog rotation
+      ansible.builtin.template:
+        src: rsyslog.logrotate.j2
+        dest: /etc/logrotate.d/rsyslog
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        validate: /usr/sbin/logrotate --debug %s
+
+    - name: Enable the daily log rotation timer
+      ansible.builtin.systemd:
+        name: logrotate.timer
+        enabled: true
+        state: started

@@ -1,0 +1,34 @@
+{
+  "name": "evander-admin-web",
+  "private": true,
+  "version": "0.3.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "npm run test:unit && npm run test:browser",
+    "test:smoke": "node --test --test-timeout=120000 --test-concurrency=1 --experimental-strip-types test/**/*.smoke.mjs",
+    "build:team-org-flow": "vite build --config vite.team-org-flow.config.ts",
+    "build:team-agent-create": "vite build --config vite.team-agent-create.config.ts",
+    "sync:design": "node scripts/sync-design-assets.mjs",
+    "check:design-assets": "node scripts/sync-design-assets.mjs --check",
+    "build": "npm run sync:design && tsc -b && vite build",
+    "preview": "vite preview",
+    "test:unit": "node --test --test-timeout=30000 --test-concurrency=1 --experimental-strip-types test/**/*.test.mjs",
+    "test:browser": "node --test --test-timeout=60000 --test-concurrency=1 --experimental-strip-types test/**/*.browser.mjs",
+    "test:all": "npm test && npm run test:smoke"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.8.5",
+    "lucide-react": "^0.462.0",
+    "playwright": "1.64.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.4.4"
+  }
+}

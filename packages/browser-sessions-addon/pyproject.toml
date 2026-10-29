@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = "AGPL-3.0-only AND MIT"
+license-files = ["LICENSE", "evander_browser_sessions_addon/controller/THIRD_PARTY_LICENSES.txt"]
+name = "evander-browser-sessions-addon"
+version = "0.10.0"
+description = "Shared hosted and user-owned Chrome sessions for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.138.7", "httpx>=0.28.1", "pydantic>=2.8.0", "starlette>=1.3.1", "uvicorn>=0.42.0", "websockets>=15.0.1"]
+
+[project.entry-points."evander.addons"]
+browser_sessions = "evander_browser_sessions_addon:register_addon"
+
+[project.scripts]
+evander-browser-session-relay = "evander_browser_sessions_addon.relay:main"
+evander-browser-session-worker = "evander_browser_sessions_addon.worker_api:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_browser_sessions_addon*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+evander_browser_sessions_addon = ["addon.json", "agent-guide.md", "ui_static/*", "controller/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../../src"]

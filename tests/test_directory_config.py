@@ -1,0 +1,1901 @@
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from evander.config import GatewayConfig
+from evander.directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
+from evander.directories import DirectoryService, DirectoryStore
+from evander.host_directories.grants import (
+    validate_host_directory_grant_mapping,
+)
+from evander.host_directories.models import HostDirectoryDirectoryConfig
+from evander.models import SessionManifest
+from evander.policy_config import PolicyConfigResolver
+from evander.provider_config import ProviderConfigResolver
+from evander.vm.templates import (
+    DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE,
+    DEFAULT_LIBVIRT_VM_TEMPLATES,
+)
+
+
+def test_live_transcription_model_inherits_and_can_be_disabled(tmp_path: Path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    resolver = ProviderConfigResolver(config)
+    DirectoryService(resolver.directory_store).create(parent="root", name="team")
+    resolver.config_store.write("root", domain="providers", payload={
+        "openai_realtime_transcription_model": "configured-transcriber",
+    })
+    assert resolver.resolve_for_directory("root/team").openai_realtime_transcription_model == "configured-transcriber"
+    resolver.config_store.write("root/team", domain="providers", payload={
+        "openai_realtime_transcription_model": None,
+    })
+    assert resolver.resolve_for_directory("root/team").openai_realtime_transcription_model is None
+
+
+def test_local_openai_max_concurrency_is_root_only(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    child = service.create(parent="root", name="team")
+
+    assert config_store.write(
+        "root",
+        domain="providers",
+        payload={"local_openai_max_concurrency": 2},
+    ) == {"local_openai_max_concurrency": 2}
+    assert (
+        config_store.write(
+            child.path,
+            domain="providers",
+            payload={"email_provider_timeout_seconds": 15},
+        )
+        == {}
+    )
+
+    with pytest.raises(ValueError, match="host-global"):
+        config_store.write(
+            child.path,
+            domain="providers",
+            payload={
+                "local_openai_max_concurrency": 1,
+                "email_provider_timeout_seconds": 45,
+            },
+        )
+
+    assert config_store.read(child.path, domain="email") == {"email_provider_timeout_seconds": 15.0}
+
+
+def test_privacy_tree_snapshot_matches_individual_resolution_for_files_and_metadata(tmp_path):
+    from evander.privacy.models import PrivacySettings
+    from evander.repositories.directories import ReadOnlyJsonDirectoryRepository
+
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    service = DirectoryService(directories)
+    service.create(parent="root", name="parent")
+    child = service.create(parent="root/parent", name="child")
+    service.create(parent="root", name="empty")
+    store = DirectoryConfigStore(directories, runtime_dir=tmp_path)
+    store.write("root", domain="privacy", payload={"privacy": {
+        "enabled_categories": ["code", "contact"], "export_ttl_days": 9,
+        "retention": {"communication_artifacts": {
+            "approved": True, "approval_reference": "root-review",
+        }},
+    }})
+    store.write("root/parent", domain="privacy", payload={"privacy": {
+        "enabled_categories": ["code"], "export_ttl_days": 5,
+    }})
+    raw = directories.get(child.id)
+    directories.put(raw.model_copy(update={"metadata": {"config_overlays": {
+        "privacy": {"privacy": {"retention": {"communication_artifacts": {"trigger": "source_expiry"}}}},
+    }}}))
+    snapshot = DirectoryStore(config.directories_store_path, repository=ReadOnlyJsonDirectoryRepository(config.directories_store_path))
+    resolver = DirectoryConfigResolver(
+        DirectoryService(snapshot), config_store=DirectoryConfigStore(snapshot, runtime_dir=tmp_path),
+    )
+    tree = resolver.resolve_privacy_tree()
+    for path, settings in tree.items():
+        individual = resolver.resolve_domain(
+            path, domain="privacy", validator=lambda value: validate_effective_domain_payload("privacy", value),
+        )
+        assert not individual.validation_errors
+        assert settings == PrivacySettings.model_validate(individual.effective_config["privacy"]).model_dump(mode="json")
+    assert tree["root/empty"] is tree["root"]
+    assert tree["root/parent/child"]["export_ttl_days"] == 5
+
+
+def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(service)
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    root = store.get("root")
+    assert root is not None
+    store.put(
+        root.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "limits": {"ttl": 120},
+                            "roles": ["root"],
+                        }
+                    }
+                }
+            }
+        )
+    )
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "limits": {"burst": 5},
+                            "roles": ["team"],
+                            "optional": None,
+                        }
+                    }
+                }
+            }
+        )
+    )
+    sandbox_directory = store.get(sandbox.id)
+    assert sandbox_directory is not None
+    store.put(
+        sandbox_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "mode": "relaxed",
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        sandbox.path,
+        domain="custom",
+        base_config={
+            "limits": {"ttl": 60},
+            "roles": ["base"],
+            "mode": "strict",
+            "optional": "present",
+        },
+    )
+
+    assert resolution.effective_config == {
+        "limits": {"ttl": 120, "burst": 5},
+        "roles": ["team"],
+        "mode": "relaxed",
+        "optional": None,
+    }
+    assert resolution.provenance["limits.ttl"].directory_path == "root"
+    assert resolution.provenance["limits.burst"].directory_path == "root/team"
+    assert resolution.provenance["roles"].directory_path == "root/team"
+    assert resolution.provenance["mode"].directory_path == "root/team/sandbox"
+    assert resolution.provenance["optional"].directory_path == "root/team"
+
+
+def test_host_directory_inheritance_and_child_grant_validation(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    directory_service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(directory_service)
+    child = directory_service.create(parent="root", name="team")
+    root_path = tmp_path / "shared"
+
+    root = store.get("root")
+    assert root is not None
+    store.put(
+        root.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "host_directories": {
+                            "host_directories": {
+                                "shared": {
+                                    "display_name": "Shared",
+                                    "description": "Shared inbound files",
+                                    "root": str(root_path),
+                                    "capabilities": ["list", "import"],
+                                    "max_import_bytes": 1024,
+                                },
+                                "blocked": {
+                                    "display_name": "Blocked",
+                                    "description": "Disabled below the root scope",
+                                    "root": str(tmp_path / "blocked"),
+                                    "capabilities": ["list"],
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    child_info = store.get(child.id)
+    assert child_info is not None
+    store.put(
+        child_info.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "host_directories": {
+                            "host_directories": {
+                                "shared": {"max_import_bytes": 2048},
+                                "blocked": {"disabled": True},
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        child.path,
+        domain="host_directories",
+        base_config={"host_directories": {}},
+        validator=lambda payload: HostDirectoryDirectoryConfig.model_validate(payload),
+    )
+    config = HostDirectoryDirectoryConfig.model_validate(resolution.effective_config)
+
+    assert resolution.validation_errors == []
+    assert config.host_directories["shared"].root == root_path
+    assert config.host_directories["shared"].capabilities == ["list", "import"]
+    assert config.host_directories["shared"].max_import_bytes == 2048
+    assert config.host_directories["blocked"].disabled is True
+    validate_host_directory_grant_mapping(
+        config,
+        {"shared": ["list", "import"]},
+        session_id="session-child",
+    )
+    with pytest.raises(ValueError, match="unavailable directory"):
+        validate_host_directory_grant_mapping(
+            config,
+            {"blocked": ["list"]},
+            session_id="session-child",
+        )
+    with pytest.raises(ValueError, match="unavailable capabilities"):
+        validate_host_directory_grant_mapping(
+            config,
+            {"shared": ["delete"]},
+            session_id="session-child",
+        )
+
+
+def test_directory_config_resolver_validates_gateway_domain_without_changing_consumers(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(
+        service,
+        base_gateway_config=GatewayConfig.model_validate(
+            {"runtime_dir": str(tmp_path / "runtime")}
+        ),
+    )
+
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "gateway": {
+                            "discord_poll_limit": 5,
+                            "email_folder_allowlist_by_mailbox": {"default": ["inbox"]},
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_gateway(team.path)
+
+    assert resolution.effective_config["discord_poll_limit"] == 5
+    assert resolution.provenance["discord_poll_limit"].directory_path == "root/team"
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_resolver_reports_validation_errors_for_invalid_gateway_override(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(
+        service,
+        base_gateway_config=GatewayConfig.model_validate(
+            {"runtime_dir": str(tmp_path / "runtime")}
+        ),
+    )
+
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "gateway": {
+                            "discord_poll_limit": 999,
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_gateway(team.id)
+
+    assert resolution.effective_config["discord_poll_limit"] == 999
+    assert resolution.validation_errors
+
+
+def test_get_domain_base_config_includes_libvirt_vm_template_defaults() -> None:
+    base_config = get_domain_base_config(GatewayConfig(), "vm")
+
+    assert base_config["libvirt_vm_default_template"] == DEFAULT_LIBVIRT_VM_DEFAULT_TEMPLATE
+    assert base_config["libvirt_vm_templates"] == DEFAULT_LIBVIRT_VM_TEMPLATES
+
+
+def test_directory_config_store_merges_libvirt_vm_template_catalogs_and_accepts_legacy_domain_alias(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    root_written = config_store.write(
+        "root",
+        domain="vm",
+        payload={
+            "libvirt_vm_default_template": " default ",
+            "libvirt_vm_templates": {
+                " default ": " ubuntu-24.04-server-cloudimg-amd64.img ",
+                "ubuntu-noble": " noble-root.qcow2 ",
+            },
+        },
+    )
+    team_written = config_store.write(
+        team.path,
+        domain="vm-defaults",
+        payload={
+            "libvirt_vm_templates": {
+                "ubuntu-jammy": " jammy-team.qcow2 ",
+                "ubuntu-noble": " noble-team.qcow2 ",
+            }
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert root_written == {
+        "libvirt_vm_default_template": "default",
+        "libvirt_vm_templates": {
+            "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+            "ubuntu-noble": "noble-root.qcow2",
+        },
+    }
+    assert team_written == {
+        "libvirt_vm_templates": {
+            "ubuntu-jammy": "jammy-team.qcow2",
+            "ubuntu-noble": "noble-team.qcow2",
+        }
+    }
+    assert resolution.effective_config["libvirt_vm_default_template"] == "default"
+    assert resolution.effective_config["libvirt_vm_templates"] == {
+        "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "ubuntu-jammy": "jammy-team.qcow2",
+        "ubuntu-noble": "noble-team.qcow2",
+    }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_resolver_reports_validation_errors_for_invalid_libvirt_vm_template_override(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(service)
+
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "vm": {
+                            "libvirt_vm_templates": {"default": 123},
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert any("must be strings" in message for message in resolution.validation_errors)
+
+
+def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_client_id": "client-123",
+            "teams_delegated_identity_id": "team-a",
+            "teams_delegated_credential_store_path": runtime_dir
+            / "teams-delegated-credentials.json",
+        },
+    )
+
+    assert written == {
+        "teams_backend": "delegated_graph_api",
+        "teams_delegated_client_id": "client-123",
+        "teams_delegated_identity_id": "team-a",
+        "teams_delegated_credential_store_path": str(
+            runtime_dir / "teams-delegated-credentials.json"
+        ),
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["teams_backend"] == "delegated_graph_api"
+    assert resolution.effective_config["teams_delegated_client_id"] == "client-123"
+    assert resolution.effective_config["teams_delegated_identity_id"] == "team-a"
+    assert resolution.effective_config["teams_delegated_credential_store_path"] == str(
+        runtime_dir / "teams-delegated-credentials.json"
+    )
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_phone_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "retell_api_base_url": "https://retell.test",
+            "retell_api_key_env": "TEAM_RETELL_API_KEY",
+            "retell_from_number": "+15550000001",
+            "retell_default_agent_id": "agent-default",
+            "retell_request_timeout_seconds": 12.5,
+            "phone_call_backend": "openai_realtime_didww",
+            "openai_realtime_model": "gpt-realtime-2",
+            "didww_sip_bridge_url": "https://voice-bridge.test",
+            "didww_sip_bridge_token_env": "TEAM_DIDWW_TOKEN",
+            "didww_from_number": "+15550000009",
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["retell_api_base_url"] == "https://retell.test"
+    assert resolution.effective_config["retell_api_key_env"] == "TEAM_RETELL_API_KEY"
+    assert resolution.effective_config["phone_call_backend"] == "openai_realtime_didww"
+    assert resolution.effective_config["didww_sip_bridge_url"] == "https://voice-bridge.test"
+    assert "retell_phonebook" not in resolution.effective_config
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_inbound_phone_routes(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "inbound_phone_routes": [
+                {
+                    "id": "ops-main",
+                    "did": " +1 (555) 000-0100 ",
+                    "directory_path": "root/team",
+                    "session_id": " ops-session ",
+                    "allowed_callers": [" +1 (555) 000-0200 ", "+15550000200"],
+                    "blocked_callers": ["(555) 000-0999"],
+                    "route_prompt": "Answer inbound calls for the ops team.",
+                    "startup_text": "Thanks for calling ops.",
+                }
+            ]
+        },
+    )
+
+    assert written == {
+        "inbound_phone_routes": [
+            {
+                "id": "ops-main",
+                "did": "+15550000100",
+                "called_number": None,
+                "directory_path": "root/team",
+                "session_id": "ops-session",
+                "allowed_callers": ["+15550000200"],
+                "blocked_callers": ["5550000999"],
+                "route_prompt": "Answer inbound calls for the ops team.",
+                "startup_text": "Thanks for calling ops.",
+            }
+        ]
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["inbound_phone_routes"] == written["inbound_phone_routes"]
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_partial_azure_openai_provider_overlays(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-root",
+                "gpt-4.1-mini": "deployment-root-mini",
+            },
+        },
+    )
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-team",
+            }
+        },
+    )
+
+    assert written == {"azure_openai_model_deployments": {"gpt-5.4": "deployment-team"}}
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["model_provider_mode"] == "azure_openai"
+    assert resolution.effective_config["azure_openai_endpoint"] == (
+        "https://example-resource.openai.azure.com"
+    )
+    assert resolution.effective_config["azure_openai_api_key_env"] == "AZURE_OPENAI_API_KEY"
+    assert resolution.effective_config["azure_openai_model_deployments"] == {
+        "gpt-5.4": "deployment-team",
+        "gpt-4.1-mini": "deployment-root-mini",
+    }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_provider_mode_legacy_alias_is_canonicalized(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"openai_provider_mode": "anthropic"},
+    )
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert written == {"model_provider_mode": "anthropic"}
+    assert resolution.effective_config["model_provider_mode"] == "anthropic"
+    assert "openai_provider_mode" not in resolution.effective_config
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_local_openai_provider_overlays(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11434/v1/",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "local_openai_api_base_url": "http://10.0.0.5:8000/v1",
+            "local_openai_provider_name": "lab_ollama",
+        },
+    )
+
+    assert written == {
+        "local_openai_api_base_url": "http://10.0.0.5:8000/v1",
+        "local_openai_provider_name": "lab_ollama",
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["model_provider_mode"] == "local_openai"
+    assert resolution.effective_config["local_openai_api_base_url"] == "http://10.0.0.5:8000/v1"
+    assert resolution.effective_config["local_openai_api_key"] == "ollama"
+    assert resolution.effective_config["local_openai_provider_name"] == "lab_ollama"
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_effective_local_openai_rejects_default_relay_loopback(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"model_provider_mode": "local_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert any("local_openai_api_base_url" in error for error in resolution.validation_errors)
+
+
+def test_provider_config_resolver_uses_claude_agent_provider_as_session_override(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "openai_public",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_DIRECTORY_KEY",
+            "anthropic_api_version": "2023-06-01",
+            "anthropic_relay_timeout_seconds": 123,
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="claude-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "claude"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "anthropic"
+    assert resolved.anthropic_api_base_url == "https://anthropic.example"
+    assert resolved.anthropic_api_key_env == "ANTHROPIC_DIRECTORY_KEY"
+    assert resolved.anthropic_api_version == "2023-06-01"
+    assert resolved.anthropic_relay_timeout_seconds == 123
+
+
+@pytest.mark.parametrize("agent_provider", [None, "codex"])
+def test_provider_config_resolver_keeps_directory_mode_for_non_claude_sessions(
+    tmp_path: Path, agent_provider: str | None
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={"model_provider_mode": "openai_public"},
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata=({} if agent_provider is None else {"agent_provider": agent_provider}),
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "openai_public"
+
+
+def test_provider_config_resolver_applies_discord_persona_webhook_cache_limit(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    service = DirectoryService(store)
+    store.ensure_root()
+    team = service.create(parent="root", name="team")
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        team.path,
+        domain="providers",
+        payload={"discord_persona_webhook_cache_limit": 3},
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+
+    assert resolver.resolve_for_directory("root").discord_persona_webhook_cache_limit == 10
+    assert resolver.resolve_for_directory(team.path).discord_persona_webhook_cache_limit == 3
+
+
+def test_provider_config_resolver_resolves_email_authorization_from_policy_domain(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        email_mailboxes=[
+            {
+                "mailbox_id": "allowed",
+                "address": "allowed@example.com",
+                "folder_allowlist_defaults": ["inbox", "drafts"],
+            },
+            {
+                "mailbox_id": "secret",
+                "address": "secret@example.com",
+                "folder_allowlist_defaults": ["inbox", "drafts"],
+            },
+        ],
+        email_send_enabled=True,
+    )
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload={
+            "email_mailbox_allowlist": ["allowed"],
+            "email_folder_allowlist_by_mailbox": {"allowed": ["inbox"]},
+            "email_send_enabled": False,
+        },
+    )
+
+    policy = ProviderConfigResolver(config, directory_store=store).resolve_policy_for_directory(
+        "root"
+    )
+
+    assert policy.email_mailbox_allowlist == ["allowed"]
+    assert policy.email_folder_allowlist_by_mailbox["allowed"] == ["inbox"]
+    assert policy.email_send_enabled is False
+
+
+def test_provider_config_resolver_uses_session_model_provider_mode_override(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "openai_public",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-local",
+            "local_openai_provider_name": "local_lab",
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="local-codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "local_openai"
+    assert resolved.local_openai_api_base_url == "http://127.0.0.1:11435/v1"
+    assert resolved.local_openai_api_key == "ollama-local"
+    assert resolved.local_openai_provider_name == "local_lab"
+
+
+def test_provider_config_resolver_session_override_can_select_public_openai_in_local_directory(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+        },
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="public-codex-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "codex", "model_provider_mode": "openai_public"},
+    )
+
+    resolved = resolver.resolve_for_session_manifest(session)
+
+    assert resolved.model_provider_mode == "openai_public"
+    assert resolved.openai_api_base_url == "https://api.openai.com/v1"
+
+
+def test_provider_config_resolver_rejects_invalid_session_model_provider_mode(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    resolver = ProviderConfigResolver(config, directory_store=store)
+    session = SessionManifest(
+        session_id="bad-provider-mode-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"model_provider_mode": "ollama"},
+    )
+
+    with pytest.raises(ValueError, match="model_provider_mode"):
+        resolver.resolve_for_session_manifest(session)
+
+
+def test_directory_config_store_merges_container_worker_image_catalogs(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    root_written = config_store.write(
+        "root",
+        domain="providers",
+        payload={
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "default": " runner-base:latest ",
+                "dotnet-playwright": " runner-dotnet-playwright:2026-06-05 ",
+            },
+        },
+    )
+    assert root_written == {
+        "container_worker_default_image": "runner-base:latest",
+        "container_worker_images": {
+            "default": "runner-base:latest",
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+        },
+    }
+
+    team_written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "container_worker_images": {
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+                "python": " runner-python:2026-06-05 ",
+            }
+        },
+    )
+    assert team_written == {
+        "container_worker_images": {
+            "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+            "python": "runner-python:2026-06-05",
+        }
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["container_worker_default_image"] == "runner-base:latest"
+    assert resolution.effective_config["container_worker_images"] == {
+        "default": "runner-base:latest",
+        "dotnet-playwright": "runner-dotnet-playwright:2026-06-06",
+        "python": "runner-python:2026-06-05",
+    }
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_resolver_reports_incomplete_effective_azure_openai_config(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={"model_provider_mode": "azure_openai"},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["model_provider_mode"] == "azure_openai"
+    assert resolution.validation_errors
+    message = resolution.validation_errors[0]
+    assert "azure_openai_endpoint" in message
+    assert "azure_openai_api_key_env" in message
+    assert "azure_openai_model_deployments" in message
+
+
+def test_directory_config_store_allows_npm_audit_facade_provider_fields(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "npm_audit_facade_timeout_seconds": 12.5,
+            "npm_audit_facade_audit_registry_url": "https://registry.npmjs.org/",
+            "npm_audit_facade_package_registry_url": "http://nexus.test:8081/repository/npm-all/",
+        },
+    )
+
+    assert written == {
+        "npm_audit_facade_timeout_seconds": 12.5,
+        "npm_audit_facade_audit_registry_url": "https://registry.npmjs.org",
+        "npm_audit_facade_package_registry_url": "http://nexus.test:8081/repository/npm-all",
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["npm_audit_facade_timeout_seconds"] == 12.5
+    assert (
+        resolution.effective_config["npm_audit_facade_audit_registry_url"]
+        == "https://registry.npmjs.org"
+    )
+    assert (
+        resolution.effective_config["npm_audit_facade_package_registry_url"]
+        == "http://nexus.test:8081/repository/npm-all"
+    )
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_rejects_npm_audit_facade_host_fields_in_providers_domain(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    try:
+        config_store.write(
+            team.path,
+            domain="providers",
+            payload={"npm_audit_facade_host": "127.0.0.1", "npm_audit_facade_port": 18181},
+        )
+    except ValueError as exc:
+        assert "does not allow fields" in str(exc)
+    else:
+        raise AssertionError("expected write() to reject npm audit facade host fields")
+
+
+def test_directory_config_store_allows_npm_audit_facade_vm_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="vm",
+        payload={"npm_audit_facade_host": "127.0.0.1", "npm_audit_facade_port": 18181},
+    )
+
+    assert written == {
+        "npm_audit_facade_host": "127.0.0.1",
+        "npm_audit_facade_port": 18181,
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="vm",
+        base_config=get_domain_base_config(GatewayConfig(), "vm"),
+        validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
+    )
+
+    assert resolution.effective_config["npm_audit_facade_host"] == "127.0.0.1"
+    assert resolution.effective_config["npm_audit_facade_port"] == 18181
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_semantic_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "semantic_store_provider": "qdrant",
+            "qdrant_base_url": "http://qdrant.internal:6333/",
+            "qdrant_api_key_env": "TEAM_QDRANT_API_KEY",
+            "semantic_embedding_provider": "openai",
+            "semantic_embedding_model": "text-embedding-3-small",
+            "semantic_embedding_dimensions": 1536,
+            "semantic_vector_distance": "cosine",
+        },
+    )
+
+    assert written["qdrant_base_url"] == "http://qdrant.internal:6333"
+    assert written["semantic_vector_distance"] == "Cosine"
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["semantic_store_provider"] == "qdrant"
+    assert resolution.effective_config["qdrant_api_key_env"] == "TEAM_QDRANT_API_KEY"
+    assert resolution.effective_config["semantic_embedding_dimensions"] == 1536
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_directory_contacts(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "description": "Deployment window escalation contact",
+                    "email_addresses": ["ops@example.com"],
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"Operator@Example.com": "ops"},
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="contacts",
+        base_config=get_domain_base_config(GatewayConfig(), "contacts"),
+        validator=lambda candidate: validate_effective_domain_payload("contacts", candidate),
+    )
+
+    assert resolution.effective_config["contacts"]["ops"]["name"] == "Ops Duty"
+    assert resolution.effective_config["user_contact_links"]["operator@example.com"] == "ops"
+    assert resolution.validation_errors == []
+
+
+def test_directory_contact_links_support_inherited_clear(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"operator@example.com": "ops"},
+        },
+    )
+    config_store.write(
+        team.path,
+        domain="contacts",
+        payload={"user_contact_links": {"operator@example.com": None}},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="contacts",
+        base_config=get_domain_base_config(GatewayConfig(), "contacts"),
+        validator=lambda candidate: validate_effective_domain_payload("contacts", candidate),
+    )
+
+    assert resolution.effective_config["contacts"]["ops"]["name"] == "Ops Duty"
+    assert resolution.effective_config["user_contact_links"]["operator@example.com"] is None
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_prunes_legacy_openai_costs_provider_key_on_read(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={"metadata": {"directory_config": {"domains": ["providers"]}}}
+        )
+    )
+    providers_path = runtime_dir / "directory-config" / "root" / "team" / "providers.json"
+    providers_path.parent.mkdir(parents=True, exist_ok=True)
+    providers_path.write_text(
+        """
+{
+  "openai_api_key_env": "OPENAI_API_KEY",
+  "openai_costs_api_key_env": "OPENAI_COSTS_API_KEY"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert config_store.read(team.path, domain="providers") == {
+        "openai_api_key_env": "OPENAI_API_KEY"
+    }
+
+
+def test_directory_config_store_writes_validated_domain_files_and_updates_directory_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    written = config_store.write(
+        sandbox.path,
+        domain="policy",
+        payload={
+            "default_session_ttl_seconds": 120,
+            "email_mailbox_allowlist": ["ops"],
+        },
+    )
+
+    assert written == {
+        "default_session_ttl_seconds": 120,
+        "email_mailbox_allowlist": ["ops"],
+    }
+    file_path = runtime_dir / "directory-config" / "root" / "team" / "sandbox" / "policy.json"
+    assert file_path.exists()
+    assert config_store.read(sandbox.id, domain="policy") == written
+
+    stored_directory = store.get(sandbox.id)
+    assert stored_directory is not None
+    assert stored_directory.metadata["directory_config"]["domains"] == ["policy"]
+
+
+def test_policy_config_resolver_inherits_approval_notification_targets(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = PolicyConfigResolver(GatewayConfig(runtime_dir=runtime_dir))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    config_store.write(
+        "root",
+        domain="policy",
+        payload={
+            "approval_notification_target_ids": [
+                " ROOT-OPS ",
+                "root-ops",
+                "ROOT-BACKUP",
+            ]
+        },
+    )
+    config_store.write(team.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+    config_store.write(
+        sandbox.path,
+        domain="policy",
+        payload={
+            "approval_notification_target_ids": [
+                " CHILD-OPS ",
+                "child-ops",
+                "",
+                "CHILD-BACKUP",
+            ]
+        },
+    )
+
+    assert resolver.resolve_for_directory("root").approval_notification_target_ids == [
+        "root-ops",
+        "root-backup",
+    ]
+    assert resolver.resolve_for_directory(team.path).approval_notification_target_ids == [
+        "root-ops",
+        "root-backup",
+    ]
+    assert resolver.resolve_for_directory(sandbox.path).approval_notification_target_ids == [
+        "child-ops",
+        "child-backup",
+    ]
+
+
+def test_policy_config_resolver_inherits_tool_argument_policies(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = PolicyConfigResolver(GatewayConfig(runtime_dir=runtime_dir))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    policy_payload = {
+        "tool_argument_policies": {
+            "create_ado_backlog_item": [
+                {
+                    "id": "ado-item-policy",
+                    "name": "ADO backlog item guardrails",
+                    "constraints": [
+                        {
+                            "id": "project",
+                            "path": "project",
+                            "operator": "fixed",
+                            "value": "Example Project",
+                        },
+                        {
+                            "id": "type",
+                            "path": "type",
+                            "operator": "enum",
+                            "values": ["Task", "Product Backlog Item"],
+                        },
+                        {
+                            "id": "title",
+                            "path": "title",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "iteration",
+                            "path": "iteration",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "tags",
+                            "path": "tags[]",
+                            "operator": "denylist",
+                            "values": ["blocked-tag"],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    expected_policy_payload = GatewayConfig.model_validate(policy_payload).model_dump(
+        mode="json", include={"tool_argument_policies"}
+    )
+
+    written = config_store.write(team.path, domain="policy", payload=policy_payload)
+
+    assert written == expected_policy_payload
+    assert config_store.read(team.path, domain="policy") == expected_policy_payload
+    assert (
+        resolver.resolve_for_directory(team.path).model_dump(
+            mode="json", include={"tool_argument_policies"}
+        )
+        == expected_policy_payload
+    )
+
+    config_store.write(sandbox.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+    assert (
+        resolver.resolve_for_directory(sandbox.path).model_dump(
+            mode="json", include={"tool_argument_policies"}
+        )
+        == expected_policy_payload
+    )
+
+
+def test_directory_config_store_deletes_empty_domain_payload_and_clears_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(team.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+
+    file_path = runtime_dir / "directory-config" / "root" / "team" / "policy.json"
+    assert file_path.exists()
+
+    written = config_store.write(team.path, domain="policy", payload={})
+
+    assert written == {}
+    assert not file_path.exists()
+    assert not file_path.parent.exists()
+    stored_directory = store.get(team.id)
+    assert stored_directory is not None
+    assert "directory_config" not in stored_directory.metadata
+
+
+def test_directory_config_store_rejects_unknown_domain_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    try:
+        config_store.write(team.path, domain="issue_setup", payload={"unexpected": True})
+    except ValueError as exc:
+        assert "does not allow fields" in str(exc)
+    else:
+        raise AssertionError("expected write() to reject unknown fields")
+
+
+def test_retired_guest_timer_settings_do_not_break_existing_git_configuration(tmp_path: Path) -> None:
+    import json
+
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    config_store.write(team.path, domain="issue_setup", payload={"git_user": "repository-bot"})
+    path = runtime_dir / "directory-config" / "root" / "team" / "issue-setup.json"
+    path.write_text(json.dumps({
+        "git_user": "repository-bot",
+        "enable_guest_heartbeat": True,
+        "guest_heartbeat_prompt": "retired timer prompt",
+    }))
+
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    result = resolver.resolve_domain(
+        team.path,
+        domain="issue_setup",
+        base_config=get_domain_base_config(GatewayConfig(), "issue_setup"),
+        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+    )
+
+    assert result.validation_errors == []
+    assert result.effective_config["git_user"] == "repository-bot"
+    assert "enable_guest_heartbeat" not in result.effective_config
+    assert "guest_heartbeat_prompt" not in result.effective_config
+    with pytest.raises(ValueError, match="does not allow fields"):
+        config_store.write(team.path, domain="issue_setup", payload={"enable_guest_heartbeat": True})
+
+
+@pytest.mark.parametrize("domain", ["wake", "automation"])
+def test_directory_config_rejects_retired_domains(tmp_path: Path, domain: str) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    config_store = DirectoryConfigStore(store, runtime_dir=tmp_path)
+    with pytest.raises(ValueError, match="unsupported directory config domain"):
+        config_store.write("root", domain=domain, payload={})
+
+
+def test_directory_config_store_metadata_remains_source_of_truth_for_reads(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    stray_path = runtime_dir / "directory-config" / "root" / "team" / "policy.json"
+    stray_path.parent.mkdir(parents=True, exist_ok=True)
+    stray_path.write_text('{"default_session_ttl_seconds": 60}', encoding="utf-8")
+
+    assert config_store.read(team.path, domain="policy") is None
+
+
+def test_directory_config_resolver_prefers_file_backed_domain_overlays(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    config_store.write(team.path, domain="policy", payload={"default_session_ttl_seconds": 90})
+    config_store.write(child.path, domain="policy", payload={"email_send_enabled": True})
+
+    resolution = resolver.resolve_domain(child.path, domain="policy", base_config={})
+
+    assert resolution.effective_config == {
+        "default_session_ttl_seconds": 90,
+        "email_send_enabled": True,
+    }
+    assert [layer.directory_path for layer in resolution.applied_layers] == [
+        "root/team",
+        "root/team/child",
+    ]
+
+
+def test_directory_config_resolver_applies_root_overlay_as_first_directory_layer(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    config_store.write("root", domain="policy", payload={"default_session_ttl_seconds": 180})
+    config_store.write(team.path, domain="policy", payload={"email_send_enabled": True})
+
+    resolution = resolver.resolve_domain(team.path, domain="policy")
+
+    assert resolution.effective_config == {
+        "default_session_ttl_seconds": 180,
+        "email_send_enabled": True,
+    }
+    assert [layer.directory_path for layer in resolution.applied_layers] == ["root", "root/team"]
+    assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
+
+
+def test_directory_config_resolver_treats_root_as_top_of_chain_without_implicit_base(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    config_store.write("root", domain="policy", payload={"default_session_ttl_seconds": 180})
+
+    resolution = resolver.resolve_domain("root", domain="policy")
+
+    assert resolution.effective_config == {"default_session_ttl_seconds": 180}
+    assert [layer.directory_path for layer in resolution.applied_layers] == ["root"]
+    assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
+
+
+def test_directory_config_resolver_uses_explicit_merge_rules_for_maps_lists_scalars_and_nulls(
+    tmp_path: Path,
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    service = DirectoryService(store)
+    resolver = DirectoryConfigResolver(service)
+
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    root = store.get("root")
+    assert root is not None
+    store.put(
+        root.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "scalar": "root",
+                            "map": {"a": 1, "nested": {"x": 1}},
+                            "list_value": ["root"],
+                            "nullable": "set",
+                        }
+                    }
+                }
+            }
+        )
+    )
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "scalar": "team",
+                            "map": {"b": 2, "nested": {"y": 2}},
+                            "list_value": ["team"],
+                        }
+                    }
+                }
+            }
+        )
+    )
+    child_directory = store.get(child.id)
+    assert child_directory is not None
+    store.put(
+        child_directory.model_copy(
+            update={
+                "metadata": {
+                    "config_overlays": {
+                        "custom": {
+                            "scalar": "child",
+                            "map": {"nested": {"z": 3}},
+                            "list_value": ["child"],
+                            "nullable": None,
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    resolution = resolver.resolve_domain(
+        child.path,
+        domain="custom",
+        base_config={
+            "scalar": "base",
+            "map": {"base": 0, "nested": {"base": 0}},
+            "list_value": ["base"],
+            "nullable": "base",
+        },
+    )
+
+    assert resolution.effective_config == {
+        "scalar": "child",
+        "map": {"base": 0, "a": 1, "b": 2, "nested": {"base": 0, "x": 1, "y": 2, "z": 3}},
+        "list_value": ["child"],
+        "nullable": None,
+    }
+    assert resolution.provenance["scalar"].directory_path == "root/team/child"
+    assert resolution.provenance["map.a"].directory_path == "root"
+    assert resolution.provenance["map.b"].directory_path == "root/team"
+    assert resolution.provenance["map.nested.z"].directory_path == "root/team/child"
+    assert resolution.provenance["list_value"].directory_path == "root/team/child"
+    assert resolution.provenance["nullable"].directory_path == "root/team/child"
+
+
+def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    worker_payload = config_store.write(
+        team.path,
+        domain="ado_worker",
+        payload={"ado_repo_source": "/tmp/repo"},
+    )
+    issue_payload = config_store.write(
+        team.path,
+        domain="issue_setup",
+        payload={
+            "git_host": "10.1.2.3",
+            "git_user": "agent",
+            "git_ssh_alias": "agent-git",
+            "default_model": "gpt-5.3-codex",
+        },
+    )
+
+    assert worker_payload == {
+        "ado_repo_source": "/tmp/repo",
+    }
+    assert issue_payload == {
+        "git_host": "10.1.2.3",
+        "git_user": "agent",
+        "git_ssh_alias": "agent-git",
+        "default_model": "gpt-5.3-codex",
+    }
+
+
+def test_directory_config_store_prunes_retired_ado_pr_fields_on_read(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={"metadata": {"directory_config": {"domains": ["ado_worker"]}}}
+        )
+    )
+    worker_path = runtime_dir / "directory-config" / "root" / "team" / "ado-worker.json"
+    worker_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_path.write_text(
+        """
+{
+  "ado_repo_source": "/tmp/repo",
+  "create_prs_automatically": true,
+  "create_prs_as_draft": true
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert config_store.read(team.path, domain="ado_worker") == {"ado_repo_source": "/tmp/repo"}
+
+
+def test_managed_git_operation_timeout_is_host_and_directory_configurable(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+    host_config = GatewayConfig(managed_git_operation_timeout_seconds=45.0)
+
+    base_config = get_domain_base_config(host_config, "providers")
+    assert base_config["managed_git_operation_timeout_seconds"] == 45.0
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"managed_git_operation_timeout_seconds": 90.0},
+    )
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=base_config,
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert written == {"managed_git_operation_timeout_seconds": 90.0}
+    assert resolution.effective_config["managed_git_operation_timeout_seconds"] == 90.0
+
+
+def test_directory_config_store_accepts_container_worker_git_allowed_from(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    provider_payload = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"container_worker_git_allowed_from": "10.2.1.4/32"},
+    )
+
+    assert provider_payload == {"container_worker_git_allowed_from": "10.2.1.4/32"}
+
+
+def test_directory_config_store_validates_pr_template_domain(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    config_store.write(
+        team.path, domain="pr_template", payload={"pr_template_markdown": "Team template"}
+    )
+    config_store.write(
+        child.path, domain="pr_template", payload={"pr_template_markdown": "Child template"}
+    )
+
+    assert config_store.read(team.path, domain="pr_template") == {
+        "pr_template_markdown": "Team template"
+    }
+    assert config_store.read(child.path, domain="pr_template") == {
+        "pr_template_markdown": "Child template"
+    }
+
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    resolution = resolver.resolve_domain(
+        child.path, domain="pr_template", base_config={"pr_template_markdown": ""}
+    )
+    assert resolution.effective_config == {"pr_template_markdown": "Child template"}
+
+
+def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    config_store.write(
+        team.path,
+        domain="ado_worker",
+        payload={"ado_repo_source": "/tmp/team-repo"},
+    )
+    config_store.write(
+        child.path,
+        domain="ado_worker",
+        payload={"ado_team_filters": ["Child Team"]},
+    )
+    config_store.write(
+        team.path,
+        domain="issue_setup",
+        payload={
+            "git_host": "10.1.2.3",
+            "git_user": "team-bot",
+            "git_ssh_alias": "team",
+        },
+    )
+    config_store.write(child.path, domain="issue_setup", payload={"default_model": "child-model"})
+
+    ado_resolution = resolver.resolve_domain(
+        child.path,
+        domain="ado_worker",
+        base_config=get_domain_base_config(GatewayConfig(), "ado_worker"),
+        validator=lambda candidate: validate_effective_domain_payload("ado_worker", candidate),
+    )
+    issue_resolution = resolver.resolve_domain(
+        child.path,
+        domain="issue_setup",
+        base_config=get_domain_base_config(GatewayConfig(), "issue_setup"),
+        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+    )
+
+    assert ado_resolution.effective_config["ado_repo_source"] == "/tmp/team-repo"
+    assert ado_resolution.effective_config["ado_team_filters"] == ["Child Team"]
+    assert "ado_project_or_solution" not in ado_resolution.effective_config
+    assert "ado_bootstrap_mssql" not in ado_resolution.effective_config
+    assert "git_root" not in issue_resolution.effective_config
+    assert issue_resolution.effective_config["git_user"] == "team-bot"
+    assert issue_resolution.effective_config["default_model"] == "child-model"

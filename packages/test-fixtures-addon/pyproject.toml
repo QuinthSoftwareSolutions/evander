@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+name = "evander-test-fixtures-addon"
+version = "0.1.5"
+description = "Task-owned disposable SQL Server and RabbitMQ fixtures for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.131.2", "httpx>=0.28.1", "pydantic>=2.8.0", "starlette>=1.3.1", "uvicorn>=0.30.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.3", "pika>=1.3.2", "pyodbc>=5.2.0"]
+
+[project.scripts]
+evander-test-fixtures-migrate = "evander_test_fixtures_addon.migration:main"
+evander-test-fixtures-worker = "evander_test_fixtures_addon.worker_api:main"
+
+[project.entry-points."evander.addons"]
+test-fixtures = "evander_test_fixtures_addon:register_addon"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_test_fixtures_addon*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+evander_test_fixtures_addon = ["addon.json", "ui_static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

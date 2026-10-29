@@ -1,0 +1,23 @@
+flowchart TB
+    teamSignals[Member-Team escalation,\nblocked/cost signals, or membership change]
+    operator[Operator or policy input]
+    fingerprint[Deduplicate runtime signal fingerprints]
+    agenda[Pending governance agenda item]
+    group[Governance group\nmember Team boundary]
+    lease[Lease the governance manager]
+    decide{Decision}
+    directive[Durable operator directive]
+    teamManager[Target member Team's manager inbox]
+    teamWork[Normal Team routing and work]
+    handled[Mark governance agenda handled]
+
+    teamSignals --> fingerprint --> agenda
+    operator --> agenda
+    group --> agenda
+    agenda --> lease --> decide
+    decide -- route action --> directive --> teamManager --> teamWork --> handled
+    decide -- no directive required --> handled
+
+    ownership[Group membership authorizes visibility and the Team target.\nA governance directive can target only that member Team's manager;\nit does not assign tasks or decide reviews.]
+    ownership --- group
+    ownership --- directive

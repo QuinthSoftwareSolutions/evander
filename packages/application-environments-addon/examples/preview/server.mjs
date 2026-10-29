@@ -1,0 +1,2 @@
+import { createServer } from "node:http";
+createServer((request,response)=>{response.setHeader("Content-Type","text/html");response.end('<!doctype html><title>Application preview</title><h1>Station materials</h1><label>Material <input id="material"></label><button>Add material</button><p id="result"></p><script>document.querySelector("button").onclick=()=>document.querySelector("#result").textContent=document.querySelector("#material").value+" added"</script>');}).listen(4200,"0.0.0.0");

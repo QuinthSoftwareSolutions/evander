@@ -1,0 +1,5 @@
+include README.md CHANGELOG.md addon.json package.json package-lock.json
+recursive-include docs *.md
+recursive-include examples *.json
+recursive-include tests *.py *.mjs *.html
+recursive-include scripts *.py

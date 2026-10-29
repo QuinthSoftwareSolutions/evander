@@ -1,0 +1,371 @@
+:root {
+  color-scheme: light;
+  --skv-bg: #f6f7f9;
+  --skv-text: #20242a;
+  --skv-muted: #5a6270;
+  --skv-panel-bg: #ffffff;
+  --skv-panel-border: #d8dde5;
+  --skv-row-border: #edf0f4;
+  --skv-button-bg: #ffffff;
+  --skv-button-border: #aeb6c2;
+  --skv-button-hover-bg: #eef2f6;
+  --skv-input-bg: #ffffff;
+  --skv-code-bg: #f7f9fb;
+  --skv-code-border: #e7ebf0;
+  --skv-success: #226d3b;
+  --skv-error: #9f2f1d;
+  --skv-focus: #367995;
+  --skv-shadow: none;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --skv-bg: #08151b;
+  --skv-text: #e7f1f6;
+  --skv-muted: #a8bdc8;
+  --skv-panel-bg: #102630;
+  --skv-panel-border: rgba(127, 174, 197, 0.2);
+  --skv-row-border: rgba(127, 174, 197, 0.14);
+  --skv-button-bg: #142d38;
+  --skv-button-border: rgba(127, 174, 197, 0.32);
+  --skv-button-hover-bg: #1b3946;
+  --skv-input-bg: #071116;
+  --skv-code-bg: #071116;
+  --skv-code-border: rgba(127, 174, 197, 0.16);
+  --skv-success: #8cd9a8;
+  --skv-error: #f19a86;
+  --skv-focus: #8fc7de;
+  --skv-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
+html {
+  min-height: 100%;
+  color: var(--skv-text);
+  background: var(--skv-bg);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--skv-bg);
+  color: var(--skv-text);
+}
+
+.skv-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.skv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+}
+
+h2 {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+
+p {
+  color: var(--skv-muted);
+  margin-top: 4px;
+}
+
+button {
+  border: 1px solid var(--skv-button-border);
+  background: var(--skv-button-bg);
+  border-radius: var(--ui-radius, 0);
+  color: var(--skv-text);
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  background: var(--skv-button-hover-bg);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 2px;
+}
+
+.skv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.skv-wide {
+  grid-column: 1 / -1;
+}
+
+article {
+  background: var(--skv-panel-bg);
+  border: 1px solid var(--skv-panel-border);
+  border-radius: var(--ui-radius, 0);
+  box-shadow: var(--skv-shadow);
+  padding: 14px;
+  min-width: 0;
+}
+
+.skv-form {
+  display: grid;
+  gap: 14px;
+}
+
+.skv-field-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skv-field-row label,
+.skv-api-picker {
+  min-width: 0;
+}
+
+.skv-field-row label {
+  display: grid;
+  gap: 6px;
+}
+
+.skv-field-label,
+.skv-api-picker legend {
+  color: var(--skv-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.skv-field-label,
+.skv-api-picker legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skv-field-label,
+.skv-api-picker {
+  position: relative;
+}
+
+.skv-help {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid var(--skv-button-border);
+  border-radius: 50%;
+  color: var(--skv-muted);
+  cursor: help;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.skv-help::after {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: min(320px, 100%);
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--skv-panel-border);
+  border-radius: var(--ui-radius, 0);
+  background: var(--skv-code-bg);
+  box-shadow: var(--skv-shadow);
+  color: var(--skv-text);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: left;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+}
+
+.skv-help:hover,
+.skv-help:focus-visible {
+  border-color: var(--skv-focus);
+  color: var(--skv-text);
+}
+
+.skv-help:hover::after,
+.skv-help:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.skv-help:focus-visible {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 2px;
+}
+
+.skv-check {
+  align-content: end;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.skv-check input {
+  align-self: center;
+}
+
+input,
+select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--skv-button-border);
+  border-radius: var(--ui-radius, 0);
+  background: var(--skv-input-bg);
+  color: var(--skv-text);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+input[type="checkbox"] {
+  width: auto;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--skv-focus);
+  outline-offset: 1px;
+}
+
+.skv-api-picker {
+  margin: 0;
+  border: 1px solid var(--skv-panel-border);
+  border-radius: var(--ui-radius, 0);
+  padding: 12px;
+}
+
+.skv-api-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.skv-api-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--skv-row-border);
+  border-radius: var(--ui-radius, 0);
+  background: var(--skv-code-bg);
+  padding: 8px;
+}
+
+.skv-api-option span,
+.skv-api-option small {
+  display: block;
+}
+
+.skv-api-option strong {
+  color: var(--skv-text);
+  font-size: 12px;
+}
+
+.skv-api-option small {
+  color: var(--skv-muted);
+  font-size: 11px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.skv-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skv-message {
+  color: var(--skv-muted);
+  font-size: 13px;
+}
+
+.skv-message[data-state="success"] {
+  color: var(--skv-success);
+}
+
+.skv-message[data-state="error"] {
+  color: var(--skv-error);
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  border: 1px solid var(--skv-code-border);
+  border-radius: var(--ui-radius, 0);
+  background: var(--skv-code-bg);
+  color: var(--skv-text);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
+}
+
+.skv-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skv-row {
+  border-top: 1px solid var(--skv-row-border);
+  padding-top: 8px;
+}
+
+.skv-row strong {
+  display: block;
+  font-size: 13px;
+}
+
+.skv-row span {
+  color: var(--skv-muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+@media (max-width: 760px) {
+  .skv-shell {
+    padding: 16px;
+  }
+
+  .skv-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .skv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skv-field-row,
+  .skv-api-options {
+    grid-template-columns: 1fr;
+  }
+}

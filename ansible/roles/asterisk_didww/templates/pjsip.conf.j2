@@ -1,0 +1,54 @@
+; Managed by evander Ansible.
+[global]
+type=global
+user_agent={{ evander_asterisk_user_agent }}
+
+[transport-udp]
+type=transport
+protocol=udp
+bind={{ evander_asterisk_sip_bind_host }}:{{ evander_asterisk_sip_bind_port }}
+external_signaling_address={{ evander_asterisk_public_address }}
+external_media_address={{ evander_asterisk_public_address }}
+{% for local_net in evander_asterisk_local_nets %}
+local_net={{ local_net }}
+{% endfor %}
+
+[{{ evander_asterisk_didww_auth_section }}]
+type=auth
+auth_type=userpass
+username={{ evander_asterisk_didww_sip_username }}
+password={{ evander_asterisk_didww_sip_password }}
+
+[{{ evander_asterisk_didww_aor_section }}]
+type=aor
+contact=sip:{{ evander_asterisk_didww_sip_host }}
+qualify_frequency={{ evander_asterisk_didww_qualify_frequency }}
+
+[{{ evander_asterisk_didww_endpoint }}]
+type=endpoint
+transport=transport-udp
+context={{ evander_asterisk_didww_context }}
+disallow=all
+allow={{ evander_asterisk_didww_codecs | join(",") }}
+outbound_auth={{ evander_asterisk_didww_auth_section }}
+aors={{ evander_asterisk_didww_aor_section }}
+direct_media=no
+rewrite_contact=yes
+force_rport=yes
+rtp_symmetric=no
+{% if evander_asterisk_didww_from_domain | length > 0 %}
+from_domain={{ evander_asterisk_didww_from_domain }}
+{% endif %}
+{% if evander_asterisk_didww_from_user | length > 0 %}
+from_user={{ evander_asterisk_didww_from_user }}
+{% endif %}
+{% if evander_asterisk_didww_contact_user | length > 0 %}
+contact_user={{ evander_asterisk_didww_contact_user }}
+{% endif %}
+
+[{{ evander_asterisk_didww_identify_section }}]
+type=identify
+endpoint={{ evander_asterisk_didww_endpoint }}
+{% for match in evander_asterisk_didww_identify_matches %}
+match={{ match }}
+{% endfor %}

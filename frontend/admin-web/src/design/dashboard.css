@@ -1,0 +1,329 @@
+[data-admin-design] .feature-page.dashboard-page {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  gap: 20px;
+}
+[data-admin-design] .dashboard-page .admin-toolbar {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  gap: 12px;
+  box-shadow: none;
+}
+[data-admin-design] .dashboard-toolbar-copy {
+  gap: 4px;
+}
+[data-admin-design] .dashboard-toolbar-copy h1 {
+  margin: 0;
+}
+[data-admin-design] .dashboard-toolbar-summary {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+[data-admin-design] .dashboard-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  overflow: hidden;
+}
+[data-admin-design] .dashboard-metric-strip > button {
+  border: 0;
+  border-right: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 12px 16px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-admin-design] .dashboard-metric-strip > button:last-child {
+  border-right: 0;
+}
+[data-admin-design] .dashboard-metric-strip span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+[data-admin-design] .dashboard-metric-strip strong {
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+[data-admin-design] .dashboard-metric-strip small {
+  color: var(--ui-warning);
+}
+[data-admin-design] .dashboard-panel-grid {
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, 1fr);
+  gap: 24px;
+}
+[data-admin-design] .dashboard-panel-column {
+  gap: 0;
+}
+[data-admin-design] .dashboard-panel-column-primary {
+  grid-column: 1;
+  grid-row: 1;
+}
+[data-admin-design] .dashboard-panel-column-news {
+  grid-column: 2;
+  grid-row: 1;
+}
+[data-admin-design] .dashboard-panel-column-secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+[data-admin-design] .admin-panel {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  box-shadow: none;
+}
+[data-admin-design] .dashboard-panel-column-secondary > .dashboard-panel {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-admin-design] .dashboard-panel-summary {
+  position: relative;
+  padding: 14px 135px 14px 0;
+  border: 0;
+}
+[data-admin-design] .dashboard-panel-summary-copy {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3px;
+}
+[data-admin-design] .dashboard-panel-summary h2 {
+  font-size: 15px;
+  margin: 0;
+}
+[data-admin-design] .dashboard-panel-kicker-row .eyebrow {
+  font-size: 11px;
+}
+[data-admin-design] .dashboard-panel-summary-actions {
+  position: absolute;
+  right: 0;
+  top: 14px;
+}
+[data-admin-design] .dashboard-panel-expand-control {
+  border: 0;
+  background: transparent;
+  color: var(--ui-muted);
+  border-radius: var(--ui-radius, 0);
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+}
+[data-admin-design] .dashboard-panel-body {
+  padding: 0 0 16px;
+  gap: 16px;
+}
+[data-admin-design] .dashboard-attention {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ui-border);
+}
+[data-admin-design] .dashboard-attention h2 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+[data-admin-design] .dashboard-attention > button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  text-align: left;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-admin-design] .dashboard-attention > button:last-of-type {
+  border-bottom: 0;
+}
+[data-admin-design] .dashboard-attention small {
+  display: block;
+  font-weight: 400;
+  color: var(--ui-muted);
+  margin-top: 3px;
+}
+[data-admin-design] :is(.dashboard-metric-row, .dashboard-detail-row) {
+  background: transparent;
+  border-radius: 0;
+  border-color: var(--ui-border);
+  padding: 8px 12px;
+}
+[data-admin-design] .dashboard-metric-row {
+  align-items: center;
+}
+[data-admin-design] :is(.dashboard-metric-row, .dashboard-detail-row) strong {
+  color: var(--ui-text);
+}
+[data-admin-design] :is(.dashboard-metric-row, .dashboard-detail-row) span {
+  color: var(--ui-muted);
+}
+[data-admin-design] .dashboard-block {
+  gap: 12px;
+}
+[data-admin-design] .dashboard-block-header {
+  gap: 8px;
+}
+[data-admin-design] .dashboard-link-chip {
+  border-radius: 4px;
+  background: var(--ui-surface);
+  color: var(--ui-accent);
+  padding: 4px 8px;
+  transform: none;
+  box-shadow: none;
+}
+[data-admin-design] .dashboard-release-panel {
+  padding: 0 20px;
+  overflow: visible;
+}
+[data-admin-design] .dashboard-release-panel > .dashboard-panel-summary {
+  border-bottom: 1px solid var(--ui-border);
+}
+[data-admin-design] .dashboard-release-panel > .dashboard-panel-summary .eyebrow {
+  display: none;
+}
+[data-admin-design] .dashboard-release-panel > .dashboard-panel-body {
+  padding: 20px 0 12px;
+}
+[data-admin-design] .dashboard-product-context {
+  gap: 20px;
+}
+[data-admin-design] .release-news-entry {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+[data-admin-design] .release-news-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+[data-admin-design] .release-news-heading button {
+  white-space: nowrap;
+  font-size: 12px;
+}
+[data-admin-design] .release-news-title {
+  margin: 0 0 12px;
+  font-size: 22px;
+  letter-spacing: -0.4px;
+}
+[data-admin-design] .release-news-copy {
+  font: 14px/1.65 var(--ui-font);
+  color: var(--ui-text);
+  max-width: 72ch;
+}
+[data-admin-design] .release-news-copy :is(p, li) {
+  color: inherit;
+  font-size: inherit;
+}
+[data-admin-design] .release-news-image {
+  margin: 16px 0;
+  border-radius: var(--ui-radius, 0);
+  overflow: hidden;
+}
+[data-admin-design] .release-news-image img {
+  max-width: 100%;
+  height: auto;
+}
+[data-admin-design] .release-news-source {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+[data-admin-design] .release-news-pager {
+  border-top: 1px solid var(--ui-border);
+  padding-top: 12px;
+}
+[data-admin-design] .dashboard-release-secondary {
+  border-top: 1px solid var(--ui-border);
+  padding-top: 12px;
+}
+[data-admin-design] .dashboard-release-secondary > summary {
+  font-size: 12px;
+  color: var(--ui-muted);
+  cursor: pointer;
+}
+[data-admin-design] .release-reader {
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-dialog-radius);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .release-reader::backdrop {
+  background: var(--ui-overlay);
+}
+[data-admin-design] :is(.release-reader-header, .release-reader-footer) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--ui-surface);
+}
+[data-admin-design] .release-reader-header {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--ui-border);
+  z-index: 1;
+}
+[data-admin-design] .release-reader-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+[data-admin-design] .release-reader-article {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 24px;
+}
+[data-admin-design] .release-reader-article > h2 {
+  font-size: 28px;
+}
+[data-admin-design] .release-reader-footer {
+  border-top: 1px solid var(--ui-border);
+  position: sticky;
+  bottom: 0;
+  font-size: 12px;
+}
+@media (max-width: 1120px) {
+  [data-admin-design] .dashboard-panel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-admin-design] .dashboard-attention {
+    padding-bottom: 8px;
+  }
+  [data-admin-design] .dashboard-panel-column-news {
+    grid-column: 1;
+    grid-row: 2;
+  }
+}
+@media (max-width: 720px) {
+  [data-admin-design] .feature-page.dashboard-page {
+    padding: 12px;
+  }
+  [data-admin-design] .dashboard-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  [data-admin-design] .dashboard-metric-strip > button {
+    border-bottom: 1px solid var(--ui-border);
+  }
+  [data-admin-design] .dashboard-release-panel {
+    padding: 0 12px;
+  }
+  [data-admin-design] .release-news-heading {
+    display: block;
+  }
+  [data-admin-design] .release-news-heading button {
+    margin-bottom: 12px;
+  }
+}

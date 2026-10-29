@@ -1,0 +1,38 @@
+all:
+  vars:
+    evander_control_plane_public_host: 203.0.113.10
+    evander_control_plane_ssh_user: azureuser
+    evander_control_plane_ssh_private_key_file: >-
+      {{ lookup('env', 'EVANDER_CONTROL_PLANE_SSH_KEY_FILE')
+      | default('~/.ssh/evander-control-plane.pem', true) }}
+    evander_worker_ssh_private_key_file: >-
+      {{ lookup('env', 'EVANDER_WORKER_SSH_KEY_FILE')
+      | default('~/.ssh/evander-worker.pem', true) }}
+  children:
+    azure:
+      children:
+        evander_hosts:
+          hosts:
+            evander-control-plane:
+              ansible_host: "{{ evander_control_plane_public_host }}"
+              ansible_user: "{{ evander_control_plane_ssh_user }}"
+              ansible_ssh_private_key_file: "{{ evander_control_plane_ssh_private_key_file }}"
+              ansible_ssh_common_args: >-
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
+        evander_worker_hosts:
+          hosts:
+            evander-worker-1:
+              ansible_host: 10.0.1.4
+              ansible_user: "{{ evander_control_plane_ssh_user }}"
+              ansible_ssh_private_key_file: "{{ evander_worker_ssh_private_key_file }}"
+              ansible_ssh_common_args: >-
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
+                -o ProxyCommand="ssh -i {{ evander_control_plane_ssh_private_key_file }}
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
+                -W %h:%p {{ evander_control_plane_ssh_user }}@{{ evander_control_plane_public_host }}"
+              evander_worker_mssql_enabled: true
+              evander_worker_mssql_accept_eula: true
+              evander_worker_docker_network: "bridge"
+              evander_worker_egress_policy_enabled: true
+              evander_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ evander_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main"
+              evander_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ evander_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/24.04/prod noble main"

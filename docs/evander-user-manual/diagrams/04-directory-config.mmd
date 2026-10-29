@@ -1,0 +1,24 @@
+flowchart TB
+    root[root\nimmutable top-level directory]
+    platform[root/platform]
+    mission[root/platform/mission-control]
+    sibling[root/finance]
+
+    host[Host-global bootstrap configuration]
+    rootcfg[Root directory baseline]
+    platformcfg[Platform overrides]
+    missioncfg[Mission-control overrides]
+
+    host --> root
+    root --> platform
+    root --> sibling
+    platform --> mission
+    rootcfg --> root
+    rootcfg -. inherited .-> platform
+    rootcfg -. inherited .-> mission
+    platformcfg --> platform
+    platformcfg -. inherited .-> mission
+    missioncfg --> mission
+
+    classDef selected fill:#f6efe2,stroke:#9a6b13,color:#3a3424;
+    class mission,missioncfg selected;

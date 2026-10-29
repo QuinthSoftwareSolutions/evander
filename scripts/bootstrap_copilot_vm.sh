@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: bootstrap_copilot_vm.sh <vm-name> [vm-user]
+
+Copy the host GitHub Copilot CLI into a guest VM and configure it to use the host
+MCP gateway plus host-mediated GitHub authentication fallback.
+
+Arguments:
+  vm-name   libvirt domain name.
+  vm-user   Guest user to configure. Default: agent
+
+Environment:
+  SSH_KEY_PATH            Private key matching the guest authorized key.
+  HOST_COPILOT_BIN        Host GitHub Copilot CLI binary. Default: `command -v copilot`
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+  show_help >&2
+  exit 1
+fi
+
+VM_NAME="$1"
+VM_USER="${2:-agent}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
+# shellcheck source=lib/guest_ripgrep.sh
+source "${SCRIPT_DIR}/lib/guest_ripgrep.sh"
+CALLER_USER="${SUDO_USER:-$USER}"
+CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+  SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
+fi
+
+HOST_COPILOT_BIN="${HOST_COPILOT_BIN:-$(command -v copilot || true)}"
+SSH_OPTS=(
+  -i "${SSH_KEY_PATH}"
+)
+
+if [[ -z "${HOST_COPILOT_BIN}" ]]; then
+  echo "Missing host GitHub Copilot CLI binary." >&2
+  echo "Install Copilot on the host first or set HOST_COPILOT_BIN." >&2
+  exit 1
+fi
+HOST_COPILOT_BIN="$(readlink -f "${HOST_COPILOT_BIN}")"
+if [[ ! -x "${HOST_COPILOT_BIN}" ]]; then
+  echo "Host GitHub Copilot CLI binary is not executable: ${HOST_COPILOT_BIN}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+  echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
+  echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
+  exit 1
+fi
+
+get_vm_ip() {
+  if guest_ssh_resolve_vm_ip "${VM_NAME}"; then
+    return 0
+  fi
+
+  echo "Could not determine an IPv4 address for VM ${VM_NAME}." >&2
+  echo "Run this script with sudo, grant the current user libvirt access, or authorize the pkexec prompt." >&2
+  return 1
+}
+
+VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
+
+echo "Bootstrapping GitHub Copilot CLI into ${VM_USER}@${VM_IP}"
+guest_ripgrep_seed "${VM_USER}" "${VM_IP}" "${SSH_OPTS[@]}"
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
+  set -euo pipefail
+  mkdir -p ~/bin ~/.copilot ~/.config/systemd/user ~/.config/evander ~/.evander
+  chmod 700 ~/.evander
+"
+scp "${SSH_OPTS[@]}" "${HOST_COPILOT_BIN}" "${VM_USER}@${VM_IP}:~/bin/copilot"
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
+  "VM_USER='${VM_USER}' bash -s" <<'EOF'
+set -euo pipefail
+chmod +x ~/bin/copilot
+mkdir -p ~/.copilot
+if [ -f ~/.agent/config.env ]; then
+  # shellcheck disable=SC1091
+  . ~/.agent/config.env
+fi
+if [ -f /etc/evander/session.env ]; then
+  # shellcheck disable=SC1091
+  . /etc/evander/session.env
+fi
+COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-}"
+if [ -n "${COPILOT_SESSION_ID:-}" ]; then
+  COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${COPILOT_SESSION_ID}"
+fi
+COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("EVANDER_GATEWAY_URL") or "http://192.168.250.1:8000/mcp"; parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
+COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"
+cat > ~/.copilot/config.json <<CONFIG
+{
+  "alt_screen": false
+}
+CONFIG
+cat > ~/.copilot/mcp-config.json <<CONFIG
+{
+  "mcpServers": {
+    "evander": {
+      "type": "http",
+      "url": "${COPILOT_GATEWAY_URL}",
+      "tools": ["*"]
+    }
+  }
+}
+CONFIG
+cat > ~/bin/gh <<SHIM
+#!/usr/bin/env bash
+set -euo pipefail
+
+copilot_host_auth_token() {
+  local session_id=""
+  if [ -n "\${EVANDER_SESSION_ID:-}" ]; then
+    session_id="\${EVANDER_SESSION_ID}"
+  else
+    session_id="${COPILOT_SESSION_ID}"
+  fi
+  local mcp_session_token="\${EVANDER_MCP_SESSION_TOKEN:-}"
+  python3 - "${COPILOT_HOST_AUTH_URL}" "\${session_id}" "\${mcp_session_token}" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url = sys.argv[1]
+session_id = sys.argv[2].strip()
+mcp_session_token = sys.argv[3].strip()
+if not session_id:
+    print("EVANDER_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
+    raise SystemExit(1)
+headers = {
+    "Accept": "text/plain",
+    "X-Evander-Session-Id": session_id,
+}
+if mcp_session_token:
+    headers["X-Evander-MCP-Session-Token"] = mcp_session_token
+request = urllib.request.Request(
+    url,
+    headers=headers,
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        sys.stdout.write(response.read().decode("utf-8"))
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace").strip()
+    if body:
+        print(body, file=sys.stderr)
+    else:
+        print(f"Host-mediated Copilot auth failed with HTTP {exc.code}.", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+if [[ "\${1:-}" == "auth" && "\${2:-}" == "token" ]]; then
+  copilot_host_auth_token
+  exit 0
+fi
+
+if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
+  if copilot_host_auth_token >/dev/null; then
+    printf 'github.com\\n'
+    printf '  ✓ Logged in to github.com via evander host auth\\n'
+    exit 0
+  fi
+  exit 1
+fi
+
+if [[ -x /usr/bin/gh ]]; then
+  exec /usr/bin/gh "\$@"
+fi
+
+echo "This guest gh shim only supports 'gh auth token' and 'gh auth status' for Copilot auth fallback." >&2
+exit 1
+SHIM
+chmod +x ~/bin/gh
+
+append_shell_setup() {
+  local target="$1"
+  if ! grep -q 'export PATH="$HOME/bin:$PATH"' "${target}" 2>/dev/null; then
+    printf '\nexport PATH="$HOME/bin:$PATH"\n' >> "${target}"
+  fi
+  if ! grep -q 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' "${target}" 2>/dev/null; then
+    printf 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"\n' >> "${target}"
+  fi
+}
+
+append_shell_setup ~/.profile
+append_shell_setup ~/.bashrc
+
+export PATH="$HOME/bin:$PATH"
+export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
+copilot version
+
+echo "Host-mediated Copilot auth is available through the guest gh shim and the host gateway."
+echo "COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or 'copilot login' still override the gh fallback if you set them intentionally."
+echo "Host-side wake workers are now responsible for feedback wakeups by default."
+EOF
+
+# Reconcile VMs that still have the retired guest timer installed.
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+  set -euo pipefail
+  systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
+  rm -f ~/.config/systemd/user/agent-heartbeat.service \
+    ~/.config/systemd/user/agent-heartbeat.timer \
+    ~/.config/systemd/user/heartbeat_cycle.sh ~/.config/evander/guest-heartbeat.env
+  systemctl --user daemon-reload || true
+'
+
+echo "GitHub Copilot CLI bootstrap complete for ${VM_NAME} (${VM_IP})"

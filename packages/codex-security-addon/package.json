@@ -1,0 +1,8 @@
+{
+  "name": "evander-codex-security-runtime",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.13.0"},
+  "dependencies": {"@openai/codex-security": "0.1.31", "smol-toml": "1.9.1"},
+  "overrides": {"smol-toml": "1.9.1"}
+}

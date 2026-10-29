@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-apply}"
+NETWORK="{{ evander_worker_docker_network | default('none') | string | trim }}"
+CHAIN="{{ evander_worker_egress_policy_chain }}"
+RESOURCE_CHAIN="EVANDER-RESOURCE-EGRESS"
+
+remove_policy() {
+  iptables -N DOCKER-USER 2>/dev/null || true
+  while true; do
+    local rule
+    rule="$(iptables -S DOCKER-USER | awk -v chain="${CHAIN}" '$0 ~ ("-j " chain) {print; exit}')"
+    if [[ -z "${rule}" ]]; then
+      break
+    fi
+    # The rule is emitted as "-A DOCKER-USER ..."; replay it as a delete.
+    # shellcheck disable=SC2086
+    iptables ${rule/-A DOCKER-USER/-D DOCKER-USER}
+  done
+  iptables -F "${CHAIN}" 2>/dev/null || true
+}
+
+if [[ "${ACTION}" == "clear" ]]; then
+  remove_policy
+  exit 0
+fi
+
+if [[ "${ACTION}" != "apply" ]]; then
+  echo "usage: $0 [apply|clear]" >&2
+  exit 2
+fi
+
+if [[ -z "${NETWORK}" || "${NETWORK}" == "none" ]]; then
+  remove_policy
+  exit 0
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is required to resolve worker container network ${NETWORK}" >&2
+  exit 1
+fi
+
+if ! command -v iptables >/dev/null 2>&1; then
+  echo "iptables is required to apply the worker egress policy" >&2
+  exit 1
+fi
+
+mapfile -t source_cidrs < <(
+{% if (evander_worker_egress_policy_source_cidrs | default([]) | length) > 0 %}
+  cat <<'CIDRS'
+{% for cidr in evander_worker_egress_policy_source_cidrs %}
+{{ cidr }}
+{% endfor %}
+CIDRS
+{% else %}
+  docker network inspect "${NETWORK}" --format '{% raw %}{{ range .IPAM.Config }}{{ if .Subnet }}{{ .Subnet }}{{ printf "\n" }}{{ end }}{{ end }}{% endraw %}'
+{% endif %}
+)
+
+filtered_source_cidrs=()
+for cidr in "${source_cidrs[@]}"; do
+  cidr="$(echo "${cidr}" | xargs)"
+  if [[ -z "${cidr}" || "${cidr}" == *:* ]]; then
+    continue
+  fi
+  filtered_source_cidrs+=("${cidr}")
+done
+
+if [[ "{% raw %}${#filtered_source_cidrs[@]}{% endraw %}" -eq 0 ]]; then
+  echo "no IPv4 source CIDR found for Docker network ${NETWORK}" >&2
+  exit 1
+fi
+
+iptables -N DOCKER-USER 2>/dev/null || true
+iptables -N "${CHAIN}" 2>/dev/null || true
+remove_policy
+iptables -N "${CHAIN}" 2>/dev/null || true
+iptables -F "${CHAIN}"
+
+for cidr in "${filtered_source_cidrs[@]}"; do
+  iptables -I DOCKER-USER 1 -s "${cidr}" -j "${CHAIN}"
+done
+
+{% for cidr in evander_worker_egress_policy_block_cidrs %}
+iptables -A "${CHAIN}" -d "{{ cidr }}" -j DROP
+{% endfor %}
+# The resource services own exact job-source/destination grants in this stable
+# chain. Policy reloads must neither shadow nor flush those accepted intents.
+iptables -N "${RESOURCE_CHAIN}" 2>/dev/null || true
+iptables -A "${CHAIN}" -j "${RESOURCE_CHAIN}"
+{% for endpoint in evander_worker_effective_egress_policy_allow_tcp_endpoints %}
+iptables -A "${CHAIN}" -p tcp -d "{{ endpoint.host }}" --dport "{{ endpoint.port }}" -j ACCEPT
+{% endfor %}
+iptables -A "${CHAIN}" -j DROP
+
+echo "Applied Evander worker egress policy for Docker network ${NETWORK}: ${filtered_source_cidrs[*]}"

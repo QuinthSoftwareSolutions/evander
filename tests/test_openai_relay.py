@@ -1,0 +1,2920 @@
+import asyncio
+import gzip
+import json
+import os
+import time
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import SessionManifest
+from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.model_usage.pricing import (
+    estimate_model_usage_cost,
+    load_model_pricing_catalog_payload,
+)
+from evander.relays.openai import (
+    OpenAIRelay,
+    _websocket_message_declares_image_generation,
+    create_app,
+)
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.session_auth import session_mcp_auth_metadata
+
+
+def make_config(tmp_path: Path) -> GatewayConfig:
+    return GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+        openai_api_base_url="https://api.openai.com/v1",
+        openai_api_key_env="OPENAI_API_KEY",
+    )
+
+
+def write_provider_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload=payload,
+    )
+
+
+def write_session(
+    config: GatewayConfig,
+    *,
+    session_id: str,
+    directory_path: str = "root",
+    web_search_enabled: bool = False,
+    image_generation_enabled: bool = False,
+    expires_at: datetime | None = None,
+    metadata: dict[str, object] | None = None,
+    model: str | None = None,
+) -> None:
+    store = JsonSessionManifestRepository(config.session_store_path)
+    store.upsert_session(
+        SessionManifest(
+            session_id=session_id,
+            model=model,
+            directory_path=directory_path,
+            allowed_tools=[],
+            web_search_enabled=web_search_enabled,
+            image_generation_enabled=image_generation_enabled,
+            expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
+            metadata=metadata or {},
+        ),
+    )
+
+
+def test_openrouter_relay_pins_provider_zdr_model_and_host_headers(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["metadata"] = request.headers.get("x-openrouter-metadata")
+        captured["guest_header"] = request.headers.get("x-openrouter-title")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"x-generation-id": "generation-1"},
+            json={
+                "id": "response-1",
+                "model": "openai/gpt-5.4",
+                "provider": "OpenAI",
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "total_tokens": 18,
+                    "cost": 0.0042,
+                    "cost_details": {"upstream_inference_cost": 0.0039},
+                },
+                "openrouter_metadata": {
+                    "region": "us-east",
+                    "is_byok": False,
+                    "request_id": "router-request-1",
+                    "attempts": [
+                        {
+                            "provider": "OpenAI",
+                            "model": "gpt-5.4",
+                            "status": "success",
+                            "latency_ms": 123,
+                            "prompt": "must-not-be-stored",
+                        }
+                    ],
+                    "response": "must-not-be-stored",
+                },
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_api_base_url": "https://openrouter.example/api/v1",
+            "openrouter_api_key_env": "OPENROUTER_TEST_KEY",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENROUTER_TEST_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/responses",
+        headers={
+            "authorization": "Bearer guest-key",
+            "x-openrouter-title": "guest-title",
+        },
+        json={
+            "model": "openai/gpt-5.4",
+            "input": "private request",
+            "reasoning": {"effort": "low"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://openrouter.example/api/v1/responses"
+    assert captured["authorization"] == "Bearer host-router-key"
+    assert captured["metadata"] == "enabled"
+    assert captured["guest_header"] is None
+    assert captured["payload"] == {
+        "model": "openai/gpt-5.4",
+        "input": "private request",
+        "reasoning": {"effort": "low"},
+        "provider": {
+            "order": ["openai"],
+            "only": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "zdr": True,
+        },
+    }
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event.provider == "openrouter"
+    assert event.request_id == "generation-1"
+    assert event.raw_usage_metadata["usage"]["cost"] == 0.0042
+    assert event.raw_usage_metadata["usage"]["cost_details"] == {
+        "upstream_inference_cost": 0.0039
+    }
+    assert event.raw_usage_metadata["response_metadata"]["openrouter"] == {
+        "selected_provider": "OpenAI",
+        "region": "us-east",
+        "is_byok": False,
+        "request_id": "router-request-1",
+        "attempts": [
+            {
+                "provider": "OpenAI",
+                "model": "gpt-5.4",
+                "status": "success",
+                "latency_ms": 123,
+            }
+        ],
+    }
+    assert "private request" not in event.model_dump_json()
+    assert "must-not-be-stored" not in event.model_dump_json()
+
+
+@pytest.mark.parametrize("field", ["models", "route", "provider", "plugins"])
+def test_openrouter_relay_rejects_guest_routing_controls(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/responses",
+        json={"model": "openai/gpt-5.4", "input": "hello", field: {}},
+    )
+
+    assert response.status_code == 400
+    assert "relay-controlled fields" in response.text
+    assert called is False
+
+
+def test_openrouter_relay_rejects_unpinned_model_and_server_tools(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+    app = create_app(config, transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+
+    wrong_model = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses/compact",
+        json={"model": "anthropic/claude-sonnet-4.6", "input": []},
+    )
+    server_tool = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses",
+        json={
+            "model": "openai/gpt-5.4",
+            "input": "hello",
+            "tools": [{"type": "openrouter:web"}],
+        },
+    )
+
+    assert wrong_model.status_code == 400
+    assert "does not match session model" in wrong_model.text
+    assert server_tool.status_code == 400
+    assert "server tools are not allowed" in server_tool.text
+
+
+def test_openrouter_models_are_filtered_to_approved_exact_ids(tmp_path: Path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "openai/gpt-5.4", "object": "model"},
+                    {"id": "anthropic/claude-sonnet-4.6", "object": "model"},
+                ],
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "GET",
+        "/v1/session/session-1/models",
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == ["openai/gpt-5.4"]
+
+
+def request_asgi(app, method: str, path: str, **kwargs) -> httpx.Response:
+    async def run() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://relay.test",
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("requested_tier", "returned_tier", "expected_rule", "expected_cost"),
+    [
+        ("priority", "priority", "priority", "8.00"),
+        ("auto", "priority", "priority", "8.00"),
+        ("priority", "default", "standard", "2.00"),
+        ("priority", None, "priority", "8.00"),
+        (None, "priority", "priority", "8.00"),
+        (None, None, "standard", "2.00"),
+    ],
+)
+def test_relay_prices_usage_with_the_returned_service_tier(
+    tmp_path: Path,
+    monkeypatch,
+    stream: bool,
+    requested_tier: str | None,
+    returned_tier: str | None,
+    expected_rule: str,
+    expected_cost: str,
+) -> None:
+    response_payload = {
+        "id": "tier-response",
+        "model": "tier-model",
+        "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    }
+    if returned_tier is not None:
+        response_payload["service_tier"] = returned_tier
+
+    class UsageStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            event = {"type": "response.completed", "response": response_payload}
+            yield f"data: {json.dumps(event)}\n\n".encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content).get("service_tier") == requested_tier
+        if stream:
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=UsageStream()
+            )
+        return httpx.Response(200, json=response_payload)
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="tier-session", model="tier-model")
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+    request_payload = {"model": "tier-model", "input": "private-prompt-marker", "stream": stream}
+    if requested_tier is not None:
+        request_payload["service_tier"] = requested_tier
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/tier-session/responses",
+        headers={"accept": "text/event-stream" if stream else "application/json"},
+        json=request_payload,
+    )
+
+    assert response.status_code == 200
+    events = relay.model_usage_store.list_events(session_id="tier-session")
+    assert len(events) == 1
+    event = events[0]
+    assert event.raw_usage_metadata["request_metadata"].get("service_tier") == requested_tier
+    assert event.raw_usage_metadata["response_metadata"].get("service_tier") == returned_tier
+    assert "private-prompt-marker" not in event.model_dump_json()
+    catalog = load_model_pricing_catalog_payload(
+        {
+            "version": "tier-test-pricing",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "standard",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2020-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {"input": "1.00", "output": "1.00"},
+                },
+                {
+                    "id": "priority",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2020-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {"input": "3.00", "output": "5.00"},
+                    "service_tier": "priority",
+                },
+            ],
+        }
+    )
+    estimate = estimate_model_usage_cost(event, catalog)
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == expected_rule
+    assert estimate.estimated_total == Decimal(expected_cost)
+
+
+def test_relay_returns_503_without_api_key(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config)
+    client = TestClient(app)
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.text
+
+
+def test_relay_rejects_direct_image_generation_without_session_opt_in(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={"model": "gpt-image-2", "prompt": "secret prompt"},
+    )
+
+    assert response.status_code == 403
+    assert "Image generation is disabled" in response.text
+    assert called is False
+
+
+def test_relay_rejects_responses_image_tool_without_session_opt_in(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.4",
+            "input": "draw a fixture",
+            "tools": [{"type": "image_generation"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Image generation is disabled" in response.text
+    assert called is False
+
+
+def test_websocket_image_tool_detection_ignores_completed_tool_output() -> None:
+    assert _websocket_message_declares_image_generation(
+        json.dumps(
+            {
+                "type": "session.update",
+                "session": {"tools": [{"type": "image_generation"}]},
+            }
+        )
+    )
+    assert not _websocket_message_declares_image_generation(
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "item": {"type": "image_generation_call", "id": "image-1"},
+            }
+        )
+    )
+
+
+def test_relay_forwards_direct_image_generation_with_host_auth_and_opt_in(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["content_type"] = request.headers.get("content-type")
+        captured["payload"] = json.loads(request.read().decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "created": 1,
+                "data": [{"b64_json": "do-not-persist"}],
+                "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        headers={"authorization": "Bearer guest-key"},
+        json={"model": "gpt-image-2", "prompt": "secret prompt", "quality": "low"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "url": "https://api.openai.com/v1/images/generations",
+        "authorization": "Bearer host-key",
+        "content_type": "application/json",
+        "payload": {
+            "model": "gpt-image-2",
+            "prompt": "secret prompt",
+            "quality": "low",
+        },
+    }
+
+
+def test_relay_forwards_multipart_image_edit_without_reencoding_body(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read()
+        captured["authorization"] = request.headers.get("authorization")
+        captured["content_type"] = request.headers.get("content-type")
+        captured["body"] = body
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        data={"model": "gpt-image-2", "prompt": "add a safety rail"},
+        files={"image": ("fixture.png", b"fake-png", "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer host-key"
+    assert str(captured["content_type"]).startswith("multipart/form-data; boundary=")
+    assert b' name="model"' in captured["body"]
+    assert b"gpt-image-2" in captured["body"]
+    assert b"fake-png" in captured["body"]
+    events = OpenAIRelay(config).model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider_endpoint_identifier == "images/edits"
+    assert events[0].model == "gpt-image-2"
+
+
+def test_relay_rejects_oversized_multipart_part_headers_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    boundary = "bounded-header"
+    body = (
+        f"--{boundary}\r\nX-Oversized: ".encode()
+        + (b"a" * (16 * 1024))
+        + f"\r\n\r\npayload\r\n--{boundary}--\r\n".encode()
+    )
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        content=body,
+    )
+
+    assert response.status_code == 400
+    assert called is False
+
+
+def test_relay_rejects_malformed_multipart_image_edit_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    boundary = "malformed-header"
+    body = (
+        f"--{boundary}\r\n".encode()
+        + b'Content-Disposition form-data; name="model"\r\n\r\n'
+        + f"gpt-image-2\r\n--{boundary}--\r\n".encode()
+    )
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        content=body,
+    )
+
+    assert response.status_code == 400
+    assert "Malformed multipart image edit request" in response.text
+    assert called is False
+
+
+def test_relay_streams_partial_image_generation_events(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={
+            "model": "gpt-image-2",
+            "prompt": "private streamed prompt",
+            "stream": True,
+            "partial_images": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.content == b"data: first\n\ndata: second\n\n"
+    assert captured["authorization"] == "Bearer host-key"
+    assert captured["payload"] == {
+        "model": "gpt-image-2",
+        "prompt": "private streamed prompt",
+        "stream": True,
+        "partial_images": 2,
+    }
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider_endpoint_identifier == "images/generations"
+    assert events[0].model == "gpt-image-2"
+    assert "private streamed prompt" not in events[0].model_dump_json()
+
+
+def test_relay_enforces_image_generation_request_limit_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path).model_copy(
+        update={"openai_image_generation_max_request_bytes": 32}
+    )
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={"model": "gpt-image-2", "prompt": "x" * 64},
+    )
+
+    assert response.status_code == 413
+    assert "32 bytes" in response.text
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "service_tier", [None, "private-tier-marker", {"private-tier-marker": True}]
+)
+def test_image_usage_audit_does_not_persist_prompt_or_generated_data(
+    tmp_path: Path, service_tier: object
+) -> None:
+    config = make_config(tmp_path)
+    register_model_usage_correlation_context(
+        runtime_dir=config.runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        model="gpt-image-2",
+    )
+    relay = OpenAIRelay(config)
+    request_body = json.dumps(
+        {"model": "gpt-image-2", "prompt": "private-prompt-marker", "service_tier": service_tier}
+    ).encode("utf-8")
+    response = httpx.Response(
+        200,
+        json={
+            "data": [{"b64_json": "private-image-marker"}],
+            "service_tier": service_tier,
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        },
+    )
+
+    relay._record_model_usage_event(
+        session_id="session-1",
+        upstream_path="images/generations",
+        request_body=request_body,
+        upstream_response=response,
+        provider_name="openai",
+    )
+
+    events = relay.model_usage_store.list_events(session_id="session-1")
+    assert len(events) == 1
+    serialized = events[0].model_dump_json()
+    assert events[0].provider_endpoint_identifier == "images/generations"
+    assert events[0].model == "gpt-image-2"
+    assert events[0].total_tokens == 5
+    assert "private-prompt-marker" not in serialized
+    assert "private-image-marker" not in serialized
+    assert "private-tier-marker" not in serialized
+
+
+def test_relay_rejects_missing_session_id(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    app = create_app(config)
+    client = TestClient(app)
+
+    response = client.post("/v1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "session_id query parameter is required"}
+
+
+def test_relay_rejects_expired_session_by_path_without_invoking_transport(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0),
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "session expired: session_id=session-1 expires_at=2020-01-01T00:00:00Z"
+    }
+    assert called is False
+
+
+def test_relay_rejects_expired_session_by_query_without_invoking_transport(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/responses?session_id=session-1",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "session expired: session_id=session-1 expires_at=2020-01-01T00:00:00Z"
+    }
+    assert called is False
+
+
+def test_relay_requires_mcp_session_token_for_tokenized_http_session(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(
+            {
+                "url": str(request.url),
+                "mcp_token_header": request.headers.get("x-evander-mcp-session-token", ""),
+            }
+        )
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    caplog.set_level("INFO", logger="evander.relays.openai")
+
+    denied_missing = client.post(
+        "/v1/session/session-1/responses",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    denied_wrong = client.post(
+        "/v1/session/session-1/responses",
+        headers={"x-evander-mcp-session-token": "wrong-token"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    allowed = client.post(
+        "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    allowed_path_token = client.post(
+        "/v1/session/session-1/auth/correct-token/responses?path_token=true",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    allowed_auth_header = client.post(
+        "/v1/session/session-1/responses?bar=baz",
+        headers={"authorization": "Bearer correct-token"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert denied_missing.status_code == 401
+    assert denied_missing.json() == {"error": "MCP session token is required for this session"}
+    assert denied_wrong.status_code == 401
+    assert denied_wrong.json() == {"error": "MCP session token is required for this session"}
+    assert allowed.status_code == 200
+    assert allowed_path_token.status_code == 200
+    assert allowed_auth_header.status_code == 200
+    assert "correct-token" not in caplog.text
+    assert "/auth/" not in caplog.text
+    assert "path=/v1/session/session-1/responses" in caplog.text
+    assert calls == [
+        {
+            "url": "https://api.openai.com/v1/responses?foo=bar",
+            "mcp_token_header": "",
+        },
+        {
+            "url": "https://api.openai.com/v1/responses?path_token=true",
+            "mcp_token_header": "",
+        },
+        {
+            "url": "https://api.openai.com/v1/responses?bar=baz",
+            "mcp_token_header": "",
+        },
+    ]
+
+
+def test_relay_injects_authorization_header(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["path"] = request.url.path
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer test-key"
+    assert captured["accept-encoding"] == "identity"
+    assert captured["path"] == "/v1/responses"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload", "expected_upstream_path"),
+    [
+        ("GET", "/v1/session/session-1/models", None, "/v1/models"),
+        (
+            "POST",
+            "/v1/session/session-1/chat/completions",
+            {"model": "gpt-5.2-codex", "messages": []},
+            "/v1/chat/completions",
+        ),
+        (
+            "POST",
+            "/v1/session/session-1/embeddings",
+            {"model": "text-embedding-3-small", "input": "hello"},
+            "/v1/embeddings",
+        ),
+    ],
+)
+def test_relay_allows_supported_openai_compatible_paths(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_upstream_path: str,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["path"] = request.url.path
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    kwargs = {"json": payload} if payload is not None else {}
+
+    response = client.request(method, path, **kwargs)
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer test-key"
+    assert captured["path"] == expected_upstream_path
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/v1/session/session-1/files", None),
+        ("DELETE", "/v1/session/session-1/files/file_123", None),
+        ("POST", "/v1/session/session-1/fine_tuning/jobs", {"model": "gpt-5.2-codex"}),
+    ],
+)
+def test_relay_rejects_unsupported_openai_paths_without_forwarding_host_auth(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    kwargs = {"json": payload} if payload is not None else {}
+
+    response = client.request(method, path, **kwargs)
+
+    assert response.status_code == 501
+    assert "OpenAI relay currently supports" in response.text
+    assert called is False
+
+
+def test_relay_rejects_encoded_dot_segments_without_forwarding_host_auth(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses/%2e%2e/files",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 501
+    assert "dot segments" in response.text
+    assert called is False
+
+
+def test_relay_rejects_hosted_web_search_for_session_without_flag(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.2-codex",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Hosted web search is disabled" in response.text
+    assert called is False
+
+
+def test_relay_allows_hosted_web_search_for_session_with_flag(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.2-codex",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"] == {
+        "model": "gpt-5.2-codex",
+        "input": "hello",
+        "tools": [{"type": "web_search_preview"}],
+    }
+
+
+def test_standalone_web_search_uses_hosted_responses_and_returns_sources(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["guest_header"] = request.headers.get("x-guest-header")
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_search",
+                "model": "gpt-6-astra",
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "sources": [
+                                {"url": "https://example.com/result", "title": "Example result"}
+                            ],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "The answer is 42.", "annotations": []}
+                        ],
+                    },
+                ],
+                "usage": {"input_tokens": 20, "output_tokens": 12, "total_tokens": 32},
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        model="gpt-6-luna",
+        web_search_enabled=True,
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/auth/correct-token/alpha/search",
+        headers={"authorization": "Bearer guest-key", "x-guest-header": "guest-value"},
+        json={
+            "id": "codex-session",
+            "model": "gpt-6-astra",
+            "input": "private conversation history",
+            "commands": {
+                "search_query": [{"q": "meaning of life", "domains": ["example.com"]}],
+                "response_length": "short",
+            },
+            "settings": {"external_web_access": "live"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "encrypted_output": None,
+        "output": "The answer is 42.\n\nSources:\n- Example result: https://example.com/result",
+    }
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["authorization"] == "Bearer host-key"
+    assert captured["guest_header"] is None
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "gpt-6-astra"
+    assert payload["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {"allowed_domains": ["example.com"]},
+            "external_web_access": True,
+        }
+    ]
+    assert payload["tool_choice"] == "required"
+    assert "meaning of life" in payload["input"]
+    assert "private conversation history" not in payload["input"]
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider == "openai"
+    assert "meaning of life" not in events[0].model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "official news", "domains": ["example.com"]},
+                    {"q": "independent coverage"},
+                ]
+            },
+            id="filtered-and-unrestricted-text",
+        ),
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "independent coverage"},
+                    {"q": "official news", "domains": ["example.com"]},
+                ]
+            },
+            id="unrestricted-and-filtered-text",
+        ),
+        pytest.param(
+            {
+                "image_query": [
+                    {"q": "official photos", "domains": ["example.com"]},
+                    {"q": "other photos"},
+                ]
+            },
+            id="filtered-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "image_query": [{"q": "other photos"}],
+            },
+            id="filtered-text-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "independent coverage"}],
+                "image_query": [{"q": "official photos", "domains": ["example.com"]}],
+            },
+            id="unrestricted-text-and-filtered-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "open": [{"ref_id": "https://other.example/article"}],
+            },
+            id="filtered-query-and-page-open",
+        ),
+    ],
+)
+def test_standalone_web_search_rejects_per_query_domains_in_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commands: dict[str, object]
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": commands},
+    )
+
+    assert response.status_code == 400
+    assert "Per-query domain filters" in response.json()["error"]
+    assert called is False
+
+
+def test_standalone_web_search_keeps_unrestricted_batches_unfiltered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "web_search_call", "status": "completed"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Results."}]},
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "search_query": [{"q": "bridge history"}, {"q": "bridge construction"}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [{"type": "web_search"}]
+    assert "bridge history" in captured["input"]
+    assert "bridge construction" in captured["input"]
+
+
+def test_standalone_image_search_returns_image_and_source_page_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "results": [
+                            {
+                                "type": "image_result",
+                                "image_url": "https://cdn.example/bridge.jpg",
+                                "source_website_url": "https://example.com/photos/bridge",
+                                "thumbnail_url": "https://cdn.example/bridge-thumb.jpg",
+                                "caption": "Bridge at sunset",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Found a bridge photo."}],
+                    },
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "image_query": [{"q": "bridge at sunset", "domains": ["example.com"]}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {"allowed_domains": ["example.com"]},
+            "search_content_types": ["image", "text"],
+        }
+    ]
+    output = response.json()["output"]
+    assert "Found a bridge photo." in output
+    assert "Bridge at sunset (image): https://cdn.example/bridge.jpg" in output
+    assert "Bridge at sunset (source page): https://example.com/photos/bridge" in output
+
+
+@pytest.mark.parametrize(
+    ("web_search_enabled", "provider_mode", "expected_status"),
+    [(False, "openai_public", 403), (True, "local_openai", 501)],
+)
+def test_standalone_web_search_requires_session_permission_and_public_openai(
+    tmp_path: Path, web_search_enabled: bool, provider_mode: str, expected_status: int
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    if provider_mode != "openai_public":
+        config.model_provider_mode = provider_mode
+        config.local_openai_api_base_url = "http://local-model.test:12345/v1"
+    write_session(config, session_id="session-1", web_search_enabled=web_search_enabled)
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": {"search_query": [{"q": "news"}]}},
+    )
+
+    assert response.status_code == expected_status, response.text
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        {"open": [{"ref_id": "turn0search0"}]},
+        {"screenshot": [{"ref_id": "https://example.com/test.pdf", "pageno": 0}]},
+    ],
+)
+def test_standalone_web_search_rejects_operations_it_cannot_resolve(
+    tmp_path: Path, commands: dict[str, object]
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": commands},
+    )
+
+    assert response.status_code == 400
+    assert called is False
+
+
+def test_standalone_web_search_does_not_claim_success_without_search_call(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "No search"}]}
+                ]
+            },
+        )
+    )
+
+    response = request_asgi(
+        create_app(config, transport=transport),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": {"search_query": [{"q": "news"}]}},
+    )
+
+    assert response.status_code == 502
+
+
+def test_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    write_provider_overlay(
+        config,
+        {
+            "openai_api_base_url": "https://override.example/v1",
+            "openai_api_key_env": "ROOT_OPENAI_TOKEN",
+        },
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["ROOT_OPENAI_TOKEN"] = "root-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer root-key"
+    assert captured["url"] == "https://override.example/v1/responses"
+
+
+def test_relay_uses_session_directory_provider_overlay(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "openai_api_base_url": "https://team-a.example/v1",
+            "openai_api_key_env": "TEAM_A_OPENAI_TOKEN",
+        },
+    )
+    write_session(config, session_id="session-team-a", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer team-a-key"
+    assert captured["url"] == "https://team-a.example/v1/responses"
+
+
+def test_relay_routes_local_openai_requests_without_host_api_key_env(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-local/responses?foo=bar",
+        json={"model": "qwen3-coder:30b", "input": "hello", "reasoning": {"effort": "low"}},
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer ollama-placeholder"
+    assert captured["accept-encoding"] == "identity"
+    assert captured["url"] == "http://127.0.0.1:11435/v1/responses?foo=bar"
+    assert captured["payload"] == {
+        "model": "qwen3-coder:30b",
+        "input": "hello",
+        "reasoning": {"effort": "low"},
+    }
+
+
+def test_relay_expands_local_openai_namespace_tools_and_restores_function_namespace(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_local_tool",
+                "object": "response",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "team_get_task",
+                        "arguments": '{"task_id":"task-1"}',
+                        "call_id": "call-1",
+                    }
+                ],
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-local/responses",
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a command",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"],
+                            },
+                            "strict": False,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    upstream_tools = captured["payload"]["tools"]
+    assert upstream_tools[0]["name"] == "exec_command"
+    assert upstream_tools[1] == {
+        "type": "function",
+        "name": "evander__team_get_task",
+        "description": "Get an assigned task",
+        "parameters": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+        "strict": False,
+    }
+    function_call = response.json()["output"][0]
+    assert function_call["name"] == "team_get_task"
+    assert function_call["namespace"] == "evander"
+
+
+def test_relay_restores_local_openai_function_namespace_in_chunked_stream(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_LocalOpenAIFunctionCallStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-local/responses",
+        headers={"accept": "text/event-stream"},
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert captured["payload"]["tools"][0]["name"] == "evander__team_get_task"
+    data_lines = [
+        line[len(b"data: ") :] for line in body.splitlines() if line.startswith(b"data: {")
+    ]
+    event = json.loads(data_lines[0])
+    assert event["item"]["name"] == "team_get_task"
+    assert event["item"]["namespace"] == "evander"
+    assert b"data: [DONE]" in body
+
+
+def test_relay_routes_azure_openai_responses_requests_through_session_directory_overlays(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+
+    write_provider_overlay(
+        config,
+        {
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-root",
+            },
+        },
+    )
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "model_provider_mode": "azure_openai",
+            "azure_openai_model_deployments": {
+                "gpt-5.4": "deployment-team-a",
+            },
+        },
+    )
+    write_session(config, session_id="session-azure", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["api-key"] = request.headers.get("api-key", "")
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/responses?session_id=session-azure&foo=bar&api-version=old",
+        json={"model": "gpt-5.4", "input": "hello", "reasoning": {"effort": "low"}},
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == (
+        "https://example-resource.openai.azure.com/openai/v1/responses?foo=bar&api-version=preview"
+    )
+    assert captured["api-key"] == "azure-key"
+    assert captured["authorization"] == ""
+    assert captured["accept-encoding"] == "identity"
+    assert captured["payload"] == {
+        "model": "deployment-team-a",
+        "input": "hello",
+        "reasoning": {"effort": "low"},
+    }
+
+
+def test_relay_returns_503_when_azure_openai_api_key_env_is_missing(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ.pop("AZURE_OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-azure/responses",
+        json={"model": "gpt-5.4", "input": "hello"},
+    )
+
+    assert response.status_code == 503
+    assert "AZURE_OPENAI_API_KEY" in response.text
+    assert called is False
+
+
+def test_relay_returns_400_when_azure_openai_model_mapping_is_missing(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    response = client.post(
+        "/v1/session/session-azure/responses",
+        json={"model": "gpt-4.1-mini", "input": "hello"},
+    )
+
+    assert response.status_code == 400
+    assert "gpt-4.1-mini" in response.text
+    assert "azure_openai_model_deployments" in response.text
+    assert called is False
+
+
+def test_relay_rejects_azure_hosted_web_search_before_forwarding(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    response = client.post(
+        "/v1/session/session-azure/responses",
+        json={
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Hosted web search is disabled" in response.text
+    assert called is False
+
+
+def test_relay_streams_azure_openai_responses_requests(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["api-key"] = request.headers.get("api-key", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-azure/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.4", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert b"data: second" in body
+    assert captured["url"] == (
+        "https://example-resource.openai.azure.com/openai/v1/responses?api-version=preview"
+    )
+    assert captured["api-key"] == "azure-key"
+    assert captured["payload"] == {
+        "model": "deployment-root",
+        "input": "hello",
+    }
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+
+
+def test_relay_routes_anthropic_messages_requests_through_session_directory_overlay(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example/",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(config, session_id="session-anthropic", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        captured["accept-encoding"] = request.headers.get("accept-encoding", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 7, "output_tokens": 8},
+            },
+        )
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.post(
+        "/session/session-anthropic/v1/messages?beta=1",
+        headers={"authorization": "Bearer guest-key", "x-api-key": "guest-key"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://anthropic.example/v1/messages?beta=1"
+    assert captured["x-api-key"] == "anthropic-key"
+    assert captured["authorization"] == ""
+    assert captured["anthropic-version"] == "2023-06-01"
+    assert captured["accept-encoding"] == "identity"
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 64,
+    }
+
+
+def test_relay_accepts_mcp_session_token_in_anthropic_auth_header(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example/",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(
+        config,
+        session_id="session-anthropic",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        return httpx.Response(200, json={"id": "msg_1", "type": "message"})
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    denied = client.post(
+        "/session/session-anthropic/v1/messages",
+        json={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64},
+    )
+    allowed = client.post(
+        "/session/session-anthropic/v1/messages?beta=1",
+        headers={"x-api-key": "correct-token"},
+        json={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64},
+    )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert captured == {
+        "url": "https://anthropic.example/v1/messages?beta=1",
+        "x-api-key": "anthropic-key",
+    }
+
+
+def test_relay_routes_claude_agent_session_through_anthropic_provider_override(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openai_public",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_DIRECTORY_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(
+        config,
+        session_id="session-claude-agent",
+        metadata={"agent_provider": "claude"},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_DIRECTORY_KEY"] = "directory-anthropic-key"
+
+    response = client.post(
+        "/session/session-claude-agent/v1/messages",
+        headers={"authorization": "Bearer guest-key", "x-api-key": "guest-key"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://anthropic.example/v1/messages"
+    assert captured["x-api-key"] == "directory-anthropic-key"
+    assert captured["authorization"] == ""
+    assert captured["anthropic-version"] == "2023-06-01"
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 64,
+    }
+
+
+def test_relay_preserves_anthropic_version_header(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["anthropic-version"] = request.headers.get("anthropic-version", "")
+        return httpx.Response(200, json={"id": "msg_1", "type": "message"})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.post(
+        "/v1/session/session-anthropic/messages",
+        headers={"Anthropic-Version": "2099-01-01"},
+        json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["anthropic-version"] == "2099-01-01"
+
+
+def test_relay_rejects_unsupported_anthropic_http_endpoints_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    response = client.get("/v1/session/session-anthropic/messages")
+
+    assert response.status_code == 501
+    assert "POST /v1/messages" in response.text
+    assert called is False
+
+
+def test_relay_rejects_anthropic_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+        },
+    )
+    write_session(config, session_id="session-anthropic")
+    client = TestClient(OpenAIRelay(config).create_app())
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-anthropic/messages"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert "Anthropic relay does not support websocket" in str(exc_info.value.reason)
+
+
+def test_relay_ignores_unknown_allowed_tools_when_resolving_session(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "openai_api_base_url": "https://team-a.example/v1",
+            "openai_api_key_env": "TEAM_A_OPENAI_TOKEN",
+        },
+    )
+    config.session_store_path.write_text(
+        json.dumps(
+            {
+                "session-team-a": {
+                    "session_id": "session-team-a",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": ["future_tool_name"],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer team-a-key"
+    assert captured["url"] == "https://team-a.example/v1/responses"
+
+
+def test_relay_logs_resolved_api_key_env_name(tmp_path: Path, caplog) -> None:
+    captured: dict[str, str] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={"openai_api_key_env": "TEAM_A_OPENAI_TOKEN"},
+    )
+    write_session(config, session_id="session-team-a", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
+    os.environ.pop("OPENAI_API_KEY", None)
+    caplog.set_level("INFO", logger="evander.relays.openai")
+
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer team-a-key"
+    assert "relay_resolved_api_key_env" in caplog.text
+    assert "session_id=session-team-a" in caplog.text
+    assert "request_kind=http" in caplog.text
+    assert "path=/v1/session/session-team-a/responses" in caplog.text
+    assert "api_key_env=TEAM_A_OPENAI_TOKEN" in caplog.text
+    assert "team-a-key" not in caplog.text
+
+
+def test_relay_strips_content_encoding_from_response(tmp_path: Path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        compressed = gzip.compress(b'{"id":"resp_test","object":"response"}')
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip", "content-type": "application/json"},
+            content=compressed,
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert "content-encoding" not in response.headers
+
+
+class _ErrorAfterChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"data: first\n\n"
+        raise httpx.ReadError("peer closed stream")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _LocalOpenAIFunctionCallErrorStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield (
+            b'data: {"type":"response.output_item.added","item":'
+            b'{"type":"function_call","name":"evander:team_get_task",'
+            b'"arguments":"","call_id":"call-1"}}'
+        )
+        raise httpx.ReadError("peer closed stream")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _CleanStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"data: first\n\n"
+        yield b"data: second\n\n"
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _LocalOpenAIFunctionCallStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'event: response.output_item.added\ndata: {"type":"response.output_item.added",'
+        yield (
+            b'"item":{"type":"function_call","name":"evander:team_get_task",'
+            b'"arguments":"","call_id":"call-1"}}\n\ndata: [DONE]\n\n'
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _FakeUpstreamWebSocket:
+    def __init__(self) -> None:
+        self.sent_messages: list[str | bytes] = []
+        self.received_messages: list[str | bytes] = []
+        self._recv_queue: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, message: str | bytes) -> None:
+        self.sent_messages.append(message)
+
+    async def recv(self) -> str | bytes:
+        message = await self._recv_queue.get()
+        if message is None:
+            raise RuntimeError("upstream closed")
+        self.received_messages.append(message)
+        return message
+
+    async def push(self, message: str | bytes) -> None:
+        await self._recv_queue.put(message)
+
+    async def close(self) -> None:
+        self.closed = True
+        await self._recv_queue.put(None)
+
+
+def test_relay_stream_transport_errors_are_suppressed_with_warning(tmp_path: Path, caplog) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_ErrorAfterChunkStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    caplog.set_level("INFO", logger="evander.relays.openai")
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-1/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 0
+    assert relay.stream_transport_terminated_count == 1
+    assert "relay_stream_transport_terminated" in caplog.text
+    assert "exception_class=ReadError" in caplog.text
+
+
+def test_relay_flushes_local_function_call_when_stream_transport_terminates(
+    tmp_path: Path,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_LocalOpenAIFunctionCallErrorStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    client = TestClient(relay.create_app())
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-local/responses",
+        headers={"accept": "text/event-stream"},
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert body.startswith(b"data: ")
+    event = json.loads(body[len(b"data: ") :])
+    assert event["item"]["name"] == "team_get_task"
+    assert event["item"]["namespace"] == "evander"
+    assert relay.stream_clean_end_count == 0
+    assert relay.stream_transport_terminated_count == 1
+
+
+def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    caplog.set_level("INFO", logger="evander.relays.openai")
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-1/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert b"data: second" in body
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+    assert relay.stream_transport_terminated_count == 0
+    assert "relay_stream_request_start" in caplog.text
+    assert "relay_stream_upstream_response" in caplog.text
+    assert "relay_stream_completed" in caplog.text
+
+
+def test_relay_proxies_websocket_messages_and_injects_auth(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout_seconds"] = timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text("hello upstream")
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != ["hello upstream"]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == ["hello upstream"]
+
+        asyncio.run(upstream.push('{"id":"resp_1"}'))
+        assert websocket.receive_text() == '{"id":"resp_1"}'
+
+    assert upstream.closed
+    assert captured["url"] == "wss://api.openai.com/v1/responses"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == "Bearer test-key"
+    assert all(not key.lower().startswith("sec-websocket-") for key in headers)
+
+
+def test_relay_rejects_unsupported_openai_websocket_paths_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    connected = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        del url, headers, timeout_seconds
+        connected = True
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-1/files"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert "only /v1/responses" in str(exc_info.value.reason)
+    assert connected is False
+    assert upstream.sent_messages == []
+
+
+def test_relay_rejects_expired_websocket_session_without_upstream_connection(
+    tmp_path: Path,
+) -> None:
+    connected = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        expires_at=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
+    )
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        del url, headers, timeout_seconds
+        connected = True
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-1/responses"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert connected is False
+    assert upstream.sent_messages == []
+
+
+def test_relay_requires_mcp_session_token_for_tokenized_websocket_session(
+    tmp_path: Path,
+) -> None:
+    connected = 0
+    captured: dict[str, object] = {}
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        connected += 1
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout_seconds"] = timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with pytest.raises(WebSocketDisconnect) as missing_exc:
+        with client.websocket_connect("/v1/session/session-1/responses"):
+            pass
+    with pytest.raises(WebSocketDisconnect) as wrong_exc:
+        with client.websocket_connect(
+            "/v1/session/session-1/responses?mcp_session_token=wrong-token"
+        ):
+            pass
+
+    with client.websocket_connect(
+        "/v1/session/session-1/auth/correct-token/responses?foo=bar"
+    ) as websocket:
+        websocket.send_text("hello upstream")
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != ["hello upstream"]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == ["hello upstream"]
+
+    assert missing_exc.value.code == 1008
+    assert missing_exc.value.reason == "MCP session token is required for this session"
+    assert wrong_exc.value.code == 1008
+    assert wrong_exc.value.reason == "MCP session token is required for this session"
+    assert connected == 1
+    assert captured["url"] == "wss://api.openai.com/v1/responses?foo=bar"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert "x-evander-mcp-session-token" not in {key.lower() for key in headers}
+
+
+def test_relay_rejects_websocket_hosted_web_search_without_session_flag(
+    tmp_path: Path,
+) -> None:
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"tools": [{"type": "web_search_preview"}]},
+                }
+            )
+        )
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert upstream.sent_messages == []
+    assert upstream.closed is True
+
+
+def test_relay_rejects_azure_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal called
+        called = True
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["AZURE_OPENAI_API_KEY"] = "azure-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-azure/responses") as websocket:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert (
+        exc_info.value.reason
+        == "Azure OpenAI websocket/realtime relay is not supported by this provider mode"
+    )
+    assert called is False
+    assert upstream.sent_messages == []
+    assert upstream.closed is False
+
+
+def test_relay_rejects_local_openai_websocket_requests_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    write_session(config, session_id="session-local")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal called
+        called = True
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-local/responses") as websocket:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1008
+    assert (
+        exc_info.value.reason
+        == "Local OpenAI-compatible relay does not support websocket/realtime requests"
+    )
+    assert called is False
+    assert upstream.sent_messages == []
+    assert upstream.closed is False
+
+
+def test_relay_rejects_unsupported_azure_http_endpoints_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "azure_openai",
+            "azure_openai_endpoint": "https://example-resource.openai.azure.com/",
+            "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
+            "azure_openai_model_deployments": {"gpt-5.4": "deployment-root"},
+        },
+    )
+    write_session(config, session_id="session-azure")
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-azure/chat/completions",
+        json={"model": "gpt-5.4", "input": "hello"},
+    )
+
+    assert response.status_code == 501
+    assert "only POST /v1/responses" in response.text
+    assert called is False
+
+
+def test_relay_allows_websocket_hosted_web_search_with_session_flag(tmp_path: Path) -> None:
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        del url, headers, timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    message = json.dumps(
+        {"type": "session.update", "session": {"tools": [{"type": "web_search_preview"}]}}
+    )
+
+    with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+        websocket.send_text(message)
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != [message]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == [message]
+
+    assert upstream.closed
+
+
+def test_relay_treats_clean_upstream_websocket_close_as_normal(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    relay = OpenAIRelay(config)
+    client_messages: list[dict[str, object]] = []
+
+    class DummyClientWebSocket:
+        async def receive(self):
+            await asyncio.sleep(10)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            client_messages.append({"code": code, "reason": reason})
+
+    class DummyUpstream:
+        async def recv(self):
+            from websockets.exceptions import ConnectionClosedOK
+
+            raise ConnectionClosedOK(None, None)
+
+    async def run_case() -> None:
+        await relay._proxy_websocket_traffic(DummyClientWebSocket(), DummyUpstream())
+
+    asyncio.run(run_case())
+    assert client_messages == [{"code": 1000, "reason": ""}]
+
+
+def test_relay_still_accepts_query_session_id_for_http(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/responses?session_id=session-1", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://api.openai.com/v1/responses"

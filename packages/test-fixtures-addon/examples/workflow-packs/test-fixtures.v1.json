@@ -1,0 +1,9 @@
+{
+  "pack_id": "test-fixtures", "pack_version": "v1",
+  "description": "Reconcile task fixture readiness, ownership, expiry and cleanup. Enable in the authorized directory after worker deployment.",
+  "graphs": [{"id":"test-fixtures","name":"Task test fixtures","directory_path":"root","node_ids":["fixtures-pending","fixtures-reconcile"]}],
+  "ir": {"version":"v1","nodes":[
+    {"node":{"id":"fixtures-pending","display_name":"Test fixtures pending","type":"trigger:test-fixtures:pending","config":{"interval_seconds":30}}},
+    {"node":{"id":"fixtures-reconcile","display_name":"Reconcile fixture lease","type":"effect:test-fixtures:reconcile","config":{"lease_id":"${{fixtures-pending.lease_id}}"}}}
+  ],"edges":[{"source_id":"fixtures-pending","target_id":"fixtures-reconcile"}]}
+}

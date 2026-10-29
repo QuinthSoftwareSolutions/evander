@@ -1,0 +1,3 @@
+recursive-include evander_browser_sessions_addon/ui_static *
+recursive-include evander_browser_sessions_addon/controller *
+include addon.json

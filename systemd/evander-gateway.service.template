@@ -1,0 +1,19 @@
+[Unit]
+Description=Evander MCP Gateway
+After=network-online.target
+Wants=network-online.target
+PartOf=evander-team-runtime.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/config/gateway.env
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+ExecStartPre=__PROJECT_DIR__/.venv/bin/python -m evander.runtime_generation register --project-dir __PROJECT_DIR__ --runtime-dir __PROJECT_DIR__/runtime --component gateway
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-gateway
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+{
+  "worker_id": "worker-a",
+  "worker_root": "/var/lib/agent-worker",
+  "runtime_dir": "/var/lib/evander-applications",
+  "token_env": "EVANDER_APPLICATION_WORKER_TOKEN",
+  "callback_url": "http://127.0.0.1:11893",
+  "allocations_enabled": false,
+  "container_user": "1000:1000",
+  "profiles": {
+    "web": {
+      "image": "approved-web:1"
+    }
+  },
+  "resource_profiles": {}
+}

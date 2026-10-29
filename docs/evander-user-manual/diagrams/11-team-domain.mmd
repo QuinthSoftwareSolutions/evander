@@ -1,0 +1,34 @@
+flowchart TB
+    team[Team]
+    role[Role]
+    agent[Persistent agent]
+    project[Project]
+    assignment[Project assignment]
+    case[Case]
+    task[Task]
+    deliverable[Deliverable]
+    review[Review request]
+    release[Release package]
+    governance[Governance group]
+    memory[Team memory]
+
+    team -->|defines| role
+    team -->|registers| agent
+    team -->|owns| project
+    agent --> assignment
+    project --> assignment
+    project --> case
+    project --> task
+    case <-->|validated link| task
+    task --> deliverable
+    deliverable --> review
+    project --> release
+    deliverable -->|accepted scope| release
+    governance -->|member Team| team
+    governance -->|managed by| agent
+    team --> memory
+    project --> memory
+    agent -->|private scope| memory
+
+    boundary[Governance observes and directs a member Team's manager;\nit does not own the Team's tasks or review decisions.]
+    governance --- boundary

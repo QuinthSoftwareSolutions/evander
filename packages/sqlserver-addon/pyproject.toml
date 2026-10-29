@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+[project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+name = "evander-sqlserver-addon"
+version = "0.1.1"
+description = "Registered SQL Server services and disposable resources for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.131.2", "pydantic>=2.8.2", "pyodbc>=5.2.0"]
+[project.optional-dependencies]
+dev = ["pytest>=9.0.3"]
+[project.entry-points."evander.addons"]
+sqlserver = "evander_sqlserver_addon:register_addon"
+[project.scripts]
+evander-sqlserver-worker = "evander_sqlserver_addon.worker:main"
+[tool.setuptools]
+include-package-data = false
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_sqlserver_addon*"]
+namespaces = false
+[tool.setuptools.package-data]
+evander_sqlserver_addon = ["addon.json", "ui_static/*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,31 @@
+{
+  "runtime_dir": "runtime/orchestration-core",
+  "poll_interval_seconds": 5,
+  "jitter_seconds": 5,
+  "lock_path": null,
+  "event_queue_cursor_store_path": null,
+  "orchestration_store_path": null,
+  "orchestration_compact_history_retention_days": 365,
+  "orchestration_retention_days": 30,
+  "orchestration_wal_checkpoint_mode": "passive",
+  "orchestration_wal_checkpoint_min_bytes": 67108864,
+  "orchestration_wal_checkpoint_interval_seconds": 300,
+  "orchestration_wal_checkpoint_busy_timeout_ms": 1000,
+  "workflow_transforms": [],
+  "triggers": [],
+  "gates": [],
+  "effects": [],
+  "queries": [],
+  "edges": [],
+  "provider_loader": {
+    "provider_profile": "profiles/core-minimal",
+    "include_builtin": null,
+    "provider_modules": [],
+    "provider_entry_points_enabled": false
+  },
+  "addon_loader": {
+    "modules": [],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": null
+  }
+}

@@ -1,0 +1,1044 @@
+<!doctype html>
+<html lang="en" data-admin-design data-addon="team">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team Add-on</title>
+    <script type="module" src="team-org-flow.js"></script>
+    <script type="module" src="team-agent-create.js"></script>
+    <script type="module" src="team-ui.js"></script>
+    <link rel="stylesheet" href="admin-design.css" />
+    <script type="module" src="admin-design.js"></script>
+  </head>
+  <body data-team-addon-ui>
+    <div class="team-shell">
+      <header class="team-header">
+        <div>
+          <h1>Teams</h1>
+        </div>
+        <div class="team-header-actions">
+          <label class="checkbox-label archived-toggle">
+            <span class="archived-toggle-track" aria-hidden="true">
+              <input id="show-archived-toggle" type="checkbox" />
+              <span class="archived-toggle-slider" aria-hidden="true"></span>
+            </span>
+            <span>Show archived</span>
+          </label>
+          <label class="checkbox-label archived-toggle governance-agenda-toggle" data-team-view-action="governance" hidden>
+            <span class="archived-toggle-track" aria-hidden="true">
+              <input id="show-handled-governance-agenda-toggle" type="checkbox" />
+              <span class="archived-toggle-slider" aria-hidden="true"></span>
+            </span>
+            <span>Show handled agenda</span>
+          </label>
+          <span id="revision-badge" class="revision-badge">Revision 0</span>
+          <button
+            id="team-tab-create-governance-group-action"
+            type="button"
+            class="record-action"
+            aria-controls="governance-create-panel"
+            aria-expanded="false"
+            data-governance-create-toggle
+            data-team-view-action="governance"
+            hidden
+          >
+            Create governance group
+          </button>
+          <button
+            id="team-tab-create-team-action"
+            type="button"
+            class="record-action"
+            data-teams-create-team-open
+            data-team-view-action="people"
+            hidden
+          >
+            Create team
+          </button>
+        </div>
+      </header>
+
+      <div id="status-message" class="status-message" role="status" aria-live="polite" hidden></div>
+
+      <label class="team-view-switcher">View
+        <select id="team-view-select" aria-label="Team view"></select>
+      </label>
+      <nav class="team-view-tabs" role="tablist" aria-label="Team Add-on views">
+        <button
+          id="team-view-workspace-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-workspace-page"
+          data-team-view="workspace"
+        >
+          Workspace
+        </button>
+        <button
+          id="team-view-operations-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-operations-page"
+          data-team-view="operations"
+        >
+          Operations
+        </button>
+        <button
+          id="team-view-delivery-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-delivery-page"
+          data-team-view="delivery"
+        >
+          Delivery
+        </button>
+        <button
+          id="team-view-memory-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-memory-page"
+          data-team-view="memory"
+        >
+          Memory
+        </button>
+        <button
+          id="team-view-projects-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-projects-page"
+          data-team-view="projects"
+        >
+          Projects
+        </button>
+        <button
+          id="team-view-task-board-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-task-board-page"
+          data-team-view="task-board"
+        >
+          Task board
+        </button>
+        <button
+          id="team-view-cases-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-cases-page"
+          data-team-view="cases"
+        >
+          Cases
+        </button>
+        <button
+          id="team-view-people-tab"
+          class="team-view-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="team-people-page"
+          data-team-view="people"
+        >
+          Teams
+        </button>
+        <button
+          id="team-view-chat-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-chat-page"
+          data-team-view="chat"
+        >
+          Chat
+        </button>
+        <button
+          id="team-view-mail-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-mail-page"
+          data-team-view="mail"
+        >
+          Mail
+        </button>
+        <button
+          id="team-view-activity-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-activity-page"
+          data-team-view="activity"
+        >
+          Activity
+        </button>
+        <button
+          id="team-view-governance-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-governance-page"
+          data-team-view="governance"
+        >
+          Governance
+        </button>
+        <button
+          id="team-view-planning-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-planning-page"
+          data-team-view="planning"
+        >
+          Planning
+        </button>
+        <button
+          id="team-view-timeline-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-timeline-page"
+          data-team-view="timeline"
+        >
+          Activity timeline
+        </button>
+        <button
+          id="team-view-org-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-org-page"
+          data-team-view="org"
+        >
+          Org chart
+        </button>
+      </nav>
+
+      <main
+        id="team-workspace-page"
+        class="workspace-dashboard-page"
+        role="tabpanel"
+        aria-labelledby="team-view-workspace-tab"
+        data-team-view-panel="workspace"
+        hidden
+      >
+        <section class="workspace-dashboard-hero" aria-labelledby="workspace-dashboard-heading">
+          <div class="workspace-dashboard-title">
+            <p class="section-label">Workspace</p>
+            <h2 id="workspace-dashboard-heading">Team Dashboard</h2>
+            <p class="workspace-dashboard-subtitle" data-workspace-dashboard-subtitle></p>
+          </div>
+          <div class="workspace-dashboard-actions" data-workspace-dashboard-actions></div>
+        </section>
+
+        <section
+          class="workspace-dashboard-metrics"
+          aria-label="Team dashboard summary"
+          data-workspace-dashboard-metrics
+        ></section>
+
+        <section class="workspace-dashboard-grid" aria-label="Team dashboard details">
+          <div class="workspace-dashboard-column workspace-dashboard-column-main" data-workspace-attention-column></div>
+          <div class="workspace-dashboard-column" data-workspace-status-column></div>
+        </section>
+      </main>
+
+      <main
+        id="team-operations-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-operations-tab"
+        data-team-view-panel="operations"
+        hidden
+      >
+        <section class="content-panel runtime-operations-panel" aria-labelledby="focused-runtime-operations-heading">
+          <div class="runtime-operations-header">
+            <div>
+              <p class="section-label">Operations</p>
+              <h2 id="focused-runtime-operations-heading">Runtime / Blockers</h2>
+            </div>
+            <div class="runtime-filter-group" role="toolbar" aria-label="Runtime filters">
+              <button class="runtime-filter-button" type="button" data-runtime-filter="all">All</button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="needs_attention">
+                Needs attention
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="due_leased_agents">
+                Due / leased agents
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="blocked_waiting_work">
+                Blocked / waiting work
+              </button>
+              <button class="runtime-filter-button" type="button" data-runtime-filter="ephemeral_work">
+                Ephemeral work
+              </button>
+            </div>
+          </div>
+          <div class="runtime-operations-view" data-runtime-operations-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-delivery-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-delivery-tab"
+        data-team-view-panel="delivery"
+        hidden
+      >
+        <section class="content-panel review-delivery-panel" aria-labelledby="focused-review-delivery-heading">
+          <div class="review-delivery-header">
+            <div>
+              <p class="subheading">Delivery</p>
+              <h2 id="focused-review-delivery-heading">Review &amp; Delivery</h2>
+              <p class="meta-line">
+                Start with work that needs attention, then focus one project or open the full history.
+              </p>
+            </div>
+            <div class="review-delivery-filters" role="toolbar" aria-label="Review and delivery filters">
+              <button type="button" class="delivery-filter is-active" data-filter="attention">
+                Needs attention
+              </button>
+              <button type="button" class="delivery-filter" data-filter="all">All records</button>
+              <button type="button" class="delivery-filter" data-filter="pending">Pending</button>
+              <button type="button" class="delivery-filter" data-filter="waiting_for_acceptance">
+                Waiting for acceptance
+              </button>
+              <button type="button" class="delivery-filter" data-filter="waiting_for_review">
+                Waiting for review
+              </button>
+              <button type="button" class="delivery-filter" data-filter="accepted">Accepted</button>
+              <button type="button" class="delivery-filter" data-filter="rejected">Rejected</button>
+              <button type="button" class="delivery-filter" data-filter="blocked">Blocked</button>
+              <button
+                type="button"
+                class="delivery-filter human-review-filter"
+                data-my-human-reviews
+                aria-pressed="false"
+              >
+                My Human Reviews
+              </button>
+            </div>
+          </div>
+          <div class="review-delivery-view" data-review-delivery-view></div>
+        </section>
+        <section class="content-grid">
+          <div class="content-panel" aria-labelledby="focused-review-profiles-heading">
+            <h2 id="focused-review-profiles-heading">Review profiles</h2>
+            <div class="review-profiles-view" data-review-profiles-view></div>
+          </div>
+          <div class="content-panel" aria-labelledby="focused-releases-heading">
+            <h2 id="focused-releases-heading">Release history</h2>
+            <div class="releases-view" data-releases-view></div>
+          </div>
+        </section>
+      </main>
+
+      <main
+        id="team-memory-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-memory-tab"
+        data-team-view-panel="memory"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="team-memory-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Memory</p>
+              <h2 id="team-memory-heading">Team Memory</h2>
+            </div>
+          </div>
+          <div class="memory-view" data-memory-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-people-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-people-tab"
+        data-team-view-panel="people"
+      >
+        <div class="people-layout">
+          <section class="people-agents-panel" aria-labelledby="focused-teams-heading">
+            <h2 id="focused-teams-heading" class="visually-hidden">Teams</h2>
+            <section
+              id="teams-create-team-panel"
+              class="content-panel teams-create-team-panel"
+              aria-labelledby="teams-create-team-heading"
+              data-teams-create-team-panel
+              hidden
+            >
+              <div class="teams-create-team-header">
+                <div>
+                  <p class="section-label">Team</p>
+                  <h3 id="teams-create-team-heading">Create team</h3>
+                </div>
+                <button type="button" class="record-action" data-teams-create-team-close>Close</button>
+              </div>
+              <form id="create-team-from-teams-form" data-endpoint="/teams" data-method="POST">
+                <label>Name <input name="name" required /></label>
+                <label>
+                  Manager existing agent
+                  <select
+                    name="manager_existing_agent_id"
+                    data-options="agents"
+                    data-placeholder="Select existing agent"
+                    data-agent-source-picker
+                    data-session-field="manager_session_id"
+                    data-display-field="manager_display_name"
+                    data-suggested-role="manager"
+                  ></select>
+                </label>
+                <label>Manager session ID <input name="manager_session_id" required /></label>
+                <label>Manager display name <input name="manager_display_name" /></label>
+                <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
+                <label>Operator communication target id <input name="operator_communication_target_id" /></label>
+                <label class="checkbox-label">
+                  <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
+                </label>
+                <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+                <label>Governance cost warning threshold <input name="cost_warning_ratio" type="number" min="0.01" max="1" step="0.01" value="0.8" /></label>
+                <label>Budget renewal <select name="cost_budget_renewal_mode"><option value="manual">Manual reset</option><option value="monthly_utc">Monthly (UTC)</option></select></label>
+                <button type="submit">Create team</button>
+              </form>
+            </section>
+            <div class="teams-records-view" data-teams-records-view></div>
+          </section>
+          <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail" hidden>
+            <div class="team-record-inspector-toolbar">
+              <span class="section-label">Record details</span>
+              <button type="button" class="record-action" data-team-detail-close aria-label="Close record details">Close</button>
+            </div>
+            <div id="people-agent-detail-view" class="people-agent-detail-view" data-agent-detail-view></div>
+          </aside>
+        </div>
+      </main>
+
+      <main
+        id="team-projects-page"
+        class="focused-team-page projects-page"
+        role="tabpanel"
+        aria-labelledby="team-view-projects-tab"
+        data-team-view-panel="projects"
+        hidden
+      >
+        <div class="projects-workbench">
+          <section class="content-panel projects-list-panel" aria-labelledby="projects-workbench-heading">
+            <div class="focused-section-header">
+              <div>
+                <p class="section-label">Projects</p>
+                <h2 id="projects-workbench-heading">Project Catalog</h2>
+              </div>
+            </div>
+            <div class="projects-focus-list" data-projects-focus-list></div>
+            <div class="projects-create-actions">
+              <button
+                type="button"
+                class="record-action"
+                aria-controls="create-project-from-projects-form"
+                aria-expanded="false"
+                data-project-create-toggle
+              >
+                Create project
+              </button>
+            </div>
+            <form
+              id="create-project-from-projects-form"
+              class="projects-create-form"
+              data-form-id="create-project-form"
+              data-endpoint="/projects"
+              data-method="POST"
+              data-project-create-form
+              hidden
+            >
+              <div class="projects-create-form-header">
+                <div>
+                  <p class="section-label">Project</p>
+                  <h3>Create project</h3>
+                </div>
+                <button type="button" class="record-action" data-project-create-close>Close</button>
+              </div>
+              <label>Team <select name="team_id" required data-options="teams"></select></label>
+              <label>Name <input name="name" required /></label>
+              <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
+              <label>Directory scope <input name="directory_path" value="root" required /></label>
+              <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
+              <details>
+                <summary>Git config</summary>
+                <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
+                <div class="git-import-actions">
+                  <button type="button" data-git-import-button>Import Git repo</button>
+                  <span class="meta-line" data-git-import-status></span>
+                </div>
+                <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
+                <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
+                <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
+                <label>Agent commit author name <input name="agent_author_name" placeholder="Evander Bot" /></label>
+                <label>Agent commit author email <input name="agent_author_email" placeholder="evander@quinth.se" /></label>
+                <label>Agent commit committer name <input name="agent_committer_name" placeholder="Evander Bot" /></label>
+                <label>Agent commit committer email <input name="agent_committer_email" placeholder="evander@quinth.se" /></label>
+              </details>
+              <button type="submit">Create project</button>
+            </form>
+          </section>
+          <section class="content-panel projects-detail-panel" aria-label="Selected project">
+            <div class="projects-focus-detail" data-projects-focus-detail></div>
+          </section>
+        </div>
+      </main>
+
+      <main
+        id="team-chat-page"
+        class="focused-team-page chat-layout"
+        role="tabpanel"
+        aria-labelledby="team-view-chat-tab"
+        data-team-view-panel="chat"
+        hidden
+      >
+        <aside class="content-panel chat-sidebar" aria-label="Recent conversations">
+          <div class="chat-sidebar-header">
+            <div>
+              <p class="section-label">Chat</p>
+              <h2>Recent</h2>
+            </div>
+            <button type="button" data-chat-new>New chat</button>
+          </div>
+          <div id="chat-operator-view" class="chat-operator-view" data-chat-operator-view></div>
+          <div id="chat-new-picker" class="chat-new-picker" data-chat-new-picker hidden></div>
+          <div id="chat-conversations-view" class="chat-conversations-view" data-chat-conversations-view></div>
+        </aside>
+        <section class="content-panel chat-main" aria-label="Selected conversation">
+          <div id="chat-thread-view" class="chat-thread-view" data-chat-thread-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-mail-page"
+        class="focused-team-page mail-page"
+        role="tabpanel"
+        aria-labelledby="team-view-mail-tab"
+        data-team-view-panel="mail"
+        hidden
+      >
+        <section class="content-panel mail-shell" aria-labelledby="team-mail-heading">
+          <header class="mail-header">
+            <div>
+              <p class="section-label">Internal correspondence</p>
+              <h2 id="team-mail-heading">Agent Mail</h2>
+              <p>Review correspondence and create durable work for a Team manager.</p>
+            </div>
+            <div class="mail-header-actions">
+              <button type="button" class="record-action" data-mail-directive-open>Create directive</button>
+              <button type="button" class="record-action" data-mail-refresh>Refresh</button>
+            </div>
+          </header>
+
+          <form class="mail-directive-composer" data-mail-directive-form hidden>
+            <div class="mail-directive-composer-heading">
+              <div>
+                <p class="section-label">Operator instruction</p>
+                <h3>Create operator directive</h3>
+              </div>
+              <button type="button" class="icon-button" data-mail-directive-cancel aria-label="Close directive composer">×</button>
+            </div>
+            <p class="mail-directive-description">Creates durable Team work for the selected Team’s manager. Use Chat when you want a conversation with an individual agent.</p>
+            <p class="mail-directive-recipient" data-mail-directive-recipient aria-live="polite"></p>
+            <div class="mail-directive-fields">
+              <label>
+                Team
+                <select data-mail-directive-team name="team_id" required>
+                  <option value="">Select a Team</option>
+                </select>
+              </label>
+              <label>
+                Project context <span class="field-optional">Optional</span>
+                <select data-mail-directive-project name="project_id">
+                  <option value="">No project context</option>
+                </select>
+              </label>
+              <label>
+                Title <span class="field-optional">Optional</span>
+                <input data-mail-directive-title name="title" maxlength="240" placeholder="What should the Team do?" />
+              </label>
+              <label class="mail-directive-message-field">
+                Directive
+                <textarea data-mail-directive-message name="message" rows="5" required placeholder="Describe the outcome, constraints, and any useful context."></textarea>
+              </label>
+            </div>
+            <div class="mail-directive-actions">
+              <span class="mail-directive-form-status" data-mail-directive-status role="status" aria-live="polite"></span>
+              <button type="button" class="secondary" data-mail-directive-cancel>Cancel</button>
+              <button type="submit" data-mail-directive-submit>Create directive</button>
+            </div>
+          </form>
+
+          <div class="mail-toolbar" aria-label="Mail filters">
+            <label>
+              Team
+              <select id="mail-team-filter" data-mail-filter="team_id">
+                <option value="">All teams</option>
+              </select>
+            </label>
+            <label>
+              Agent
+              <select id="mail-agent-filter" data-mail-filter="agent_id">
+                <option value="">Everyone</option>
+              </select>
+            </label>
+            <label>
+              Direction
+              <select id="mail-direction-filter" data-mail-filter="direction" disabled>
+                <option value="">Received and sent</option>
+                <option value="received">Received</option>
+                <option value="sent">Sent</option>
+              </select>
+            </label>
+            <label>
+              Kind
+              <select id="mail-type-filter" data-mail-filter="item_type">
+                <option value="">All mail</option>
+                <option value="operator_directive">Operator directive</option>
+                <option value="question">Question</option>
+                <option value="status_request">Status request</option>
+                <option value="progress_report">Progress report</option>
+                <option value="deliverable_notice">Deliverable notice</option>
+                <option value="escalation">Escalation</option>
+              </select>
+            </label>
+            <form class="mail-search" data-mail-search-form role="search">
+              <label>
+                Search messages
+                <span class="mail-search-controls">
+                  <input id="mail-search-input" name="q" type="search" placeholder="Words, agent, task, id..." />
+                  <button type="submit">Search</button>
+                </span>
+              </label>
+            </form>
+          </div>
+
+          <div class="mail-layout">
+            <aside class="mail-folders" aria-label="Mail folders">
+              <button type="button" data-mail-state="" aria-pressed="true">
+                <span>All mail</span><strong data-mail-folder-count="all">0</strong>
+              </button>
+              <button type="button" data-mail-state="pending" aria-pressed="false">
+                <span>Awaiting action</span><strong data-mail-folder-count="pending">0</strong>
+              </button>
+              <button type="button" data-mail-state="handled" aria-pressed="false">
+                <span>Filed</span><strong data-mail-folder-count="handled">0</strong>
+              </button>
+            </aside>
+
+            <section class="mail-list-panel" aria-label="Messages">
+              <div id="mail-status" class="mail-status" role="status" aria-live="polite"></div>
+              <div id="mail-list" class="mail-list" data-mail-list></div>
+              <div id="mail-pagination" class="mail-pagination" data-mail-pagination></div>
+            </section>
+
+            <article id="mail-reader" class="mail-reader" data-mail-reader aria-live="polite">
+              <p class="empty-state">Select a message to read it.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <main
+        id="team-activity-page"
+        class="focused-team-page mail-page"
+        role="tabpanel"
+        aria-labelledby="team-view-activity-tab"
+        data-team-view-panel="activity"
+        hidden
+      >
+        <section class="content-panel mail-shell" aria-labelledby="team-activity-heading">
+          <header class="mail-header">
+            <div>
+              <p class="section-label">Structured dispatch tail</p>
+              <h2 id="team-activity-heading">Agent Activity</h2>
+              <p>Redacted dispatch lifecycle and Team tool outcomes. Mail remains agent correspondence.</p>
+            </div>
+            <button type="button" class="record-action" data-activity-refresh>Refresh</button>
+          </header>
+          <div class="mail-toolbar" aria-label="Activity filters">
+            <label>Team <select id="activity-team-filter" data-activity-filter="team_id"><option value="">All teams</option></select></label>
+            <label>Agent <select id="activity-agent-filter" data-activity-filter="agent_id"><option value="">All agents</option></select></label>
+            <label>Status
+              <select id="activity-status-filter" data-activity-filter="status">
+                <option value="">Any status</option>
+                <option value="success">Success</option>
+                <option value="failure">Failure</option>
+              </select>
+            </label>
+            <label>Dispatch <input id="activity-dispatch-filter" data-activity-filter="dispatch_id" placeholder="team-dispatch-…" /></label>
+            <form class="mail-search" data-activity-search-form role="search">
+              <label>Search
+                <span class="mail-search-controls">
+                  <input id="activity-search-input" type="search" placeholder="Tool, error, agent, id…" />
+                  <button type="submit">Search</button>
+                </span>
+              </label>
+            </form>
+          </div>
+          <div id="activity-status" class="mail-status" role="status" aria-live="polite"></div>
+          <div id="activity-list" class="mail-list activity-list"></div>
+          <div id="activity-pagination" class="mail-pagination"></div>
+        </section>
+      </main>
+
+      <main
+        id="team-task-board-page"
+        class="focused-team-page task-board-page"
+        role="tabpanel"
+        aria-labelledby="team-view-task-board-tab"
+        data-team-view-panel="task-board"
+        hidden
+      >
+        <section class="content-panel task-board-panel" aria-labelledby="task-board-heading">
+          <div class="task-board-header">
+            <div>
+              <p class="section-label">Task board</p>
+              <h2 id="task-board-heading">Project work</h2>
+            </div>
+            <div class="task-board-selectors" aria-label="Task board filters">
+              <label>
+                Team
+                <select id="task-board-team-select" data-task-board-team></select>
+              </label>
+              <label>
+                Project
+                <select id="task-board-project-select" data-task-board-project></select>
+              </label>
+            </div>
+          </div>
+          <div id="task-board-view" class="task-board-view" data-task-board-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-cases-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-cases-tab"
+        data-team-view-panel="cases"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-cases-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Cases</p>
+              <h2 id="focused-cases-heading">Intake &amp; Tickets</h2>
+            </div>
+          </div>
+          <div class="cases-view" data-cases-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-governance-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-governance-tab"
+        data-team-view-panel="governance"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-governance-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Governance</p>
+              <h2 id="focused-governance-heading">Groups</h2>
+            </div>
+          </div>
+          <div id="governance-create-panel" class="governance-create-panel" hidden>
+            <form
+              id="create-governance-group-form"
+              class="governance-create-form"
+              data-endpoint="/governance-groups"
+              data-method="POST"
+            >
+              <label>Name <input name="name" required /></label>
+              <label>Manager <select name="manager_agent_id" required data-options="agents-by-display-name"></select></label>
+              <label>Member teams <select name="member_team_ids" multiple size="5" data-options="teams"></select></label>
+              <div data-governance-create-goals></div>
+              <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+              <button type="submit">Create governance group</button>
+            </form>
+          </div>
+          <div class="governance-view" data-governance-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-planning-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-planning-tab"
+        data-team-view-panel="planning"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="focused-projects-heading">
+          <div class="planning-header">
+            <div>
+              <p class="section-label">Planning</p>
+              <h2 id="focused-projects-heading">Projects</h2>
+            </div>
+            <div class="planning-filters" role="group" aria-label="Planning task statuses">
+              <label><input id="planning-status-blocked" type="checkbox" data-planning-task-status="blocked" checked /> Blocked</label>
+              <label><input id="planning-status-waiting-for-input" type="checkbox" data-planning-task-status="waiting_for_input" checked /> Waiting input</label>
+              <label><input id="planning-status-waiting-for-review" type="checkbox" data-planning-task-status="waiting_for_review" checked /> Waiting review</label>
+              <label><input id="planning-status-in-progress" type="checkbox" data-planning-task-status="in_progress" checked /> In progress</label>
+              <label><input id="planning-status-pending" type="checkbox" data-planning-task-status="pending" checked /> Pending</label>
+              <label><input id="planning-status-accepted" type="checkbox" data-planning-task-status="accepted" /> Accepted</label>
+              <label><input id="planning-status-finished" type="checkbox" data-planning-task-status="finished" /> Finished</label>
+              <label><input id="planning-status-rejected" type="checkbox" data-planning-task-status="rejected" /> Rejected</label>
+              <label><input id="planning-status-cancelled" type="checkbox" data-planning-task-status="cancelled" /> Cancelled</label>
+            </div>
+          </div>
+          <div class="projects-view" data-projects-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-timeline-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-timeline-tab"
+        data-team-view-panel="timeline"
+        hidden
+      >
+        <section class="content-panel timeline-panel" aria-labelledby="focused-timeline-heading">
+          <div class="timeline-header">
+            <div>
+              <h2 id="focused-timeline-heading">Activity timeline</h2>
+              <p class="timeline-note">
+                This history is reconstructed from records still present in the current Team
+                snapshot. It may omit earlier changes, deleted or compacted records, and previous
+                field values, so it is not a compliance-grade audit log.
+              </p>
+            </div>
+            <div class="timeline-summary" data-timeline-summary></div>
+          </div>
+
+          <div class="timeline-filters" aria-label="Activity timeline filters">
+            <label>
+              Team
+              <select
+                id="focused-timeline-team-filter"
+                data-timeline-filter="team_id"
+                data-options="timeline-teams"
+                data-placeholder="All teams"
+              ></select>
+            </label>
+            <label>
+              Project
+              <select
+                id="focused-timeline-project-filter"
+                data-timeline-filter="project_id"
+                data-options="timeline-projects"
+                data-placeholder="All projects"
+              ></select>
+            </label>
+            <label>
+              Agent
+              <select
+                id="focused-timeline-agent-filter"
+                data-timeline-filter="agent_id"
+                data-options="timeline-agents"
+                data-placeholder="All agents"
+              ></select>
+            </label>
+            <label>
+              Item type
+              <select
+                id="focused-timeline-type-filter"
+                data-timeline-filter="type"
+                data-options="timeline-types"
+                data-placeholder="All types"
+              ></select>
+            </label>
+            <label>
+              Status
+              <select
+                id="focused-timeline-status-filter"
+                data-timeline-filter="status"
+                data-options="timeline-statuses"
+                data-placeholder="All statuses"
+              ></select>
+            </label>
+            <label>
+              Attention needed
+              <select
+                id="focused-timeline-attention-filter"
+                data-timeline-filter="attention_needed"
+                data-options="timeline-attention"
+                data-placeholder="Any attention"
+              >
+                <option value=""></option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="timeline-status" role="status" aria-live="polite" data-timeline-status></div>
+          <div class="timeline-view" data-timeline-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-org-page"
+        class="org-focus-page"
+        role="tabpanel"
+        aria-labelledby="team-view-org-tab"
+        data-team-view-panel="org"
+        hidden
+      >
+        <section class="org-focus-header" aria-labelledby="org-focus-heading">
+          <div>
+            <p class="section-label">Focus</p>
+            <h2 id="org-focus-heading">Org chart</h2>
+          </div>
+          <div id="org-focus-summary" class="org-focus-summary"></div>
+        </section>
+        <nav id="org-focus-team-tabs" class="org-focus-team-tabs" role="tablist" aria-label="Org chart teams"></nav>
+        <section id="org-focus-view" class="org-focus-view" aria-label="Focused team org chart"></section>
+      </main>
+      <div id="edit-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+        <div class="edit-modal-backdrop" data-edit-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Edit</p>
+              <h2 id="edit-modal-title">Edit record</h2>
+            </div>
+            <button type="button" class="record-action" data-edit-close>Close</button>
+          </div>
+          <form id="edit-record-form">
+            <div id="edit-form-body" class="edit-form-body"></div>
+            <div class="edit-modal-actions">
+              <button type="submit">Save changes</button>
+              <button type="button" class="record-action" data-edit-close>Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
+      <div
+        id="task-cancellation-modal"
+        class="edit-modal"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-cancellation-modal-title"
+      >
+        <div class="edit-modal-backdrop" data-task-cancellation-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Task lifecycle</p>
+              <h2 id="task-cancellation-modal-title">Cancel task</h2>
+            </div>
+            <button type="button" class="record-action" data-task-cancellation-close>Close</button>
+          </div>
+          <form id="task-cancellation-form">
+            <div class="edit-form-body">
+              <p id="task-cancellation-subject" class="task-cancellation-subject"></p>
+              <p class="task-cancellation-warning">
+                Cancellation is a terminal, audited disposition. It resolves the task's active
+                blockers and finalizes its Git work context.
+              </p>
+              <label>
+                <span>Reason</span>
+                <select name="reason_code" required>
+                  <option value="">Select a reason</option>
+                  <option value="superseded">Superseded</option>
+                  <option value="duplicate">Duplicate</option>
+                  <option value="no_longer_required">No longer required</option>
+                  <option value="replaced">Replaced by another task</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                <span>Explanation</span>
+                <textarea
+                  name="reason"
+                  rows="4"
+                  required
+                  placeholder="Explain why this task no longer needs to remain active."
+                ></textarea>
+              </label>
+              <label>
+                <span>Successor task (optional)</span>
+                <select name="successor_task_id">
+                  <option value="">No successor</option>
+                </select>
+              </label>
+              <label>
+                <span>
+                  <input type="checkbox" name="rebind_dependents" />
+                  Replace this task in active dependencies
+                </span>
+                <small>
+                  Atomically move every nonterminal dependent task and required contribution
+                  frontier to the selected successor. Terminal task history is preserved.
+                </small>
+              </label>
+            </div>
+            <div class="edit-modal-actions">
+              <button type="submit" class="task-cancellation-confirm">Cancel task</button>
+              <button type="button" class="record-action" data-task-cancellation-close>
+                Keep task
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+      <div id="chat-attachment-policy-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="chat-attachment-policy-title">
+        <div class="edit-modal-backdrop" data-chat-attachment-policy-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Team Chat</p>
+              <h2 id="chat-attachment-policy-title">Attachment policy</h2>
+            </div>
+            <button type="button" class="record-action" data-chat-attachment-policy-close>Close</button>
+          </div>
+          <form id="chat-attachment-policy-form">
+            <div class="edit-form-body">
+              <label><span>Directory path</span><input name="directory_path" value="root" required /></label>
+              <div class="form-grid two-column">
+                <label class="checkbox-label"><input type="checkbox" name="operator_to_agent_enabled" /><span>Operator uploads enabled</span></label>
+                <label class="checkbox-label"><input type="checkbox" name="agent_to_operator_enabled" /><span>Agent attachments enabled</span></label>
+                <label class="checkbox-label"><input type="checkbox" name="agent_send_requires_approval" /><span>Require agent send approval</span></label>
+                <label><span>Maximum bytes per file</span><input type="number" min="0" name="max_attachment_bytes" required /></label>
+                <label><span>Maximum files per message</span><input type="number" min="1" max="20" name="max_attachments_per_message" required /></label>
+              </div>
+              <label><span>Allowed MIME types (one per line)</span><textarea name="allowed_mime_types" rows="5"></textarea></label>
+              <label><span>Allowed extensions (one per line)</span><textarea name="allowed_extensions" rows="4"></textarea></label>
+              <label><span>Blocked extensions (one per line)</span><textarea name="blocked_extensions" rows="4"></textarea></label>
+            </div>
+            <div class="edit-modal-actions">
+              <button type="submit">Save policy</button>
+              <button type="button" class="record-action" data-chat-attachment-policy-close>Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>

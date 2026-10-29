@@ -1,0 +1,33 @@
+---
+- name: Probe worker PyPI package-cache asset access
+  ansible.builtin.uri:
+    url: "{{ evander_worker_package_cache_probe_url }}"
+    method: GET
+    return_content: false
+    timeout: 30
+    status_code:
+      - 200
+      - 401
+      - 403
+      - 404
+      - 500
+      - 502
+      - 503
+  register: evander_worker_package_cache_probe
+  changed_when: false
+  failed_when: false
+  when: evander_worker_validate_package_cache | bool
+
+- name: Assert worker can download PyPI assets through Nexus
+  ansible.builtin.assert:
+    that:
+      - evander_worker_package_cache_probe.status == 200
+    fail_msg: >-
+      Worker cannot anonymously download PyPI package assets through the
+      control-plane Nexus cache at {{ evander_worker_package_cache_probe_url }}.
+      HTTP status={{ evander_worker_package_cache_probe.status | default('unreachable') }}.
+      Deploy the control plane package cache first with ansible/site.yml so the
+      package_cache_nexus role creates the anonymous package-cache reader role,
+      then rerun ansible/worker.yml.
+    success_msg: Worker can download PyPI package assets through Nexus.
+  when: evander_worker_validate_package_cache | bool

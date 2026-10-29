@@ -1,0 +1,1047 @@
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from typing import Any, Callable, Sequence
+from pathlib import Path
+
+from evander.messaging.agent_prompt_store import AgentPromptStore
+from evander.audit import AuditLogger
+from evander.directories import DirectoryStore
+from evander.models import (
+    ApprovalRequest,
+    DraftMessage,
+    ToolName,
+)
+from evander.config import GatewayConfig, MailboxConfig
+from evander.directory_config import load_root_gateway_config
+from evander.repositories.cursors import EmailCursorRepository, JsonEmailCursorRepository
+from evander.email.gmail_provider import GmailEmailProvider
+from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
+from evander.policy import PolicyEngine
+from evander.policy_config import PolicyConfigResolver
+from evander.provider_config import ProviderConfigResolver
+from evander.pull_request_automation import build_pr_reply_service
+from evander.messaging.targets import CommunicationTargetCapability
+from evander.host_config import HostConfig
+from evander.retell_phone import RetellPhoneCallService, RetellPhoneCallStore
+from evander.reviews.request_service import (
+    ReviewRequestService,
+    _build_review_request_service,
+)
+from evander.repositories.records import (
+    DiscordRecordsRepository,
+    EmailRecordsRepository,
+    JsonDiscordRecordsRepository,
+    JsonEmailRecordsRepository,
+    SqliteTeamsRecordsRepository,
+    TeamsRecordsRepository,
+)
+from evander.repositories.session_manifests import (
+    JsonSessionManifestRepository,
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
+from evander.repositories.mcp_transport_bindings import (
+    SqliteMcpTransportBindingRepository,
+    McpTransportBindingRepository,
+)
+from evander.repositories.session_tool_approval_leases import (
+    JsonSessionToolApprovalLeaseRepository,
+    SessionToolApprovalLeaseRepository,
+)
+from evander.repositories.script_run_requests import (
+    ScriptRunRequestRepository,
+    ScriptRunRequestStore,
+)
+from evander.services import (
+    AzureDevOpsPrQueryProvider,
+    AzureDevOpsPrPublishProvider,
+    DiscordBotApiService,
+    DiscordInboxService,
+    DiscordService,
+    EmailService,
+    GitHubPrQueryProvider,
+    GitHubPrPublishProvider,
+    PrFeedbackService,
+    PrReplyService,
+    PrQueryService,
+    PrPublishService,
+    StubDiscordService,
+    StubTeamsService,
+    TeamsService,
+)
+from evander.integration_services.teams import ManagedTeamsService
+from evander.optional_integrations import (
+    azure_devops_enabled,
+    UnavailableTeamsGraphService,
+    require_teams_graph_module,
+    teams_graph_enabled,
+)
+from evander.storage import JsonStore
+from evander.messaging.wake_store import WakeRequestRepository, WakeRequestStore
+from evander.outbound_identity import (
+    OutboundIdentityRegistry,
+    OutboundIdentityResolution,
+    OutboundIdentityResolver,
+)
+from evander.teams_meeting import (
+    TeamsMeetingStore,
+    build_teams_meeting_bridge_client,
+)
+from evander.voice_sessions import (
+    OpenAIRealtimePhoneCallService,
+    PhoneCallRouterService,
+    VoiceMediaBridgeClient,
+    VoiceSessionReconciler,
+    VoiceSessionStore,
+)
+
+CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
+    "read-only": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_READ_CONFIG,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
+    ),
+    "operator-limited": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_READ_CONFIG,
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        ToolName.ASSISTANT_CREATE_WORKFLOW,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
+    ),
+    "full-admin": (
+        ToolName.DOCUMENTATION_LIST,
+        ToolName.DOCUMENTATION_SEARCH,
+        ToolName.DOCUMENTATION_READ,
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_READ_CONFIG,
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        ToolName.ASSISTANT_CREATE_WORKFLOW,
+        ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
+    ),
+}
+
+
+def allowed_tools_for_capability_profile(profile: str | None) -> list[ToolName]:
+    normalized = str(profile or "").strip().lower()
+    if not normalized:
+        return []
+    return list(CAPABILITY_PROFILE_ALLOWED_TOOLS.get(normalized, ()))
+
+
+@dataclass(slots=True)
+class RuntimeContext:
+    config: GatewayConfig
+    policy_config: PolicyConfigResolver
+    provider_config: ProviderConfigResolver
+    audit: AuditLogger
+    policy: PolicyEngine
+    email_service: EmailService
+    discord_service: DiscordService
+    teams_service: TeamsService
+    discord_inbox_service: DiscordInboxService
+    pr_feedback_service: PrFeedbackService
+    pr_reply_service: PrReplyService
+    pr_query_service: PrQueryService
+    pr_publish_service: PrPublishService
+    review_request_service: ReviewRequestService
+    session_repository: SessionManifestRepository
+    approvals: JsonStore[ApprovalRequest]
+    directories: DirectoryStore
+    drafts: JsonStore[DraftMessage]
+    emails: EmailRecordsRepository
+    email_cursors: EmailCursorRepository
+    discord_commands: DiscordRecordsRepository
+    teams_messages: TeamsRecordsRepository
+    teams_user_chat_cache: dict[str, str]
+    wake_store: WakeRequestRepository
+    agent_prompt_store: AgentPromptStore
+    script_run_request_store: ScriptRunRequestRepository
+    retell_phone_call_store: RetellPhoneCallStore
+    voice_session_store: VoiceSessionStore
+    voice_session_reconciler: VoiceSessionReconciler
+    teams_meeting_store: TeamsMeetingStore
+    teams_meeting_bridge_client: Any
+    outbound_identity_registry: OutboundIdentityRegistry = field(
+        default_factory=OutboundIdentityRegistry
+    )
+    tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
+    mcp_transport_bindings: McpTransportBindingRepository | None = None
+    resource_authorities: dict[str, Any] = field(default_factory=dict)
+
+    def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
+        return self.provider_config.resolve_for_session_id(session_id)
+
+    @property
+    def inbound_phone_routing_service(self):
+        from evander.admin.services.inbound_phone_routing_service import InboundPhoneRoutingService
+
+        return InboundPhoneRoutingService(self)
+
+    @property
+    def teams_voice_service(self):
+        if not teams_graph_enabled(self.config):
+            return UnavailableTeamsGraphService(self.config)
+        module = require_teams_graph_module("evander_teams_graph_addon.admin.voice", self.config)
+        return module.TeamsVoiceService(self)
+
+    @property
+    def voice_visual_store(self):
+        from evander.voice_visuals import VoiceVisualStore
+
+        return VoiceVisualStore(self.config.runtime_dir)
+
+    @property
+    def voice_visual_service(self):
+        from evander.admin.services.voice_visual_service import VoiceVisualService
+
+        return VoiceVisualService(self)
+
+    def register_outbound_identity_resolver(
+        self, source: str, resolver: OutboundIdentityResolver
+    ) -> None:
+        self.outbound_identity_registry.register(source, resolver)
+
+    def resolve_outbound_identity(
+        self, *, session_id: str, provider: str, destination: str
+    ) -> OutboundIdentityResolution:
+        if provider != "discord":
+            return OutboundIdentityResolution(identity=None, status="not_found")
+        return self.outbound_identity_registry.resolve(
+            session_id=session_id,
+            provider="discord",
+            destination=destination,
+        )
+
+    def email_service_for_session(self, session_id: str) -> EmailService:
+        if not isinstance(self.email_service, EmailService):
+            return self.email_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.email_service
+        return EmailService(
+            _build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors)
+        )
+
+    def email_service_for_directory(self, directory_path: str) -> EmailService:
+        if not isinstance(self.email_service, EmailService):
+            return self.email_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        if resolved_config == self.config:
+            return self.email_service
+        return EmailService(
+            _build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors)
+        )
+
+    def discord_service_for_session(self, session_id: str) -> DiscordService:
+        if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
+            return self.discord_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        return _build_discord_service(
+            resolved_config,
+            self.discord_commands,
+            self.session_repository,
+            self.policy_config,
+            session_id=session_id,
+        )
+
+    def discord_service_for_directory(
+        self,
+        directory_path: str,
+        *,
+        allowed_channel_ids: Sequence[str],
+    ) -> DiscordService:
+        if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
+            return self.discord_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        exact_channel_ids = sorted(
+            {
+                str(channel_id or "").strip()
+                for channel_id in allowed_channel_ids
+                if str(channel_id or "").strip()
+            }
+        )
+        return _build_discord_service(
+            resolved_config,
+            self.discord_commands,
+            self.session_repository,
+            self.policy_config,
+            allowed_channel_ids_provider=lambda: exact_channel_ids,
+            poll_channel_ids_provider=lambda: exact_channel_ids,
+            allowed_webhook_channel_ids_provider=lambda: [],
+        )
+
+    def discord_inbox_service_for_session(self, session_id: str) -> DiscordInboxService:
+        return self.discord_inbox_service
+
+    def pr_reply_service_for_session(self, session_id: str) -> PrReplyService:
+        if not isinstance(self.pr_reply_service, PrReplyService):
+            return self.pr_reply_service
+        session = self.session_repository.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config and session.directory_path == "root":
+            return self.pr_reply_service
+        return _build_pr_reply_service(
+            resolved_config,
+            directory_path=session.directory_path,
+        )
+
+    def pr_publish_service_for_session(self, session_id: str) -> PrPublishService:
+        if not isinstance(self.pr_publish_service, PrPublishService):
+            return self.pr_publish_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.pr_publish_service
+        return _build_pr_publish_service(resolved_config)
+
+    def pr_query_service_for_session(self, session_id: str) -> PrQueryService:
+        if not isinstance(self.pr_query_service, PrQueryService):
+            return self.pr_query_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.pr_query_service
+        return _build_pr_query_service(resolved_config)
+
+    def review_request_service_for_session(self, session_id: str) -> ReviewRequestService:
+        if not isinstance(self.review_request_service, ReviewRequestService):
+            return self.review_request_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.review_request_service
+        return _build_review_request_service(resolved_config, self.session_repository)
+
+    def retell_phone_call_service_for_session(self, session_id: str) -> RetellPhoneCallService:
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        contacts_config = self.provider_config.resolve_contacts_for_session_id(session_id)
+        return RetellPhoneCallService(
+            config=resolved_config,
+            contacts_config=contacts_config,
+            store=self.retell_phone_call_store,
+        )
+
+    def phone_call_service_for_session(self, session_id: str) -> PhoneCallRouterService:
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        contacts_config = self.provider_config.resolve_contacts_for_session_id(session_id)
+        retell_service = RetellPhoneCallService(
+            config=resolved_config,
+            contacts_config=contacts_config,
+            store=self.retell_phone_call_store,
+        )
+        realtime_service = OpenAIRealtimePhoneCallService(
+            config=resolved_config,
+            contacts_config=contacts_config,
+            store=self.voice_session_store,
+            bridge_client=VoiceMediaBridgeClient(
+                base_url=resolved_config.didww_sip_bridge_url,
+                token_env=resolved_config.didww_sip_bridge_token_env,
+                timeout_seconds=resolved_config.voice_media_controller_request_timeout_seconds,
+            ),
+            reconciler=self.voice_session_reconciler,
+            tool_summary_provider=lambda session: self.policy.allowed_tool_summary_for_session(
+                session
+            ),
+        )
+        return PhoneCallRouterService(
+            backend=resolved_config.phone_call_backend,
+            retell_service=retell_service,
+            realtime_service=realtime_service,
+            voice_store=self.voice_session_store,
+        )
+
+    def teams_service_for_session(self, session_id: str) -> TeamsService:
+        if not isinstance(self.teams_service, ManagedTeamsService):
+            return self.teams_service
+        session = self.session_repository.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config and isinstance(self.teams_service, StubTeamsService):
+            return self.teams_service
+        return _build_teams_service(
+            resolved_config,
+            self.teams_messages,
+            self.session_repository,
+            directory_path=session.directory_path,
+            allowed_channel_targets_provider=lambda: (
+                _resolve_allowed_teams_channel_targets_for_session(
+                    self.session_repository,
+                    session_id,
+                    policy_config=self.policy_config,
+                )
+            ),
+            allowed_user_targets_provider=lambda: _resolve_allowed_teams_user_targets_for_session(
+                self.session_repository,
+                session_id,
+                policy_config=self.policy_config,
+            ),
+            user_chat_cache=self.teams_user_chat_cache,
+        )
+
+    def teams_service_for_directory(
+        self,
+        directory_path: str,
+        *,
+        allowed_channel_targets: Sequence[str],
+        allowed_user_targets: Sequence[str] = (),
+    ) -> TeamsService:
+        if not isinstance(self.teams_service, ManagedTeamsService):
+            return self.teams_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        exact_targets = sorted(
+            {
+                str(target or "").strip()
+                for target in allowed_channel_targets
+                if str(target or "").strip()
+            }
+        )
+        exact_user_targets = sorted(
+            {
+                str(target or "").strip()
+                for target in allowed_user_targets
+                if str(target or "").strip()
+            }
+        )
+        return _build_teams_service(
+            resolved_config,
+            self.teams_messages,
+            self.session_repository,
+            directory_path=directory_path,
+            allowed_channel_targets_provider=lambda: exact_targets,
+            allowed_user_targets_provider=lambda: exact_user_targets,
+            user_chat_cache=self.teams_user_chat_cache,
+        )
+
+
+def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    host_config = HostConfig.from_gateway_config(config)
+    config = load_root_gateway_config(
+        directories,
+        runtime_dir=config.runtime_dir,
+        host_config=host_config,
+        base_gateway_config=config,
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    approvals = JsonStore(config.approval_store_path, ApprovalRequest)
+    tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
+        config.runtime_dir
+    )
+    mcp_transport_bindings = SqliteMcpTransportBindingRepository.from_runtime_dir(
+        config.runtime_dir
+    )
+    drafts = JsonStore(config.draft_store_path, DraftMessage)
+    emails = JsonEmailRecordsRepository(config.email_store_path)
+    email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
+    policy_config = PolicyConfigResolver(
+        config, directory_store=directories, session_store=session_repository
+    )
+    provider_config = ProviderConfigResolver(
+        config, directory_store=directories, session_store=session_repository
+    )
+    discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
+    teams_messages = SqliteTeamsRecordsRepository(config.teams_message_store_path)
+    teams_user_chat_cache: dict[str, str] = {}
+    discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.db")
+    wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.db")
+    agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
+    script_run_request_store = ScriptRunRequestStore(
+        config.runtime_dir / "script-run-requests-store.json"
+    )
+    retell_phone_call_store = RetellPhoneCallStore(
+        config.runtime_dir / "retell-phone-calls-store.json"
+    )
+    voice_session_store = VoiceSessionStore(config.runtime_dir / "voice-sessions-store.json")
+    voice_session_reconciler = VoiceSessionReconciler(
+        store=voice_session_store,
+        wake_store=wake_store,
+    )
+    teams_meeting_store = TeamsMeetingStore(config.teams_meeting_store_path)
+    teams_meeting_bridge_client = build_teams_meeting_bridge_client(config)
+    root_provider_config = provider_config.resolve_for_directory("root")
+    discord_service = _build_discord_service(
+        root_provider_config, discord_commands, session_repository, policy_config
+    )
+    teams_service = _build_teams_service(
+        root_provider_config,
+        teams_messages,
+        session_repository,
+        directory_path="root",
+        policy_config=policy_config,
+        user_chat_cache=teams_user_chat_cache,
+    )
+
+    runtime_context = RuntimeContext(
+        config=config,
+        policy_config=policy_config,
+        provider_config=provider_config,
+        audit=AuditLogger(config.audit_log_path),
+        policy=PolicyEngine(
+            config,
+            session_repository,
+            approvals,
+            policy_config=policy_config,
+            tool_approval_leases=tool_approval_leases,
+        ),
+        email_service=EmailService(
+            _build_email_provider(root_provider_config, emails, drafts, email_cursors)
+        ),
+        discord_service=discord_service,
+        teams_service=teams_service,
+        discord_inbox_service=discord_inbox_service,
+        pr_feedback_service=PrFeedbackService(
+            config.runtime_dir / "pr-feedback-store.json",
+            ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+            pr_map_path=config.pr_map_path,
+        ),
+        pr_reply_service=_build_pr_reply_service(root_provider_config),
+        pr_query_service=_build_pr_query_service(root_provider_config),
+        pr_publish_service=_build_pr_publish_service(root_provider_config),
+        review_request_service=_build_review_request_service(
+            root_provider_config, session_repository
+        ),
+        session_repository=session_repository,
+        approvals=approvals,
+        directories=directories,
+        drafts=drafts,
+        emails=emails,
+        email_cursors=email_cursors,
+        discord_commands=discord_commands,
+        teams_messages=teams_messages,
+        teams_user_chat_cache=teams_user_chat_cache,
+        wake_store=wake_store,
+        agent_prompt_store=agent_prompt_store,
+        script_run_request_store=script_run_request_store,
+        retell_phone_call_store=retell_phone_call_store,
+        voice_session_store=voice_session_store,
+        voice_session_reconciler=voice_session_reconciler,
+        teams_meeting_store=teams_meeting_store,
+        teams_meeting_bridge_client=teams_meeting_bridge_client,
+        tool_approval_leases=tool_approval_leases,
+        mcp_transport_bindings=mcp_transport_bindings,
+    )
+    from evander.approval_notifications import ApprovalNotificationDispatcher
+
+    runtime_context.policy.set_approval_notification_dispatcher(
+        ApprovalNotificationDispatcher(runtime=runtime_context, project_dir=Path.cwd())
+    )
+    runtime_context.voice_visual_service.cleanup_visual_context()
+    return runtime_context
+
+
+def build_runtime(config: GatewayConfig) -> RuntimeContext:
+
+    from evander.app_bootstrap import build_runtime as build_bootstrapped_runtime
+
+    return build_bootstrapped_runtime(config)
+
+
+def _build_email_provider(
+    config: GatewayConfig,
+    emails: EmailRecordsRepository,
+    drafts: JsonStore[DraftMessage],
+    email_cursors: EmailCursorRepository | None,
+) -> JsonEmailProvider | MultiMailboxEmailProvider:
+    mailbox_configs = config.email_mailboxes or [
+        MailboxConfig(mailbox_id="default", provider="json_store", account_identifier="default")
+    ]
+
+    if all(mailbox.provider == "json_store" for mailbox in mailbox_configs):
+        return JsonEmailProvider(emails, drafts)
+
+    providers_by_mailbox: dict[str, Any] = {}
+    for mailbox in mailbox_configs:
+        if mailbox.provider == "json_store":
+            providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
+            continue
+        if mailbox.provider == "gmail":
+            _validate_mailbox_auth_environment(mailbox)
+            providers_by_mailbox[mailbox.mailbox_id] = GmailEmailProvider(
+                account_identifier=mailbox.account_identifier,
+                folder_mapping=mailbox.folder_mapping,
+                auth_secret_refs=mailbox.auth_secret_refs,
+                timeout_seconds=config.email_provider_timeout_seconds,
+                cursor_store=email_cursors,
+            )
+            continue
+        if mailbox.provider == "graph":
+            if not teams_graph_enabled(config):
+                providers_by_mailbox[mailbox.mailbox_id] = UnavailableTeamsGraphService(config)
+                continue
+            GraphEmailProvider = require_teams_graph_module(
+                "evander_teams_graph_addon.email", config
+            ).GraphEmailProvider
+            _validate_mailbox_auth_environment(mailbox)
+            providers_by_mailbox[mailbox.mailbox_id] = GraphEmailProvider(
+                account_identifier=mailbox.account_identifier,
+                folder_mapping=mailbox.folder_mapping,
+                auth_secret_refs=mailbox.auth_secret_refs,
+                timeout_seconds=config.email_provider_timeout_seconds,
+                cursor_store=email_cursors,
+            )
+            continue
+        raise RuntimeError(f"Unsupported email provider: {mailbox.provider!r}")
+
+    return MultiMailboxEmailProvider(providers_by_mailbox)
+
+
+def _validate_mailbox_auth_environment(mailbox: MailboxConfig) -> None:
+    graph_client_credential_names = ("tenant_id", "client_id", "client_secret")
+    graph_client_credential_refs = {
+        name: mailbox.auth_secret_refs.get(name, "").strip()
+        for name in graph_client_credential_names
+    }
+    if mailbox.provider == "graph" and any(graph_client_credential_refs.values()):
+        missing_refs = [
+            name for name, env_var_name in graph_client_credential_refs.items() if not env_var_name
+        ]
+        if missing_refs:
+            missing = ", ".join(f"auth_secret_refs.{name}" for name in missing_refs)
+            raise RuntimeError(
+                f"email mailbox {mailbox.mailbox_id!r} using provider 'graph' requires "
+                f"complete OAuth client credential refs; missing {missing}"
+            )
+        missing_env_vars = [
+            env_var_name
+            for env_var_name in graph_client_credential_refs.values()
+            if not os.environ.get(env_var_name, "").strip()
+        ]
+        if missing_env_vars:
+            missing = ", ".join(repr(name) for name in missing_env_vars)
+            raise RuntimeError(
+                f"email mailbox {mailbox.mailbox_id!r} using provider 'graph' requires "
+                f"non-empty OAuth client credential environment variables: {missing}"
+            )
+        return
+
+    env_var_name = mailbox.auth_secret_refs.get("access_token", "").strip()
+    if not env_var_name:
+        raise RuntimeError(
+            f"email mailbox {mailbox.mailbox_id!r} using provider {mailbox.provider!r} "
+            "requires auth_secret_refs.access_token to be configured"
+            + (
+                " or Graph OAuth client credential refs tenant_id, client_id, and client_secret"
+                if mailbox.provider == "graph"
+                else ""
+            )
+        )
+
+    access_token = os.environ.get(env_var_name, "").strip()
+    if not access_token:
+        raise RuntimeError(
+            f"email mailbox {mailbox.mailbox_id!r} using provider {mailbox.provider!r} "
+            f"requires a non-empty access token in environment variable {env_var_name!r}"
+        )
+
+
+def _build_discord_service(
+    config: GatewayConfig,
+    command_store: DiscordRecordsRepository,
+    sessions: SessionManifestRepository,
+    policy_config: PolicyConfigResolver,
+    *,
+    session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
+    allowed_channel_ids_provider: Callable[[], list[str]] | None = None,
+    poll_channel_ids_provider: Callable[[], list[str]] | None = None,
+    allowed_webhook_channel_ids_provider: Callable[[], list[str]] | None = None,
+) -> DiscordService:
+    if config.discord_backend == "stub":
+        return StubDiscordService(
+            command_store,
+            read_reaction_emoji=config.discord_read_reaction_emoji,
+        )
+    if config.discord_backend == "bot_api":
+        env_var_name = config.discord_bot_token_env.strip()
+        if not env_var_name:
+            raise RuntimeError(
+                "discord backend 'bot_api' requires config.discord_bot_token_env to be set"
+            )
+        token = os.environ.get(env_var_name, "").strip()
+        if not token:
+            raise RuntimeError(
+                "discord backend 'bot_api' requires a bot token in environment variable "
+                f"{env_var_name!r}"
+            )
+        return DiscordBotApiService(
+            command_store,
+            token=token,
+            api_base_url=config.discord_api_base_url,
+            poll_limit=config.discord_poll_limit,
+            timeout_seconds=config.discord_timeout_seconds,
+            retry_count=config.discord_retry_count,
+            retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
+            allowed_channel_ids_provider=(
+                allowed_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_channel_ids(
+                        sessions,
+                        config,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                        capability=capability,
+                    )
+                )
+            ),
+            poll_channel_ids_provider=(
+                poll_channel_ids_provider
+                or allowed_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_channel_ids(
+                        sessions,
+                        config,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                        capability=capability,
+                        include_archived_threads=False,
+                    )
+                )
+            ),
+            allowed_webhook_channel_ids_provider=(
+                allowed_webhook_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_webhook_channel_ids(
+                        sessions,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                    )
+                )
+            ),
+            operator_user_ids_provider=(
+                policy_config.operator_user_ids_for_active_sessions
+                if session_id is None
+                else lambda: policy_config.operator_user_ids_for_session_id(session_id)
+            ),
+            include_operator_dms_provider=(
+                policy_config.include_operator_dms_for_active_sessions
+                if session_id is None
+                else lambda: policy_config.include_operator_dms_for_session_id(session_id)
+            ),
+            read_reaction_emoji=config.discord_read_reaction_emoji,
+            bot_token_env=env_var_name,
+            webhook_store_path=config.discord_webhook_store_path,
+            persona_webhook_cache_limit=config.discord_persona_webhook_cache_limit,
+        )
+    raise RuntimeError(
+        f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."
+    )
+
+
+def _build_teams_service(
+    config: GatewayConfig,
+    message_store: TeamsRecordsRepository,
+    sessions: SessionManifestRepository,
+    *,
+    directory_path: str | None = None,
+    policy_config: PolicyConfigResolver | None = None,
+    allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
+    allowed_user_targets_provider: Callable[[], list[str]] | None = None,
+    user_chat_cache: dict[str, str] | None = None,
+) -> TeamsService:
+    if config.teams_backend == "stub":
+        return StubTeamsService(
+            message_store,
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
+            read_reaction_emoji=config.teams_read_reaction_emoji,
+        )
+    if not teams_graph_enabled(config):
+        return UnavailableTeamsGraphService(config)
+    GraphTeamsService = require_teams_graph_module(
+        "evander_teams_graph_addon.service", config
+    ).GraphTeamsService
+    if config.teams_backend == "graph_api":
+        env_var_name = config.teams_graph_access_token_env.strip()
+        if not env_var_name:
+            raise RuntimeError(
+                "teams backend 'graph_api' requires config.teams_graph_access_token_env to be set"
+            )
+        token = os.environ.get(env_var_name, "").strip()
+        if not token:
+            raise RuntimeError(
+                "teams backend 'graph_api' requires an access token in environment variable "
+                f"{env_var_name!r}"
+            )
+        return GraphTeamsService(
+            message_store,
+            token=token,
+            api_base_url=config.teams_graph_api_base_url,
+            poll_limit=config.teams_poll_limit,
+            history_page_cap=config.teams_history_page_cap,
+            history_deadline_seconds=config.teams_history_deadline_seconds,
+            history_request_timeout_seconds=config.teams_history_request_timeout_seconds,
+            timeout_seconds=config.teams_timeout_seconds,
+            retry_count=config.teams_retry_count,
+            retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
+            allowed_channel_targets_provider=allowed_channel_targets_provider
+            or (
+                lambda: _resolve_allowed_teams_channel_targets(
+                    sessions,
+                    policy_config=policy_config,
+                )
+            ),
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
+            user_chat_cache=user_chat_cache,
+            user_chat_cache_namespace=(
+                f"graph_api:{config.teams_graph_access_token_env}:{directory_path or 'root'}"
+            ),
+            read_reaction_emoji=config.teams_read_reaction_emoji,
+        )
+    if config.teams_backend == "delegated_graph_api":
+        token_provider = _build_delegated_teams_token_provider(config, directory_path or "root")
+        return GraphTeamsService(
+            message_store,
+            token_provider=token_provider.get_bearer_token,
+            tenant_id_provider=token_provider.get_tenant_id,
+            api_base_url=config.teams_graph_api_base_url,
+            poll_limit=config.teams_poll_limit,
+            history_page_cap=config.teams_history_page_cap,
+            history_deadline_seconds=config.teams_history_deadline_seconds,
+            history_request_timeout_seconds=config.teams_history_request_timeout_seconds,
+            timeout_seconds=config.teams_timeout_seconds,
+            retry_count=config.teams_retry_count,
+            retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
+            allowed_channel_targets_provider=allowed_channel_targets_provider
+            or (
+                lambda: _resolve_allowed_teams_channel_targets(
+                    sessions,
+                    policy_config=policy_config,
+                )
+            ),
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
+            user_chat_cache=user_chat_cache,
+            user_chat_cache_namespace=(
+                f"delegated:{config.teams_delegated_identity_id or 'default'}:"
+                f"{directory_path or 'root'}"
+            ),
+            read_reaction_emoji=config.teams_read_reaction_emoji,
+        )
+    raise RuntimeError(
+        f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api', 'delegated_graph_api'."
+    )
+
+
+def _build_delegated_teams_token_provider(config: GatewayConfig, directory_path: str = "root"):
+    module = require_teams_graph_module("evander_teams_graph_addon.auth", config)
+    MicrosoftDeviceCodeAuthConfig = module.MicrosoftDeviceCodeAuthConfig
+    TeamsDeviceCodeTokenProvider = module.TeamsDeviceCodeTokenProvider
+    identity_id = str(config.teams_delegated_identity_id or "").strip()
+    if not identity_id:
+        raise RuntimeError(
+            "teams backend 'delegated_graph_api' requires teams_delegated_identity_id"
+        )
+    client_id = str(config.teams_delegated_client_id or "").strip()
+    if not client_id:
+        raise RuntimeError("teams backend 'delegated_graph_api' requires teams_delegated_client_id")
+
+    auth_config = MicrosoftDeviceCodeAuthConfig(
+        client_id=client_id,
+        tenant_id=config.teams_delegated_tenant_id,
+        scopes=config.teams_delegated_scopes,
+        authority_base_url=config.teams_delegated_authority_base_url,
+        timeout_seconds=config.teams_timeout_seconds,
+    )
+    from evander.credentials.teams import teams_credential_store
+
+    credential_store = teams_credential_store(config, directory_path)
+    return TeamsDeviceCodeTokenProvider(auth_config, credential_store)
+
+
+def _build_pr_reply_service(
+    config: GatewayConfig,
+    *,
+    directory_path: str = "root",
+) -> PrReplyService:
+    return build_pr_reply_service(
+        config=config,
+        resolve_secret=lambda env_name: os.environ.get(env_name),
+        directory_path=directory_path,
+    )
+
+
+def _build_pr_publish_service(config: GatewayConfig) -> PrPublishService:
+    github_token = os.environ.get(config.github_token_env, "").strip()
+    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
+
+    providers = {}
+    if github_token:
+        providers["github"] = GitHubPrPublishProvider(
+            token=github_token,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    if azure_pat and azure_devops_enabled(config):
+        providers["azure_devops"] = AzureDevOpsPrPublishProvider(
+            organization_url=config.azure_devops_organization_url,
+            project=config.azure_devops_project,
+            pat=azure_pat,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    return PrPublishService(
+        providers=providers,
+        idempotency_store_path=config.runtime_dir / "pr-publish-idempotency.json",
+        ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+    )
+
+
+def _build_pr_query_service(config: GatewayConfig) -> PrQueryService:
+    github_token = os.environ.get(config.github_token_env, "").strip() or None
+    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
+    providers = {
+        "github": GitHubPrQueryProvider(
+            token=github_token,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    }
+    if azure_pat and azure_devops_enabled(config):
+        providers["azure_devops"] = AzureDevOpsPrQueryProvider(
+            organization_url=config.azure_devops_organization_url,
+            project=config.azure_devops_project,
+            pat=azure_pat,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    return PrQueryService(providers=providers)
+
+
+def _resolve_allowed_discord_channel_ids(
+    session_store: SessionManifestRepository,
+    config: GatewayConfig,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
+    session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
+    include_archived_threads: bool = True,
+) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
+    if session_id is not None:
+        if policy_config is not None:
+            return policy_config.allowed_discord_channel_ids_for_session_id(
+                session_id,
+                capability=capability,
+                include_archived_threads=include_archived_threads,
+            )
+        session = session_store.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        channel_ids = set(config.discord_operator_channel_allowlist)
+        if capability != "read" or ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+            channel_ids.update(session.discord_channel_allowlist)
+        return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
+
+    now = datetime.now(UTC)
+    if policy_config is None:
+        channel_ids: set[str] = set()
+        channel_ids.update(config.discord_operator_channel_allowlist)
+        for session in session_store.list_active_sessions(now=now):
+            if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
+                continue
+            channel_ids.update(session.discord_channel_allowlist)
+        return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
+
+    return policy_config.allowed_discord_channel_ids_for_active_sessions(
+        include_archived_threads=include_archived_threads
+    )
+
+
+def _resolve_allowed_discord_webhook_channel_ids(
+    session_store: SessionManifestRepository,
+    *,
+    policy_config: PolicyConfigResolver,
+    session_id: str | None,
+) -> list[str]:
+    if session_id is None:
+        return []
+    session = as_session_manifest_repository(session_store).get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    return policy_config.resolved_discord_webhook_channel_ids_for_session(session)
+
+
+def _resolve_allowed_teams_channel_targets(
+    session_store: SessionManifestRepository,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
+) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
+    now = datetime.now(UTC)
+    targets: set[str] = set()
+    for session in session_store.list_active_sessions(now=now):
+        if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
+            continue
+        if policy_config is not None:
+            targets.update(
+                policy_config.resolved_teams_channel_targets_for_session(
+                    session,
+                    capability="read",
+                )
+            )
+        else:
+            targets.update(session.teams_channel_allowlist)
+            targets.update(session.teams_chat_allowlist)
+    return sorted(targets)
+
+
+def _resolve_allowed_teams_channel_targets_for_session(
+    session_store: SessionManifestRepository,
+    session_id: str,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
+) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
+    session = session_store.get_session(session_id)
+    if session is None:
+        return []
+    if session.expires_at <= datetime.now(UTC):
+        return []
+    if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
+        return []
+    if policy_config is not None:
+        return policy_config.resolved_teams_channel_targets_for_session(
+            session,
+            capability="read",
+        )
+    return sorted(
+        {
+            target.strip()
+            for target in list(session.teams_channel_allowlist) + list(session.teams_chat_allowlist)
+            if target.strip()
+        }
+    )
+
+
+def _resolve_allowed_teams_user_targets_for_session(
+    session_store: SessionManifestRepository,
+    session_id: str,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
+) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
+    session = session_store.get_session(session_id)
+    if session is None:
+        return []
+    if session.expires_at <= datetime.now(UTC):
+        return []
+    if policy_config is not None:
+        return policy_config.resolved_teams_user_targets_for_session(
+            session,
+            capability="write",
+        )
+    return sorted(target.strip() for target in session.teams_user_allowlist if target.strip())

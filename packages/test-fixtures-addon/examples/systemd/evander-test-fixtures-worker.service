@@ -1,0 +1,24 @@
+[Unit]
+Description=Evander task test fixtures worker
+After=docker.service evander-worker-daemon.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/evander-test-fixtures/worker.env
+ExecStart=/opt/evander-worker/.venv/bin/evander-test-fixtures-worker --config /etc/evander-test-fixtures/worker.json --host 127.0.0.1 --port 11991
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+# SQLite can spill worker-job queries to temporary files.
+PrivateTmp=yes
+ReadWritePaths=/var/lib/evander-test-fixtures /var/lib/agent-worker/runtime
+
+[Install]
+WantedBy=multi-user.target

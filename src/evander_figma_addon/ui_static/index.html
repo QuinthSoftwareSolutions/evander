@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-admin-design data-addon="figma">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figma · Evander</title><script type="module" src="figma.js"></script>  <link rel="stylesheet" href="admin-design.css" />
+    <script type="module" src="admin-design.js"></script>
+  </head>
+<body><main>
+  <header><a href="/">← Evander</a><h1>Figma</h1><p>Editable mockups, shared reviews, and design history.</p></header>
+  <form id="directory-form" class="toolbar"><label>Directory<input id="directory" value="root" required></label><button>Open directory</button></form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="privilege-notice" class="notice warning">Unlock privileged operations in Admin Web to edit settings or change Figma state.</p>
+  <section><h2>Connections</h2><p>Use an approved Figma OAuth client. Credentials stay on the host.</p><div id="connections"></div>
+    <details><summary>Add or update a connection</summary>
+      <form id="connection-form" class="grid">
+        <label>Connection ID<input name="id" required pattern="[A-Za-z0-9_\-]+"></label>
+        <label>Approved OAuth client ID<input name="client_id" required></label>
+        <label>Host client-secret setting<input name="client_secret_env" placeholder="FIGMA_CLIENT_SECRET" required></label>
+        <label>Registered callback URL<input name="redirect_uri" type="url" required></label>
+        <label>Host REST-token setting (for comments and versions)<input name="rest_token_env" placeholder="FIGMA_REST_TOKEN"></label>
+        <label>REST credential type<select name="rest_token_kind"><option value="personal">Personal access token</option><option value="oauth">OAuth access token</option></select></label>
+        <button type="submit">Save connection</button>
+      </form>
+    </details>
+  </section>
+  <section><h2>Files and access</h2><p>Set capabilities for each file. Agents use their normal session tool permissions to work with these files.</p><div id="targets"></div>
+    <details><summary>Register or update a file</summary>
+      <form id="target-form" class="grid">
+        <label>Target ID<input name="id" required pattern="[A-Za-z0-9_\-]+"></label>
+        <label>Display name<input name="name" required></label>
+        <label>Connection<select name="connection_id" id="connection-select" required></select></label>
+        <label>Figma Design file URL<input name="file_url" type="url" required></label>
+        <button type="submit">Save file</button>
+      </form>
+    </details>
+    <details><summary>File permissions</summary>
+      <form id="permissions-form" class="grid">
+        <label>File<select name="target_id" id="permissions-target" class="target-select" required></select></label>
+        <fieldset><legend>Capabilities</legend>
+          <label class="check"><input name="read" type="checkbox">Read</label>
+          <label class="check"><input name="comment" type="checkbox">Comment</label>
+          <label class="check"><input name="edit" type="checkbox">Edit</label>
+        </fieldset>
+        <label>Editable root node IDs (optional)<input name="roots" placeholder="12:34, 56:78"><small>Leave empty for the whole file. These limits apply to all agents using this file. Clear all capabilities to disable agent access.</small></label>
+        <button type="submit">Save permissions</button>
+      </form>
+    </details>
+  </section>
+  <section><h2>Design history</h2>
+    <form id="history-form" class="toolbar"><label>File<select id="history-target" class="target-select" required></select></label><button>Refresh history</button></form>
+    <div id="snapshots" class="snapshots"></div><div id="operations"></div>
+  </section>
+</main></body></html>

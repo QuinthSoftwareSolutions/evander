@@ -1,0 +1,2081 @@
+from __future__ import annotations
+
+from config_helpers import canonical_worker_config, trigger_queue_payload
+
+import json
+import sqlite3
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.orchestration.host_polling import HostFileLockManager
+from evander.daemons.trigger_orchestrator import (
+    TriggerOrchestratorCycleResult,
+    TriggerOrchestratorWorker,
+    _compute_trigger_cycle_sleep_seconds,
+    build_trigger_orchestrator_worker,
+    main,
+)
+from evander.events.models import TriggerEvent
+from evander.events.provider_models import (
+    AgentPromptNewTriggerDefinition,
+    EventTriggerDefinition,
+    TeamsNewMessageTriggerDefinition,
+    WebhookTriggerDefinition,
+)
+from evander.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.orchestration import JsonGateCursorRepository
+from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.event import EventTriggerProvider
+from evander.triggers.providers.webhook import WebhookTriggerProvider
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.triggers.queue import SqliteTriggerEventQueue
+
+
+class _StaticProvider:
+    def __init__(self, events: list[TriggerEvent]) -> None:
+        self._events = events
+
+    def poll(self) -> list[TriggerEvent]:
+        return list(self._events)
+
+
+class _AcknowledgingProvider(_StaticProvider):
+    def __init__(self, events: list[TriggerEvent]) -> None:
+        super().__init__(events)
+        self.acknowledged_event_ids: list[str] = []
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        self.acknowledged_event_ids.append(event.event_id)
+
+
+class _CapturingProviderFactory:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    def build(self, trigger, *, directory_path: str | None = None):
+        self.calls.append((trigger.id, directory_path))
+        return _StaticProvider([])
+
+
+class _FailingEventQueue:
+    def __init__(self) -> None:
+        self.published_event_ids: list[str] = []
+
+    def publish_result(self, event: TriggerEvent, **_kwargs):
+        _ = event
+        raise RuntimeError("queue publish failed")
+
+
+class _FailingSecondEventQueue:
+    def __init__(self) -> None:
+        self.published_event_ids: list[str] = []
+        self.calls = 0
+
+    def publish_result(self, event: TriggerEvent, **_kwargs):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("queue publish failed on second event")
+        self.published_event_ids.append(event.event_id)
+        return SimpleNamespace(
+            record=SimpleNamespace(event_id=event.event_id),
+            created=True,
+        )
+
+
+class _StaticReloader:
+    def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
+        self._config = config
+        self._changed = changed
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        changed = self._changed
+        self._changed = False
+        return self._config, changed
+
+
+class _SequenceReloader:
+    def __init__(self, sequence: list[tuple[TriggerOrchestratorWorkerGlobalConfig, bool]]) -> None:
+        self._sequence = list(sequence)
+        self._last = sequence[-1]
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        if self._sequence:
+            self._last = self._sequence.pop(0)
+        return self._last
+
+
+def test_build_trigger_orchestrator_worker_accepts_injected_services(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+
+    class _InjectedServices:
+        def __init__(self) -> None:
+            self.called_with: GatewayConfig | None = None
+
+        def build_runtime(self, cfg: GatewayConfig):
+            self.called_with = cfg
+            return object()
+
+    services = _InjectedServices()
+    worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path, services=services)
+
+    assert services.called_with is not None
+    assert services.called_with.runtime_dir == runtime_dir
+    assert worker.runtime is not None
+
+
+def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path)
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+
+    worker.event_queue.publish(event)
+
+    queue = SqliteTriggerEventQueue(runtime_dir / "orchestration.db")
+    assert queue.contains("event-1") is True
+    assert (runtime_dir / "orchestration.db").exists()
+
+
+def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-cron",
+                    "name": "Cron graph",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["cron-1"],
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 1
+    assert result.events_published == 1
+    assert result.next_sleep_seconds == 0.0
+    assert wake_calls == ["effect"]
+
+    queue_payload = trigger_queue_payload(worker_config)
+    assert list(queue_payload.keys()) == ["event-1"]
+    assert queue_payload["event-1"]["trace_id"]
+    assert queue_payload["event-1"]["directory_path"] == "root/team-a"
+    assert queue_payload["event-1"]["config_revision"]
+    cursor_payload = json.loads(
+        worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
+    assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-1"
+
+
+def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "enabled": False,
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    build_calls: list[str] = []
+
+    def build_provider(trigger, **_):
+        build_calls.append(trigger.id)
+        return _StaticProvider([])
+
+    worker.provider_factory.build = build_provider  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 0
+    assert result.events_discovered == 0
+    assert result.events_published == 0
+    assert build_calls == []
+    assert worker.event_queue.list_pending() == []
+    assert wake_calls == []
+
+
+def test_empty_trigger_polls_share_one_durable_cursor_write(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": f"cron-{i}", "display_name": f"Cron {i}",
+             "type": "trigger:cron", "expression": "* * * * *"}
+            for i in range(32)
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])
+    writes = []
+    original_write = worker.cursor_repository._write_payload
+
+    def write(payload):
+        writes.append(payload)
+        original_write(payload)
+
+    monkeypatch.setattr(worker.cursor_repository, "_write_payload", write)
+    result = worker.run_once()
+
+    assert result.configured_triggers == 32
+    assert result.events_discovered == result.events_published == 0
+    assert len(writes) == 1
+    reopened = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
+    for i in range(32):
+        state = reopened.get_trigger_state(f"cron-{i}")
+        assert state["last_discovered_count"] == 0
+        assert state["last_event_ids"] == []
+        assert state["last_polled_at"]
+
+
+def test_published_cursor_is_durable_before_next_provider_and_empty_batch(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": name, "display_name": name, "type": "trigger:cron",
+             "expression": "* * * * *"}
+            for name in ("publishing", "empty", "failed")
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    event = TriggerEvent(
+        event_id="event-durable", trigger_id="publishing", trigger_type="trigger:cron",
+        occurred_at=datetime.now(UTC), payload={"kind": "tick"},
+    )
+    reopened = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
+
+    class CheckingProvider:
+        def poll(self):
+            assert reopened.get_trigger_state("publishing")["last_event_id"] == "event-durable"
+            assert worker.event_queue.contains("event-durable")
+            return []
+
+    class FailingProvider:
+        def poll(self):
+            raise RuntimeError("provider unavailable")
+
+    providers = {"publishing": _StaticProvider([event]), "empty": CheckingProvider(),
+                 "failed": FailingProvider()}
+    worker.provider_factory.build = lambda trigger, **_: providers[trigger.id]
+    writes = []
+    original_write = worker.cursor_repository._write_payload
+
+    def write(payload):
+        writes.append(payload)
+        original_write(payload)
+
+    monkeypatch.setattr(worker.cursor_repository, "_write_payload", write)
+    result = worker.run_once()
+
+    assert result.events_published == 1
+    assert len(writes) == 2
+    assert reopened.get_trigger_state("publishing")["last_event_id"] == "event-durable"
+    assert reopened.get_trigger_state("empty")["last_discovered_count"] == 0
+    assert reopened.get_trigger_state("failed") is None
+
+
+def test_empty_cursor_flush_failure_preserves_publish_busy_retry(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": name, "display_name": name, "type": "trigger:cron",
+             "expression": "* * * * *"}
+            for name in ("empty", "publishing")
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    event = TriggerEvent(
+        event_id="event-busy", trigger_id="publishing", trigger_type="trigger:cron",
+        occurred_at=datetime.now(UTC), payload={},
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider(
+        [event] if trigger.id == "publishing" else []
+    )
+
+    def publish_busy(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    def flush_failed(polls):
+        assert [poll.trigger_id for poll in polls] == ["empty"]
+        raise OSError("cursor storage unavailable")
+
+    monkeypatch.setattr(worker.event_queue, "publish_result", publish_busy)
+    monkeypatch.setattr(worker.cursor_repository, "record_trigger_polls", flush_failed)
+    result = worker.run_once()
+    assert result.events_published == 0
+    assert result.next_sleep_seconds > 0
+    assert worker._cycle_storage_retry.retry_at > time.monotonic()
+    assert not worker.event_queue.contains("event-busy")
+
+
+def test_trigger_orchestrator_passes_graph_directory_to_trigger_provider(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "workflow_graphs": [
+                {
+                    "id": "graph-ado-comment",
+                    "name": "ADO comments",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["ado-comment"],
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "ado-comment",
+                    "display_name": "ADO comment",
+                    "type": "trigger:ado:work-item-comment-created",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("ado-comment", "root/team-a")]
+
+
+def test_trigger_orchestrator_prefers_trigger_directory_over_graph_directory(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "workflow_graphs": [
+                {
+                    "id": "graph-ado-comment",
+                    "name": "ADO comments",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["ado-comment"],
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "ado-comment",
+                    "display_name": "ADO comment",
+                    "type": "trigger:ado:work-item-comment-created",
+                    "directory_path": "root/team-b",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("ado-comment", "root/team-b")]
+
+
+def test_trigger_orchestrator_keeps_graphless_trigger_directory_unset(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider_factory = _CapturingProviderFactory()
+    worker.provider_factory = provider_factory  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert provider_factory.calls == [("cron-1", None)]
+
+
+def test_trigger_orchestrator_does_not_wake_effect_worker_for_duplicate_event(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    worker.event_queue.publish(event)
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
+
+    result = worker.run_once()
+
+    assert result.events_published == 0
+    assert result.next_sleep_seconds == 1
+    assert wake_calls == []
+
+
+def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    provider = _AcknowledgingProvider([event])
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+
+    worker.run_once()
+
+    assert provider.acknowledged_event_ids == ["event-1"]
+
+
+def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    provider = _AcknowledgingProvider([event])
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert provider.acknowledged_event_ids == []
+    assert failing_queue.published_event_ids == []
+    assert not worker_config.event_queue_cursor_store_path.exists()
+
+
+def test_trigger_orchestrator_retries_same_timestamp_teams_event_after_publish_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    created_at = datetime(2026, 4, 9, 9, 30, tzinfo=UTC)
+    inbox_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    inbox_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="hello",
+            created_at=created_at,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+    inbox_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-2",
+            message_id="msg-2",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="same timestamp reply",
+            created_at=created_at,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "teams-trigger",
+                    "display_name": "Teams new message",
+                    "type": "trigger:teams:new-message",
+                    "targets": [{"target": "team-a/channel-1"}],
+                    "user_ids": ["user-a"],
+                }
+            ],
+        }
+    )
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+    worker.event_queue = _FailingSecondEventQueue()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed on second event"):
+        worker.run_once()
+
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-teams.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload["teams-trigger"]["last_created_at"] == "2026-04-09T09:30:00Z"
+    assert cursor_payload["teams-trigger"]["recent_cursors"] == ["team-a/channel-1/msg-1"]
+    assert [event.event_id for event in provider.poll()] == ["teams-trigger:team-a/channel-1/msg-2"]
+
+
+def test_trigger_orchestrator_publish_failure_with_real_provider_keeps_cursor_unadvanced(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "agent-prompt-trigger",
+                    "display_name": "Agent prompt",
+                    "type": "trigger:agent:prompt:new",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="target-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime(2026, 4, 3, 13, 0, tzinfo=UTC),
+        )
+    )
+    prompt_store = AgentPromptStore(runtime_dir / "agent-prompt-store.json")
+    prompt_store.create_prompt_message(
+        AgentPromptRecord(
+            message_id="msg-1",
+            sender_session_id="sender",
+            target_session_id="target-a",
+            prompt_payload={"prompt": "Fetch the prompt inbox."},
+            issued_token_hash="token-hash-1",
+            issued_token_claims={"nonce": "n-1"},
+            created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    provider = AgentPromptNewTriggerProvider()
+    provider.initialize(
+        AgentPromptNewTriggerDefinition(
+            id="agent-prompt-trigger",
+            display_name="Agent prompt",
+            type="trigger:agent:prompt:new",
+        ),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(
+                runtime_dir=runtime_dir,
+                session_store_path=runtime_dir / "sessions.json",
+            ),
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert [event.event_id for event in provider.poll()] == ["agent-prompt-trigger:msg-1"]
+    assert failing_queue.published_event_ids == []
+    assert len(prompt_store.list_unread_prompts(target_session_id="target-a")) == 1
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-agent-prompt-new.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload == {}
+    assert not worker_config.event_queue_cursor_store_path.exists()
+
+
+def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )  # type: ignore[arg-type]
+    first_event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-1"},
+    )
+    second_event = TriggerEvent(
+        event_id="event-2",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-2"},
+    )
+    provider = _AcknowledgingProvider([first_event, second_event])
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 2
+    assert result.events_published == 2
+
+    queue_payload = trigger_queue_payload(worker_config)
+    assert list(queue_payload.keys()) == ["event-1", "event-2"]
+    cursor_payload = json.loads(
+        worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
+    assert cursor_payload["triggers"]["cron-1"]["last_discovered_count"] == 2
+    assert cursor_payload["triggers"]["cron-1"]["last_event_ids"] == ["event-1", "event-2"]
+    assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-2"
+    assert provider.acknowledged_event_ids == ["event-1", "event-2"]
+
+
+def test_trigger_orchestrator_main_once_uses_single_cycle(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    class _FakeWorker:
+        def run_once_with_lock(self):
+            return TriggerOrchestratorCycleResult(
+                configured_triggers=2,
+                events_discovered=3,
+                events_published=2,
+                next_sleep_seconds=1.5,
+            )
+
+    monkeypatch.setattr(
+        "evander.bootstrap.load_runtime_gateway_config",
+        lambda runtime_dir: GatewayConfig(runtime_dir=runtime_dir),
+    )
+    monkeypatch.setattr(
+        "evander.daemons.trigger_orchestrator.build_trigger_orchestrator_worker",
+        lambda *_args, **_kwargs: _FakeWorker(),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "evander-trigger-orchestrator",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--once",
+        ],
+    )
+
+    main()
+
+    output = capsys.readouterr().out.strip()
+    assert "Trigger orchestrator cycle complete triggers=2 discovered=3 published=2" in output
+
+
+def test_trigger_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
+    assert worker._kernel.config.lock_path == worker_config.lock_path
+
+    worker._kernel.run_once_with_lock = lambda: TriggerOrchestratorCycleResult(
+        configured_triggers=0,
+        events_discovered=0,
+        events_published=0,
+        next_sleep_seconds=1.0,
+    )  # type: ignore[method-assign]
+
+    result = worker.run_once_with_lock()
+
+    assert result.configured_triggers == 0
+    assert result.next_sleep_seconds == 1.0
+
+
+def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"__node_outputs": "forbidden"},
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([event])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 1
+    assert result.events_published == 0
+    queue_payload = trigger_queue_payload(worker_config)
+    assert queue_payload == {}
+
+
+def test_trigger_orchestrator_runs_only_explicitly_configured_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-1",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "effect-1"},
+                {"source_id": "effect-1", "target_id": "await-agent-1"},
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 0
+    assert result.events_published == 0
+
+
+def test_trigger_orchestrator_does_not_poll_system_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "system.chat_assistant",
+                    "display_name": "System Chat Assistant",
+                    "type": "trigger:system:chat-assistant",
+                },
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    built_trigger_ids: list[str] = []
+
+    def _build_provider(trigger, **_):
+        built_trigger_ids.append(trigger.id)
+        return _StaticProvider([])
+
+    worker.provider_factory.build = _build_provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 0
+    assert result.events_published == 0
+    assert built_trigger_ids == ["cron-1"]
+
+
+def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+
+
+def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_change(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "provider_loader": {
+                "provider_modules": ["custom.reload"],
+            },
+            "triggers": [
+                {
+                    "id": "reload-trigger",
+                    "display_name": "Reloaded custom trigger",
+                    "type": "trigger:custom:reload",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    event = TriggerEvent(
+        event_id="reload-event-1",
+        trigger_id="reload-trigger",
+        trigger_type="trigger:custom:reload",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "reload"},
+    )
+    build_calls: list[tuple[str, ...]] = []
+
+    def _build_runtime_wiring(
+        *,
+        config: GatewayConfig,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        runtime,
+        provider_config_resolver=None,
+        addon_base_dir=None,
+    ):
+        _ = config, runtime, provider_config_resolver, addon_base_dir
+        build_calls.append(tuple(worker_config.provider_modules))
+        if worker_config.provider_modules and len(build_calls) == 2:
+            raise RuntimeError("temporary provider_loader reload failure")
+        provider_factory = SimpleNamespace(
+            build=lambda trigger, **_: (
+                _StaticProvider([event])
+                if worker_config.provider_modules and trigger.id == "reload-trigger"
+                else _StaticProvider([])
+            )
+        )
+        return SimpleNamespace(
+            provider_config_resolver=object(),
+            provider_factory=provider_factory,
+            managed_git_maintenance=SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(
+        "evander.daemons.trigger_orchestrator.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+    monkeypatch.setattr(
+        "evander.orchestration.wiring.trigger.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_SequenceReloader(
+            [
+                (updated_config, True),
+                (updated_config, False),
+                (updated_config, False),
+            ]
+        ),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    caplog.set_level("ERROR")
+
+    first_cycle = worker.run_once()
+    assert first_cycle.configured_triggers == 0
+    assert worker.worker_config.provider_modules == []
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.configured_triggers == 1
+    assert second_cycle.events_published == 1
+    assert build_calls == [(), ("custom.reload",), ("custom.reload",)]
+    assert worker.worker_config.provider_modules == ["custom.reload"]
+    assert "provider_loader reload failed" in caplog.text
+    assert "restart or fix configuration before retrying" in caplog.text
+
+    queue_payload = trigger_queue_payload(updated_config)
+    assert list(queue_payload.keys()) == ["reload-event-1"]
+
+
+def test_trigger_orchestrator_rebinds_provider_factory_after_store_change(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "old-orchestration.db",
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "new-orchestration.db",
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    initial_factory = worker.provider_factory
+
+    worker.run_once()
+
+    assert worker.provider_factory is not initial_factory
+    assert worker.provider_factory.metadata["orchestration_store_path"] == str(
+        updated_config.orchestration_store_path
+    )
+    assert worker.event_queue.path == updated_config.orchestration_store_path
+
+
+def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="schedule-1",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-1",
+            "workflow_event_id": "event-1",
+            "workflow_trace_id": "trace-1",
+            "node_id": "node-1",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert created is True
+    assert result.events_published == 1
+
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
+    assert len(internal_events) == 1
+    published_event = internal_events[0]
+    assert published_event.event_type == "issue.plan_committed"
+    assert published_event.payload == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert published_event.correlation_key == "issue:ISSUE-1"
+    assert published_event.idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
+    assert published_event.source is not None
+    assert published_event.source.source_type == "scheduled_internal_event"
+    assert published_event.source.workflow_run_id == "run-1"
+    assert published_event.source.workflow_event_id == "event-1"
+    assert published_event.source.workflow_trace_id == "trace-1"
+    assert published_event.source.node_id == "node-1"
+    assert published_event.source.node_type == "effect:event:schedule"
+
+    queue_payload = trigger_queue_payload(worker_config)
+    assert list(queue_payload.keys()) == [f"event-listener:{published_event.event_id}"]
+    record = queue_payload[f"event-listener:{published_event.event_id}"]
+    assert record["payload"]["event_type"] == "issue.plan_committed"
+    assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+    assert record["payload"]["source"]["source_type"] == "scheduled_internal_event"
+    assert record["payload"]["source"]["workflow_run_id"] == "run-1"
+
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.status == "published"
+    assert scheduled_record.published_event_id == published_event.event_id
+
+
+def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_external_repoll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 5,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                },
+                {
+                    "id": "poller",
+                    "display_name": "External poller",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+            ],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    original_build = worker.provider_factory.build
+    external_poll_count = 0
+
+    class _SchedulingProvider:
+        def poll(self) -> list[TriggerEvent]:
+            nonlocal external_poll_count
+            external_poll_count += 1
+            now = datetime.now(UTC)
+            scheduled_store.schedule_event(
+                event_type="issue.plan_committed",
+                payload={"issue_id": "ISSUE-LATER"},
+                run_at=now - timedelta(seconds=1),
+                idempotency_key="scheduled-during-poll-later",
+            )
+            scheduled_store.schedule_event(
+                event_type="issue.plan_committed",
+                payload={"issue_id": "ISSUE-EARLIER"},
+                run_at=now - timedelta(seconds=2),
+                idempotency_key="scheduled-during-poll-earlier",
+            )
+            return []
+
+    def build_provider(trigger, **kwargs):
+        if trigger.id == "poller":
+            return _SchedulingProvider()
+        return original_build(trigger, **kwargs)
+
+    worker.provider_factory.build = build_provider  # type: ignore[assignment]
+
+    first_result = worker.run_once()
+
+    assert first_result.events_discovered == 2
+    assert first_result.events_published == 2
+    assert first_result.next_sleep_seconds == 0.0
+    assert external_poll_count == 1
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
+    assert [event.payload["issue_id"] for event in internal_events] == [
+        "ISSUE-EARLIER",
+        "ISSUE-LATER",
+    ]
+    assert [
+        record.payload["payload"]["issue_id"] for record in worker.event_queue.list_pending()
+    ] == [
+        "ISSUE-EARLIER",
+        "ISSUE-LATER",
+    ]
+    assert scheduled_store.next_pending_run_at() is None
+
+    second_result = worker.run_once()
+
+    assert second_result.events_discovered == 0
+    assert second_result.events_published == 0
+    assert external_poll_count == 2
+    assert len(worker.event_queue.list_pending()) == 2
+
+
+def test_future_scheduled_internal_event_stays_pending_until_due(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-2"},
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+        idempotency_key="schedule-future",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-2",
+            "workflow_event_id": "event-2",
+            "workflow_trace_id": "trace-2",
+            "node_id": "node-2",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert created is True
+    assert result.events_published == 0
+    assert InternalEventBus(worker_config.orchestration_store_path).list_events() == []
+
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.schedule_id == scheduled_event.schedule_id
+    assert scheduled_record.status == "pending"
+    assert scheduled_record.published_event_id is None
+    assert scheduled_record.published_at is None
+
+
+def test_trigger_cycle_sleep_is_capped_at_next_scheduled_event_due_time() -> None:
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    sleep_seconds = _compute_trigger_cycle_sleep_seconds(
+        events_published=0,
+        poll_interval_seconds=5,
+        jitter_seconds=5,
+        next_scheduled_run_at=now + timedelta(seconds=1),
+        now=now,
+    )
+
+    assert sleep_seconds == 1.0
+
+
+def test_trigger_cycle_sleep_keeps_poll_cadence_for_later_scheduled_event() -> None:
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    sleep_seconds = _compute_trigger_cycle_sleep_seconds(
+        events_published=0,
+        poll_interval_seconds=5,
+        jitter_seconds=0,
+        next_scheduled_run_at=now + timedelta(minutes=1),
+        now=now,
+    )
+
+    assert sleep_seconds == 5.0
+
+
+def test_due_scheduled_internal_event_is_published_once_across_cycles(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-3"},
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="schedule-once",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-3",
+            "workflow_event_id": "event-3",
+            "workflow_trace_id": "trace-3",
+            "node_id": "node-3",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    first_cycle = worker.run_once()
+    second_cycle = worker.run_once()
+
+    assert created is True
+    assert first_cycle.events_published == 0
+    assert second_cycle.events_published == 0
+
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
+    assert len(internal_events) == 1
+    assert internal_events[0].idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
+
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.status == "published"
+    assert scheduled_record.published_event_id == internal_events[0].event_id
+
+
+def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    project_config_dir = tmp_path / "config" / "trigger-orchestrator"
+    project_config_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    (project_config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 0
+
+
+def test_trigger_orchestrator_poll_interval_change_applies_next_cycle(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1.0,
+            "jitter_seconds": 0.0,
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 7.0,
+            "jitter_seconds": 0.0,
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_SequenceReloader([(updated_config, True), (updated_config, False)]),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.next_sleep_seconds == 1.0
+    assert second.next_sleep_seconds == 7.0
+
+
+def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
+    tmp_path: Path, caplog
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1.0,
+            "jitter_seconds": 0.0,
+            "triggers": [
+                {
+                    "id": "cron-old",
+                    "display_name": "Old",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1.0,
+            "jitter_seconds": 0.0,
+            "triggers": [
+                {
+                    "id": "cron-new",
+                    "display_name": "New",
+                    "type": "trigger:cron",
+                    "expression": "*/5 * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])  # type: ignore[assignment]
+
+    caplog.set_level("INFO")
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert "Trigger orchestrator config revision changed revision=" in caplog.text
+    assert "trigger_count=1" in caplog.text
+    cursor_payload = json.loads(
+        updated_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
+    assert cursor_payload["triggers"]["cron-new"]["last_discovered_count"] == 0
+
+
+def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Path) -> None:
+    from evander.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
+    internal = bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        idempotency_key="test-event-1",
+    )
+    result = worker.run_once()
+
+    assert result.events_published == 1
+    queue_payload = trigger_queue_payload(worker_config)
+    record = queue_payload[f"event-listener:{internal.event_id}"]
+    assert record["trigger_id"] == "event-listener"
+    assert record["trigger_type"] == "trigger:event"
+    assert record["payload"]["event_type"] == "issue.plan_committed"
+    assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_event_trigger_recovers_from_writer_contention_without_losing_events(
+    tmp_path, monkeypatch, continuous,
+):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir, "poll_interval_seconds": 1, "jitter_seconds": 0,
+        "triggers": [{"id": "listener", "display_name": "Listener", "type": "trigger:event",
+                      "event_type": "issue.plan_committed"}],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    worker.run_once()
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    event = bus.publish(event_type="issue.plan_committed", payload={"issue_id": "issue"},
+                        idempotency_key="contended-event")
+    writer = sqlite3.connect(worker_config.orchestration_store_path)
+    writer.execute("BEGIN IMMEDIATE")
+    sleeps = []
+    started = time.monotonic()
+
+    def wait(delay):
+        sleeps.append(delay)
+        if len(sleeps) == 1:
+            assert 0 < delay <= 0.3
+            writer.rollback()
+            time.sleep(delay + 0.01)
+        else:
+            raise KeyboardInterrupt
+
+    try:
+        if continuous:
+            monkeypatch.setattr(worker._wake_sleeper, "sleep", wait)
+            with pytest.raises(KeyboardInterrupt):
+                worker.run_forever()
+            assert len(sleeps) == 2
+        else:
+            deferred = worker.run_once()
+            assert deferred.events_published == 0
+            assert time.monotonic() - started < 1
+            wait(deferred.next_sleep_seconds)
+            assert worker.run_once().events_published == 1
+        assert worker.run_once().events_published == 0
+        assert list(worker.event_queue.read_all()) == [f"listener:{event.event_id}"]
+    finally:
+        writer.rollback()
+        writer.close()
+        worker._wake_sleeper.close()
+        worker._wal_checkpoint_maintenance.close()
+
+
+def test_trigger_worker_does_not_retry_permanent_storage_errors(tmp_path, monkeypatch):
+    worker = TriggerOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        worker_config=canonical_worker_config({"runtime_dir": tmp_path}), runtime=None,
+    )
+
+    def invalid_schema(*args, **kwargs):
+        raise sqlite3.OperationalError("no such table: missing")
+
+    monkeypatch.setattr(worker, "_reconcile_internal_event_subscriptions", invalid_schema)
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        worker.run_once()
+
+
+def test_event_trigger_pending_delivery_survives_transient_provider_initialization_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    original_build = worker.provider_factory.build
+    original_queue = worker.event_queue
+
+    assert worker.run_once().events_published == 0
+    internal = bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1"},
+        idempotency_key="pending-across-provider-failure",
+    )
+    worker.event_queue = _FailingEventQueue()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    def fail_provider_initialization(*_args, **_kwargs):
+        raise RuntimeError("transient provider initialization failure")
+
+    worker.event_queue = original_queue
+    worker.provider_factory.build = fail_provider_initialization  # type: ignore[assignment]
+
+    failed_cycle = worker.run_once()
+
+    assert failed_cycle.events_published == 0
+
+    worker.provider_factory.build = original_build  # type: ignore[assignment]
+    recovered_cycle = worker.run_once()
+
+    assert recovered_cycle.events_published == 1
+    assert list(trigger_queue_payload(worker_config)) == [
+        f"event-listener:{internal.event_id}"
+    ]
+
+
+def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: Path) -> None:
+    from evander.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                    "correlation_key": "issue:expected",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
+    bus.publish(event_type="issue.step_completed", payload={}, idempotency_key="wrong-type")
+    bus.publish(
+        event_type="issue.plan_committed",
+        payload={},
+        correlation_key="issue:other",
+        idempotency_key="wrong-correlation",
+    )
+    result = worker.run_once()
+
+    assert result.events_published == 0
+    assert trigger_queue_payload(worker_config) == {}
+
+
+def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Path) -> None:
+    from evander.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "listener-a",
+                    "display_name": "A",
+                    "type": "trigger:event",
+                    "event_type": "human.question_answered",
+                },
+                {
+                    "id": "listener-b",
+                    "display_name": "B",
+                    "type": "trigger:event",
+                    "event_type": "human.question_answered",
+                },
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
+    event = bus.publish(
+        event_type="human.question_answered",
+        payload={"answer": "yes"},
+        idempotency_key="answer-1",
+    )
+    result = worker.run_once()
+
+    assert result.events_published == 2
+    queue_payload = trigger_queue_payload(worker_config)
+    assert sorted(queue_payload) == [
+        f"listener-a:{event.event_id}",
+        f"listener-b:{event.event_id}",
+    ]
+
+
+def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    event_bus = InternalEventBus(runtime_dir / "orchestration.db")
+    provider = EventTriggerProvider()
+    provider.initialize(
+        EventTriggerDefinition.model_validate(
+            {
+                "id": "event-listener",
+                "display_name": "Plan committed",
+                "type": "trigger:event",
+                "event_type": "issue.plan_committed",
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+    assert provider.poll() == []
+    internal = event_bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        idempotency_key="internal-event-1",
+    )
+
+    first = provider.poll()
+
+    assert len(first) == 1
+    assert first[0].payload["event_id"] == internal.event_id
+
+    provider.acknowledge_published_event(first[0])
+
+    second = provider.poll()
+
+    assert second == []
+
+
+def _webhook_trigger_definition(
+    *,
+    trigger_id: str,
+    slug: str,
+    event_type: str | None = None,
+) -> WebhookTriggerDefinition:
+    payload: dict[str, object] = {
+        "id": trigger_id,
+        "display_name": "Webhook listener",
+        "type": "trigger:http:webhook",
+        "slug": slug,
+        "secret_env": "WEBHOOK_SECRET",
+    }
+    if event_type is not None:
+        payload["event_type"] = event_type
+    return WebhookTriggerDefinition.model_validate(payload)
+
+
+def _webhook_provider(runtime_dir: Path, *, trigger_id: str, slug: str) -> WebhookTriggerProvider:
+    provider = WebhookTriggerProvider()
+    provider.initialize(
+        _webhook_trigger_definition(trigger_id=trigger_id, slug=slug),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(runtime_dir=runtime_dir),
+            env={},
+        ),
+    )
+    return provider
+
+
+def _webhook_event_bus(runtime_dir: Path) -> InternalEventBus:
+    return InternalEventBus(runtime_dir / "orchestration.db")
+
+
+def test_webhook_trigger_emits_only_matching_signed_webhook_events(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
+    assert provider.poll() == []
+    matched = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={
+            "slug": "build-notify",
+            "headers": {"x-test": "one"},
+            "query": {"source": "ci"},
+            "body": {"target": "demo"},
+            "received_at": "2026-04-03T12:00:00Z",
+            "remote_addr": "198.51.100.10",
+            "signature_header": "sha256=1234",
+        },
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-1",
+            "node_type": "trigger:http:webhook",
+            "workflow_trace_id": "trace-123",
+        },
+        idempotency_key="sha256=body-1",
+        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+    )
+    bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1"},
+        source={"source_type": "event", "source_name": "issue"},
+    )
+    bus.publish(
+        event_type="external.webhook.other-slug",
+        payload={"slug": "other-slug"},
+        source={
+            "source_type": "webhook",
+            "source_name": "other-slug",
+            "node_id": "webhook-2",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+
+    first = provider.poll()
+    assert len(first) == 1
+    assert first[0].event_id == f"webhook-1:{matched.event_id}"
+    assert first[0].trigger_type == "trigger:http:webhook"
+    assert first[0].occurred_at == matched.created_at
+    assert first[0].trace_id == "trace-123"
+    assert first[0].payload == dict(matched.payload)
+
+    provider.acknowledge_published_event(first[0])
+    second = provider.poll()
+
+    assert second == []
+
+
+def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    build_provider = _webhook_provider(runtime_dir, trigger_id="webhook-build", slug="build-notify")
+    deploy_provider = _webhook_provider(
+        runtime_dir, trigger_id="webhook-deploy", slug="deploy-notify"
+    )
+    assert build_provider.poll() == []
+    assert deploy_provider.poll() == []
+    first_event = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={"slug": "build-notify", "body": {"target": "build"}},
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-build",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+    second_event = bus.publish(
+        event_type="external.webhook.deploy-notify",
+        payload={"slug": "deploy-notify", "body": {"target": "deploy"}},
+        source={
+            "source_type": "webhook",
+            "source_name": "deploy-notify",
+            "node_id": "webhook-deploy",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+
+    build_events = build_provider.poll()
+    deploy_events = deploy_provider.poll()
+
+    assert [event.event_id for event in build_events] == [f"webhook-build:{first_event.event_id}"]
+    assert [event.event_id for event in deploy_events] == [
+        f"webhook-deploy:{second_event.event_id}"
+    ]
+    assert build_events[0].payload["slug"] == "build-notify"
+    assert deploy_events[0].payload["slug"] == "deploy-notify"
+
+
+def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "webhook-1",
+                    "display_name": "Build notifications",
+                    "type": "trigger:http:webhook",
+                    "slug": "build-notify",
+                    "secret_env": "WEBHOOK_SECRET",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
+    worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+    initialized = worker.run_once()
+    assert initialized.events_published == 0
+    internal = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={
+            "slug": "build-notify",
+            "headers": {"content-type": "application/json"},
+            "query": {},
+            "body": {"target": "demo"},
+            "received_at": "2026-04-03T12:00:00Z",
+            "remote_addr": "198.51.100.10",
+            "signature_header": "sha256=body-hash",
+        },
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-1",
+            "node_type": "trigger:http:webhook",
+        },
+        idempotency_key="sha256=body-hash",
+        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.configured_triggers == 1
+    assert first.events_discovered == 1
+    assert first.events_published == 1
+    assert second.events_discovered == 0
+    assert second.events_published == 0
+
+    queue_payload = trigger_queue_payload(worker_config)
+    assert list(queue_payload) == [f"webhook-1:{internal.event_id}"]
+    assert queue_payload[f"webhook-1:{internal.event_id}"]["trace_id"]

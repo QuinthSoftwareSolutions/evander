@@ -1,0 +1,102 @@
+---
+- name: Skip Asterisk DIDWW provisioning when disabled
+  ansible.builtin.debug:
+    msg: "Asterisk DIDWW provisioning is disabled."
+  when: not (evander_asterisk_didww_enabled | bool)
+
+- name: Configure Asterisk for DIDWW SIP bridge
+  when: evander_asterisk_didww_enabled | bool
+  block:
+    - name: Assert Asterisk DIDWW required variables are configured
+      ansible.builtin.assert:
+        that:
+          - evander_asterisk_ari_password | length > 0
+          - evander_asterisk_public_address | length > 0
+          - evander_asterisk_local_nets | length > 0
+          - evander_asterisk_didww_sip_host | length > 0
+          - evander_asterisk_didww_sip_username | length > 0
+          - evander_asterisk_didww_sip_password | length > 0
+          - evander_asterisk_didww_identify_matches | length > 0
+          - evander_asterisk_ari_user == evander_didww_sip_bridge_env.get('ASTERISK_ARI_USER', evander_asterisk_ari_user)
+          - evander_asterisk_ari_app == evander_didww_sip_bridge_env.get('ASTERISK_ARI_APP', evander_asterisk_ari_app)
+          - evander_asterisk_didww_endpoint == evander_didww_sip_bridge_env.get('ASTERISK_PJSIP_ENDPOINT', evander_asterisk_didww_endpoint)
+        fail_msg: >-
+          evander_asterisk_didww_enabled requires ARI password, public NAT
+          address, local networks, DIDWW SIP host/auth/identify settings, and
+          Asterisk ARI/PJSIP values that match the bridge service environment.
+        success_msg: Asterisk DIDWW required variables are configured.
+
+    - name: Install Asterisk packages
+      ansible.builtin.apt:
+        name: "{{ evander_asterisk_packages }}"
+        state: present
+
+    - name: Render managed Asterisk config files
+      ansible.builtin.template:
+        src: "{{ item.template }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: asterisk
+        mode: "{{ item.mode }}"
+      loop:
+        - template: http.conf.j2
+          dest: /etc/asterisk/http.conf
+          mode: "0644"
+        - template: ari.conf.j2
+          dest: /etc/asterisk/ari.conf
+          mode: "0640"
+        - template: rtp.conf.j2
+          dest: /etc/asterisk/rtp.conf
+          mode: "0644"
+        - template: pjsip.conf.j2
+          dest: /etc/asterisk/pjsip.conf
+          mode: "0640"
+        - template: extensions.conf.j2
+          dest: /etc/asterisk/extensions.conf
+          mode: "0644"
+      loop_control:
+        label: "{{ item.dest }}"
+      no_log: true
+      register: evander_asterisk_config_render
+
+    - name: Enable and start Asterisk
+      ansible.builtin.systemd:
+        name: asterisk.service
+        enabled: true
+        state: "{{ 'restarted' if evander_asterisk_config_render.changed else 'started' }}"
+        daemon_reload: true
+
+    - name: Wait for local Asterisk ARI listener
+      ansible.builtin.wait_for:
+        host: "{{ evander_asterisk_http_bind_host }}"
+        port: "{{ evander_asterisk_http_bind_port }}"
+        timeout: 30
+
+    - name: Verify Asterisk ARI credentials
+      ansible.builtin.uri:
+        url: >-
+          http://{{ evander_asterisk_http_bind_host }}:{{ evander_asterisk_http_bind_port }}/ari/asterisk/info
+        method: GET
+        url_username: "{{ evander_asterisk_ari_user }}"
+        url_password: "{{ evander_asterisk_ari_password }}"
+        force_basic_auth: true
+        status_code: 200
+      no_log: true
+      register: evander_asterisk_ari_probe
+      retries: 6
+      delay: 5
+      until: evander_asterisk_ari_probe.status == 200
+
+    - name: Verify Asterisk DIDWW endpoint exists
+      ansible.builtin.command:
+        cmd: "asterisk -rx 'pjsip show endpoint {{ evander_asterisk_didww_endpoint }}'"
+      changed_when: false
+      register: evander_asterisk_didww_endpoint_probe
+
+    - name: Assert Asterisk DIDWW endpoint was loaded
+      ansible.builtin.assert:
+        that:
+          - "'Endpoint:' in evander_asterisk_didww_endpoint_probe.stdout"
+          - "evander_asterisk_didww_endpoint in evander_asterisk_didww_endpoint_probe.stdout"
+        fail_msg: "Asterisk did not load the managed DIDWW PJSIP endpoint."
+        success_msg: "Asterisk loaded the managed DIDWW PJSIP endpoint."

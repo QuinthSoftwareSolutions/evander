@@ -1,0 +1,5 @@
+{
+  "runtime_dir": "runtime",
+  "poll_interval_seconds": 5,
+  "directories": []
+}

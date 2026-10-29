@@ -1,0 +1,9 @@
+{
+  "name": "evander-wordpress-addon-browser",
+  "version": "0.1.3",
+  "private": true,
+  "description": "Host-owned browser verification runtime for the WordPress add-on",
+  "dependencies": {
+    "playwright": "1.59.1"
+  }
+}

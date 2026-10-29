@@ -1,0 +1,20 @@
+{
+  "connections": {
+    "studio": {
+      "client_id": "replace-with-approved-evander-client-id",
+      "client_secret_env": "FIGMA_CLIENT_SECRET",
+      "redirect_uri": "https://evander.example.com/api/addons/figma-addon/oauth/callback",
+      "rest_token_env": "FIGMA_REST_TOKEN",
+      "rest_token_kind": "personal"
+    }
+  },
+  "targets": {
+    "mockups": {
+      "name": "UI mockups",
+      "connection_id": "studio",
+      "file_key": "ReplaceWithFigmaFileKey",
+      "access": ["read", "comment", "edit"],
+      "edit_roots": []
+    }
+  }
+}

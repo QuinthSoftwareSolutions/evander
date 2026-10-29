@@ -1,0 +1,200 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Verify Docker service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['docker.service'].status == 'enabled'"
+      - "ansible_facts.services['docker.service'].state == 'running'"
+    fail_msg: "docker.service should be enabled and running on the worker VM."
+    success_msg: "docker.service is enabled and running."
+
+- name: Verify worker daemon service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['evander-worker-daemon.service'].status == 'enabled'"
+      - "ansible_facts.services['evander-worker-daemon.service'].state == 'running'"
+    fail_msg: >-
+      evander-worker-daemon.service should be enabled and running.
+      actual={{
+        ansible_facts.services.get('evander-worker-daemon.service', {})
+      }}
+    success_msg: "evander-worker-daemon.service is enabled and running."
+
+- name: Verify MSSQL seed sidecar service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['evander-mssql-seed-sidecar.service'].status == 'enabled'"
+      - "ansible_facts.services['evander-mssql-seed-sidecar.service'].state == 'running'"
+    fail_msg: >-
+      evander-mssql-seed-sidecar.service should be enabled and running when
+      evander_worker_mssql_seed_sidecar_enabled=true. actual={{
+        ansible_facts.services.get('evander-mssql-seed-sidecar.service', {})
+      }}
+    success_msg: "evander-mssql-seed-sidecar.service is enabled and running."
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Check worker egress policy service enabled state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - evander-worker-egress-policy.service
+  register: evander_worker_egress_policy_enabled_state
+  changed_when: false
+  failed_when: false
+  when:
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
+- name: Check worker egress policy service active state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - evander-worker-egress-policy.service
+  register: evander_worker_egress_policy_active_state
+  changed_when: false
+  failed_when: false
+  when:
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
+- name: Verify worker egress policy service is active
+  ansible.builtin.assert:
+    that:
+      - "evander_worker_egress_policy_enabled_state.stdout == 'enabled'"
+      - "evander_worker_egress_policy_active_state.stdout == 'active'"
+    fail_msg: >-
+      evander-worker-egress-policy.service should be enabled and active
+      whenever a non-none worker Docker network is configured with
+      evander_worker_egress_policy_enabled=true. service_facts={{
+        ansible_facts.services.get('evander-worker-egress-policy.service', {})
+      }} systemctl_enabled={{
+        evander_worker_egress_policy_enabled_state.stdout | default('')
+      }} systemctl_active={{
+        evander_worker_egress_policy_active_state.stdout | default('')
+      }} systemctl_active_stderr={{
+        evander_worker_egress_policy_active_state.stderr | default('')
+      }}
+    success_msg: "evander-worker-egress-policy.service is enabled and active."
+  when:
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
+- name: Verify Docker is usable by the worker user
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --format
+      - "{{ '{{' }}.ID{{ '}}' }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+
+- name: Wait for worker daemon listener
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ evander_worker_port }}"
+    timeout: 30
+
+- name: Verify worker daemon health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ evander_worker_port }}/healthz"
+    method: GET
+    return_content: true
+    status_code: 200
+    use_proxy: false
+    timeout: 5
+  register: evander_worker_health
+  until:
+    - evander_worker_health.status == 200
+    - >-
+      (evander_worker_health.json | default({})).get('deployment_revision')
+      == evander_worker_deployed_revision.stdout
+    - >-
+      (evander_worker_health.json | default({})).get('capabilities', {}).get('codex_fast_mode', 0)
+      | int >= 1
+    - >-
+      (evander_worker_health.json | default({})).get('capabilities', {}).get('codex_ultrafast_mode', 0)
+      | int >= 1
+  retries: 10
+  delay: 1
+
+- name: Resolve Codex egress proxy verification endpoint
+  ansible.builtin.set_fact:
+    evander_worker_codex_egress_proxy_probe_host: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('hostname') }}
+    evander_worker_codex_egress_proxy_probe_port: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('port') | default(80, true) }}
+  when: (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+
+- name: Wait for the private Codex egress proxy
+  ansible.builtin.wait_for:
+    host: "{{ evander_worker_codex_egress_proxy_probe_host }}"
+    port: "{{ evander_worker_codex_egress_proxy_probe_port }}"
+    timeout: 30
+  when: (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+
+- name: Verify a runner container reaches only the private Codex proxy health surface
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - "{{ evander_worker_docker_network }}"
+      - "{{ evander_worker_codex_auth_image }}"
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - "10"
+      - "http://{{ evander_worker_codex_egress_proxy_probe_host }}:{{ evander_worker_codex_egress_proxy_probe_port }}/healthz"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when:
+    - (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
+- name: Resolve MSSQL seed sidecar verification host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_host: "{{ '127.0.0.1' if evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::'] else evander_worker_mssql_seed_sidecar_bind_host }}"
+  vars:
+    evander_worker_mssql_seed_sidecar_bind_host: "{{ evander_worker_mssql_seed_sidecar_host | default('') | string | trim | regex_replace('^\\[(.*)\\]$', '\\1') }}"
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Resolve MSSQL seed sidecar verification URL host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_url_host: >-
+      {{ '[' ~ evander_worker_mssql_seed_sidecar_probe_host ~ ']' if ':' in evander_worker_mssql_seed_sidecar_probe_host else evander_worker_mssql_seed_sidecar_probe_host }}
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Wait for MSSQL seed sidecar listener
+  ansible.builtin.wait_for:
+    host: "{{ evander_worker_mssql_seed_sidecar_probe_host }}"
+    port: "{{ evander_worker_mssql_seed_sidecar_port }}"
+    timeout: 30
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Verify MSSQL seed sidecar health endpoint
+  ansible.builtin.uri:
+    url: "http://{{ evander_worker_mssql_seed_sidecar_probe_url_host }}:{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
+    method: GET
+    return_content: true
+    status_code: 200
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Emit worker deployment verification summary
+  ansible.builtin.debug:
+    msg:
+      - "worker root: {{ evander_worker_root }}"
+      - "worker runtime dir: {{ evander_worker_runtime_dir }}"
+      - "worker daemon: http://{{ ansible_default_ipv4.address | default(evander_worker_host) }}:{{ evander_worker_port }}"
+      - "sandbox profile: {{ evander_worker_sandbox_profile }}"
+      - "container user: {{ evander_effective_worker_container_user }}"
+      - "worker egress policy: {{ evander_worker_egress_policy_enabled }}"
+      - "Codex egress proxy: {{ evander_worker_codex_egress_proxy_url | default('disabled', true) }}"
+      - "mssql seed sidecar: {{ evander_worker_mssql_seed_sidecar_enabled | default(false) }}"

@@ -1,0 +1,20 @@
+flowchart TB
+    config[Configuration files\nhost and directory scopes]
+    json[JSON registries and manifests]
+    sqlite[SQLite stores\nqueues, ledgers, Team state]
+    audit[Append-only audit JSONL and index]
+    git[Managed bare Git repositories]
+    blobs[Published artifacts and artifact spaces]
+    derived[Derived caches and semantic indexes]
+
+    backup[Consistent backup boundary]
+    config --> backup
+    json --> backup
+    sqlite --> backup
+    audit --> backup
+    git --> backup
+    blobs --> backup
+    derived -. rebuildable .-> backup
+
+    restore[Restore configuration and canonical stores first; rebuild derived state last.]
+    backup --> restore

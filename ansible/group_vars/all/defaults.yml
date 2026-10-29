@@ -1,0 +1,567 @@
+---
+# Core deploy contract.
+evander_repo_url: "git@example.com:your-org/evander.git"
+evander_repo_version: "main"
+evander_repo_refspec: ""
+evander_repo_accept_newhostkey: true
+evander_repo_ssh_private_key: ""
+evander_repo_ssh_private_key_path: "/home/{{ evander_run_user }}/.ssh/evander-repo-deploy-key"
+evander_manage_workflow_config: true
+evander_manage_teams_ingest_config: false
+evander_repo_managed_base_tracked_config_paths:
+  - config/admin-web.env
+  - config/firewall.env
+evander_repo_managed_workflow_config_paths:
+  - config/workflow-packs/agent-container-worker.v1.json
+  - "{{ evander_workflow_layout_path }}"
+evander_repo_managed_workflow_untracked_config_paths:
+  - config/workflow-packs/agent-container-worker.v1.json
+  - "{{ evander_workflow_layout_path }}"
+evander_repo_managed_generated_tracked_paths:
+  - frontend/admin-web/dist/index.html
+evander_repo_managed_tracked_config_paths: >-
+  {{
+    evander_repo_managed_base_tracked_config_paths
+    + evander_repo_managed_generated_tracked_paths
+    + (
+      evander_repo_managed_workflow_config_paths
+      if evander_manage_workflow_config
+      else []
+    )
+  }}
+evander_repo_managed_base_untracked_config_paths:
+  - config/admin-web.env
+  - config/ado-worker.env
+  - config/codex-egress-proxy.env
+  - config/didww-sip-bridge.env
+  - config/firewall.env
+  - config/gateway.env
+  - config/http-target-relay.env
+  - config/openai-relay.env
+  - config/npm-audit-facade.env
+evander_repo_managed_untracked_config_paths: >-
+  {{
+    evander_repo_managed_base_untracked_config_paths
+    + (
+      evander_repo_managed_workflow_untracked_config_paths
+      if evander_manage_workflow_config
+      else []
+    )
+  }}
+evander_deploy_path: "/opt/evander"
+evander_runtime_dir: "{{ evander_deploy_path }}/runtime"
+# Explicit opt-in: preserve an existing key, never recreate a lost store key.
+evander_initialize_credential_store: false
+evander_runtime_service_lock_files:
+  - discord-ingest.lock
+  - scheduled-wake.lock
+  - teams-ingest.lock
+  - teams-meeting-ingest.lock
+  - trigger-orchestrator.lock
+  - effect-orchestrator.lock
+evander_deployment_status_path: "{{ evander_runtime_dir }}/deployment-status.json"
+evander_deployment_status_message: "Control plane update in progress."
+evander_deployment_status_ttl_seconds: 21600
+evander_run_user: "evander"
+evander_manage_run_user: true
+# Control-plane syslog: about four weeks of daily archives, compressed after one day.
+evander_manage_system_log_rotation: true
+evander_system_log_rotate_count: 28
+evander_service_profile: "full"
+evander_run_user_supplementary_groups: >-
+  {{
+    ['libvirt', 'kvm']
+    if evander_service_profile == 'full'
+    else []
+  }}
+evander_common_host_packages:
+  - acl
+  - openssh-server
+  - git
+  - curl
+  - python3
+  - python3-pip
+  - python3-venv
+  - nodejs
+  - npm
+evander_install_azure_cli: false
+evander_azure_cli_deb_architecture: >-
+  {{
+    'amd64'
+    if ansible_architecture == 'x86_64'
+    else (
+      'arm64'
+      if ansible_architecture in ['aarch64', 'arm64']
+      else ansible_architecture
+    )
+  }}
+evander_local_vm_host_packages:
+  - nftables
+  - qemu-system-x86
+  - qemu-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - virtinst
+  - cloud-image-utils
+  - ovmf
+evander_base_allowed_tcp_ports:
+  - 22
+  - 8000
+  - 11434
+  - 11666
+  - 11777
+  - 11778
+evander_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+evander_codex_egress_proxy_port: 11889
+evander_codex_egress_proxy_bind_host: "{{ evander_control_plane_private_ip }}"
+evander_codex_egress_proxy_allowed_hosts:
+  - "auth.openai.com"
+  - "api.openai.com"
+  - "chatgpt.com"
+  - "*.openai.com"
+  - "*.chatgpt.com"
+evander_codex_egress_proxy_allowed_client_cidrs: >-
+  {{
+    (
+      ['127.0.0.1/32', evander_control_plane_private_ip ~ '/32']
+      + (
+        groups.get('evander_worker_hosts', [])
+        | map('extract', hostvars, 'evander_worker_private_cidr')
+        | map('string')
+        | map('trim')
+        | reject('equalto', '')
+        | list
+      )
+    )
+    | unique
+    | list
+  }}
+
+# Control-plane apt cache for worker VM provisioning. This is intentionally
+# separate from Nexus, which only proxies PyPI and npm.
+evander_apt_cache_port: 3142
+evander_npm_audit_facade_port: 11881
+evander_apt_cache_bind_host: "0.0.0.0"
+evander_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
+evander_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
+evander_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com|download\\.docker\\.com):443$"
+
+# Optional host-local Asterisk provisioning for the DIDWW SIP bridge. This is
+# disabled by default so existing deployments with hand-managed Asterisk configs
+# are not overwritten by an Ansible re-run.
+evander_asterisk_didww_enabled: false
+evander_asterisk_packages:
+  - asterisk
+evander_asterisk_public_address: >-
+  {{
+    evander_control_plane_public_host
+    | default(ansible_default_ipv4.address | default(''))
+  }}
+evander_asterisk_local_nets:
+  - "{{ (evander_control_plane_private_ip | regex_replace('\\.[0-9]+$', '.0')) ~ '/24' }}"
+evander_asterisk_http_bind_host: "127.0.0.1"
+evander_asterisk_http_bind_port: 8088
+evander_asterisk_ari_user: "{{ evander_didww_sip_bridge_env.get('ASTERISK_ARI_USER', 'evander') }}"
+evander_asterisk_ari_password: "{{ evander_shared_secrets_env.get('ASTERISK_ARI_PASSWORD', '') }}"
+evander_asterisk_ari_app: "{{ evander_didww_sip_bridge_env.get('ASTERISK_ARI_APP', 'evander_didww') }}"
+evander_asterisk_ari_allowed_origins:
+  - "http://127.0.0.1"
+evander_asterisk_sip_bind_host: "0.0.0.0"
+evander_asterisk_sip_bind_port: 5060
+evander_asterisk_rtp_start: 12000
+evander_asterisk_rtp_end: 12100
+evander_asterisk_user_agent: "evander-asterisk"
+evander_asterisk_didww_endpoint: "{{ evander_didww_sip_bridge_env.get('ASTERISK_PJSIP_ENDPOINT', 'didww') }}"
+evander_asterisk_didww_auth_section: "didww"
+evander_asterisk_didww_aor_section: "didww"
+evander_asterisk_didww_identify_section: "didww-identify"
+evander_asterisk_didww_context: "from-didww"
+evander_asterisk_didww_sip_host: "out.didww.com"
+evander_asterisk_didww_sip_username: ""
+evander_asterisk_didww_sip_password: ""
+evander_asterisk_didww_from_user: ""
+evander_asterisk_didww_from_domain: ""
+evander_asterisk_didww_contact_user: ""
+evander_asterisk_didww_identify_matches:
+  - "46.19.208.0/21"
+  - "185.238.172.0/22"
+evander_asterisk_didww_qualify_frequency: 60
+evander_asterisk_didww_codecs:
+  - ulaw
+  - alaw
+evander_asterisk_didww_inbound_route_id: ""
+
+evander_worker_use_apt_proxy: true
+evander_worker_apt_proxy_config_path: "/etc/apt/apt.conf.d/01evander-proxy"
+evander_worker_apt_proxy_url: "http://{{ evander_control_plane_private_ip }}:{{ evander_apt_cache_port }}"
+evander_worker_apt_proxy_https_url: ""
+evander_package_cache_allowed_tcp_ports: >-
+  {{
+    [evander_nexus_port]
+    if (evander_services.package_cache | default(false) | bool)
+    else []
+  }}
+evander_apt_cache_allowed_tcp_ports: >-
+  {{
+    [evander_apt_cache_port]
+    if (evander_services.apt_cache | default(false) | bool)
+    else []
+  }}
+evander_npm_audit_facade_allowed_tcp_ports: >-
+  {{
+    [evander_npm_audit_facade_port]
+    if (evander_services.npm_audit_facade | default(false) | bool)
+    else []
+  }}
+evander_allowed_tcp_ports: >-
+  {{
+    evander_base_allowed_tcp_ports
+    + evander_package_cache_allowed_tcp_ports
+    + evander_apt_cache_allowed_tcp_ports
+    + evander_npm_audit_facade_allowed_tcp_ports
+  }}
+evander_git_host: "{{ evander_control_plane_private_ip }}"
+
+# Explicit worker egress destinations stay private to the control plane. The
+# worker playbook can append operator-defined endpoints, but it should not need
+# broad CIDRs or public internet destinations.
+evander_worker_egress_policy_allow_tcp_endpoints:
+  - name: control-plane git ssh
+    host: "{{ evander_git_host }}"
+    port: 22
+  - name: control-plane mcp gateway
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 8000
+  - name: control-plane openai relay
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 11434
+  - name: control-plane nuget relay
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 11666
+  - name: control-plane http target relay
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 11777
+  - name: control-plane HTTP target browser proxy
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 11778
+  - name: control-plane Codex egress proxy
+    host: "{{ evander_worker_codex_egress_proxy_url | urlsplit('hostname') }}"
+    port: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('port') | default(80, true) }}
+  - name: control-plane npm audit facade
+    host: "{{ evander_control_plane_private_ip }}"
+    port: "{{ evander_npm_audit_facade_port }}"
+  - name: control-plane nexus package cache
+    host: "{{ evander_control_plane_private_ip }}"
+    port: "{{ evander_nexus_port }}"
+  - name: control-plane apt-cacher-ng
+    host: "{{ evander_control_plane_private_ip }}"
+    port: "{{ evander_apt_cache_port }}"
+evander_worker_egress_policy_extra_allow_tcp_endpoints: []
+
+# Control-plane package cache. Nexus Repository Community Edition proxies only
+# public PyPI and npm in v1; publishing/internal hosted repositories are not
+# provisioned by this role.
+evander_nexus_version: "3.97.1-02"
+evander_nexus_archive_url: "https://download.sonatype.com/nexus/3/nexus-{{ evander_nexus_version }}-linux-x86_64.tar.gz"
+evander_nexus_archive_checksum: ""
+evander_nexus_user: "nexus"
+evander_nexus_group: "nexus"
+evander_nexus_install_parent: "/opt/sonatype"
+evander_nexus_install_dir: "{{ evander_nexus_install_parent }}/nexus-{{ evander_nexus_version }}"
+evander_nexus_current_link: "{{ evander_nexus_install_parent }}/nexus"
+evander_nexus_data_dir: "/var/lib/evander/nexus-data"
+evander_nexus_cache_dir: "/var/cache/evander/nexus"
+evander_nexus_port: 8081
+evander_nexus_bind_host: "0.0.0.0"
+evander_nexus_admin_user: "admin"
+evander_nexus_admin_password: ""
+evander_nexus_accept_community_eula: true
+# Review Nexus required base telemetry before explicitly enabling acknowledgement.
+evander_nexus_acknowledge_mandatory_telemetry: false
+evander_nexus_blob_store: "default"
+evander_nexus_pypi_proxy_repository: "pypi-proxy"
+evander_nexus_pypi_group_repository: "pypi-all"
+evander_nexus_pypi_remote_url: "https://pypi.org/"
+evander_nexus_npm_proxy_repository: "npm-proxy"
+evander_nexus_npm_group_repository: "npm-all"
+evander_nexus_npm_remote_url: "https://registry.npmjs.org"
+evander_nexus_anonymous_reader_role: "evander-package-cache-reader"
+evander_nexus_pypi_probe_asset_path: "packages/wheel/0.47.0/wheel-0.47.0-py3-none-any.whl"
+evander_worker_pypi_index_url: "http://{{ evander_control_plane_private_ip }}:{{ evander_nexus_port }}/repository/{{ evander_nexus_pypi_group_repository }}/simple"
+evander_worker_npm_registry_url: "http://{{ evander_control_plane_private_ip }}:{{ evander_nexus_port }}/repository/{{ evander_nexus_npm_group_repository }}/"
+evander_worker_validate_package_cache: true
+evander_worker_package_cache_probe_url: >-
+  {{
+    (
+      evander_worker_pypi_index_url
+      | regex_replace('/simple/?$', '')
+      | regex_replace('/+$', '')
+    )
+    ~ '/'
+    ~ evander_nexus_pypi_probe_asset_path
+  }}
+
+# Optional host-local semantic store. Qdrant is bound to localhost by default and is
+# intentionally not added to guest/worker firewall allowances in this first slice.
+evander_qdrant_image: "qdrant/qdrant:v1.19.2"
+evander_qdrant_data_dir: "/var/lib/evander/qdrant"
+evander_qdrant_bind_host: "127.0.0.1"
+evander_qdrant_port: 6333
+
+# Host prerequisites.
+evander_host_packages: >-
+  {{
+    evander_common_host_packages
+    + (
+      evander_local_vm_host_packages
+      if evander_service_profile == 'full'
+      else []
+    )
+  }}
+
+# Install profile for the Python package.
+evander_python_install_extras: "[dev]"
+evander_python_install_env: {}
+
+# Admin Web frontend build.
+evander_admin_web_frontend_dir: "{{ evander_deploy_path }}/frontend/admin-web"
+evander_admin_web_frontend_dist_dir: "{{ evander_admin_web_frontend_dir }}/dist"
+evander_admin_web_frontend_build_enabled: true
+evander_admin_web_caddy_enabled: false
+evander_admin_web_caddy_manage_config: "{{ evander_admin_web_caddy_enabled }}"
+evander_admin_web_caddy_config_path: "/etc/caddy/Caddyfile"
+evander_admin_web_caddy_hostname: >-
+  {{
+    evander_admin_web_env.get('EVANDER_ADMIN_WEB_PUBLIC_BASE_URL', '')
+    | regex_replace('^https?://', '')
+    | regex_replace('/.*$', '')
+  }}
+# Optional relay routes follow its operator-provisioned environment file.
+# Set evander_admin_web_browser_relay_enabled explicitly to override discovery.
+evander_admin_web_browser_relay_environment_file: "/etc/evander/browser-relay.env"
+evander_admin_web_browser_relay_upstream_host: "127.0.0.1"
+evander_admin_web_browser_relay_upstream_port: 11890
+evander_admin_web_caddy_upstream_host: "127.0.0.1"
+evander_admin_web_caddy_upstream_port: "{{ evander_admin_web_env.get('ADMIN_WEB_PORT', '8100') }}"
+evander_teams_notifications_public_base_url: >-
+  {{ evander_teams_ingest_config.get('change_notification_public_base_url', '') | default('', true) }}
+evander_teams_notifications_caddy_hostname: >-
+  {{
+    evander_teams_notifications_public_base_url
+    | regex_replace('^https?://', '')
+    | regex_replace('/.*$', '')
+  }}
+evander_teams_notifications_listener_host: >-
+  {{ evander_teams_ingest_config.get('change_notification_listener_host', '127.0.0.1') }}
+evander_teams_notifications_listener_endpoint_host: >-
+  {{ ('[' ~ evander_teams_notifications_listener_host ~ ']')
+     if ':' in evander_teams_notifications_listener_host
+     else evander_teams_notifications_listener_host }}
+evander_teams_notifications_listener_port: >-
+  {{ evander_teams_ingest_config.get('change_notification_listener_port', 11882) }}
+evander_admin_web_caddy_validate_config: true
+evander_admin_web_caddy_verification_connect_timeout_seconds: 5
+evander_admin_web_caddy_verification_max_time_seconds: 20
+evander_admin_web_caddy_verification_retries: 6
+evander_admin_web_caddy_verification_delay_seconds: 10
+evander_admin_web_branding_asset_dir: "{{ evander_admin_web_env.get('EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR', '') }}"
+evander_admin_web_branding_assets: []
+
+# Workflow editor layout for a single-pack workflow is stored beside that pack.
+evander_managed_workflow_pack_files:
+  - path: "config/workflow-packs/agent-container-worker.v1.json"
+    source_path: "{{ playbook_dir }}/../config/workflow-packs/agent-container-worker.v1-example.json"
+evander_workflow_layout_path: "config/workflow-packs/agent-container-worker.v1.layout.json"
+evander_workflow_layout_source_path: "{{ playbook_dir }}/../config/workflow-packs/agent-container-worker.v1.layout-example.json"
+
+# Repo-native scripts currently render units that point at deploy_path/runtime.
+evander_vm_storage_dir: "/var/lib/libvirt/images/evander"
+evander_base_image_path: "{{ evander_vm_storage_dir }}/images/ubuntu-24.04-server-cloudimg-amd64.img"
+
+# Optional shared secret env file loaded by several systemd units.
+evander_render_shared_secrets_env: false
+evander_shared_secrets_env: {}
+
+# Per-service environment files.
+evander_firewall_env:
+  ALLOWED_TCP_PORTS: "{{ evander_allowed_tcp_ports | join(' ') }}"
+
+evander_codex_egress_proxy_env:
+  EVANDER_CODEX_EGRESS_PROXY_HOST: "{{ evander_codex_egress_proxy_bind_host }}"
+  EVANDER_CODEX_EGRESS_PROXY_PORT: "{{ evander_codex_egress_proxy_port }}"
+  EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS: "{{ evander_codex_egress_proxy_allowed_client_cidrs | join(' ') }}"
+  EVANDER_CODEX_EGRESS_PROXY_ALLOWED_HOSTS: "{{ evander_codex_egress_proxy_allowed_hosts | join(' ') }}"
+
+evander_gateway_env:
+  AZURE_DEVOPS_PR_PAT: ""
+
+evander_admin_web_env:
+  ADMIN_WEB_HOST: "0.0.0.0"
+  ADMIN_WEB_PORT: "8100"
+  EVANDER_ADMIN_WEB_AUTH_MODE: "local_password"
+  EVANDER_ADMIN_WEB_USERNAME: "admin"
+  EVANDER_ADMIN_WEB_PASSWORD: "replace-with-real-password"
+  EVANDER_ADMIN_WEB_SESSION_SECRET: "replace-with-random-secret"
+  EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS: "43200"
+  EVANDER_ADMIN_WEB_COOKIE_SECURE: "false"
+
+evander_openai_relay_env:
+  OPENAI_API_KEY: ""
+
+evander_nuget_relay_env:
+  AZURE_ARTIFACTS_PAT: ""
+
+evander_npm_audit_facade_env: {}
+
+evander_http_target_relay_env: {}
+
+evander_ado_worker_env: {}
+
+evander_didww_sip_bridge_enable_inbound_phone_calls: false
+evander_didww_sip_bridge_ari_user: "{{ evander_run_user }}"
+
+evander_didww_sip_bridge_env:
+  DIDWW_SIP_BRIDGE_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_PORT: "11888"
+  DIDWW_SIP_BRIDGE_TOKEN_ENV: "DIDWW_SIP_BRIDGE_TOKEN"
+  DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: "{{ (evander_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}"
+  DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL: "http://127.0.0.1:8000"
+  DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV: "VOICE_MEDIA_CONTROLLER_TOKEN"
+  OPENAI_REALTIME_API_KEY_ENV: "OPENAI_API_KEY"
+  OPENAI_REALTIME_MODEL: "gpt-realtime-2"
+  OPENAI_REALTIME_API_BASE_URL: "https://api.openai.com/v1"
+  OPENAI_REALTIME_VOICE: "marin"
+  OPENAI_REALTIME_IDLE_TIMEOUT_MS: "10000"
+  OPENAI_REALTIME_TRANSCRIPTION_MODEL: "gpt-live-transcribe"
+  OPENAI_REALTIME_INPUT_NOISE_REDUCTION_TYPE: "near_field"
+  OPENAI_REALTIME_TURN_DETECTION_TYPE: "server_vad"
+  OPENAI_REALTIME_VAD_THRESHOLD: "0.70"
+  OPENAI_REALTIME_VAD_PREFIX_PADDING_MS: "300"
+  OPENAI_REALTIME_VAD_SILENCE_DURATION_MS: "800"
+  ASTERISK_ARI_URL: "http://127.0.0.1:8088/ari"
+  ASTERISK_ARI_USER: "{{ evander_didww_sip_bridge_ari_user }}"
+  ASTERISK_ARI_PASSWORD_ENV: "ASTERISK_ARI_PASSWORD"
+  ASTERISK_ARI_APP: "evander_didww"
+  ASTERISK_PJSIP_ENDPOINT: "didww"
+  ASTERISK_ENDPOINT_TEMPLATE: "PJSIP/{number}@{trunk}"
+  DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_RTP_BIND_HOST: "127.0.0.1"
+  DIDWW_SIP_BRIDGE_RTP_PORT_MIN: "41000"
+  DIDWW_SIP_BRIDGE_RTP_PORT_MAX: "41100"
+  DIDWW_SIP_BRIDGE_RTP_PAYLOAD_TYPE: "8"
+  DIDWW_SIP_BRIDGE_MEDIA_FORMAT: "alaw"
+  DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ: "8000"
+  DIDWW_SIP_BRIDGE_FRAME_DURATION_MS: "20"
+  DIDWW_SIP_BRIDGE_CALL_TIMEOUT_SECONDS: "45"
+  DIDWW_SIP_BRIDGE_MAX_CALL_SECONDS: "1800"
+  DIDWW_SIP_BRIDGE_REQUEST_TIMEOUT_SECONDS: "15"
+  DIDWW_SIP_BRIDGE_MAX_CONCURRENT_CALLS: "4"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_POLL_INTERVAL_SECONDS: "1"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_CALLER_PATIENCE_SECONDS: "18"
+  DIDWW_SIP_BRIDGE_VOICE_QUERY_TIMEOUT_SECONDS: "90"
+  DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS: "700"
+  DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS: "120"
+  DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS: "0"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS: "3"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD: "0.84"
+  DIDWW_SIP_BRIDGE_BACKCHANNEL_PHRASES: "ok,okay,yep,yup,right,sure,uh-huh,mhm,mm-hmm,yeah,yes,good,great,thanks,thank you"
+
+# Worker/global JSON config files.
+evander_ado_worker_config:
+  runtime_dir: "runtime"
+  poll_interval_seconds: 5
+  directories: []
+
+evander_discord_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 5
+  jitter_seconds: 5
+  backoff_seconds: 60
+  lock_path: null
+
+evander_scheduled_wake_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  backoff_seconds: 60
+  cooldown_seconds: 60
+  lock_path: null
+  session_cooldown_path: null
+  busy_check_script_path: "scripts/check_session_vm_busy.sh"
+  resume_script_path: "scripts/resume_issue_agent.sh"
+  wake_state_path: null
+  vm_user: "agent"
+  resume_timeout_seconds: 1200
+  scheduled_wake_prefix_text: "You have unread PR comments. Please fetch them with list_unread_feedback."
+
+evander_teams_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  publish_trigger_events_directly: true
+  poll_interval_seconds: 2
+  jitter_seconds: 5
+  backoff_seconds: 60
+  max_concurrent_target_polls: 4
+  target_backoff_initial_seconds: 60
+  target_backoff_max_seconds: 900
+  target_transient_backoff_initial_seconds: 5
+  target_transient_backoff_max_seconds: 30
+  change_notifications_enabled: false
+  change_notification_public_base_url: null
+  change_notification_listener_host: "127.0.0.1"
+  change_notification_listener_port: 11882
+  change_notification_subscription_lifetime_hours: 48
+  change_notification_renewal_margin_hours: 24
+  change_notification_reconciliation_poll_interval_seconds: 60
+  lock_path: null
+
+evander_teams_meeting_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 5
+  jitter_seconds: 2
+  backoff_seconds: 60
+
+evander_trigger_orchestrator_config:
+  runtime_dir: "runtime"
+  poll_interval_seconds: 5
+  jitter_seconds: 5
+  lock_path: null
+  event_queue_cursor_store_path: null
+  workflow_packs:
+    - "agent-container-worker.v1.json"
+  workflow_transforms: []
+  provider_loader:
+    provider_profile: "profiles/agent-default"
+    include_builtin: null
+    provider_modules: []
+    provider_entry_points_enabled: true
+
+# Full current stack by default, with explicit toggle points for operators.
+evander_services:
+  admin_web: true
+  gateway: true
+  firewall: "{{ evander_service_profile == 'full' }}"
+  openai_relay: true
+  didww_sip_bridge: true
+  nuget_relay: true
+  npm_audit_facade: true
+  package_cache: true
+  apt_cache: true
+  semantic_store: true
+  http_target_relay: true
+  http_target_browser_proxy: true
+  codex_egress_proxy: true
+  ado_worker: true
+  proxy_issue_sync: true
+  discord_ingest: true
+  scheduled_wake: true
+  managed_git_refresh: true
+  teams_ingest: true
+  teams_notifications: true
+  teams_meeting_ingest: true
+  effect_orchestrator: true
+  trigger_orchestrator: true

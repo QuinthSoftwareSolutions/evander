@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import pytest
+
+from evander_team_addon.chat_attachments import (
+    TeamChatAttachmentPolicyService,
+    TeamChatAttachmentStorage,
+)
+from evander_team_addon.mcp import _delete_uncommitted_team_chat_attachments
+from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.commands.chat_commands import TeamChatCommandService
+
+
+def _repo_with_chat(tmp_path):
+    repo = TeamStateRepository(tmp_path)
+    TeamAdminService(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state, conversation, _created = TeamChatService(repo).create_or_get_conversation(
+        agent_id="manager",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = TeamChatService(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please reply with the result.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+
+    TeamChatService(repo).begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+        lease_seconds=60,
+    )
+    return repo, conversation, message
+
+
+def test_team_chat_attachment_policy_inherits_inside_addon_state(tmp_path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    service = TeamChatAttachmentPolicyService(repo)
+    root = service.effective_policy("root/product/backend")
+    assert root.operator_to_agent_enabled is True
+    assert root.agent_send_requires_approval is True
+
+    state = service.set_override(
+        directory_path="root/product",
+        values={"max_attachment_bytes": 2048, "agent_send_requires_approval": False},
+        updated_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    inherited = service.effective_policy("root/product/backend", state=state)
+    assert inherited.max_attachment_bytes == 2048
+    assert inherited.agent_send_requires_approval is False
+    assert inherited.allowed_mime_types == root.allowed_mime_types
+
+
+def test_team_chat_staging_is_session_owned_and_promotes_deterministically(tmp_path) -> None:
+    storage = TeamChatAttachmentStorage(tmp_path)
+    staged = storage.stage_agent_file(
+        session_id="session-a",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    with pytest.raises(PermissionError, match="another session"):
+        storage.get_staged(staged.id, session_id="session-b")
+
+    first = storage.promote_staged([staged.id], session_id="session-a")
+    second = storage.promote_staged([staged.id], session_id="session-a")
+    assert first == second
+    assert storage.asset_path(first[0].id).read_bytes() == b"report"
+
+    storage.staging_blob_path(staged.id).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="no longer matches"):
+        storage.get_staged(staged.id, session_id="session-a")
+
+
+def test_agent_chat_reply_persists_staged_attachment_with_message(tmp_path) -> None:
+    repo, conversation, source_message = _repo_with_chat(tmp_path)
+    storage = TeamChatAttachmentStorage(tmp_path)
+    staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/result.json",
+        content=b'{"ok":true}',
+        filename="result.json",
+        mime_type="application/json",
+    )
+    prepared = storage.promote_staged([staged.id], session_id="session-manager")
+
+    state, result = TeamChatCommandService(repo).reply_to_chat_command(
+        session_id="session-manager",
+        conversation_id=conversation.id,
+        message_id=source_message.id,
+        body="",
+        request_id="reply-with-file",
+        attachments=prepared,
+        source_attachment_ids=[staged.id],
+    )
+
+    reply = state.conversation_messages[result["chat_message_id"]]
+    assert reply.body is None
+    assert reply.attachment_ids == [prepared[0].id]
+    attachment = state.chat_attachments[prepared[0].id]
+    assert attachment.message_id == reply.id
+    assert attachment.created_by_session_id == "session-manager"
+    assert TeamStateRepository(tmp_path).read().chat_attachments[attachment.id].sha256
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_body"),
+    [
+        ("", "Team Chat attachment reference:"),
+        ("Attached is the report.", "Attached is the report."),
+    ],
+)
+def test_external_chat_reply_represents_attachments_in_delivery_event(
+    tmp_path,
+    body,
+    expected_body,
+) -> None:
+    repo, conversation, source_message = _repo_with_chat(tmp_path)
+
+    def _mark_external(state):
+        state.conversation_messages[source_message.id].metadata["external_origin"] = {
+            "provider": "discord",
+            "communication_target_id": "discord-ops",
+            "source_message_id": "discord-message-1",
+            "source_thread_id": None,
+            "source_author_id": "operator-1",
+        }
+        return state
+
+    repo.update(_mark_external)
+    storage = TeamChatAttachmentStorage(tmp_path)
+    staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    prepared = storage.promote_staged([staged.id], session_id="session-manager")
+
+    state, result = TeamChatCommandService(repo).reply_to_chat_command(
+        session_id="session-manager",
+        conversation_id=conversation.id,
+        message_id=source_message.id,
+        body=body,
+        request_id=f"external-file-reply-{bool(body)}",
+        attachments=prepared,
+        source_attachment_ids=[staged.id],
+    )
+
+    reply = state.conversation_messages[result["chat_message_id"]]
+    assert reply.body == (body or None)
+    assert reply.attachment_ids == [prepared[0].id]
+    records = repo.list_outbox_records(
+        intent_type="team.chat.external_reply_requested",
+    )
+    assert len(records) == 1
+    payload = records[0].payload["payload"]
+    assert payload["body"].strip()
+    assert expected_body in payload["body"]
+    assert "report.txt" in payload["body"]
+    assert payload["team_chat_body"] == (body or None)
+    assert payload["attachment_ids"] == [prepared[0].id]
+    assert payload["attachments"] == [prepared[0].payload()]
+
+
+def test_failed_send_cleanup_preserves_attachment_claimed_by_concurrent_message(tmp_path) -> None:
+    repo, conversation, source_message = _repo_with_chat(tmp_path)
+    storage = TeamChatAttachmentStorage(tmp_path)
+    committed_staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/committed.txt",
+        content=b"committed",
+        filename="committed.txt",
+        mime_type="text/plain",
+    )
+    uncommitted_staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/uncommitted.txt",
+        content=b"uncommitted",
+        filename="uncommitted.txt",
+        mime_type="text/plain",
+    )
+    committed = storage.promote_staged([committed_staged.id], session_id="session-manager")
+    uncommitted = storage.promote_staged([uncommitted_staged.id], session_id="session-manager")
+    TeamChatCommandService(repo).reply_to_chat_command(
+        session_id="session-manager",
+        conversation_id=conversation.id,
+        message_id=source_message.id,
+        body="Committed first.",
+        request_id="winning-send",
+        attachments=committed,
+        source_attachment_ids=[committed_staged.id],
+    )
+
+    _delete_uncommitted_team_chat_attachments(
+        repository=repo,
+        storage=storage,
+        attachments=[*committed, *uncommitted],
+    )
+
+    assert storage.asset_path(committed[0].id).read_bytes() == b"committed"
+    assert not storage.asset_path(uncommitted[0].id).exists()

@@ -1,0 +1,29 @@
+{
+  "pack_id": "security-scan-example",
+  "pack_version": "v1",
+  "description": "Disabled example: the explicit enable gate drops all requests until an operator changes it.",
+  "graphs": [{
+    "id": "security-scan-example",
+    "name": "Repository security scan (disabled)",
+    "directory_path": "root",
+    "node_ids": ["scan-request", "scan-enable", "scan-repo"]
+  }],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {"node": {"id": "scan-request", "display_name": "Security scan request", "type": "trigger:event", "config": {"event_type": "security.scan.requested"}, "outputs": {"session_id": {"type": "string"}, "repo_path": {"type": "string"}}}},
+      {"node": {"id": "scan-enable", "display_name": "Enable scans explicitly", "type": "gate:filter", "config": {"when": {"left": false, "equals": true}}}},
+      {"node": {"id": "scan-repo", "display_name": "Scan repository", "type": "effect:security:scan-repo", "config": {
+        "session_id": "${{scan-request.session_id}}",
+        "repo_path": "${{scan-request.repo_path}}",
+        "provider": "codex-security",
+        "mode": "standard",
+        "timeout_seconds": 3600
+      }}}
+    ],
+    "edges": [
+      {"source_id": "scan-request", "target_id": "scan-enable"},
+      {"source_id": "scan-enable", "target_id": "scan-repo"}
+    ]
+  }
+}

@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+from uuid import uuid4
+
+from evander.admin.services.vm_agent.common import (
+    Any,
+    VmActionResult,
+    _is_synthetic_chat_assistant_thread_id,
+    _source_project_dir,
+    ensure_session_not_expired,
+    os,
+    process_helpers,
+    subprocess,
+    sys,
+)
+from evander.cost_categories import dispatch_with_cost_context
+from evander.fast_mode import FastModeValue, resolve_fast_mode
+from evander.cyber_access import session_cyber_access_program
+from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
+
+
+class VmAgentResumeMixin:
+    def resume_agent(
+        self,
+        target: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        fast_mode: FastModeValue | None = None,
+        reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
+        mcp_gateway_url: str | None = None,
+    ) -> VmActionResult:
+        container_session = None
+        if getattr(self.runtime, "session_repository", None) is not None:
+            try:
+                container_session, _container_record = self._resolve_container_agent_session(
+                    target,
+                    require_session=False,
+                )
+            except ValueError as exc:
+                if str(exc).startswith("Ambiguous container worker session target"):
+                    raise
+                container_session = None
+        if container_session is not None and self._is_container_session(container_session):
+            try:
+                container_session = self._reconcile_managed_git_remote_before_dispatch(
+                    session_id=container_session.session_id,
+                    session=container_session,
+                    backend="container_worker_vm",
+                    vm_name=None,
+                    vm_user=vm_user,
+                )
+            except RuntimeError as exc:
+                return VmActionResult(
+                    success=False,
+                    vm_name=self._container_session_target_name(container_session),
+                    action="resume_issue_agent",
+                    message=str(exc),
+                    provider="container_worker_vm",
+                )
+            response = self._agent_prompt_dispatch_port().prompt_admin_agent(
+                container_session.session_id,
+                backend="container_worker_vm",
+                payload={
+                    "prompt": prompt,
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
+                    "fast_mode": fast_mode,
+                    "reasoning_effort_source": reasoning_effort_source,
+                    "fast_mode_source": fast_mode_source,
+                    "vm_user": vm_user,
+                    "dispatch_id": dispatch_id,
+                    "resume_thread_id": resume_thread_id,
+                    "resume_mode": resume_mode,
+                },
+            )
+            return VmActionResult(
+                success=bool(response.get("success", True)),
+                vm_name=str(
+                    response.get("target_name")
+                    or self._container_session_target_name(container_session)
+                ),
+                action=str(response.get("action") or "resume_issue_agent"),
+                message=str(response.get("message") or ""),
+                provider="container_worker_vm",
+                thread_id=str(response.get("thread_id") or "") or None,
+                reasoning_effort=response.get("reasoning_effort"),
+                fast_mode=response.get("fast_mode"),
+                reasoning_effort_source=response.get("reasoning_effort_source"),
+                fast_mode_source=response.get("fast_mode_source"),
+            )
+
+        vm_name = self._resolve_vm_name_from_target(target)
+        session_id: str | None = None
+        directory_path: str | None = None
+        manifest: Any | None = None
+        effective_resume_thread_id: str | None = None
+        web_search_mode = "disabled"
+        agent_provider: str | None = None
+        try:
+            session_id, manifest = self._resolve_session_target(target)
+            ensure_session_not_expired(manifest)
+            resolved_model = str(model or "").strip() or self._deps.resolve_agent_model_for_session(
+                manifest
+            )
+            directory_path = manifest.directory_path
+            web_search_mode = (
+                "live" if bool(getattr(manifest, "web_search_enabled", False)) else "disabled"
+            )
+            effective_resume_thread_id = str(resume_thread_id or "").strip() or None
+            if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
+                effective_resume_thread_id = None
+            effective_config = self._deps.runtime.provider_config.resolve_for_directory(
+                manifest.directory_path
+            )
+            agent_provider = session_agent_harness(manifest, effective_config)
+            cyber_program = session_cyber_access_program(manifest, effective_config)
+            reasoning = resolve_reasoning_effort(
+                {
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_source": reasoning_effort_source,
+                },
+                session=manifest,
+                harness=agent_provider,
+                model=resolved_model,
+                route=(manifest.metadata or {}).get("model_provider_mode")
+                or effective_config.model_provider_mode,
+            )
+            speed = resolve_fast_mode(
+                {
+                    "fast_mode": fast_mode,
+                    "fast_mode_source": fast_mode_source,
+                },
+                session=manifest,
+                harness=agent_provider,
+                route=(manifest.metadata or {}).get("model_provider_mode")
+                or effective_config.model_provider_mode,
+            )
+            manifest = self._reconcile_managed_git_remote_before_dispatch(
+                session_id=session_id,
+                session=manifest,
+                backend="libvirt_vm",
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
+        except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=str(exc),
+            )
+        except RuntimeError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=str(exc),
+            )
+        script_path = _source_project_dir() / "scripts" / "resume_issue_agent.sh"
+        normalized_resume_mode = str(resume_mode).strip() or "new_context"
+        if normalized_resume_mode not in {"same_context", "new_context"}:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=f"Unsupported resume mode: {resume_mode}",
+            )
+        args = [
+            str(script_path),
+            "--prompt",
+            prompt,
+            "--vm-name",
+            vm_name,
+            "--vm-user",
+            vm_user,
+            "--host-control-state-path",
+            str(self._deps.config.host_agent_control_state_path),
+            *(["--dispatch-id", dispatch_id] if dispatch_id else []),
+            *(
+                ["--resume-thread-id", effective_resume_thread_id]
+                if effective_resume_thread_id
+                else ["--resume-mode", normalized_resume_mode]
+            ),
+            *(["--mcp-gateway-url", mcp_gateway_url] if mcp_gateway_url else []),
+        ]
+        try:
+            resume_timeout_seconds = max(
+                1.0,
+                float(os.environ.get("EVANDER_ADMIN_RESUME_TIMEOUT_SECONDS", "120") or "120"),
+            )
+        except ValueError:
+            resume_timeout_seconds = 120.0
+        resume_env = os.environ | {
+            "AGENT_MODEL": resolved_model,
+            "AGENT_REASONING_EFFORT": reasoning.value or "",
+            "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
+            "AGENT_FAST_MODE": speed.env_value,
+            "AGENT_CYBER_ACCESS_PROGRAM": cyber_program or "",
+            "AGENT_WEB_SEARCH_MODE": web_search_mode,
+        }
+        if agent_provider:
+            resume_env["AGENT_PROVIDER"] = agent_provider
+        try:
+            completed = dispatch_with_cost_context(
+                lambda: process_helpers.run_subprocess(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    env=resume_env,
+                    timeout=resume_timeout_seconds,
+                ),
+                runtime_dir=self._deps.config.runtime_dir,
+                session=manifest,
+                session_id=session_id,
+                payload={},
+                dispatch_id=dispatch_id or f"cost-manual-{uuid4().hex}",
+                agent_harness=agent_provider or "codex",
+                model=resolved_model,
+                execution_backend="libvirt_vm",
+            )
+        except subprocess.TimeoutExpired:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=f"resume_issue_agent.sh timed out after {resume_timeout_seconds:g}s",
+            )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        thread_id: str | None = None
+        message_lines: list[str] = []
+        for line in stdout.splitlines():
+            if line.startswith("thread_id="):
+                candidate = line.partition("=")[2].strip()
+                if candidate:
+                    thread_id = candidate
+                continue
+            message_lines.append(line)
+        message = (
+            "\n".join(line for line in message_lines if line.strip()).strip() or stderr.strip()
+        )
+        resolved_thread_id = thread_id or effective_resume_thread_id
+        if (
+            completed.returncode == 0
+            and persist_thread_id
+            and session_id
+            and manifest is not None
+            and resolved_thread_id
+        ):
+            updated_metadata = dict(manifest.metadata)
+            updated_metadata["agent_thread_id"] = resolved_thread_id
+            self._persist_session(
+                session_id, manifest.model_copy(update={"metadata": updated_metadata})
+            )
+        if completed.returncode == 0 and dispatch_id:
+            self._spawn_agent_completion_watcher(
+                vm_name=vm_name,
+                dispatch_id=dispatch_id,
+                vm_user=vm_user,
+                session_id=session_id,
+                directory_path=directory_path,
+            )
+        return VmActionResult(
+            success=completed.returncode == 0,
+            vm_name=vm_name,
+            action="resume_issue_agent",
+            message=message or f"resume_issue_agent.sh exited with code {completed.returncode}",
+            thread_id=resolved_thread_id,
+            model=resolved_model,
+            **reasoning.fields(),
+            **speed.fields(),
+        )
+
+    def _spawn_agent_completion_watcher(
+        self,
+        *,
+        vm_name: str,
+        dispatch_id: str,
+        vm_user: str,
+        session_id: str | None,
+        directory_path: str | None,
+    ) -> None:
+        watcher_cmd = [
+            sys.executable,
+            "-m",
+            "evander.daemons.agent_completion_watcher",
+            "--runtime-dir",
+            str(self._deps.config.runtime_dir),
+            "--vm-name",
+            vm_name,
+            "--dispatch-id",
+            dispatch_id,
+            "--vm-user",
+            vm_user,
+            "--poll-interval-seconds",
+            "1.0",
+            "--timeout-seconds",
+            "172800",
+        ]
+        trigger_worker_config = self._deps.workflow_config.read_worker_global_config(
+            "trigger-orchestrator"
+        ).config
+        workflow_runtime_dir = process_helpers.resolve_path_setting(
+            base_dir=self._deps.project_dir,
+            value=trigger_worker_config.get("runtime_dir"),
+            fallback=self._deps.config.runtime_dir,
+        )
+        effect_lock_path = process_helpers.resolve_path_setting(
+            base_dir=self._deps.project_dir,
+            value=trigger_worker_config.get("effect_lock_path"),
+            fallback=workflow_runtime_dir / "effect-orchestrator.lock",
+        )
+        orchestration_store_path = process_helpers.resolve_path_setting(
+            base_dir=self._deps.project_dir,
+            value=trigger_worker_config.get("orchestration_store_path"),
+            fallback=workflow_runtime_dir / "orchestration.db",
+        )
+        orchestration_retention_days = trigger_worker_config.get("orchestration_retention_days")
+        orchestration_compact_history_retention_days = trigger_worker_config.get(
+            "orchestration_compact_history_retention_days"
+        )
+        watcher_cmd.extend(["--effect-lock-path", str(effect_lock_path)])
+        watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
+        if orchestration_retention_days is not None:
+            watcher_cmd.extend(
+                ["--orchestration-retention-days", str(orchestration_retention_days)]
+            )
+            if orchestration_compact_history_retention_days is None:
+                raise ValueError(
+                    "orchestration_compact_history_retention_days is required when "
+                    "orchestration_retention_days is configured"
+                )
+            watcher_cmd.extend(
+                [
+                    "--orchestration-compact-history-retention-days",
+                    str(orchestration_compact_history_retention_days),
+                ]
+            )
+        if session_id:
+            watcher_cmd.extend(["--session-id", session_id])
+        if directory_path:
+            watcher_cmd.extend(["--directory-path", directory_path])
+        subprocess.Popen(
+            watcher_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(self._deps.project_dir),
+            env=os.environ.copy(),
+            text=True,
+        )
+
+    spawn_agent_completion_watcher = _spawn_agent_completion_watcher

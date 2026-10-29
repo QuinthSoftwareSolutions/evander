@@ -1,0 +1,37 @@
+---
+- name: Ensure managed config directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0750"
+  loop:
+    - "{{ evander_deploy_path }}/config"
+    - "{{ evander_deploy_path }}/config/ado-worker"
+    - "{{ evander_deploy_path }}/config/discord-ingest"
+    - "{{ evander_deploy_path }}/config/host-heartbeat"
+    - "{{ evander_deploy_path }}/config/scheduled-wake"
+    - "{{ evander_deploy_path }}/config/teams-ingest"
+    - "{{ evander_deploy_path }}/config/teams-meeting-ingest"
+    - "{{ evander_deploy_path }}/config/trigger-orchestrator"
+    - "{{ evander_runtime_dir }}"
+
+- name: Ensure managed runtime service lock files are owned by the run user
+  ansible.builtin.file:
+    path: "{{ evander_runtime_dir }}/{{ item }}"
+    state: touch
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0644"
+    access_time: preserve
+    modification_time: preserve
+  loop: "{{ evander_runtime_service_lock_files }}"
+
+- name: Initialize repo runtime state
+  ansible.builtin.command:
+    cmd: "./.venv/bin/evander-cli init-state --runtime-dir runtime"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false

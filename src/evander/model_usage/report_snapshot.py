@@ -1,0 +1,169 @@
+"""Consistent, indexed inputs for incrementally refreshed usage reports.
+
+The change table keeps one row per identity, not one row per write. Tombstones
+allow an existing report to observe deletions without retaining usage payloads.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+
+from .models import ModelInferenceUsageEvent, ModelUsageCorrelationContext
+from .cost_balances import model_usage_request_key
+
+
+def ensure_cost_report_tracking(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS model_usage_report_clock (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            generation TEXT NOT NULL,
+            revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO model_usage_report_clock VALUES (1, lower(hex(randomblob(16))), 0);
+        CREATE TABLE IF NOT EXISTS model_usage_report_changes (
+            kind TEXT NOT NULL,
+            identity TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            PRIMARY KEY (kind, identity)
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_usage_report_changes_revision
+            ON model_usage_report_changes(revision);
+        """
+    )
+    # Identifiers below are fixed internal constants, never user input.
+    for table, kind, identity in (
+        ("model_usage_events", "event", "event_id"),
+        ("model_usage_correlation_contexts", "context", "dispatch_id"),
+    ):
+        for operation, reference in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+            condition = ""
+            if operation == "UPDATE":
+                fields = (
+                    ("payload_json",) if kind == "event" else ("team_id", "project_id", "agent_id")
+                )
+                condition = "WHEN " + " OR ".join(
+                    f"OLD.{field} IS NOT NEW.{field}" for field in fields
+                )
+            connection.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {table}_report_{operation.lower()}
+                AFTER {operation} ON {table} {condition}
+                BEGIN
+                    UPDATE model_usage_report_clock SET revision = revision + 1 WHERE singleton = 1;
+                    INSERT INTO model_usage_report_changes(kind, identity, revision)
+                    VALUES ('{kind}', {reference}.{identity},
+                        (SELECT revision FROM model_usage_report_clock WHERE singleton = 1))
+                    ON CONFLICT(kind, identity) DO UPDATE SET revision = excluded.revision;
+                END
+                """
+            )
+
+
+class CostReportSnapshot:
+    """A read transaction held while one report revision is assembled."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        row = connection.execute(
+            "SELECT generation, revision FROM model_usage_report_clock WHERE singleton = 1"
+        ).fetchone()
+        self.generation = str(row["generation"])
+        self.revision = int(row["revision"])
+
+    def changes_since(self, revision: int) -> tuple[set[str], set[str]]:
+        events: set[str] = set()
+        contexts: set[str] = set()
+        for row in self.connection.execute(
+            "SELECT kind, identity FROM model_usage_report_changes WHERE revision > ?",
+            (revision,),
+        ):
+            (events if row["kind"] == "event" else contexts).add(row["identity"])
+        return events, contexts
+
+    def events(self) -> Iterable[ModelInferenceUsageEvent]:
+        for row in self.connection.execute(
+            "SELECT payload_json FROM model_usage_events ORDER BY occurred_at, event_id"
+        ):
+            yield ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+
+    def events_in_period(
+        self, *, start: datetime, end: datetime, directory_path: str,
+        include_request_siblings: bool = False,
+    ) -> Iterable[ModelInferenceUsageEvent]:
+        """Use the source period index, without building or migrating a projection."""
+        events: dict[str, ModelInferenceUsageEvent] = {}
+        # Existing rows mix whole-second and fractional ISO timestamps. Fetch
+        # complete boundary seconds through the index, then compare datetimes:
+        # lexically, '.500000Z' sorts before 'Z' in the same second.
+        candidate_start = start.astimezone(UTC).replace(microsecond=0)
+        candidate_end = end.astimezone(UTC).replace(microsecond=0) + timedelta(seconds=1)
+        for row in self.connection.execute(
+            "SELECT payload_json FROM model_usage_events WHERE occurred_at>=? AND occurred_at<? "
+            "AND (directory_path=? OR substr(directory_path,1,?)=? "
+            "OR (?='root' AND directory_path IS NULL) OR (? AND provider='anthropic')) "
+            "ORDER BY occurred_at,event_id",
+            (candidate_start.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+             candidate_end.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+             directory_path, len(directory_path) + 1, directory_path + "/", directory_path,
+             include_request_siblings),
+        ):
+            event = ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+            if start <= event.occurred_at < end:
+                events[event.event_id] = event
+        if include_request_siblings:
+            # Transcripts may lack directory attribution and their canonical
+            # timestamp may lie across a report boundary from the relay. Seed
+            # all Anthropic candidates in the indexed period, resolve siblings,
+            # then let the report apply directory scope after deduplication.
+            requests: dict[str, set[str]] = {}
+            for event in events.values():
+                key = model_usage_request_key(event)
+                if event.provider == "anthropic" and key is not None:
+                    requests.setdefault(key[0], set()).add(key[1])
+            for session_id, keys in requests.items():
+                identities = sorted(keys)
+                for offset in range(0, len(identities), 400):
+                    chunk = identities[offset:offset + 400]
+                    placeholders = ",".join("?" for _ in chunk)
+                    for row in self.connection.execute(
+                        f"SELECT payload_json FROM model_usage_events WHERE session_id=? "
+                        f"AND cost_request_key IN ({placeholders})", (session_id, *chunk),
+                    ):
+                        event = ModelInferenceUsageEvent.model_validate_json(row["payload_json"])
+                        events[event.event_id] = event
+        yield from events.values()
+
+    def event_ids_for(self, *, field: str, values: Iterable[str]) -> set[str]:
+        if field not in {"session_id", "dispatch_id"}:
+            raise ValueError("unsupported cost report lookup")
+        unique_values = list(dict.fromkeys(values))
+        result: set[str] = set()
+        for offset in range(0, len(unique_values), 400):
+            chunk = unique_values[offset : offset + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            result.update(
+                row["event_id"]
+                for row in self.connection.execute(
+                    f"SELECT event_id FROM model_usage_events WHERE {field} IN ({placeholders})",
+                    chunk,
+                )
+            )
+        return result
+
+    def event(self, event_id: str) -> ModelInferenceUsageEvent | None:
+        row = self.connection.execute(
+            "SELECT payload_json FROM model_usage_events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return ModelInferenceUsageEvent.model_validate_json(row["payload_json"]) if row else None
+
+    def context(self, dispatch_id: str) -> ModelUsageCorrelationContext | None:
+        row = self.connection.execute(
+            "SELECT payload_json FROM model_usage_correlation_contexts WHERE dispatch_id = ?",
+            (dispatch_id,),
+        ).fetchone()
+        return (
+            ModelUsageCorrelationContext.model_validate_json(row["payload_json"]) if row else None
+        )

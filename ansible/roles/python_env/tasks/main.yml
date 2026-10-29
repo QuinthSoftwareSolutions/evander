@@ -1,0 +1,84 @@
+---
+- name: Create the repo virtualenv with uv
+  ansible.builtin.command:
+    cmd: "uv venv {{ evander_deploy_path }}/.venv"
+    creates: "{{ evander_deploy_path }}/.venv/bin/python"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  become_user: "{{ evander_run_user }}"
+
+- name: Install the repo into the virtualenv
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e .{{ evander_python_install_extras }}"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+
+- name: Install the optional Azure DevOps integration for selected ADO services
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/azure-devops-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when: >-
+    evander_azure_devops_addon_enabled | default(
+      (evander_services.ado_worker | default(false) | bool)
+      or (evander_services.proxy_issue_sync | default(false) | bool)
+    ) | bool
+
+- name: Install the optional Teams Graph integration for selected Teams services
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/teams-graph-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when: >-
+    evander_teams_graph_addon_enabled | default(
+      (evander_services.teams_ingest | default(false) | bool)
+      or (evander_services.teams_notifications | default(false) | bool)
+      or (evander_services.teams_meeting_ingest | default(false) | bool)
+    ) | bool
+
+- name: Check for provisioned Browser Sessions services
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/evander/browser-relay.env
+    - /etc/evander/browser-worker.env
+  register: evander_browser_sessions_environment
+
+- name: Install the optional Browser Sessions integration on provisioned hosts
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/browser-sessions-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  register: evander_browser_sessions_package_install
+  when: >-
+    evander_browser_sessions_addon_enabled | default(
+      (evander_browser_sessions_environment.results | selectattr('stat.exists') | list | length) > 0
+    ) | bool
+
+- name: Check for provisioned Application Environments service
+  ansible.builtin.stat:
+    path: /etc/evander/application-worker.env
+  register: evander_application_environments_environment
+
+- name: Install the optional Application Environments integration on provisioned hosts
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/application-environments-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  register: evander_application_environments_package_install
+  when: evander_application_environments_addon_enabled | default(evander_application_environments_environment.stat.exists) | bool

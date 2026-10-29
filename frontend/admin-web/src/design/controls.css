@@ -1,0 +1,296 @@
+/* Shared base for React and standalone add-on surfaces. */
+:root[data-admin-design] {
+  color: var(--ui-text);
+  background: var(--ui-canvas);
+  font: 14px/1.45 var(--ui-font);
+  accent-color: var(--ui-accent);
+}
+
+[data-admin-design] body {
+  color: var(--ui-text);
+  background: var(--ui-canvas);
+  font: inherit;
+}
+
+[data-admin-design] [hidden] {
+  display: none !important;
+}
+
+[data-admin-design] :is(button, input, select, textarea) {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ui-text);
+  border-radius: var(--ui-radius);
+}
+
+/* Preserve pill launchers and circular controls above the structural CSS layers. */
+[data-admin-design] :is(
+  .chat-pill,
+  .session-tool-settings-button,
+  .structured-input-json-row .admin-icon-button,
+  .copy-identifier-button,
+  .mail-directive-composer .icon-button,
+  .skv-help
+) {
+  border-radius: 999px;
+}
+
+[data-admin-design] .react-flow {
+  --xy-node-border-radius: var(--ui-radius);
+}
+
+[data-admin-design] .react-flow__resize-control.handle {
+  border-radius: var(--ui-radius);
+}
+
+[data-admin-design] :is(input, select, textarea) {
+  font-weight: 400;
+  border-color: var(--ui-control-border);
+  background: var(--ui-surface);
+  min-width: 0;
+}
+
+[data-admin-design]
+  :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
+  min-height: var(--ui-control-height);
+  padding: 5px 9px;
+  border: 1px solid var(--ui-control-border);
+}
+
+[data-admin-design]
+  :where(
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    select:not([multiple]):not([size]),
+    select:not([multiple])[size="0"],
+    select:not([multiple])[size="1"]
+  ) {
+  height: var(--ui-control-height);
+}
+
+[data-admin-design] textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--ui-control-border);
+  line-height: 1.5;
+}
+
+[data-admin-design] :is(input, select, textarea)[aria-invalid="true"] {
+  border-color: var(--ui-danger);
+  outline-color: var(--ui-danger);
+}
+
+[data-admin-design] :is(input, textarea)::placeholder {
+  color: var(--ui-muted);
+  opacity: 1;
+}
+
+[data-admin-design] button {
+  min-height: var(--ui-control-height);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: none;
+  padding: 5px 10px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+/* Icon-only buttons keep their glyphs centered within the existing control box. */
+[data-admin-design] button:is(.admin-icon-button, .toolbar-icon-button, .dashboard-icon-button, .session-tool-settings-button, .admin-quick-nav-close) {
+  padding: 0;
+}
+
+[data-admin-design] button:hover:not(:disabled) {
+  color: var(--ui-text);
+  background: var(--ui-subtle);
+  border-color: var(--ui-control-border);
+}
+
+[data-admin-design] :is(button.primary, button.primary-button, button[type="submit"]) {
+  color: var(--ui-on-accent);
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+
+[data-admin-design] :is(button.primary, button.primary-button, button[type="submit"]):hover:not(:disabled) {
+  background: var(--ui-accent-hover);
+  color: var(--ui-on-accent);
+}
+
+[data-admin-design] button.danger {
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+  border-color: color-mix(in srgb, var(--ui-danger) 35%, var(--ui-border));
+}
+
+[data-admin-design] :is(button, input, select, textarea):disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+[data-admin-design] :focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+
+[data-admin-design] :is(h1, h2, h3, h4) {
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+[data-admin-design] h1 {
+  font-size: 22px;
+  letter-spacing: -0.4px;
+}
+[data-admin-design] h2 {
+  font-size: 18px;
+  letter-spacing: -0.2px;
+}
+[data-admin-design] h3 {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+[data-admin-design] :is(code, pre, .mono) {
+  font-family: var(--ui-mono);
+}
+[data-admin-design] a {
+  color: var(--ui-accent);
+}
+[data-admin-design] :is(.muted-text, .muted-copy, .muted, .panel-meta, .field-help, .field-note, .help-text) {
+  color: var(--ui-muted);
+}
+
+[data-admin-design] :is(label, .checkbox-row, .checkbox-inline, .option-checkbox-row) {
+  color: var(--ui-text);
+}
+
+[data-admin-design] :is(.eyebrow, .section-label, .node-kind) {
+  color: var(--ui-muted);
+  font: 600 11px/1.4 var(--ui-font);
+  letter-spacing: 0.04em;
+}
+
+[data-admin-design] :is(th, td) {
+  border-color: var(--ui-border);
+  padding: var(--ui-row-padding) 12px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-admin-design] th {
+  background: var(--ui-navigation);
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+[data-admin-design] td {
+  min-height: var(--ui-row-height);
+}
+[data-admin-design] :is(.status-pill, .state-pill, .badge, .revision-badge) {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0;
+  line-height: 1.4;
+  text-transform: none;
+  color: var(--ui-muted);
+  background: var(--ui-subtle);
+  border: 0;
+}
+
+[data-admin-design]
+  :is(.status-pill, .state-pill, .badge):is(
+    .state-pass,
+    .state-completed,
+    .state-approved,
+    .state-success,
+    .state-running,
+    .state-active,
+    .success
+  ) {
+  color: var(--ui-success);
+  background: var(--ui-success-surface);
+}
+[data-admin-design]
+  :is(.status-pill, .state-pill, .badge):is(.state-pending, .state-waiting, .state-warning, .state-blocked, .warning) {
+  color: var(--ui-warning);
+  background: var(--ui-warning-surface);
+}
+[data-admin-design]
+  :is(.status-pill, .state-pill, .badge):is(.state-fail, .state-failed, .state-denied, .state-error, .error, .danger) {
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+}
+[data-admin-design] .success-callout {
+  color: var(--ui-success);
+  background: var(--ui-success-surface);
+  border: 1px solid color-mix(in srgb, var(--ui-success) 25%, var(--ui-border));
+}
+[data-admin-design] .warning-callout {
+  color: var(--ui-warning);
+  background: var(--ui-warning-surface);
+  border: 1px solid color-mix(in srgb, var(--ui-warning) 25%, var(--ui-border));
+}
+[data-admin-design] .error-callout {
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 25%, var(--ui-border));
+}
+[data-admin-design] :is(.error-text, .missing) {
+  color: var(--ui-danger);
+}
+[data-admin-design] :is(.admin-privilege, .admin-privilege.unlocked) {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+[data-admin-design] .admin-privilege.unlocked {
+  color: var(--ui-accent);
+}
+
+[data-admin-design] :is(.empty-state, .notice, .callout, .status-message) {
+  border-radius: var(--ui-radius);
+  box-shadow: none;
+}
+
+[data-admin-design] label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Keep the control beside the first line when an option label wraps. */
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row, .config-toggle-row) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.45;
+}
+[data-admin-design] :is(input[type="checkbox"], input[type="radio"]) {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--ui-accent);
+  box-shadow: none;
+}
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row) > span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-admin-design] *,
+  [data-admin-design] *::before,
+  [data-admin-design] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,26 @@
+flowchart TB
+    config[Host and directory configuration]
+    bootstrap[Application bootstrap]
+    composition[build_admin_runtime]
+    runtime[AdminRuntimeComponents]
+    services[Domain services]
+    web[Admin Web routes]
+    cli[CLI commands]
+    gateway[MCP gateway adapters]
+    addons[Enabled add-ons]
+    stores[Repositories and runtime stores]
+
+    config --> bootstrap
+    bootstrap --> composition
+    composition --> runtime
+    runtime --> services
+    runtime --> stores
+    services --> web
+    services --> cli
+    services --> gateway
+    addons --> composition
+    addons --> web
+    addons --> gateway
+
+    note[Composition owns wiring; domain services own behavior; routes and adapters stay thin.]
+    note --- composition

@@ -1,0 +1,738 @@
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import test from "node:test";
+
+import { chromium } from "playwright";
+import { createServer } from "vite";
+
+import {
+  ensureSectionsExpanded,
+  fulfillAdminShellBackgroundApiRequest,
+} from "./adminShellHelpers.mjs";
+
+function jsonResponse(payload, status = 200) {
+  return {
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(payload),
+  };
+}
+
+function createDirectoryTree() {
+  return {
+    directory: {
+      id: "root",
+      name: "root",
+      parent_id: null,
+      created_at: "2026-05-16T00:00:00Z",
+      metadata: {},
+      path: "root",
+    },
+    config_domains: [],
+    children: [
+      {
+        directory: {
+          id: "team-a",
+          name: "team-a",
+          parent_id: "root",
+          created_at: "2026-05-16T00:00:00Z",
+          metadata: {},
+          path: "root/team-a",
+        },
+        config_domains: [],
+        children: [],
+      },
+    ],
+  };
+}
+
+function selectedDirectoryInfo(directoryPath) {
+  return {
+    path: directoryPath,
+    parent_path: directoryPath === "root" ? null : "root",
+    can_create: true,
+    can_delete: directoryPath !== "root",
+  };
+}
+
+async function workflowViewportTransform(page) {
+  const viewport = page.locator(".react-flow__viewport");
+  await viewport.waitFor({ state: "visible" });
+  return viewport.evaluate((element) => getComputedStyle(element).transform);
+}
+
+async function changeWorkflowCanvasViewport(page) {
+  const canvasBox = await page.locator(".canvas-shell").boundingBox();
+  assert.ok(canvasBox, "expected canvas shell bounds");
+  const beforeTransform = await workflowViewportTransform(page);
+  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+  await page.mouse.wheel(0, 300);
+  await page.waitForFunction((expectedPreviousTransform) => {
+    const viewport = document.querySelector(".react-flow__viewport");
+    return Boolean(viewport) && getComputedStyle(viewport).transform !== expectedPreviousTransform;
+  }, beforeTransform, { timeout: 5000 });
+  const afterTransform = await workflowViewportTransform(page);
+  assert.notEqual(afterTransform, beforeTransform, "expected zooming to change the workflow viewport");
+  return afterTransform;
+}
+
+async function expectWorkflowViewportTransform(page, expectedTransform, message) {
+  await page.waitForTimeout(350);
+  assert.equal(await workflowViewportTransform(page), expectedTransform, message);
+}
+
+async function clickWorkflowNode(page, nodeId) {
+  const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  await node.click();
+}
+
+test("workflow editor stages unsaved changes, resets them, and guards tab and directory navigation", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  const page = await context.newPage();
+
+  const requestedEndpoints = [];
+  const pageErrors = [];
+  const consoleErrors = [];
+  const consoleErrorDetails = [];
+  const failedResponses = [];
+  const saveRequests = [];
+  const validationRequests = [];
+  const tabConfirmMessages = [];
+  const directoryConfirmMessages = [];
+  let acceptNextDirectoryConfirm = false;
+
+  await t.after(async () => {
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  const sessionResponse = {
+    auth_mode: "none",
+    auth_required: false,
+    authenticated: true,
+    username: "admin",
+    display_name: "Admin Operator",
+    permissions: ["admin.owner"],
+    effective_permissions: ["admin.owner"],
+    can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    session_id: "session-123",
+    available_login_methods: [],
+    azure_sso_login_url: null,
+    privileged_operations: {
+      unlocked: true,
+    },
+  };
+  const adminStateResponse = {
+    selected_directory_path: "root",
+    directory_scoped_config_enabled: true,
+    execution_backend: "libvirt_vm",
+    permissions: ["admin.owner"],
+    effective_permissions: ["admin.owner"],
+    can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    privileged_operations: {
+      unlocked: true,
+    },
+    assistant: {
+      enabled: false,
+      show_launcher_when_disabled: false,
+    },
+  };
+  const configurationStateResponse = {
+    directory_scoped_config_enabled: true,
+    selected_directory_path: "root",
+    execution_backend: "libvirt_vm",
+    selected_directory: selectedDirectoryInfo("root"),
+    tree: {
+      ok: true,
+      data: createDirectoryTree(),
+      errors: [],
+      validation_diagnostics: [],
+    },
+  };
+  let workflowDocument = {
+    config_path: "workflow.json",
+    layout_path: "workflow-layout.json",
+    config_exists: true,
+    layout_exists: true,
+    revision: "rev-1",
+    config: {
+      triggers: [
+        {
+          id: "trigger-1",
+          display_name: "Incoming command",
+          type: "trigger:manual",
+          config: {},
+        },
+      ],
+      gates: [],
+      effects: [
+        {
+          id: "effect-1",
+          display_name: "Dispatch agent",
+          type: "effect:agent",
+          config: { prompt: "Handle ticket" },
+          outputs: {
+            dispatch_id: { type: "string" },
+          },
+        },
+      ],
+      queries: [],
+      edges: [
+        {
+          source_id: "trigger-1",
+          target_id: "effect-1",
+          source_port: "completed",
+        },
+      ],
+    },
+    layout: {
+      nodes: {
+        "trigger-1": { x: 80, y: 120 },
+        "effect-1": { x: 360, y: 120 },
+      },
+    },
+    graphs: [
+      {
+        id: "graph-1",
+        name: "Unsaved changes smoke",
+        description: null,
+        directory_path: "root",
+        user_ids: [],
+        node_ids: ["trigger-1", "effect-1"],
+      },
+    ],
+    output_schemas: {},
+    validation_diagnostics: [],
+  };
+  const workflowCatalog = {
+    worker_id: "trigger-orchestrator",
+    nodes: [
+      {
+        kind: "trigger",
+        type: "trigger:manual",
+        label: "Manual",
+        fields: [],
+        input_ports: [],
+        output_ports: [{ key: "completed", label: "Completed" }],
+      },
+      {
+        kind: "effect",
+        type: "effect:agent",
+        label: "Agent",
+        fields: [
+          {
+            key: "outputs",
+            label: "Outputs",
+            kind: "json",
+            required: false,
+            bindable: false,
+            read_only: true,
+            multiline: false,
+            description: "Declared outputs.",
+            placeholder: null,
+            options: [],
+            item_fields: [],
+          },
+          {
+            key: "prompt",
+            label: "Prompt",
+            kind: "string",
+            required: false,
+            bindable: false,
+            read_only: false,
+            multiline: false,
+            description: null,
+            placeholder: null,
+            options: [],
+            item_fields: [],
+          },
+        ],
+        input_ports: [],
+        output_ports: [],
+      },
+    ],
+  };
+  const workflowRuns = {
+    worker_id: "trigger-orchestrator",
+    generated_at: "2026-05-16T12:00:00Z",
+    runs: [],
+    node_activity: {},
+  };
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+    requestedEndpoints.push(`${pathname}${url.search}`);
+
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
+
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(jsonResponse(sessionResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/state") {
+      const directoryPath = url.searchParams.get("directory_path") ?? "root";
+      assert.ok(["root", "root/team-a"].includes(directoryPath));
+      await route.fulfill(jsonResponse({
+        ...adminStateResponse,
+        selected_directory_path: directoryPath,
+      }));
+      return;
+    }
+
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
+
+    if (pathname === "/api/configuration/state") {
+      const directoryPath = url.searchParams.get("directory_path") ?? "root";
+      assert.ok(["root", "root/team-a"].includes(directoryPath));
+      await route.fulfill(jsonResponse({
+        ...configurationStateResponse,
+        selected_directory_path: directoryPath,
+        selected_directory: selectedDirectoryInfo(directoryPath),
+      }));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/document") {
+      if (route.request().method() === "PUT") {
+        const body = JSON.parse(route.request().postData() ?? "{}");
+        saveRequests.push(body);
+        const nextRevision = saveRequests.length === 1 ? "rev-2" : "rev-3";
+        assert.equal(body.expected_revision, workflowDocument.revision);
+        if (saveRequests.length === 1) {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
+          assert.equal(body.config.effects[0].config.prompt, "Handle escalations");
+        } else {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v3");
+          assert.equal(body.config.effects[0].config.prompt, "Handle renewals");
+        }
+        workflowDocument = {
+          ...workflowDocument,
+          config: body.config,
+          layout: body.layout,
+          graphs: body.graphs,
+          revision: nextRevision,
+        };
+        await route.fulfill(jsonResponse(workflowDocument));
+        return;
+      }
+
+      await route.fulfill(jsonResponse(workflowDocument));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/validate") {
+      const body = JSON.parse(route.request().postData() ?? "{}");
+      validationRequests.push(body);
+      await route.fulfill(jsonResponse({
+        config: body.config,
+        layout: body.layout,
+        graphs: body.graphs,
+        output_schemas: {
+          "effect-1": {
+            dispatch_id: { type: "string" },
+          },
+        },
+        validation_diagnostics: [
+          {
+            severity: "warning",
+            message: "Synthetic validation warning",
+            node_id: "effect-1",
+          },
+        ],
+      }));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/catalog") {
+      assert.ok(["root", "root/team-a"].includes(url.searchParams.get("directory_path") ?? "root"));
+      await route.fulfill(jsonResponse(workflowCatalog));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/runs") {
+      await route.fulfill(jsonResponse(workflowRuns));
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/runs/stream") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        headers: {
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+        body: ": workflow run stream\n\n",
+      });
+      return;
+    }
+
+    if (pathname === "/favicon.ico") {
+      await route.fulfill({
+        status: 204,
+        body: "",
+      });
+      return;
+    }
+
+    await route.fulfill(jsonResponse({ error: `Unhandled ${pathname}` }, 404));
+  });
+
+  page.on("pageerror", (error) => {
+    pageErrors.push(error);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+      consoleErrorDetails.push({
+        text: message.text(),
+        url: message.location().url,
+        line: message.location().lineNumber,
+        column: message.location().columnNumber,
+      });
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() === 404) {
+      failedResponses.push(response.url());
+    }
+  });
+  page.on("dialog", async (dialog) => {
+    if (dialog.message() === "Workflow has unsaved changes. Discard them and continue?") {
+      if (tabConfirmMessages.length === 0) {
+        tabConfirmMessages.push(dialog.message());
+        await dialog.dismiss();
+        return;
+      }
+      directoryConfirmMessages.push(dialog.message());
+      if (acceptNextDirectoryConfirm) {
+        acceptNextDirectoryConfirm = false;
+        await dialog.accept();
+        return;
+      }
+      await dialog.dismiss();
+      return;
+    }
+    await dialog.dismiss();
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#workflow`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.waitForSelector(".canvas-shell .react-flow__pane").catch((error) => {
+    throw new Error(`${error.message}\nPage errors: ${JSON.stringify(pageErrors.map((error) => String(error)))}\nConsole errors: ${JSON.stringify(consoleErrors)}`);
+  });
+  await assert.equal(await page.getByRole("button", { name: "Apply node changes" }).count(), 0);
+  await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  const saveStatus = page.locator(".save-status");
+  const saveStatusHeadline = saveStatus.locator("strong");
+  const undoButton = page.getByRole("button", { name: "Undo" }).first();
+  assert.equal(await undoButton.isDisabled(), true);
+  await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+
+  await page.getByRole("button", { name: "Add node", exact: true }).click();
+  const createPanel = page.getByRole("dialog", { name: "Add node", exact: true });
+  await createPanel.getByLabel("Search nodes").fill("unknown node type");
+  await createPanel.getByText("No matching nodes.").waitFor({ state: "visible" });
+  await createPanel.getByLabel("Search nodes").fill("agent");
+  const originalNodeCount = await page.locator(".react-flow__node").count();
+  await createPanel.getByRole("button", { name: "Agent", exact: true }).click();
+  await page.waitForFunction((count) => document.querySelectorAll(".react-flow__node").length === count + 1, originalNodeCount);
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1, "adding a search result should stage an unsaved workflow change");
+  await undoButton.click();
+  await page.waitForFunction((count) => document.querySelectorAll(".react-flow__node").length === count, originalNodeCount);
+  await page.getByRole("button", { name: "Add node", exact: true }).click();
+  await createPanel.getByLabel("Search nodes").fill("");
+  await createPanel.getByRole("button", { name: "Close", exact: true }).click();
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/workflow-editor/validate" && response.ok()),
+    page.getByRole("button", { name: "Validate" }).first().click(),
+  ]);
+  assert.equal(validationRequests.length, 1);
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), true);
+
+  await changeWorkflowCanvasViewport(page);
+  const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
+  await clickWorkflowNode(page, "effect-1");
+
+  const nodeInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Display name" });
+  const displayNameInput = nodeInspector.locator(".inspector-label").filter({ hasText: "Display name" }).locator("input");
+  await nodeInspector.waitFor({ state: "visible" });
+  const promptField = nodeInspector.locator(".inspector-field").filter({ hasText: "Prompt" });
+  const outputsField = nodeInspector.locator(".inspector-field").filter({ hasText: "Outputs" });
+  await nodeInspector.getByRole("tab", { name: "Outputs", exact: true }).click();
+  await outputsField.waitFor({ state: "visible" });
+  assert.equal(await promptField.isVisible(), false);
+  await nodeInspector.getByRole("tab", { name: "Configuration", exact: true }).click();
+  assert.equal(await promptField.isVisible(), true);
+  const changedViewportTransform = await workflowViewportTransform(page);
+  await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
+  const promptInput = promptField.locator("input");
+  await promptInput.fill("Handle escalations");
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "inspector field edits should not refit the workflow canvas",
+  );
+
+  await assert.doesNotReject(
+    () => page.locator(".node-title").filter({ hasText: "Dispatch agent v2" }).first().waitFor({ state: "visible", timeout: 60000 }),
+  );
+  assert.equal(await promptInput.inputValue(), "Handle escalations");
+  await assert.equal(saveRequests.length, 0);
+  await assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  await assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+  await assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
+  await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
+  await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), false);
+
+  await undoButton.click();
+  await page.waitForFunction(() => {
+    const promptField = [...document.querySelectorAll(".inspector-field")]
+      .find((element) => element.textContent?.includes("Prompt"));
+    return promptField?.querySelector("input")?.value === "Handle ticket";
+  });
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
+
+  await page.keyboard.press("Control+Z");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent"),
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  assert.equal(await undoButton.isDisabled(), true);
+
+  await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
+  await promptInput.fill("Handle escalations");
+  await page.waitForFunction(
+    (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
+    "Dispatch agent v2",
+  );
+  assert.equal(await promptInput.inputValue(), "Handle escalations");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+
+  await clickWorkflowNode(page, "trigger-1");
+  await page.waitForTimeout(250);
+  await nodeInspector.waitFor({ state: "visible" });
+  assert.equal(await displayNameInput.inputValue(), "Incoming command");
+  await clickWorkflowNode(page, "effect-1");
+  await page.waitForTimeout(250);
+  await nodeInspector.waitFor({ state: "visible" });
+  await assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
+  await assert.equal(await promptInput.inputValue(), "Handle escalations");
+
+  await page.getByRole("button", { name: "Reset changes" }).click();
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent"),
+  );
+  await page.waitForTimeout(250);
+  await nodeInspector.waitFor({ state: "visible" });
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent");
+  assert.equal(await promptInput.inputValue(), "Handle ticket");
+  await assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
+  await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  await assert.equal(saveRequests.length, 0);
+
+  await clickWorkflowNode(page, "effect-1");
+  await page.waitForTimeout(250);
+  await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
+  await promptInput.fill("Handle escalations");
+  await page.waitForFunction(
+    (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
+    "Dispatch agent v2",
+  );
+
+  await ensureSectionsExpanded(page);
+  await page.getByRole("button", { name: "Find page", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search pages" }).fill("Users & Groups");
+  await page.getByRole("option", { name: /Users & Groups/ }).click();
+  assert.deepEqual(tabConfirmMessages, ["Workflow has unsaved changes. Discard them and continue?"]);
+  await page.waitForFunction(() => window.location.hash === "#workflow");
+  await assert.equal(await page.locator(".admin-shell-tab.active").filter({ hasText: "Workflow" }).count(), 1);
+  await assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+
+  await page.getByRole("button", { name: "Choose directory" }).click();
+  await page.getByRole("button", { name: "root/team-a", exact: true }).click();
+  assert.deepEqual(directoryConfirmMessages, ["Workflow has unsaved changes. Discard them and continue?"]);
+  await assert.equal(await page.locator(".modal-card.directory-modal").count(), 1);
+  await page.getByRole("button", { name: "Close" }).click();
+  await assert.equal(await page.locator(".modal-card.directory-modal").count(), 0);
+
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v2"));
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "saving workflow edits should not refit the workflow canvas",
+  );
+
+  assert.equal(saveRequests.length, 1);
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
+  assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await undoButton.isDisabled(), true);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
+  assert.equal(await promptInput.inputValue(), "Handle escalations");
+
+  await displayNameInput.fill("Dispatch agent v3");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  await promptInput.fill("Handle renewals");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v3" }).count(), 1);
+
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+
+  assert.equal(saveRequests.length, 2);
+  assert.equal(saveRequests[1].expected_revision, "rev-2");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
+  assert.equal(await page.locator(".save-error-box").count(), 0);
+  assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await undoButton.isDisabled(), true);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v3");
+  assert.equal(await promptInput.inputValue(), "Handle renewals");
+
+  await displayNameInput.fill("Dispatch agent v4");
+  await promptInput.fill("Handle follow-ups");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v4"),
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+
+  acceptNextDirectoryConfirm = true;
+  await page.getByRole("button", { name: "Choose directory" }).click();
+  await page.getByRole("button", { name: "root/team-a", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".admin-directory-context strong")?.textContent?.trim() === "root/team-a",
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await page.waitForFunction(
+    () => document.querySelector(".save-status strong")?.textContent?.trim() === "No unsaved workflow changes",
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatusHeadline.innerText(), "No unsaved workflow changes");
+  assert.equal(saveRequests.length, 2);
+  assert.deepEqual(directoryConfirmMessages, [
+    "Workflow has unsaved changes. Discard them and continue?",
+    "Workflow has unsaved changes. Discard them and continue?",
+  ]);
+
+  await page.getByRole("button", { name: "Choose directory" }).click();
+  await page.getByRole("button", { name: "root", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".admin-directory-context strong")?.textContent?.trim() === "root",
+  );
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  assert.equal(await page.locator(".node-title").filter({ hasText: "Dispatch agent v4" }).count(), 0);
+  assert.equal(saveRequests.length, 2);
+  assert.equal(await saveStatusHeadline.innerText(), "No unsaved workflow changes");
+
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, [], JSON.stringify(consoleErrorDetails));
+  assert.deepEqual(failedResponses, []);
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root%2Fteam-a"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/validate"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root%2Fteam-a"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs/stream"));
+});

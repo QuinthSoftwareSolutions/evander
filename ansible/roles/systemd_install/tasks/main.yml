@@ -1,0 +1,11 @@
+---
+# The installer runs preflight before changing units; avoid running it twice.
+- name: Install repo-native systemd units
+  ansible.builtin.command:
+    cmd: "./scripts/install_systemd_units.sh"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment:
+    SUDO_USER: "{{ evander_run_user }}"
+    EVANDER_GIT_USER: "{{ evander_git_user | default(evander_run_user) }}"
+    EVANDER_SERVICE_PROFILE: "{{ evander_service_profile }}"

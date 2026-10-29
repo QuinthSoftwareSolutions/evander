@@ -1,0 +1,14 @@
+{
+  "name": "evander-user-manual-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned diagram rendering dependencies for the Evander Technical Manual.",
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.16.0"
+  },
+  "overrides": {
+    "dompurify": "^3.4.16",
+    "katex": "0.18.2",
+    "mermaid": "^11.16.1"
+  }
+}

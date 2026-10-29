@@ -1,0 +1,208 @@
+---
+- name: Configure optional encrypted credential store
+  ansible.builtin.import_tasks: credentials.yml
+
+- name: Render managed env files
+  ansible.builtin.template:
+    src: env_file.j2
+    dest: "{{ evander_deploy_path }}/{{ item.path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "{{ item.mode }}"
+  vars:
+    env_map: "{{ item.env }}"
+  no_log: true
+  loop:
+    - path: "config/firewall.env"
+      env: "{{ evander_firewall_env }}"
+      mode: "0640"
+    - path: "config/codex-egress-proxy.env"
+      env: "{{ evander_codex_egress_proxy_env }}"
+      mode: "0640"
+    - path: "config/gateway.env"
+      env: "{{ evander_gateway_env }}"
+      mode: "0600"
+    - path: "config/admin-web.env"
+      env: "{{ evander_admin_web_env }}"
+      mode: "0600"
+    - path: "config/openai-relay.env"
+      env: "{{ evander_openai_relay_env }}"
+      mode: "0600"
+    - path: "config/nuget-relay.env"
+      env: "{{ evander_nuget_relay_env }}"
+      mode: "0600"
+    - path: "config/npm-audit-facade.env"
+      env: "{{ evander_npm_audit_facade_env }}"
+      mode: "0600"
+    - path: "config/http-target-relay.env"
+      env: "{{ evander_http_target_relay_env }}"
+      mode: "0640"
+    - path: "config/ado-worker.env"
+      env: "{{ evander_ado_worker_env }}"
+      mode: "0600"
+    - path: "config/didww-sip-bridge.env"
+      env: "{{ evander_didww_sip_bridge_env }}"
+      mode: "0600"
+  register: evander_env_file_render
+
+- name: Render optional shared secrets.env
+  ansible.builtin.template:
+    src: env_file.j2
+    dest: "{{ evander_deploy_path }}/secrets.env"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0600"
+  vars:
+    env_map: "{{ evander_shared_secrets_env }}"
+  when: evander_render_shared_secrets_env | bool
+  no_log: true
+  register: evander_shared_secrets_render
+
+- name: Remove secrets.env when disabled
+  ansible.builtin.file:
+    path: "{{ evander_deploy_path }}/secrets.env"
+    state: absent
+  when: not (evander_render_shared_secrets_env | bool)
+  register: evander_shared_secrets_remove
+
+- name: Ensure Admin Web branding asset directory exists
+  ansible.builtin.file:
+    path: "{{ evander_admin_web_branding_asset_dir }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+    state: directory
+  when:
+    - evander_admin_web_branding_asset_dir | length > 0
+    - evander_admin_web_branding_assets | length > 0
+
+- name: Ensure Admin Web branding asset subdirectories exist
+  ansible.builtin.file:
+    path: "{{ evander_admin_web_branding_asset_dir }}/{{ item.path | dirname }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+    state: directory
+  loop: "{{ evander_admin_web_branding_assets }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - evander_admin_web_branding_asset_dir | length > 0
+    - (item.path | dirname) != "."
+
+- name: Copy Admin Web branding assets
+  ansible.builtin.copy:
+    src: "{{ item.source_path }}"
+    dest: "{{ evander_admin_web_branding_asset_dir }}/{{ item.path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "{{ item.mode | default('0644') }}"
+  loop: "{{ evander_admin_web_branding_assets }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - evander_admin_web_branding_asset_dir | length > 0
+  register: evander_admin_web_branding_asset_copy
+
+- name: Render managed worker/global JSON config
+  ansible.builtin.template:
+    src: json_file.j2
+    dest: "{{ evander_deploy_path }}/{{ item.path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "{{ item.mode }}"
+    force: false
+  vars:
+    json_payload: "{{ item.payload }}"
+  loop:
+    - path: "config/ado-worker/config.json"
+      payload: "{{ evander_ado_worker_config }}"
+      mode: "0600"
+    - path: "config/discord-ingest/config.json"
+      payload: "{{ evander_discord_ingest_config }}"
+      mode: "0640"
+    - path: "config/scheduled-wake/config.json"
+      payload: "{{ evander_scheduled_wake_config }}"
+      mode: "0640"
+    - path: "config/teams-ingest/config.json"
+      payload: "{{ evander_teams_ingest_config }}"
+      mode: "0640"
+    - path: "config/teams-meeting-ingest/config.json"
+      payload: "{{ evander_teams_meeting_ingest_config }}"
+      mode: "0640"
+    - path: "config/trigger-orchestrator/config.json"
+      payload: "{{ evander_trigger_orchestrator_config }}"
+      mode: "0640"
+      enabled: "{{ evander_manage_workflow_config }}"
+  when: item.enabled | default(true) | bool
+  register: evander_json_config_render
+
+- name: Reconcile CI managed Teams ingest config
+  ansible.builtin.template:
+    src: json_file.j2
+    dest: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+    force: true
+  vars:
+    json_payload: "{{ evander_teams_ingest_config }}"
+  when: evander_manage_teams_ingest_config | bool
+  register: evander_teams_ingest_managed_config_render
+
+- name: Remove retired worker config files
+  ansible.builtin.file:
+    path: "{{ evander_deploy_path }}/{{ item }}"
+    state: absent
+  loop:
+    - "config/host-heartbeat/config.json"
+    - "config/issue-orchestrator/config.json"
+    - "config/discord-wake/config.json"
+  register: evander_retired_config_remove
+
+- name: Copy managed workflow pack files
+  ansible.builtin.copy:
+    src: "{{ item.source_path }}"
+    dest: "{{ evander_deploy_path }}/{{ item.path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  loop: "{{ evander_managed_workflow_pack_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: evander_manage_workflow_config | bool
+  register: evander_workflow_pack_copy
+
+- name: Check whether a controller-side workflow editor layout exists
+  ansible.builtin.stat:
+    path: "{{ evander_workflow_layout_source_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_workflow_layout_source
+  when: evander_manage_workflow_config | bool
+
+- name: Copy managed workflow editor layout
+  ansible.builtin.copy:
+    src: "{{ evander_workflow_layout_source_path }}"
+    dest: "{{ evander_deploy_path }}/{{ evander_workflow_layout_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when:
+    - evander_manage_workflow_config | bool
+    - evander_workflow_layout_source.stat.exists | default(false)
+  register: evander_workflow_layout_copy
+
+- name: Track whether managed service config changed
+  ansible.builtin.set_fact:
+    evander_managed_service_config_changed: >-
+      {{
+        (evander_env_file_render.changed | default(false))
+        or (evander_shared_secrets_render.changed | default(false))
+        or (evander_shared_secrets_remove.changed | default(false))
+        or (evander_json_config_render.changed | default(false))
+        or (evander_teams_ingest_managed_config_render.changed | default(false))
+        or (evander_retired_config_remove.changed | default(false))
+        or (evander_workflow_pack_copy.changed | default(false))
+        or (evander_workflow_layout_copy.changed | default(false))
+      }}

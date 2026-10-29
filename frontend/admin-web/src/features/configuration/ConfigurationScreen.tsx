@@ -1,0 +1,2497 @@
+import { useTeamsConfiguration, type TeamsChannelLookupResultView } from "./useTeamsConfiguration";
+import { TeamsAuthConfiguration } from "./TeamsAuthConfiguration";
+import { useModelPricingCatalog } from "./useModelPricingCatalog";
+import { ModelPricingConfiguration } from "./ModelPricingConfiguration";
+import { useEffect, useRef, useState } from "react";
+
+import { ApiError, fetchJson } from "../admin/api";
+import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
+import { TeamsCallRoutesEditor } from "./TeamsCallRoutesEditor";
+import { PhoneCallerMapsEditor } from "./PhoneCallerMapsEditor";
+import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
+import { EventsConfiguration } from "./EventsConfiguration";
+import { CredentialsConfiguration } from "./CredentialsConfiguration";
+import type { AdminResult } from "../admin/AdminContext";
+import { useAdminUi } from "../admin/AdminContext";
+import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
+import { Tooltip } from "../admin/Tooltip";
+import { RecordCollection } from "../admin/RecordCollection";
+import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
+import { dedupeStrings, encodeStringListDraftValue, formatJsonTextDraftValue, parseJsonTextDraftValue, parseStringListDraftValue } from "../admin/structuredPolicyInputs";
+import {
+  emailMailboxDraftEntriesToConfig,
+  emailMailboxDraftValue,
+  emailMailboxEntriesFromConfig,
+  parseEmailMailboxDraftValue,
+  type EmailMailboxDraftEntry,
+} from "./emailMailboxDraft";
+import {
+  emailMailboxAuthProfileRef,
+  emailMailboxFolderPolicyDraftEntriesToConfig,
+  emailMailboxFolderPolicyDraftValue,
+  emailMailboxFolderPolicyEntriesFromConfig,
+  emailMailboxIdFromAuthProfileRef,
+  parseEmailMailboxFolderPolicyDraftValue,
+} from "./emailMailboxPolicyDraft";
+import {
+  EmailMailboxAllowlistEditor,
+  EmailMailboxFolderPolicyEditor,
+  EmailMailboxesEditor,
+  emailMailboxLabel,
+  resolveConfiguredEmailMailboxEntries,
+} from "./EmailMailboxConfiguration";
+import { ConfigurationNavigator } from "./ConfigurationNavigator";
+import {
+  communicationTargetDiscordConversationScopeFromValue,
+  communicationTargetSenderIdentityFromValue,
+  type CommunicationTargetSenderIdentity,
+  type ConfigurationDraftFieldState,
+  type DiscordConversationScope,
+} from "./configurationDraftState";
+import {
+  configurationDestinationsForTab,
+  configurationFieldDomId,
+  configurationHash,
+  defaultConfigurationDestination,
+  resolveConfigurationLocation,
+  type ConfigurationField,
+  type ConfigurationTab,
+  type ConfigurationUtilityKey,
+} from "./configurationNavigation";
+
+type Diagnostic = { code: string; message: string; field?: string | null };
+
+type TabSnapshot = {
+  key: string;
+  title: string;
+  revision: string;
+  raw: {
+    exists: boolean;
+    config: Record<string, unknown>;
+  };
+  effective: {
+    config: Record<string, unknown>;
+    validation_diagnostics: Diagnostic[];
+    errors: Diagnostic[];
+    payload: unknown;
+  };
+  parent_defaults: {
+    directory_path: string | null;
+    config: Record<string, unknown>;
+    payload: unknown;
+  };
+};
+
+type DirectoryOverridesSnapshot = {
+  directory_path: string;
+  exists: boolean;
+  domain_count: number;
+  field_count: number;
+  overrides: Record<string, Record<string, unknown>>;
+  errors: Diagnostic[];
+  payload: unknown;
+};
+
+type ConfigurationState = {
+  directory_scoped_config_enabled: boolean;
+  selected_directory_path: string;
+  selected_directory: {
+    path: string;
+    parent_path: string | null;
+    can_create: boolean;
+    can_delete: boolean;
+  };
+  tabs: ConfigurationTab[];
+  tab_snapshots: Record<string, TabSnapshot>;
+  directory_overrides: DirectoryOverridesSnapshot;
+};
+
+type TabDraft = Record<string, ConfigurationDraftFieldState>;
+type TabDrafts = Record<string, TabDraft>;
+
+const CONTACTS_TAB_KEY = "contacts";
+const CONTACTS_FIELD_NAME = "contacts";
+const COMMUNICATION_TARGETS_DOMAIN = "communication_targets";
+const COMMUNICATION_TARGETS_FIELD_NAME = "targets";
+const EMAIL_DOMAIN = "email";
+const EMAIL_MAILBOXES_FIELD_NAME = "email_mailboxes";
+const EMAIL_FOLDER_ALLOWLIST_BY_MAILBOX_FIELD_NAME = "email_folder_allowlist_by_mailbox";
+const EMAIL_MAILBOX_ALLOWLIST_FIELD_NAME = "email_mailbox_allowlist";
+const COMMUNICATION_TARGET_PROVIDERS = ["teams", "discord", "email", "github", "ado", "jira", "linear"];
+const COMMUNICATION_TARGET_KINDS = ["teams", "discord", "email", "pull-request", "ticket"];
+const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
+  teams: ["teams"],
+  discord: ["discord"],
+  email: ["email"],
+  github: ["pull-request", "ticket"],
+  ado: ["pull-request", "ticket"],
+  jira: ["ticket"],
+  linear: ["ticket"],
+};
+const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
+const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
+const DEFAULT_CONFIGURATION_TAB_KEY = "people_communications";
+const TEAMS_AUTH_CONFIGURATION_TAB_KEY = "people_communications";
+const MODEL_PRICING_CONFIGURATION_TAB_KEY = "models_assistant_knowledge";
+
+type ContactPhoneDraft = {
+  label: string;
+  number: string;
+  primary: boolean;
+};
+
+type ContactDraftEntry = {
+  id: string;
+  isNew: boolean;
+  name: string;
+  description: string;
+  emailAddresses: string[];
+  phoneNumbers: ContactPhoneDraft[];
+};
+
+type ContactDraftParseResult = {
+  entries: ContactDraftEntry[];
+  error: string | null;
+};
+
+type CommunicationTargetDraftEntry = {
+  id: string;
+  disabled: boolean;
+  provider: string;
+  kind: string;
+  address: string;
+  capabilities: string[];
+  authProfileRef: string;
+  senderIdentity: CommunicationTargetSenderIdentity;
+  discordConversationScope: DiscordConversationScope;
+};
+
+type CommunicationTargetDraftParseResult = {
+  entries: CommunicationTargetDraftEntry[];
+  error: string | null;
+};
+
+type DiscordWebhookOperationState = {
+  loading: boolean;
+  configured: boolean | null;
+  message: string | null;
+  error: string | null;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isContactsConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === CONTACTS_TAB_KEY && field.field_name === CONTACTS_FIELD_NAME;
+}
+
+function isCommunicationTargetsConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === COMMUNICATION_TARGETS_DOMAIN && field.field_name === COMMUNICATION_TARGETS_FIELD_NAME;
+}
+
+function isEmailMailboxesConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === EMAIL_DOMAIN && field.field_name === EMAIL_MAILBOXES_FIELD_NAME;
+}
+
+function isEmailMailboxFolderPolicyField(field: ConfigurationField): boolean {
+  return field.source_domain === "policy"
+    && field.field_name === EMAIL_FOLDER_ALLOWLIST_BY_MAILBOX_FIELD_NAME;
+}
+
+function isEmailMailboxAllowlistField(field: ConfigurationField): boolean {
+  return field.source_domain === "policy" && field.field_name === EMAIL_MAILBOX_ALLOWLIST_FIELD_NAME;
+}
+
+function isApprovalNotificationTargetField(field: ConfigurationField): boolean {
+  return field.source_domain === "policy" && field.field_name === APPROVAL_NOTIFICATION_TARGET_FIELD_NAME;
+}
+
+function stringListFromValue(value: unknown): string[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.map((item) => String(item ?? ""));
+  if (typeof value === "string") return [value];
+  return [];
+}
+
+function phoneDraftsFromValue(value: unknown): ContactPhoneDraft[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = isRecord(item) ? item : {};
+    return {
+      label: String(record.label ?? ""),
+      number: String(record.number ?? ""),
+      primary: Boolean(record.primary),
+    };
+  });
+}
+
+function contactIdSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "contact";
+}
+
+function reserveGeneratedContactId(name: string, reservedIds: Set<string>): string {
+  const base = contactIdSlug(name);
+  let candidate = base;
+  let suffix = 2;
+  while (reservedIds.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  reservedIds.add(candidate);
+  return candidate;
+}
+
+function communicationTargetIdSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "channel";
+}
+
+function reserveGeneratedCommunicationTargetId(name: string, reservedIds: Set<string>): string {
+  const base = `teams-${communicationTargetIdSlug(name)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (reservedIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  reservedIds.add(candidate);
+  return candidate;
+}
+
+function contactDraftResolvedIds(entries: ContactDraftEntry[]): string[] {
+  const reservedIds = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isNew) {
+      const existingId = entry.id.trim();
+      if (existingId) {
+        reservedIds.add(existingId);
+      }
+    }
+  }
+  return entries.map((entry) => {
+    if (!entry.isNew) {
+      return entry.id.trim();
+    }
+    return reserveGeneratedContactId(entry.name, reservedIds);
+  });
+}
+
+function contactsValueToDraftEntries(value: unknown): ContactDraftEntry[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const record = isRecord(item) ? item : {};
+      const id = String(record.id ?? "");
+      return {
+        id,
+        isNew: Boolean(record.isNew) || !id.trim(),
+        name: String(record.name ?? ""),
+        description: String(record.description ?? ""),
+        emailAddresses: stringListFromValue(record.emailAddresses ?? record.email_addresses),
+        phoneNumbers: phoneDraftsFromValue(record.phoneNumbers ?? record.phone_numbers),
+      };
+    });
+  }
+  if (!isRecord(value)) return [];
+  return Object.entries(value).map(([id, rawContact]) => {
+    const contact = isRecord(rawContact) ? rawContact : {};
+    return {
+      id,
+      isNew: false,
+      name: String(contact.name ?? ""),
+      description: String(contact.description ?? ""),
+      emailAddresses: stringListFromValue(contact.email_addresses),
+      phoneNumbers: phoneDraftsFromValue(contact.phone_numbers),
+    };
+  });
+}
+
+function parseContactDraftValue(value: string | boolean): ContactDraftParseResult {
+  if (typeof value === "boolean") {
+    return { entries: [], error: null };
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return { entries: [], error: null };
+  }
+  try {
+    return { entries: contactsValueToDraftEntries(JSON.parse(text)), error: null };
+  } catch (reason) {
+    return {
+      entries: [],
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+}
+
+function contactsDraftValue(entries: ContactDraftEntry[]): string {
+  return JSON.stringify(entries, null, 2);
+}
+
+function contactsDraftEntriesToConfig(entries: ContactDraftEntry[]): Record<string, unknown> {
+  const contacts: Record<string, unknown> = {};
+  const reservedIds = new Set<string>();
+  entries.forEach((entry, index) => {
+    if (entry.isNew) return;
+    const existingId = entry.id.trim();
+    if (!existingId) {
+      throw new Error(`Contact ${index + 1} id is missing.`);
+    }
+    if (reservedIds.has(existingId)) {
+      throw new Error(`Duplicate contact id: ${existingId}.`);
+    }
+    reservedIds.add(existingId);
+  });
+  entries.forEach((entry, index) => {
+    const name = entry.name.trim();
+    if (!name) {
+      throw new Error(`Contact ${entry.id.trim() || index + 1} name is required.`);
+    }
+    const contactId = entry.isNew
+      ? reserveGeneratedContactId(name, reservedIds)
+      : entry.id.trim();
+
+    const emailAddresses: string[] = [];
+    const seenEmails = new Set<string>();
+    for (const rawAddress of entry.emailAddresses) {
+      const address = rawAddress.trim();
+      if (!address) continue;
+      const key = address.toLowerCase();
+      if (seenEmails.has(key)) {
+        throw new Error(`Contact ${contactId} has a duplicate email address: ${address}.`);
+      }
+      seenEmails.add(key);
+      emailAddresses.push(address);
+    }
+
+    const phoneNumbers: ContactPhoneDraft[] = [];
+    const seenPhoneLabels = new Set<string>();
+    for (const rawPhone of entry.phoneNumbers) {
+      const label = rawPhone.label.trim();
+      const number = rawPhone.number.trim();
+      if (!label && !number) continue;
+      if (!label || !number) {
+        throw new Error(`Contact ${contactId} phone numbers require both label and number.`);
+      }
+      const key = label.toLowerCase();
+      if (seenPhoneLabels.has(key)) {
+        throw new Error(`Contact ${contactId} has a duplicate phone label: ${label}.`);
+      }
+      seenPhoneLabels.add(key);
+      phoneNumbers.push({ label, number, primary: Boolean(rawPhone.primary) });
+    }
+    if (phoneNumbers.filter((phone) => phone.primary).length > 1) {
+      throw new Error(`Contact ${contactId} can have only one primary phone number.`);
+    }
+
+    contacts[contactId] = {
+      name,
+      description: entry.description.trim(),
+      email_addresses: emailAddresses,
+      phone_numbers: phoneNumbers,
+    };
+  });
+  return contacts;
+}
+
+function communicationTargetEntriesFromConfig(value: unknown): CommunicationTargetDraftEntry[] {
+  const rawTargets = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.targets)
+      ? value.targets
+      : [];
+  return rawTargets.map((item) => {
+    const target = isRecord(item) ? item : {};
+    const policy = isRecord(target.policy) ? target.policy : {};
+    const provider = String(target.provider ?? "teams");
+    const draftCapabilities = stringListFromValue(target.capabilities);
+    const policyCapabilities = stringListFromValue(policy.capabilities);
+    return {
+      id: String(target.id ?? ""),
+      disabled: Boolean(target.disabled),
+      provider,
+      kind: normalizeCommunicationTargetKind(provider, String(target.kind ?? "")),
+      address: String(target.address ?? ""),
+      capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
+      authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
+      senderIdentity: communicationTargetSenderIdentityFromValue(target),
+      discordConversationScope: communicationTargetDiscordConversationScopeFromValue(target),
+    };
+  });
+}
+
+function parseCommunicationTargetDraftValue(value: string | boolean): CommunicationTargetDraftParseResult {
+  if (typeof value === "boolean") {
+    return { entries: [], error: null };
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return { entries: [], error: null };
+  }
+  try {
+    return { entries: communicationTargetEntriesFromConfig(JSON.parse(text)), error: null };
+  } catch (reason) {
+    return {
+      entries: [],
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+}
+
+function communicationTargetsDraftValue(entries: CommunicationTargetDraftEntry[]): string {
+  return JSON.stringify(entries, null, 2);
+}
+
+function communicationTargetKindsForProvider(provider: string): string[] {
+  return COMMUNICATION_TARGET_KINDS_BY_PROVIDER[provider.trim()] ?? COMMUNICATION_TARGET_KINDS;
+}
+
+function defaultKindForCommunicationTargetProvider(provider: string): string {
+  return communicationTargetKindsForProvider(provider)[0] ?? "ticket";
+}
+
+function normalizeCommunicationTargetKind(provider: string, kind: string): string {
+  const normalizedKind = kind.trim();
+  const providerKinds = communicationTargetKindsForProvider(provider);
+  if (providerKinds.includes(normalizedKind)) {
+    return normalizedKind;
+  }
+  return defaultKindForCommunicationTargetProvider(provider);
+}
+
+function communicationTargetAddressPlaceholder(provider: string, kind: string): string {
+  if (provider === "teams") return "team-id/channel-id";
+  if (provider === "discord") return "123456789012345678";
+  if (provider === "email") return "ops@example.com";
+  if (kind === "pull-request") return "owner/repo#123";
+  if (kind === "ticket") return "project/TICKET-123";
+  return "target address";
+}
+
+function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDraftEntry[]): unknown[] {
+  const seenIds = new Set<string>();
+  return entries.map((entry, index) => {
+    const id = entry.id.trim().toLowerCase();
+    if (!id) {
+      throw new Error(`Communication target ${index + 1} id is required.`);
+    }
+    if (!/^[a-z0-9](?:[a-z0-9._:-]{0,126}[a-z0-9])?$/.test(id)) {
+      throw new Error(`Communication target ${id} has an invalid id.`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`Duplicate communication target id: ${id}.`);
+    }
+    seenIds.add(id);
+
+    if (entry.disabled) {
+      return { id, disabled: true };
+    }
+
+    const provider = entry.provider.trim();
+    const kind = normalizeCommunicationTargetKind(provider, entry.kind);
+    const address = entry.address.trim();
+    if (!provider || !kind || !address) {
+      throw new Error(`Communication target ${id} requires provider, kind, and address.`);
+    }
+    const capabilities = entry.capabilities.map((capability) => capability.trim()).filter(Boolean);
+    const policy: {
+      capabilities: string[];
+      auth_profile_ref?: string;
+      sender_identity?: CommunicationTargetSenderIdentity;
+      discord_conversation_scope?: DiscordConversationScope;
+    } = { capabilities };
+    const authProfileRef = entry.authProfileRef.trim();
+    if (provider === "email" && authProfileRef) {
+      policy.auth_profile_ref = authProfileRef;
+    }
+    if (provider === "discord" && entry.senderIdentity === "resolved") {
+      policy.sender_identity = "resolved";
+    }
+    if (provider === "discord" && entry.discordConversationScope !== "channel") {
+      policy.discord_conversation_scope = entry.discordConversationScope;
+    }
+    return {
+      id,
+      provider,
+      kind,
+      address,
+      policy,
+    };
+  });
+}
+
+function formatJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+function normalizeFieldValue(field: ConfigurationField, value: unknown): string | boolean {
+  if (field.kind === "bool") {
+    return Boolean(value);
+  }
+  if (isContactsConfigField(field)) {
+    return JSON.stringify(contactsValueToDraftEntries(value), null, 2);
+  }
+  if (isCommunicationTargetsConfigField(field)) {
+    return JSON.stringify(communicationTargetEntriesFromConfig(value), null, 2);
+  }
+  if (isEmailMailboxesConfigField(field)) {
+    return emailMailboxDraftValue(emailMailboxEntriesFromConfig(value));
+  }
+  if (isEmailMailboxFolderPolicyField(field)) {
+    return emailMailboxFolderPolicyDraftValue(
+      emailMailboxFolderPolicyEntriesFromConfig(value),
+    );
+  }
+  if (field.kind === "string_list") {
+    return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : value == null ? "" : String(value);
+  }
+  if (field.kind === "json") {
+    return formatJsonTextDraftValue(value);
+  }
+  return value == null ? "" : String(value);
+}
+
+function isGlobalField(field: ConfigurationField): boolean {
+  return field.scope === "global";
+}
+
+function buildTabDraft(tab: ConfigurationTab | undefined, snapshot: TabSnapshot | undefined, directoryPath: string): TabDraft {
+  const draft: TabDraft = {};
+  const isRoot = directoryPath === "root";
+  for (const section of tab?.sections ?? []) {
+    for (const field of section.fields) {
+      const rawValue = snapshot?.raw.config[field.field_name];
+      const hasExplicitValue = Object.prototype.hasOwnProperty.call(snapshot?.raw.config ?? {}, field.field_name);
+      if (isGlobalField(field)) {
+        draft[field.field_name] = {
+          include: true,
+          clear: false,
+          value: normalizeFieldValue(field, hasExplicitValue ? rawValue : snapshot?.effective.config[field.field_name]),
+        };
+        continue;
+      }
+      if (isRoot) {
+        const clear = !hasExplicitValue && !field.root_starts_editable;
+        draft[field.field_name] = {
+          include: !clear,
+          clear,
+          value: normalizeFieldValue(field, hasExplicitValue ? rawValue : field.root_starts_editable ? "" : null),
+        };
+        continue;
+      }
+      draft[field.field_name] = {
+        include: hasExplicitValue,
+        clear: hasExplicitValue && rawValue === null,
+        value: normalizeFieldValue(field, rawValue),
+      };
+    }
+  }
+  return draft;
+}
+
+function parseFieldValue(field: ConfigurationField, rawValue: string | boolean): unknown {
+  if (field.kind === "bool") {
+    return Boolean(rawValue);
+  }
+  if (isContactsConfigField(field)) {
+    const parsed = parseContactDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return contactsDraftEntriesToConfig(parsed.entries);
+  }
+  if (isCommunicationTargetsConfigField(field)) {
+    const parsed = parseCommunicationTargetDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return communicationTargetDraftEntriesToConfig(parsed.entries);
+  }
+  if (isEmailMailboxesConfigField(field)) {
+    const parsed = parseEmailMailboxDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return emailMailboxDraftEntriesToConfig(parsed.entries);
+  }
+  if (isEmailMailboxFolderPolicyField(field)) {
+    const parsed = parseEmailMailboxFolderPolicyDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return emailMailboxFolderPolicyDraftEntriesToConfig(parsed.entries);
+  }
+  if (field.kind === "int") {
+    const text = String(rawValue).trim();
+    if (!text) {
+      throw new Error(`${field.label} is required.`);
+    }
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`${field.label} must be an integer.`);
+    }
+    return parsed;
+  }
+  if (field.kind === "float") {
+    const text = String(rawValue).trim();
+    if (!text) {
+      throw new Error(`${field.label} is required.`);
+    }
+    const parsed = Number.parseFloat(text);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`${field.label} must be a number.`);
+    }
+    return parsed;
+  }
+  if (field.kind === "string_list") {
+    return String(rawValue)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+  if (field.kind === "literal") {
+    return String(rawValue);
+  }
+  if (field.kind === "json") {
+    return parseJsonTextDraftValue(rawValue, field.label);
+  }
+  return String(rawValue).trim();
+}
+
+function inheritedPreview(value: unknown): string {
+  if (value === undefined) return "Inherited: not set";
+  if (value === null) return "Inherited: null";
+  if (value === "") return 'Inherited: ""';
+  const rendered = typeof value === "string" ? JSON.stringify(value) : JSON.stringify(value);
+  if (!rendered) return "Inherited";
+  return rendered.length > 120 ? `Inherited: ${rendered.slice(0, 117)}...` : `Inherited: ${rendered}`;
+}
+
+function hasDirtyDrafts(dirtyTabs: Record<string, boolean>): boolean {
+  return Object.values(dirtyTabs).some(Boolean);
+}
+
+function normalizeDirectoryPath(directoryPath: string | null | undefined): string {
+  const trimmed = directoryPath?.trim() ?? "";
+  return trimmed || "root";
+}
+
+export function ConfigurationScreen() {
+  const {
+    privilegedUnlocked,
+    selectedDirectoryPath: globalSelectedDirectoryPath,
+    setSelectedDirectoryPath: setGlobalSelectedDirectoryPath,
+    refreshAdminState,
+  } = useAdminUi();
+  const [state, setState] = useState<ConfigurationState | null>(null);
+  const [websiteLoginsDirty, setWebsiteLoginsDirty] = useState(false);
+  const [classificationDirty, setClassificationDirty] = useState(false);
+  const [eventsDirty, setEventsDirty] = useState(false);
+  const [credentialsDirty, setCredentialsDirty] = useState(false);
+  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
+  const [selectedTab, setSelectedTab] = useState(DEFAULT_CONFIGURATION_TAB_KEY);
+  const [selectedDestination, setSelectedDestination] = useState("");
+  const [pendingFieldFocus, setPendingFieldFocus] = useState<string | null>(null);
+  const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  const lastDestinationByTabRef = useRef<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<TabDrafts>({});
+  const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [discordWebhookOperations, setDiscordWebhookOperations] = useState<
+    Record<string, DiscordWebhookOperationState>
+  >({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const teamsConfiguration = useTeamsConfiguration(selectedDirectoryPath, selectedTab);
+  const {
+    teamsChannelLookupTeamId,
+    setTeamsChannelLookupTeamId,
+    teamsChannelLookupChannelName,
+    setTeamsChannelLookupChannelName,
+    teamsChannelLookupIncludeAll,
+    setTeamsChannelLookupIncludeAll,
+    teamsChannelLookupResult,
+    teamsChannelLookupLoading,
+    teamsChannelLookupError,
+    setTeamsChannelLookupError,
+    handleTeamsChannelLookup,
+  } = teamsConfiguration;
+  const modelPricing = useModelPricingCatalog({ loading, mutationLocked: !privilegedUnlocked, setStatusMessage });
+  const { modelPricingDirty, loadModelPricingCatalog } = modelPricing;
+
+  async function loadState(directoryPath: string, options?: { preserveDirty?: boolean }) {
+    const payload = await fetchJson<ConfigurationState>(
+      `/api/configuration/state?directory_path=${encodeURIComponent(directoryPath)}`,
+    );
+    await loadModelPricingCatalog();
+    setState((current) => {
+      if (!options?.preserveDirty || !current) {
+        return payload;
+      }
+      const tab_snapshots = { ...payload.tab_snapshots };
+      for (const tab of payload.tabs) {
+        if (dirtyTabs[tab.key] && current.tab_snapshots[tab.key]) {
+          tab_snapshots[tab.key] = current.tab_snapshots[tab.key];
+        }
+      }
+      return { ...payload, tab_snapshots };
+    });
+    setSelectedDirectoryPath(payload.selected_directory_path);
+    if (payload.selected_directory_path !== globalSelectedDirectoryPath) {
+      setGlobalSelectedDirectoryPath(payload.selected_directory_path);
+    }
+    const location = resolveConfigurationLocation(payload.tabs, window.location.hash);
+    if (location) {
+      setSelectedTab(location.tabKey);
+      setSelectedDestination(location.destinationKey);
+      setPendingFieldFocus(location.fieldName);
+      lastDestinationByTabRef.current[location.tabKey] = location.destinationKey;
+    } else {
+      setSelectedTab(payload.tabs[0]?.key ?? DEFAULT_CONFIGURATION_TAB_KEY);
+      setSelectedDestination(payload.tabs[0] ? defaultConfigurationDestination(payload.tabs[0]) : "");
+      setPendingFieldFocus(null);
+    }
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const tab of payload.tabs) {
+        if (options?.preserveDirty && dirtyTabs[tab.key]) {
+          continue;
+        }
+        next[tab.key] = buildTabDraft(tab, payload.tab_snapshots[tab.key], payload.selected_directory_path);
+      }
+      return next;
+    });
+    if (!options?.preserveDirty) {
+      setDirtyTabs({});
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      if (state !== null && globalSelectedDirectoryPath === selectedDirectoryPath) {
+        return;
+      }
+      if (
+        state !== null
+        && globalSelectedDirectoryPath !== selectedDirectoryPath
+        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty || eventsDirty || credentialsDirty)
+        && !window.confirm("Discard unsaved configuration edits and switch directories?")
+      ) {
+        setGlobalSelectedDirectoryPath(selectedDirectoryPath);
+        return;
+      }
+      try {
+        if (!cancelled) {
+          setLoading(true);
+        }
+        await loadState(globalSelectedDirectoryPath);
+        if (!cancelled) {
+          setError(null);
+          setStatusMessage(null);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [globalSelectedDirectoryPath]);
+
+  const selectedTabDefinition = state?.tabs.find((tab) => tab.key === selectedTab);
+  const selectedDestinationDefinition = selectedTabDefinition
+    ? configurationDestinationsForTab(selectedTabDefinition).find((destination) => destination.key === selectedDestination)
+    : null;
+  const selectedSectionDefinition = selectedTabDefinition?.sections.find(
+    (section) => section.key === selectedDestination,
+  ) ?? null;
+  const selectedUtility = selectedSectionDefinition
+    ? null
+    : (selectedDestination as ConfigurationUtilityKey | "");
+  const snapshot = state?.tab_snapshots[selectedTab] ?? null;
+  // Saved snapshots can reorder records (contact object keys are sorted on disk).
+  // Reset collection UI state with the snapshot so an open source index cannot select another record.
+  const collectionSnapshotKey = `${selectedDirectoryPath}:${selectedTab}:${snapshot?.revision ?? ""}`;
+  const tabDraft = drafts[selectedTab] ?? {};
+  const isDirty = dirtyTabs[selectedTab] ?? false;
+  const hasUnsavedTabs = hasDirtyDrafts(dirtyTabs);
+  const isRoot = selectedDirectoryPath === "root";
+  const mutationLocked = !privilegedUnlocked;
+  const emailMailboxEntries = resolveConfiguredEmailMailboxEntries(
+    tabDraft[EMAIL_MAILBOXES_FIELD_NAME],
+    snapshot?.effective.config[EMAIL_MAILBOXES_FIELD_NAME],
+    isRoot,
+  );
+  const selectedTabHasGlobalFields = Boolean(
+    selectedTabDefinition?.sections.some((section) => section.fields.some(isGlobalField)),
+  );
+  const saveBlockedByConfigMode = !state?.directory_scoped_config_enabled && !selectedTabHasGlobalFields;
+  function navigateToConfigurationDestination(
+    tabKey: string,
+    destinationKey: string,
+    fieldName?: string | null,
+  ) {
+    if (!tabKey || !destinationKey) return;
+    if (eventsDirty && destinationKey !== "events" && !window.confirm("Discard unsaved event definitions?")) return;
+    if (destinationKey !== "events") setEventsDirty(false);
+    if (credentialsDirty && destinationKey !== "credentials" && !window.confirm("Discard unsaved credential changes?")) return;
+    if (destinationKey !== "credentials") setCredentialsDirty(false);
+    if (websiteLoginsDirty && destinationKey !== "website-logins"
+      && !window.confirm("Discard unsaved website login changes?")) return;
+    if (destinationKey !== "website-logins") setWebsiteLoginsDirty(false);
+    if (classificationDirty && destinationKey !== "classification"
+      && !window.confirm("Discard unsaved classification changes?")) return;
+    if (destinationKey !== "classification") setClassificationDirty(false);
+    lastDestinationByTabRef.current[tabKey] = destinationKey;
+    setSelectedTab(tabKey);
+    setSelectedDestination(destinationKey);
+    setPendingFieldFocus(fieldName ?? null);
+    setHighlightedField(null);
+    const nextHash = configurationHash(tabKey, destinationKey, fieldName);
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }
+
+  function navigateToConfigurationArea(tabKey: string) {
+    const tab = state?.tabs.find((candidate) => candidate.key === tabKey);
+    if (!tab) return;
+    const destinations = configurationDestinationsForTab(tab);
+    const remembered = lastDestinationByTabRef.current[tabKey];
+    const destination = destinations.some((candidate) => candidate.key === remembered)
+      ? remembered
+      : defaultConfigurationDestination(tab);
+    navigateToConfigurationDestination(tabKey, destination);
+  }
+
+  useEffect(() => {
+    function syncFromHash() {
+      const location = resolveConfigurationLocation(state?.tabs ?? [], window.location.hash);
+      if (!location) return;
+      lastDestinationByTabRef.current[location.tabKey] = location.destinationKey;
+      setSelectedTab(location.tabKey);
+      setSelectedDestination(location.destinationKey);
+      setPendingFieldFocus(location.fieldName);
+      setHighlightedField(null);
+    }
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [state?.tabs]);
+
+  useEffect(() => {
+    if (!pendingFieldFocus || !selectedSectionDefinition) return;
+    let highlightTimeout: number | undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const element = document.getElementById(configurationFieldDomId(selectedTab, pendingFieldFocus));
+      if (!element) return;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      const focusable = element.querySelector<HTMLElement>(
+        ".config-field-control input:not([disabled]), .config-field-control select:not([disabled]), .config-field-control textarea:not([disabled]), .config-field-control button:not([disabled])",
+      ) ?? element.querySelector<HTMLElement>(
+        "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      );
+      (focusable ?? element).focus({ preventScroll: true });
+      setHighlightedField(pendingFieldFocus);
+      highlightTimeout = window.setTimeout(() => {
+        setHighlightedField(null);
+        setPendingFieldFocus(null);
+      }, 1800);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (highlightTimeout !== undefined) window.clearTimeout(highlightTimeout);
+    };
+  }, [pendingFieldFocus, selectedDestination, selectedSectionDefinition, selectedTab]);
+
+  async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
+    try {
+      setLoading(true);
+      await loadState(selectedDirectoryPath, options);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function insertTeamsChannelLookupResult(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    channel: TeamsChannelLookupResultView,
+  ) {
+    const allowlistEntry = channel.allowlistEntry?.trim();
+    if (!allowlistEntry) {
+      setTeamsChannelLookupError("The selected channel does not include an allowlist entry.");
+      return;
+    }
+    const updated = mutateCommunicationTargetsField(field, fieldState, (current) => {
+      const reservedIds = new Set(current.map((entry) => entry.id.trim().toLowerCase()).filter(Boolean));
+      const channelId = channel.displayName.trim() || channel.channelId?.trim() || "channel";
+      return [
+        ...current,
+        {
+          id: reserveGeneratedCommunicationTargetId(channelId, reservedIds),
+          disabled: false,
+          provider: "teams",
+          kind: "teams",
+          address: allowlistEntry,
+          capabilities: ["notify"],
+          authProfileRef: "",
+          senderIdentity: "platform",
+          discordConversationScope: "channel",
+        },
+      ];
+    });
+    if (!updated) {
+      return;
+    }
+    setTeamsChannelLookupError(null);
+    setStatusMessage(
+      `Inserted ${channel.displayName.trim() || channel.channelId?.trim() || "Teams channel"} into the People & Communications draft.`,
+    );
+    setError(null);
+  }
+
+  async function handleSaveTab() {
+    if (!selectedTabDefinition || !snapshot) return;
+    const currentDraft = drafts[selectedTab] ?? {};
+    const payload: Record<string, unknown> = {};
+    const removedFields: string[] = [];
+    try {
+      for (const section of selectedTabDefinition.sections) {
+        for (const field of section.fields) {
+          const fieldState = currentDraft[field.field_name];
+          if (!fieldState) continue;
+          const hadExplicitValue = Object.prototype.hasOwnProperty.call(snapshot.raw.config, field.field_name);
+          if (isGlobalField(field)) {
+            payload[field.field_name] = parseFieldValue(field, fieldState.value);
+            continue;
+          }
+          if (!state?.directory_scoped_config_enabled) {
+            continue;
+          }
+          if (isRoot) {
+            if (fieldState.clear) {
+              if (hadExplicitValue) {
+                removedFields.push(field.field_name);
+              }
+              continue;
+            }
+            payload[field.field_name] = parseFieldValue(field, fieldState.value);
+            continue;
+          }
+          if (!fieldState.include) {
+            if (hadExplicitValue) {
+              removedFields.push(field.field_name);
+            }
+            continue;
+          }
+          if (fieldState.clear) {
+            payload[field.field_name] = field.kind === "string_list" ? [] : null;
+            continue;
+          }
+          payload[field.field_name] = parseFieldValue(field, fieldState.value);
+        }
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+
+    setSaving(true);
+    setStatusMessage(null);
+    try {
+      const payloadResponse = await fetchJson<{
+        write_result: AdminResult<unknown>;
+        tab_snapshot: TabSnapshot | null;
+      }>(`/api/configuration/domains/${encodeURIComponent(selectedTab)}?directory_path=${encodeURIComponent(selectedDirectoryPath)}`, {
+        method: "PUT",
+        body: JSON.stringify({ config: payload, removed_fields: removedFields, expected_revision: snapshot.revision }),
+      });
+      if (!payloadResponse.write_result.ok || !payloadResponse.tab_snapshot) {
+        throw new Error(payloadResponse.write_result.errors[0]?.message ?? "Save failed.");
+      }
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              tab_snapshots: {
+                ...current.tab_snapshots,
+                [selectedTab]: payloadResponse.tab_snapshot as TabSnapshot,
+              },
+            }
+          : current,
+      );
+      setDrafts((current) => ({
+        ...current,
+        [selectedTab]: buildTabDraft(selectedTabDefinition, payloadResponse.tab_snapshot ?? undefined, selectedDirectoryPath),
+      }));
+      setDirtyTabs((current) => ({ ...current, [selectedTab]: false }));
+      setStatusMessage(
+        selectedTabHasGlobalFields
+          ? `Saved ${selectedTabDefinition.title} settings.`
+          : `Saved ${selectedTabDefinition.title} overrides for ${selectedDirectoryPath}.`,
+      );
+      setError(null);
+      if (selectedTabHasGlobalFields) {
+        await refreshAdminState();
+      }
+      await reloadCurrentDirectory();
+    } catch (reason) {
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This configuration tab changed on the server. Reload this tab before saving again; your draft is still visible."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyDirectoryOverrides() {
+    const payload = state?.directory_overrides.payload ?? {
+      directory_path: selectedDirectoryPath,
+      overrides: {},
+    };
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API is not available in this browser.");
+      }
+      await navigator.clipboard.writeText(formatJson(payload));
+      setStatusMessage(`Copied unified override JSON for ${selectedDirectoryPath}.`);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function updateFieldState(fieldName: string, next: Partial<ConfigurationDraftFieldState>) {
+    setDrafts((current) => ({
+      ...current,
+      [selectedTab]: {
+        ...(current[selectedTab] ?? {}),
+        [fieldName]: {
+          ...(current[selectedTab]?.[fieldName] ?? { include: false, clear: false, value: "" }),
+          ...next,
+        },
+      },
+    }));
+    setDirtyTabs((current) => ({ ...current, [selectedTab]: true }));
+  }
+
+  function updateContactsField(fieldName: string, nextEntries: ContactDraftEntry[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: contactsDraftValue(nextEntries),
+    });
+  }
+
+  function updateCommunicationTargetsField(fieldName: string, nextEntries: CommunicationTargetDraftEntry[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: communicationTargetsDraftValue(nextEntries),
+    });
+  }
+
+  function mutateCommunicationTargetsField(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    mutate: (entries: CommunicationTargetDraftEntry[]) => CommunicationTargetDraftEntry[],
+  ): boolean {
+    const parsed = parseCommunicationTargetDraftValue(fieldState.value);
+    if (parsed.error) {
+      setError(`Unable to edit communication targets: ${parsed.error}`);
+      return false;
+    }
+    updateCommunicationTargetsField(field.field_name, mutate(parsed.entries));
+    setError(null);
+    return true;
+  }
+
+  function updateCommunicationTargetEntry(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    targetIndex: number,
+    nextTarget: CommunicationTargetDraftEntry,
+  ) {
+    mutateCommunicationTargetsField(field, fieldState, (entries) =>
+      entries.map((entry, index) => (index === targetIndex ? nextTarget : entry)),
+    );
+  }
+
+  function updateStringListField(fieldName: string, nextEntries: string[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: encodeStringListDraftValue(dedupeStrings(nextEntries)),
+    });
+  }
+
+  async function handleDiscordWebhookOperation(
+    targetId: string,
+    action: "status" | "provision" | "test" | "recreate",
+  ) {
+    const normalizedTargetId = targetId.trim().toLowerCase();
+    if (!normalizedTargetId) {
+      setError("Save a non-empty Discord target id before managing its webhook.");
+      return;
+    }
+    const operationKey = `${normalizeDirectoryPath(selectedDirectoryPath)}:${normalizedTargetId}`;
+    setDiscordWebhookOperations((current) => ({
+      ...current,
+      [operationKey]: {
+        loading: true,
+        configured: current[operationKey]?.configured ?? null,
+        message: null,
+        error: null,
+      },
+    }));
+    try {
+      const actionSuffix = action === "status" ? "" : `/${action}`;
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/discord-webhooks/targets/${encodeURIComponent(normalizedTargetId)}${actionSuffix}`
+          + `?directory_path=${encodeURIComponent(normalizeDirectoryPath(selectedDirectoryPath))}`,
+        action === "status" ? undefined : { method: "POST" },
+      );
+      const configured = Boolean(payload.configured ?? action !== "status");
+      const channelWebhookCount = Number(payload.channel_webhook_count ?? 0);
+      const personaWebhookCount = Number(payload.persona_webhook_count ?? 0);
+      const message = action === "test"
+        ? `Webhook test posted (message ${String(payload.message_id ?? "created")}).`
+        : action === "status" && configured
+          ? `${channelWebhookCount} channel webhook${channelWebhookCount === 1 ? "" : "s"} ready (${personaWebhookCount} cached persona avatar${personaWebhookCount === 1 ? "" : "s"}).`
+        : configured
+          ? `Webhook ready${payload.webhook_id ? ` (${String(payload.webhook_id)})` : ""}.`
+          : "No webhook is currently provisioned.";
+      setDiscordWebhookOperations((current) => ({
+        ...current,
+        [operationKey]: { loading: false, configured, message, error: null },
+      }));
+      setStatusMessage(`${normalizedTargetId}: ${message}`);
+      setError(null);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setDiscordWebhookOperations((current) => ({
+        ...current,
+        [operationKey]: {
+          loading: false,
+          configured: current[operationKey]?.configured ?? null,
+          message: null,
+          error: message,
+        },
+      }));
+    }
+  }
+
+  function mutateContactsField(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    mutate: (entries: ContactDraftEntry[]) => ContactDraftEntry[],
+  ) {
+    const parsed = parseContactDraftValue(fieldState.value);
+    if (parsed.error) {
+      setError(`Unable to edit contacts: ${parsed.error}`);
+      return;
+    }
+    updateContactsField(field.field_name, mutate(parsed.entries));
+    setError(null);
+  }
+
+  function updateContactEntry(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    contactIndex: number,
+    nextContact: ContactDraftEntry,
+  ) {
+    mutateContactsField(field, fieldState, (entries) =>
+      entries.map((entry, index) => (index === contactIndex ? nextContact : entry)),
+    );
+  }
+
+  function renderContactsEditor(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    disabled: boolean,
+  ) {
+    const parsed = parseContactDraftValue(fieldState.value);
+    const entries = parsed.entries;
+    const resolvedContactIds = contactDraftResolvedIds(entries);
+    return (
+      <div className="contacts-editor">
+        <div className="contacts-editor-header">
+          <p className="muted-text">User attachments are managed from the Users page.</p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                mutateContactsField(field, fieldState, (current) => [
+                  ...current,
+                  {
+                    id: "",
+                    isNew: true,
+                    name: "",
+                    description: "",
+                    emailAddresses: [],
+                    phoneNumbers: [],
+                  },
+                ])
+              }
+              disabled={disabled}
+            >
+              Add contact
+            </button>
+          </div>
+        </div>
+        {parsed.error ? (
+          <div className="callout error-callout">Contacts draft could not be read: {parsed.error}</div>
+        ) : null}
+        {!parsed.error ? <RecordCollection
+          key={`${collectionSnapshotKey}:${field.field_name}`}
+          label="Contacts" entries={entries}
+          name={(contact, index) => contact.name.trim() || contact.id.trim() || `Contact ${index + 1}`}
+          description={contact => contact.emailAddresses.join(", ") || contact.description}
+          searchText={contact => [contact.id, contact.description, ...contact.phoneNumbers.map(phone => `${phone.label} ${phone.number}`)].join(" ")}
+          isNew={contact => !contact.name.trim()}
+        >
+          {(contact, contactIndex) => (
+              <div key={`contact-${contactIndex}`} className="contact-editor-item">
+                <div className="contact-editor-item-header">
+                  <strong>{contact.name.trim() || contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        mutateContactsField(field, fieldState, (current) =>
+                          current.filter((_, index) => index !== contactIndex),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <div className="contact-editor-grid">
+                  <div className="contact-id-field">
+                    <span>Contact id</span>
+                    <strong>{resolvedContactIds[contactIndex] || "contact"}</strong>
+                  </div>
+                  <label className="field-stack">
+                    <span>Name</span>
+                    <input
+                      value={contact.name}
+                      onChange={(event) =>
+                        updateContactEntry(field, fieldState, contactIndex, {
+                          ...contact,
+                          name: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="Ops Duty"
+                    />
+                  </label>
+                  <label className="field-stack contact-description-field">
+                    <span>Description</span>
+                    <textarea
+                      value={contact.description}
+                      onChange={(event) =>
+                        updateContactEntry(field, fieldState, contactIndex, {
+                          ...contact,
+                          description: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="Optional"
+                    />
+                  </label>
+                </div>
+
+                <div className="contact-subsection">
+                  <div className="contact-subsection-header">
+                    <strong>Email addresses</strong>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateContactEntry(field, fieldState, contactIndex, {
+                            ...contact,
+                            emailAddresses: [...contact.emailAddresses, ""],
+                          })
+                        }
+                        disabled={disabled}
+                      >
+                        Add email
+                      </button>
+                    </div>
+                  </div>
+                  {contact.emailAddresses.length === 0 ? (
+                    <div className="empty-state compact-empty-state">No email addresses.</div>
+                  ) : null}
+                  {contact.emailAddresses.map((address, emailIndex) => (
+                    <div key={`contact-${contactIndex}-email-${emailIndex}`} className="contact-row">
+                      <label className="field-stack">
+                        <span>Email</span>
+                        <input
+                          type="email"
+                          value={address}
+                          onChange={(event) => {
+                            const nextEmails = contact.emailAddresses.map((current, index) =>
+                              index === emailIndex ? event.target.value : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              emailAddresses: nextEmails,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="ops@example.com"
+                        />
+                      </label>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() =>
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              emailAddresses: contact.emailAddresses.filter(
+                                (_, index) => index !== emailIndex,
+                              ),
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="contact-subsection">
+                  <div className="contact-subsection-header">
+                    <strong>Phone numbers</strong>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateContactEntry(field, fieldState, contactIndex, {
+                            ...contact,
+                            phoneNumbers: [
+                              ...contact.phoneNumbers,
+                              {
+                                label: "",
+                                number: "",
+                                primary: contact.phoneNumbers.length === 0,
+                              },
+                            ],
+                          })
+                        }
+                        disabled={disabled}
+                      >
+                        Add phone
+                      </button>
+                    </div>
+                  </div>
+                  {contact.phoneNumbers.length === 0 ? (
+                    <div className="empty-state compact-empty-state">No phone numbers.</div>
+                  ) : null}
+                  {contact.phoneNumbers.map((phone, phoneIndex) => (
+                    <div key={`contact-${contactIndex}-phone-${phoneIndex}`} className="contact-row contact-phone-row">
+                      <label className="field-stack">
+                        <span>Label</span>
+                        <input
+                          value={phone.label}
+                          onChange={(event) => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) =>
+                              index === phoneIndex ? { ...current, label: event.target.value } : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="mobile"
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Number</span>
+                        <input
+                          value={phone.number}
+                          onChange={(event) => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) =>
+                              index === phoneIndex ? { ...current, number: event.target.value } : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="+15551230001"
+                        />
+                      </label>
+                      <label className="checkbox-row contact-primary-row">
+                        <input
+                          type="radio"
+                          checked={phone.primary}
+                          onChange={() => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) => ({
+                              ...current,
+                              primary: index === phoneIndex,
+                            }));
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                        />
+                        <span>Primary</span>
+                      </label>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() =>
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: contact.phoneNumbers.filter(
+                                (_, index) => index !== phoneIndex,
+                              ),
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+        </RecordCollection> : null}
+      </div>
+    );
+  }
+
+  function renderCommunicationTargetsEditor(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    disabled: boolean,
+    inheritedTargets: CommunicationTargetDraftEntry[],
+    mailboxes: EmailMailboxDraftEntry[],
+  ) {
+    const parsed = parseCommunicationTargetDraftValue(fieldState.value);
+    const entries = parsed.entries;
+    const explicitIds = new Set(entries.map((entry) => entry.id.trim().toLowerCase()).filter(Boolean));
+    const availableInheritedTargets = inheritedTargets.filter((target) => !explicitIds.has(target.id.trim().toLowerCase()));
+    const teamsChannelLookupDisabled = loading || saving || teamsChannelLookupLoading || !state?.directory_scoped_config_enabled;
+    const teamsChannelInsertDisabled = disabled || mutationLocked || teamsChannelLookupLoading || Boolean(parsed.error);
+    return (
+      <div className="communication-targets-editor">
+        <div className="contacts-editor-header">
+          <p className="muted-text">
+            Messaging destinations for workflows and agents. Expand a target to edit its address and capabilities.
+          </p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                mutateCommunicationTargetsField(field, fieldState, (current) => [
+                  ...current,
+                  {
+                    id: "",
+                    disabled: false,
+                    provider: "teams",
+                    kind: "teams",
+                    address: "",
+                    capabilities: ["notify"],
+                    authProfileRef: "",
+                    senderIdentity: "platform",
+                    discordConversationScope: "channel",
+                  },
+                ])
+              }
+              disabled={disabled || mutationLocked}
+            >
+              Add target
+            </button>
+          </div>
+        </div>
+        <details className="contact-subsection teams-channel-lookup">
+          <summary>Optional Teams channel lookup</summary>
+          <div className="contact-subsection-header">
+            <div className="inline-actions compact-actions">
+              <button
+                type="button"
+                onClick={() => void handleTeamsChannelLookup()}
+                disabled={teamsChannelLookupDisabled}
+              >
+                {teamsChannelLookupLoading ? "Looking up..." : "Lookup channels"}
+              </button>
+            </div>
+          </div>
+          <div className="teams-channel-lookup-grid">
+            <label className="field-stack">
+              <span>Team id</span>
+              <input
+                value={teamsChannelLookupTeamId}
+                onChange={(event) => setTeamsChannelLookupTeamId(event.target.value)}
+                disabled={teamsChannelLookupDisabled}
+                placeholder="c85e4de5-e0d7-4240-8302-8bc944f2360d"
+              />
+            </label>
+            <label className="field-stack">
+              <span>Channel name</span>
+              <input
+                value={teamsChannelLookupChannelName}
+                onChange={(event) => setTeamsChannelLookupChannelName(event.target.value)}
+                disabled={teamsChannelLookupDisabled}
+                placeholder="General"
+              />
+            </label>
+            <label className="checkbox-row teams-channel-lookup-all-toggle">
+              <input
+                type="checkbox"
+                checked={teamsChannelLookupIncludeAll}
+                onChange={(event) => setTeamsChannelLookupIncludeAll(event.target.checked)}
+                disabled={teamsChannelLookupDisabled}
+              />
+              <span>Include all channels</span>
+            </label>
+          </div>
+          {teamsChannelLookupError ? <div className="callout error-callout">{teamsChannelLookupError}</div> : null}
+          {teamsChannelLookupResult ? (
+            <div className="teams-channel-lookup-results">
+              <div className="panel-meta">
+                Directory {teamsChannelLookupResult.directoryPath} · backend {teamsChannelLookupResult.backend} ·{" "}
+                {teamsChannelLookupResult.matchCount} match{teamsChannelLookupResult.matchCount === 1 ? "" : "es"}
+              </div>
+              {!teamsChannelLookupResult.channels.length ? (
+                <div className="empty-state">
+                  No matching channels were returned for team {teamsChannelLookupResult.teamId}.
+                </div>
+              ) : (
+                teamsChannelLookupResult.channels.map((channel) => (
+                  <div key={`${channel.teamId}-${channel.channelId ?? channel.displayName}`} className="teams-channel-lookup-result">
+                    <div className="teams-channel-lookup-result-header">
+                      <div>
+                        <strong>{channel.displayName || channel.channelId || "Teams channel"}</strong>
+                        <div className="panel-meta">
+                          {channel.membershipType ?? "membership unknown"}
+                          {channel.allowlistEntry ? ` · ${channel.allowlistEntry}` : ""}
+                        </div>
+                      </div>
+                      <div className="inline-actions compact-actions teams-channel-lookup-result-actions">
+                        {channel.webUrl ? (
+                          <a href={channel.webUrl} target="_blank" rel="noreferrer">
+                            Open
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => insertTeamsChannelLookupResult(field, fieldState, channel)}
+                          disabled={teamsChannelInsertDisabled || !channel.allowlistEntry}
+                        >
+                          Insert target
+                        </button>
+                      </div>
+                    </div>
+                    <div className="teams-channel-lookup-result-fields">
+                      <div>
+                        <span>Channel id</span>
+                        <strong>{channel.channelId ?? "n/a"}</strong>
+                      </div>
+                      <div>
+                        <span>Allowlist entry</span>
+                        <strong>{channel.allowlistEntry ?? "n/a"}</strong>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
+        </details>
+        {parsed.error ? (
+          <div className="callout error-callout">Communication target draft could not be read: {parsed.error}</div>
+        ) : null}
+        {!parsed.error ? <RecordCollection
+          key={`${collectionSnapshotKey}:${field.field_name}`}
+          label="Communication targets" entries={entries}
+          name={(target, index) => target.id.trim() || `Target ${index + 1}`}
+          description={target => target.address || "No address configured"}
+          searchText={target => [target.provider, target.kind, ...target.capabilities, target.disabled ? "disabled" : "enabled", target.authProfileRef].join(" ")}
+          category={target => target.provider}
+          metadata={target => <><span className="record-provider">{target.provider}</span><span>{target.disabled ? "Disabled" : target.capabilities.join(" · ")}</span></>}
+          isNew={target => !target.id.trim()}
+        >
+          {(target, targetIndex) => {
+              const kindOptions = communicationTargetKindsForProvider(target.provider);
+              const showKindSelector = kindOptions.length > 1;
+              const selectedKind = normalizeCommunicationTargetKind(target.provider, target.kind);
+              const showSendingMailbox = target.provider === "email";
+              const selectedMailboxId = emailMailboxIdFromAuthProfileRef(target.authProfileRef);
+              const selectedMailbox = mailboxes.find(
+                (mailbox) => mailbox.mailboxId.trim() === selectedMailboxId,
+              );
+              const webhookOperationKey = `${normalizeDirectoryPath(selectedDirectoryPath)}:${target.id.trim().toLowerCase()}`;
+              const webhookOperation = discordWebhookOperations[webhookOperationKey];
+              const webhookManagementDisabled = disabled
+                || target.disabled
+                || !target.id.trim()
+                || Boolean(dirtyTabs[selectedTab]);
+              return (
+              <div key={`communication-target-${targetIndex}`} className="contact-editor-item communication-target-editor-item">
+                <div className="contact-editor-item-header">
+                  <strong>{target.id.trim() || `Target ${targetIndex + 1}`}</strong>
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        mutateCommunicationTargetsField(field, fieldState, (current) =>
+                          current.filter((_, index) => index !== targetIndex),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <div className="communication-target-grid">
+                  <label className="field-stack">
+                    <span>Target id</span>
+                    <input
+                      value={target.id}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          id: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="target-primary"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Provider</span>
+                    <select
+                      value={target.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value;
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          provider,
+                          kind: normalizeCommunicationTargetKind(provider, target.kind),
+                          authProfileRef: provider === "email" ? target.authProfileRef : "",
+                          senderIdentity: provider === "discord" ? target.senderIdentity : "platform",
+                          discordConversationScope:
+                            provider === "discord" ? target.discordConversationScope : "channel",
+                        });
+                      }}
+                      disabled={disabled || target.disabled}
+                    >
+                      {COMMUNICATION_TARGET_PROVIDERS.map((provider) => (
+                        <option key={provider} value={provider}>{provider}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {showKindSelector ? (
+                    <label className="field-stack">
+                      <span>Kind</span>
+                      <select
+                        value={selectedKind}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            kind: event.target.value,
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      >
+                        {kindOptions.map((kind) => (
+                          <option key={kind} value={kind}>{kind}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <label className="field-stack communication-target-address-field">
+                    <span>Address</span>
+                    <input
+                      value={target.address}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          address: event.target.value,
+                        })
+                      }
+                      disabled={disabled || target.disabled}
+                      placeholder={communicationTargetAddressPlaceholder(target.provider, selectedKind)}
+                    />
+                  </label>
+                  {showSendingMailbox ? (
+                    <label className="field-stack">
+                      <span>Sending mailbox</span>
+                      <select
+                        value={selectedMailboxId}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            authProfileRef: emailMailboxAuthProfileRef(event.target.value),
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      >
+                        <option value="">
+                          {mailboxes.length ? "Select a mailbox" : "No mailboxes configured"}
+                        </option>
+                        {!selectedMailbox && selectedMailboxId ? (
+                          <option value={selectedMailboxId}>
+                            {selectedMailboxId} (unknown mailbox)
+                          </option>
+                        ) : null}
+                        {mailboxes
+                          .filter((mailbox) => mailbox.mailboxId.trim())
+                          .map((mailbox) => (
+                            <option key={mailbox.mailboxId} value={mailbox.mailboxId.trim()}>
+                              {emailMailboxLabel(mailbox)}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+                <div className="communication-target-capabilities">
+                  {COMMUNICATION_TARGET_CAPABILITIES.map((capability) => (
+                    <label key={capability} className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={target.capabilities.includes(capability)}
+                        onChange={(event) => {
+                          const capabilities = event.target.checked
+                            ? [...target.capabilities, capability]
+                            : target.capabilities.filter((current) => current !== capability);
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            capabilities,
+                          });
+                        }}
+                        disabled={disabled || target.disabled}
+                      />
+                      <span>{capability}</span>
+                    </label>
+                  ))}
+                  {target.provider === "discord" ? (
+                    <label className="field-stack">
+                      <span>Conversation scope</span>
+                      <select
+                        value={target.discordConversationScope}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            discordConversationScope: event.target.value as CommunicationTargetDraftEntry["discordConversationScope"],
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      >
+                        <option value="channel">Channel only</option>
+                        <option value="public_threads">Public threads only</option>
+                        <option value="channel_and_public_threads">Channel and public threads</option>
+                      </select>
+                    </label>
+                  ) : null}
+                  {target.provider === "discord" ? (
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={target.senderIdentity === "resolved"}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            senderIdentity: event.target.checked ? "resolved" : "platform",
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      />
+                      <span>Use resolved sender name and avatar</span>
+                    </label>
+                  ) : null}
+                  <label className="checkbox-row communication-target-disabled-toggle">
+                    <input
+                      type="checkbox"
+                      checked={target.disabled}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          disabled: event.target.checked,
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    <span>Disable inherited target</span>
+                  </label>
+                </div>
+                {target.provider === "discord" ? (
+                  <div className="contact-subsection">
+                    <div className="contact-subsection-header">
+                      <div>
+                        <strong>Discord persona webhook pool</strong>
+                        <div className="panel-meta">
+                          Discord stores each resolved avatar on a small, lazily managed channel webhook pool; no public Admin Web avatar URL is required. Save target changes before managing it.
+                        </div>
+                      </div>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "status")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading}
+                        >
+                          Status
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "provision")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Provision
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "test")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Test
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "recreate")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Recreate
+                        </button>
+                      </div>
+                    </div>
+                    {webhookOperation?.loading ? <div className="panel-meta">Working...</div> : null}
+                    {webhookOperation?.message ? (
+                      <div className="callout success-callout">{webhookOperation.message}</div>
+                    ) : null}
+                    {webhookOperation?.error ? (
+                      <div className="callout error-callout">{webhookOperation.error}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              );
+            }}
+        </RecordCollection> : null}
+        {availableInheritedTargets.length ? (
+          <div className="contact-subsection communication-target-inherited">
+            <div className="contact-subsection-header">
+              <strong>Inherited targets</strong>
+            </div>
+            <RecordCollection key={`${collectionSnapshotKey}:inherited-targets`} label="Inherited targets" entries={availableInheritedTargets}
+              name={target => target.id} description={target => target.address}
+              searchText={target => [target.provider, target.kind, ...target.capabilities].join(" ")}
+              category={target => target.provider}
+              metadata={target => <><span className="record-provider">{target.provider}</span><span>Inherited</span></>}
+            >
+            {target => (
+              <div key={`inherited-${target.id}`} className="communication-target-inherited-row">
+                <div>
+                  <strong>{target.id}</strong>
+                  <span className="panel-meta">{target.provider} / {target.kind}</span>
+                </div>
+                <div className="inline-actions compact-actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      mutateCommunicationTargetsField(field, fieldState, (current) => [
+                        ...current,
+                        { ...target },
+                      ])
+                    }
+                    disabled={disabled}
+                  >
+                    Override
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() =>
+                      mutateCommunicationTargetsField(field, fieldState, (current) => [
+                        ...current,
+                        { ...target, disabled: true },
+                      ])
+                    }
+                    disabled={disabled}
+                  >
+                    Disable
+                  </button>
+                </div>
+              </div>
+            )}
+            </RecordCollection>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderApprovalNotificationTargetEditor(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    disabled: boolean,
+  ) {
+    const entries = parseStringListDraftValue(fieldState.value);
+    const knownTargets = field.options;
+    const nextAvailableTarget = knownTargets.find((option) => !entries.includes(option)) ?? "";
+
+    return (
+      <div className="string-list-selector">
+        <div className="contacts-editor-header">
+          <p className="muted-text">
+            Select notify-capable communication targets declared in the Communications tab.
+          </p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() => updateStringListField(field.field_name, [...entries, nextAvailableTarget])}
+              disabled={disabled || !nextAvailableTarget}
+            >
+              Add communication target
+            </button>
+          </div>
+        </div>
+        {entries.length === 0 ? (
+          <div className="empty-state">
+            {knownTargets.length
+              ? "No communication targets selected."
+              : "No notify-capable communication targets are currently declared."}
+          </div>
+        ) : null}
+        {entries.map((entry, index) => {
+          const rowOptions = dedupeStrings([
+            entry,
+            ...knownTargets.filter((option) => option === entry || !entries.includes(option)),
+          ]);
+          const isUnknownTarget = !knownTargets.includes(entry);
+          return (
+            <div key={`${field.field_name}-${index}-${entry}`} className="string-list-selector-row">
+              <label className="field-stack">
+                <span>Communication target</span>
+                <select
+                  value={entry}
+                  onChange={(event) => {
+                    const nextEntries = [...entries];
+                    nextEntries[index] = event.target.value;
+                    updateStringListField(field.field_name, nextEntries);
+                  }}
+                  disabled={disabled}
+                >
+                  {rowOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option === entry && isUnknownTarget ? `${option} (unknown target)` : option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="inline-actions compact-actions">
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() =>
+                    updateStringListField(
+                      field.field_name,
+                      entries.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                  disabled={disabled}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderFieldInput(
+    field: ConfigurationField,
+    fieldState: ConfigurationDraftFieldState,
+    inheritedOrCleared: boolean,
+  ) {
+    const disabled = inheritedOrCleared || loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
+    const inputProps = { "aria-label": field.label };
+    if (field.field_name === "inbound_phone_caller_maps") {
+      return <PhoneCallerMapsEditor value={String(fieldState.value)} disabled={disabled || mutationLocked}
+        sessions={field.session_options ?? []} routes={field.phone_route_options ?? []}
+        onChange={(value) => updateFieldState(field.field_name, { include: true, clear: false, value })} />;
+    }
+    if (field.field_name === "teams_call_routes") {
+      return <TeamsCallRoutesEditor value={String(fieldState.value)} disabled={disabled}
+        assistants={field.assistant_options ?? []}
+        onChange={(value) => updateFieldState(field.field_name, { include: true, clear: false, value })} />;
+    }
+    if (field.kind === "bool") {
+      return (
+        <select
+          {...inputProps}
+          value={String(Boolean(fieldState.value))}
+          onChange={(event) => updateFieldState(field.field_name, { value: event.target.value === "true" })}
+          disabled={disabled}
+        >
+          <option value="false">No</option>
+          <option value="true">Yes</option>
+        </select>
+      );
+    }
+    if (field.kind === "literal") {
+      return (
+        <select
+          {...inputProps}
+          value={String(fieldState.value)}
+          onChange={(event) => updateFieldState(field.field_name, { value: event.target.value })}
+          disabled={disabled}
+        >
+          {field.options.map((option) => (
+            <option key={option} value={option}>
+              {option || "default"}
+            </option>
+          ))}
+        </select>
+      );
+    }
+    if (field.kind === "string_list") {
+      return (
+        <StringListEditor
+          values={parseStringListDraftValue(fieldState.value)}
+          onChange={(nextValues) =>
+            updateFieldState(field.field_name, {
+              value: encodeStringListDraftValue(nextValues),
+            })
+          }
+          disabled={disabled}
+          itemLabel="Value"
+          suggestions={field.options}
+          placeholder="Enter a value"
+        />
+      );
+    }
+    if (field.kind === "json") {
+      return (
+        <JsonTextEditor
+          value={String(fieldState.value)}
+          onChange={(nextValue) => updateFieldState(field.field_name, { value: nextValue })}
+          fieldLabel={field.label}
+          validate={!inheritedOrCleared}
+          disabled={disabled}
+        />
+      );
+    }
+    if (field.kind === "multiline_text") {
+      return (
+        <textarea
+          {...inputProps}
+          className="json-editor compact-editor"
+          value={String(fieldState.value)}
+          spellCheck={false}
+          onChange={(event) => updateFieldState(field.field_name, { value: event.target.value })}
+          disabled={disabled}
+        />
+      );
+    }
+    return (
+      <input
+        {...inputProps}
+        type={field.kind === "int" || field.kind === "float" ? "number" : "text"}
+        value={String(fieldState.value)}
+        onChange={(event) => updateFieldState(field.field_name, { value: event.target.value })}
+        disabled={disabled}
+      />
+    );
+  }
+
+  return (
+    <div className="feature-page configuration-page">
+      <section className="feature-sidebar">
+        <div className="feature-sidebar-header">
+          <div>
+            <h1>Configuration</h1>
+          </div>
+        </div>
+        <ConfigurationNavigator
+          tabs={state?.tabs ?? []}
+          selectedTabKey={selectedTab}
+          selectedDestinationKey={selectedDestination}
+          dirtyTabs={dirtyTabs}
+          modelPricingDirty={modelPricingDirty}
+          disabled={loading || saving}
+          onSelectArea={navigateToConfigurationArea}
+          onSelectDestination={navigateToConfigurationDestination}
+        />
+        {!state?.tabs.length ? <div className="empty-state">No configuration areas are available for this directory.</div> : null}
+      </section>
+
+      <section className="feature-content">
+        <div className="feature-toolbar">
+          <div>
+            <div className="eyebrow">{selectedTabDefinition?.title ?? "Configuration"}</div>
+            <h2>{selectedDestinationDefinition?.label ?? "Configuration"}</h2>
+            <p className="muted-text">
+              {selectedDestinationDefinition?.description
+                ?? "Inspect inherited defaults, adjust explicit overrides, and save when the selected area is ready."}
+            </p>
+          </div>
+          {selectedSectionDefinition || isDirty ? <div className="feature-toolbar-actions">
+            <Tooltip content={selectedTabHasGlobalFields ? "Save the current tab's settings." : "Save the current tab's explicit overrides for the selected directory."}>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handleSaveTab()}
+                disabled={saving || loading || saveBlockedByConfigMode || !selectedTabDefinition || !snapshot || !isDirty || mutationLocked}
+              >
+                {saving ? "Saving…" : <><SaveIcon /> Save changes</>}
+              </button>
+            </Tooltip>
+          </div> : null}
+        </div>
+
+        {!state?.directory_scoped_config_enabled ? (
+          <div className="callout warning-callout">
+            Directory-scoped config is disabled. You can inspect current values, but create, delete, and save actions are unavailable.
+          </div>
+        ) : null}
+        {mutationLocked ? (
+          <div className="callout warning-callout">
+            Privileged operations are locked. You can inspect configuration, but save actions are unavailable.
+          </div>
+        ) : null}
+        {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
+        {error ? <div className="callout error-callout">{error}</div> : null}
+        {hasUnsavedTabs ? (
+          <div className="callout warning-callout">
+            Unsaved override edits are being preserved during refresh. Switching directories will discard them.
+          </div>
+        ) : null}
+
+        <details className="configuration-context">
+          <summary>
+            <strong>{selectedDirectoryPath}</strong>
+            <span>{isRoot ? "Root defaults" : "Directory override"} · {state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</span>
+            <span className="configuration-context-hint">Directory details</span>
+          </summary>
+          <div className="configuration-context-strip" aria-label="Configuration context">
+            <div><span>Directory</span><strong>{selectedDirectoryPath}</strong></div>
+            <div><span>Parent</span><strong>{state?.selected_directory.parent_path ?? "No parent"}</strong></div>
+            <div><span>Scope</span><strong>{isRoot ? "Root defaults" : "Directory override"}</strong></div>
+            <div><span>Mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
+            <div><span>Domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
+            <div><span>Overrides</span><strong>{state?.directory_overrides.field_count ?? 0} fields</strong></div>
+          </div>
+        </details>
+
+        <div className="feature-grid configuration-summary-grid">
+          {selectedUtility === "teams-auth" && selectedTabDefinition?.key === TEAMS_AUTH_CONFIGURATION_TAB_KEY ? (
+            <TeamsAuthConfiguration auth={teamsConfiguration} loading={loading} saving={saving} mutationLocked={mutationLocked} />
+          ) : null}
+          {selectedUtility === "model-pricing" && selectedTabDefinition?.key === MODEL_PRICING_CONFIGURATION_TAB_KEY ? (
+            <ModelPricingConfiguration model={modelPricing} selectedDirectoryPath={selectedDirectoryPath} loading={loading} mutationLocked={mutationLocked} />
+          ) : null}
+        </div>
+
+        {selectedSectionDefinition ? (() => {
+          const section = selectedSectionDefinition;
+          const sectionIsGlobal = section.fields.every(isGlobalField);
+          return (
+            <article key={section.key} className="panel section-panel configuration-section-workspace">
+              {section.fields.length > 1 ? <div className="panel-header configuration-section-header">
+                <div>
+                  <h3>{section.title}</h3>
+                  <p className="muted-text">
+                    {sectionIsGlobal
+                      ? "Edit runtime-global settings for this section."
+                      : isRoot
+                      ? "Edit root-level defaults for this section."
+                      : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
+                  </p>
+                </div>
+              </div> : null}
+                <div className="config-field-grid">
+                  {section.fields.map((field) => {
+                    const fieldIsGlobal = isGlobalField(field);
+                    const fieldState = tabDraft[field.field_name] ?? {
+                      include: false,
+                      clear: false,
+                      value: normalizeFieldValue(field, undefined),
+                    };
+                    const inherited = snapshot?.parent_defaults.config?.[field.field_name];
+                    const inputDisabled = fieldIsGlobal
+                      ? false
+                      : isRoot
+                      ? fieldState.clear
+                      : !fieldState.include || fieldState.clear;
+                    const isContactsField = isContactsConfigField(field);
+                    const isCommunicationTargetsField = isCommunicationTargetsConfigField(field);
+                    const isEmailMailboxesField = isEmailMailboxesConfigField(field);
+                    const isEmailMailboxFolderPolicy = isEmailMailboxFolderPolicyField(field);
+                    const isEmailMailboxAllowlist = isEmailMailboxAllowlistField(field);
+                    const isApprovalNotificationTargetList = isApprovalNotificationTargetField(field);
+                    const isPhoneCallerMapField = field.field_name === "inbound_phone_caller_maps";
+                    const inheritedCommunicationTargets = isCommunicationTargetsField
+                      ? communicationTargetEntriesFromConfig(snapshot?.parent_defaults.config?.[field.field_name])
+                      : [];
+                    return (
+                      <div
+                        key={field.field_name}
+                        id={configurationFieldDomId(selectedTab, field.field_name)}
+                        tabIndex={-1}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : isPhoneCallerMapField ? " complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
+                      >
+                        <div className="feature-list-title-row">
+                          <div className="config-field-label">
+                            <strong>{field.label}</strong>
+                            <Tooltip
+                              content={field.tooltip}
+                              focusable
+                              ariaLabel={`${field.label} setting help`}
+                              triggerClassName="config-field-tooltip-trigger"
+                            >
+                              <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
+                            </Tooltip>
+                          </div>
+                        </div>
+                        {!fieldIsGlobal ? (
+                          <div className="config-toggle-row">
+                            {!isRoot ? (
+                              <label className="checkbox-row">
+                                <input
+                                  type="checkbox"
+                                  checked={fieldState.include}
+                                  onChange={(event) => updateFieldState(field.field_name, { include: event.target.checked })}
+                                  disabled={!state?.directory_scoped_config_enabled || loading || saving}
+                                />
+                                <span>Override</span>
+                              </label>
+                            ) : null}
+                            <label className="checkbox-row">
+                              <input
+                                type="checkbox"
+                                checked={fieldState.clear}
+                                onChange={(event) =>
+                                  updateFieldState(field.field_name, isRoot ? { clear: event.target.checked, include: !event.target.checked } : { clear: event.target.checked })
+                                }
+                                disabled={!state?.directory_scoped_config_enabled || loading || saving || (!isRoot && !fieldState.include)}
+                              />
+                              <span>{isRoot ? "Unset" : "Clear"}</span>
+                            </label>
+                          </div>
+                        ) : null}
+                        <div className={`config-field-control${inputDisabled ? " disabled-block" : ""}`}>
+                          {isContactsField
+                            ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
+                            : isEmailMailboxesField
+                            ? <EmailMailboxesEditor
+                                key={`${collectionSnapshotKey}:${field.field_name}`}
+                                draftValue={fieldState.value}
+                                disabled={inputDisabled || loading || saving || !state?.directory_scoped_config_enabled}
+                                onDraftChange={(value) => updateFieldState(field.field_name, {
+                                  include: true,
+                                  clear: false,
+                                  value,
+                                })}
+                                onError={setError}
+                              />
+                            : isCommunicationTargetsField
+                            ? renderCommunicationTargetsEditor(
+                                field,
+                                fieldState,
+                                inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
+                                inheritedCommunicationTargets,
+                                emailMailboxEntries,
+                              )
+                            : isEmailMailboxFolderPolicy
+                            ? <EmailMailboxFolderPolicyEditor
+                                draftValue={fieldState.value}
+                                disabled={inputDisabled || loading || saving || !state?.directory_scoped_config_enabled}
+                                mailboxes={emailMailboxEntries}
+                                onDraftChange={(value) => updateFieldState(field.field_name, {
+                                  include: true,
+                                  clear: false,
+                                  value,
+                                })}
+                                onError={setError}
+                              />
+                            : isEmailMailboxAllowlist
+                            ? <EmailMailboxAllowlistEditor
+                                fieldName={field.field_name}
+                                draftValue={fieldState.value}
+                                disabled={inputDisabled || loading || saving || !state?.directory_scoped_config_enabled}
+                                mailboxes={emailMailboxEntries}
+                                onDraftChange={(value) => updateFieldState(field.field_name, {
+                                  include: true,
+                                  clear: false,
+                                  value,
+                                })}
+                              />
+                            : isApprovalNotificationTargetList
+                            ? renderApprovalNotificationTargetEditor(
+                                field,
+                                fieldState,
+                                inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
+                              )
+                            : renderFieldInput(field, fieldState, inputDisabled)}
+                        </div>
+                        {fieldIsGlobal ? (
+                          <div className="panel-meta config-field-inheritance">Runtime-global setting.</div>
+                        ) : !isRoot ? (
+                          <Tooltip content={inheritedPreview(inherited)} inline={false}>
+                            <div className="panel-meta config-field-inheritance">{inheritedPreview(inherited)}</div>
+                          </Tooltip>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+            </article>
+          );
+        })() : null}
+        {selectedTabDefinition && selectedTabDefinition.sections.length === 0 && !selectedUtility ? (
+          <article className="panel">
+            <div className="empty-state">This tab has no editable fields yet.</div>
+          </article>
+        ) : null}
+        {!selectedTabDefinition ? (
+          <article className="panel">
+            <div className="empty-state">Select a configuration tab to inspect and edit it.</div>
+          </article>
+        ) : null}
+
+        {selectedUtility === "events" ? <EventsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setEventsDirty} /> : null}
+        {selectedUtility === "classification" ? <ClassificationConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setClassificationDirty} /> : null}
+        {selectedUtility === "credentials" ? <CredentialsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setCredentialsDirty} /> : null}
+        {selectedUtility === "website-logins" ? <WebsiteLoginsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setWebsiteLoginsDirty} /> : null}
+        {selectedUtility === "validation" ? <article className="panel configuration-utility-panel">
+          <div className="panel-header">
+            <h3>Validation</h3>
+            <span className="panel-meta">{snapshot?.raw.exists ? "Saved overrides present" : "Inherited only"}</span>
+          </div>
+          <div className="diagnostic-list">
+            {!snapshot ? (
+              <div className="empty-state">No validation snapshot is available for the selected tab.</div>
+            ) : snapshot.effective.validation_diagnostics.length ? (
+              snapshot.effective.validation_diagnostics.map((diagnostic, index) => (
+                <div key={`${diagnostic.code}-${index}`} className="diagnostic-item">
+                  {diagnostic.message}
+                </div>
+              ))
+            ) : (
+              <div className="empty-state">No validation errors.</div>
+            )}
+            {snapshot?.effective.errors.length
+              ? snapshot.effective.errors.map((diagnostic, index) => (
+                  <div key={`${diagnostic.code}-error-${index}`} className="diagnostic-item error-item">
+                    {diagnostic.message}
+                  </div>
+                ))
+              : null}
+          </div>
+        </article> : null}
+
+        <div className="feature-grid configuration-diagnostics-grid">
+          {selectedUtility === "directory-overrides" ? <article className="panel section-panel configuration-utility-panel">
+            <div className="panel-header configuration-json-panel-header">
+              <div className="configuration-json-toggle">
+                <div>
+                  <h3>Directory override JSON</h3>
+                  <p className="muted-text">
+                    Unified explicit overrides for {selectedDirectoryPath}, grouped by config domain.
+                  </p>
+                </div>
+              </div>
+              <div className="feature-toolbar-actions icon-actions">
+                <Tooltip content="Copy unified directory override JSON.">
+                  <button
+                    type="button"
+                    onClick={() => void copyDirectoryOverrides()}
+                    disabled={!state}
+                    aria-label="Copy directory override JSON"
+                  >
+                    <CopyIcon />
+                  </button>
+                </Tooltip>
+              </div>
+            </div>
+            <pre className="json-view">{formatJson(state?.directory_overrides.payload ?? {})}</pre>
+          </article> : null}
+
+          {selectedUtility === "effective-config" ? <article className="panel section-panel configuration-utility-panel">
+            <div className="panel-header">
+              <div>
+                <h3>Effective configuration</h3>
+                <p className="muted-text">Resolved output across {selectedTabDefinition?.underlying_domains.join(", ") || "the selected domains"}.</p>
+              </div>
+            </div>
+            <pre className="json-view">{formatJson(snapshot?.effective.payload ?? {})}</pre>
+          </article> : null}
+
+          {selectedUtility === "parent-defaults" ? <article className="panel section-panel configuration-utility-panel">
+            <div className="panel-header">
+              <div>
+                <h3>Parent defaults</h3>
+                <p className="muted-text">Inherited diagnostic payload from {snapshot?.parent_defaults.directory_path ?? "root"}.</p>
+              </div>
+            </div>
+            <pre className="json-view">{formatJson(snapshot?.parent_defaults.payload ?? {})}</pre>
+          </article> : null}
+        </div>
+      </section>
+    </div>
+  );
+}

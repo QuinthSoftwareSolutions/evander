@@ -1,0 +1,386 @@
+---
+- name: Resolve worker Playwright runtime source mode
+  ansible.builtin.set_fact:
+    evander_worker_playwright_runtime_uses_archive: >-
+      {{
+        (evander_worker_playwright_runtime_archive_path | default('') | string | trim | length) > 0
+      }}
+    evander_worker_playwright_browsers_uses_archive: >-
+      {{
+        (evander_worker_playwright_browsers_archive_path | default('') | string | trim | length) > 0
+      }}
+
+- name: Check local Playwright runtime archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_playwright_runtime_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_playwright_runtime_archive_stat
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - evander_worker_playwright_runtime_uses_archive | bool
+
+- name: Assert local Playwright runtime archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_playwright_runtime_archive_stat.stat.exists
+      - evander_worker_playwright_runtime_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local Playwright runtime archive:
+      {{ evander_worker_playwright_runtime_archive_path }}. Set
+      evander_worker_playwright_runtime_archive_path to a tar.gz containing
+      playwright and playwright-core directories at the archive root, or unset it
+      and set HOST_PLAYWRIGHT_NODE_MODULES.
+    success_msg: Local Playwright runtime archive is present.
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - evander_worker_playwright_runtime_uses_archive | bool
+
+- name: Check local Playwright node_modules directory
+  ansible.builtin.stat:
+    path: "{{ evander_worker_playwright_node_modules_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_playwright_node_modules_stat
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_runtime_uses_archive | bool)
+
+- name: Check local Playwright packages
+  ansible.builtin.stat:
+    path: "{{ evander_worker_playwright_node_modules_local_path }}/{{ item }}"
+  delegate_to: localhost
+  become: false
+  loop:
+    - playwright
+    - playwright-core
+  register: evander_worker_playwright_package_stats
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_runtime_uses_archive | bool)
+
+- name: Assert local Playwright runtime includes required packages
+  ansible.builtin.assert:
+    that:
+      - evander_worker_playwright_node_modules_stat.stat.exists
+      - evander_worker_playwright_node_modules_stat.stat.isdir
+      - >-
+        {{
+          evander_worker_playwright_package_stats.results
+          | selectattr('stat.isdir')
+          | list
+          | length == 2
+        }}
+    fail_msg: >-
+      Missing Playwright packages under
+      {{ evander_worker_playwright_node_modules_local_path }}. Expected
+      playwright and playwright-core directories. Run npm install in the frontend
+      workspace, set HOST_PLAYWRIGHT_NODE_MODULES, or provide
+      evander_worker_playwright_runtime_archive_path.
+    success_msg: Local Playwright runtime includes playwright and playwright-core.
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_runtime_uses_archive | bool)
+
+- name: Check local Playwright browsers archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_playwright_browsers_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_playwright_browsers_archive_stat
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - evander_worker_playwright_browsers_uses_archive | bool
+
+- name: Assert local Playwright browsers archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_playwright_browsers_archive_stat.stat.exists
+      - evander_worker_playwright_browsers_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local Playwright browsers archive:
+      {{ evander_worker_playwright_browsers_archive_path }}. Set
+      evander_worker_playwright_browsers_archive_path to a tar.gz containing
+      the contents of a Playwright browser cache, or unset it and set
+      HOST_PLAYWRIGHT_BROWSERS.
+    success_msg: Local Playwright browsers archive is present.
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - evander_worker_playwright_browsers_uses_archive | bool
+
+- name: Check local Playwright browser cache
+  ansible.builtin.stat:
+    path: "{{ evander_worker_playwright_browsers_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_playwright_browsers_local_stat
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_browsers_uses_archive | bool)
+
+- name: Assert local Playwright browser cache exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_playwright_browsers_local_stat.stat.exists
+      - evander_worker_playwright_browsers_local_stat.stat.isdir
+    fail_msg: >-
+      Missing Playwright browser cache at
+      {{ evander_worker_playwright_browsers_local_path }}. Run
+      playwright install locally, set HOST_PLAYWRIGHT_BROWSERS, or provide
+      evander_worker_playwright_browsers_archive_path.
+    success_msg: Local Playwright browser cache is present.
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_browsers_uses_archive | bool)
+
+- name: Create local temporary Playwright archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: evander-playwright-toolchain
+  delegate_to: localhost
+  become: false
+  register: evander_worker_playwright_archive_tmp
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - >-
+      not (evander_worker_playwright_runtime_uses_archive | bool)
+      or not (evander_worker_playwright_browsers_uses_archive | bool)
+
+- name: Pack local Playwright runtime packages
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_playwright_node_modules_local_path }}"
+      - -czf
+      - "{{ evander_worker_playwright_archive_tmp.path }}/playwright-runtime.tar.gz"
+      - playwright
+      - playwright-core
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_runtime_uses_archive | bool)
+
+- name: Pack local Playwright browser cache
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_playwright_browsers_local_path }}"
+      - -czf
+      - "{{ evander_worker_playwright_archive_tmp.path }}/playwright-browsers.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - not (evander_worker_playwright_browsers_uses_archive | bool)
+
+- name: Resolve Playwright archives to copy
+  ansible.builtin.set_fact:
+    evander_worker_playwright_runtime_archive_to_copy: >-
+      {{
+        evander_worker_playwright_runtime_archive_path
+        if (evander_worker_playwright_runtime_uses_archive | bool)
+        else evander_worker_playwright_archive_tmp.path ~ '/playwright-runtime.tar.gz'
+      }}
+    evander_worker_playwright_browsers_archive_to_copy: >-
+      {{
+        evander_worker_playwright_browsers_archive_path
+        if (evander_worker_playwright_browsers_uses_archive | bool)
+        else evander_worker_playwright_archive_tmp.path ~ '/playwright-browsers.tar.gz'
+      }}
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Copy Playwright runtime archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_playwright_runtime_archive_to_copy }}"
+    dest: "{{ evander_worker_playwright_runtime_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Copy Playwright browsers archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_playwright_browsers_archive_to_copy }}"
+    dest: "{{ evander_worker_playwright_browsers_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Install worker Playwright seed verifier
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/verify_seeded_playwright_runtime.mjs"
+    dest: "{{ evander_worker_root }}/images/verify_seeded_playwright_runtime.mjs"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0644"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright preflight staging cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Create worker Playwright preflight staging directories
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/{{ item }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  loop:
+    - playwright-runtime/node_modules
+    - ms-playwright
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright runtime into preflight staging cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_runtime_remote_archive_path }}"
+    dest: >-
+      {{ evander_worker_toolchain_cache_root
+      }}/.playwright-preflight/playwright-runtime/node_modules
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright browsers into preflight staging cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_browsers_remote_archive_path }}"
+    dest: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/ms-playwright"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Verify staged Playwright package and browser cache are compatible
+  ansible.builtin.command:
+    argv:
+      - "{{ evander_worker_node_cache_path }}/bin/node"
+      - "{{ evander_worker_root }}/images/verify_seeded_playwright_runtime.mjs"
+      - >-
+        {{ evander_worker_toolchain_cache_root
+        }}/.playwright-preflight/playwright-runtime/node_modules
+      - "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight/ms-playwright"
+  changed_when: false
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Remove worker Playwright preflight staging cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_toolchain_cache_root }}/.playwright-preflight"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright runtime cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_playwright_runtime_cache_path }}"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Recreate worker Playwright runtime node_modules cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_playwright_runtime_cache_path }}/node_modules"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright runtime into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_runtime_remote_archive_path }}"
+    dest: "{{ evander_worker_playwright_runtime_cache_path }}/node_modules"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright browser cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_playwright_browsers_cache_path }}"
+    state: absent
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Recreate worker Playwright browser cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_playwright_browsers_cache_path }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright browsers into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_playwright_browsers_remote_archive_path }}"
+    dest: "{{ evander_worker_playwright_browsers_cache_path }}"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Verify worker Playwright runtime on host cache
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - >-
+        export PATH="{{ evander_worker_node_cache_path }}/bin:$PATH";
+        export EVANDER_PLAYWRIGHT_RUNTIME="{{ evander_worker_playwright_runtime_cache_path }}/node_modules";
+        export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME";
+        export PLAYWRIGHT_BROWSERS_PATH="{{ evander_worker_playwright_browsers_cache_path }}";
+        export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1";
+        export PLAYWRIGHT_MCP_SANDBOX="0";
+        export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(3); process.stdout.write(executable);')";
+        printf '%s\n' "$PLAYWRIGHT_MCP_EXECUTABLE_PATH";
+        test -x "$PLAYWRIGHT_MCP_EXECUTABLE_PATH"
+  changed_when: false
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Verify Playwright is available inside runner container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.22.1:ro"
+      - -v
+      - "{{ evander_worker_playwright_runtime_cache_path }}:/opt/evander/playwright-runtime:ro"
+      - -v
+      - "{{ evander_worker_playwright_browsers_cache_path }}:/opt/evander/ms-playwright:ro"
+      - "{{ evander_runner_image_name }}"
+      - bash
+      - -lc
+      - >-
+        export PATH="/opt/evander/toolchains/node-v24.22.1/bin:$PATH";
+        export EVANDER_PLAYWRIGHT_RUNTIME="/opt/evander/playwright-runtime/node_modules";
+        export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME";
+        export PLAYWRIGHT_BROWSERS_PATH="/opt/evander/ms-playwright";
+        export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1";
+        export PLAYWRIGHT_MCP_SANDBOX="0";
+        export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(3); process.stdout.write(executable);')";
+        printf '%s\n' "$PLAYWRIGHT_MCP_EXECUTABLE_PATH";
+        test -x "$PLAYWRIGHT_MCP_EXECUTABLE_PATH"
+  changed_when: false
+  when: evander_worker_playwright_toolchain_enabled | bool
+
+- name: Remove temporary local Playwright archive directory
+  ansible.builtin.file:
+    path: "{{ evander_worker_playwright_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_playwright_toolchain_enabled | bool
+    - evander_worker_playwright_archive_tmp.path is defined

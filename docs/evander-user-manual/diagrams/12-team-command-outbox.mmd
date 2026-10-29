@@ -1,0 +1,33 @@
+flowchart TB
+    admin[Ordinary authenticated Admin domain edit]
+    adminTx[BEGIN IMMEDIATE\ncheck expected_revision\nvalidate complete next TeamState\ncommit next revision]
+    conflict[409 conflict\nreload and merge]
+
+    mcp[Team MCP command]
+    identity[Resolve ambient session\nagent, governance, or assignment scope\nactive lease and stand-down]
+    replay{request_id already stored?}
+    same[Return original stored response]
+    different[Idempotency conflict\nno domain mutation]
+    commandTx[One BEGIN IMMEDIATE transaction\nvalidate command and inbox IDs\nmutate TeamState and revision\nappend dispatch activity\ninsert or reuse outbox rows\nstore idempotent response]
+
+    db[(Team SQLite)]
+    outbox[(team_outbox\nin the same SQLite commit)]
+    publisher[Outbox publisher\nclaim, publish, complete or retry]
+    workflow[Core workflow runtime]
+    effect[Wake, spawn, Git, release,\nor communication effect]
+
+    admin --> adminTx
+    adminTx -- stale revision --> conflict
+    adminTx -- current revision --> db
+
+    mcp --> identity --> replay
+    replay -- same payload --> same
+    replay -- different payload --> different
+    replay -- new request --> commandTx
+    commandTx --> db
+    commandTx -. atomic with state and activity .-> outbox
+    outbox --> publisher --> workflow --> effect
+
+    distinction[Ordinary Admin domain edits use expected_revision.\nAppend-only Chat validates its current conversation instead.\nMCP commands use ambient identity, dispatch scope, and request_id.]
+    distinction --- admin
+    distinction --- mcp

@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+from evander.addons import AddonAdminNavigation, AddonRegistration
+
+from .api import admin_api_routes
+from .mcp import MCP_TOOL_CATALOG, register_mcp_tools
+from .outbound_identity import build_outbound_identity_resolver
+from .providers import register_providers
+from .git_submission import validate_submission_checkout
+from .resource_authority import build_resource_authority
+from .repository import ADDON_ID, STATE_FILE
+from .ui import admin_ui_routes
+
+
+def register_addon() -> AddonRegistration:
+    return AddonRegistration(
+        addon_id=ADDON_ID,
+        display_name="Team Add-on",
+        admin_navigation=AddonAdminNavigation(
+            label="Teams",
+            short_label="Teams",
+            description="Hierarchical agent-team orchestration.",
+            ui_path="/addons/team-addon/",
+        ),
+        admin_api_routes=admin_api_routes,
+        admin_ui_routes=admin_ui_routes,
+        mcp_tools=register_mcp_tools,
+        mcp_tool_catalog=MCP_TOOL_CATALOG,
+        workflow_providers=register_providers,
+        outbound_identity_resolver=build_outbound_identity_resolver,
+        git_submission_validator=validate_submission_checkout,
+        resource_authority=build_resource_authority,
+        metadata={
+            "description": "Hierarchical team state model for optional agent-team orchestration.",
+            "state_file": STATE_FILE,
+            "runtime_workflow_pack": "evander_team_addon.workflow_packs.team_runtime_v1",
+            "runtime_workflow_pack_layout": (
+                "evander_team_addon.workflow_packs.team_runtime_v1_layout"
+            ),
+        },
+    )
+
+
+__all__ = ["register_addon"]

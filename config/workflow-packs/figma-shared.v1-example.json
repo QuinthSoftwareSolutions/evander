@@ -1,0 +1,100 @@
+{
+  "pack_id": "figma-shared-example",
+  "pack_version": "v1",
+  "description": "Concurrent authors on one screen with revisions and individual completion snapshots.",
+  "graphs": [
+    {
+      "id": "figma-shared-example",
+      "name": "Concurrent authors on one screen with revisions and individual completion snapshots.",
+      "directory_path": "root/design",
+      "node_ids": [
+        "shared-request",
+        "shared-author-a",
+        "shared-snapshot-a",
+        "shared-author-b",
+        "shared-snapshot-b"
+      ]
+    }
+  ],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "id": "shared-request",
+        "display_name": "shared-request",
+        "type": "trigger:event",
+        "config": {
+          "event_type": "example.figma.shared_requested"
+        }
+      },
+      {
+        "id": "shared-author-a",
+        "display_name": "shared-author-a",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "designer-a",
+          "prompt": "Collaborate on the same screen in target mockups, node ${{shared-request.payload.node_id}}. Brief: ${{shared-request.payload.brief}}. Your assignment: ${{shared-request.payload.assignment_a}}. Other authors may edit this screen concurrently. Preserve their changes. Use figma_query inspect before each small figma_execute edit, include expected_revision, and use stable unique request IDs. On a stale revision, inspect and revise your edit. If an operation is uncertain, stop and report its operation_id; do not retry with a new ID. Stay within your granted design area.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "shared-snapshot-a",
+        "display_name": "shared-snapshot-a",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-a",
+          "request": {
+            "operation": "snapshot",
+            "target_id": "mockups",
+            "node_id": "${{shared-request.payload.node_id}}",
+            "request_id": "${{shared-request.event_id}}:shared-snapshot-a"
+          }
+        }
+      },
+      {
+        "id": "shared-author-b",
+        "display_name": "shared-author-b",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "designer-b",
+          "prompt": "Collaborate on the same screen in target mockups, node ${{shared-request.payload.node_id}}. Brief: ${{shared-request.payload.brief}}. Your assignment: ${{shared-request.payload.assignment_b}}. Other authors may edit this screen concurrently. Preserve their changes. Use figma_query inspect before each small figma_execute edit, include expected_revision, and use stable unique request IDs. On a stale revision, inspect and revise your edit. If an operation is uncertain, stop and report its operation_id; do not retry with a new ID. Stay within your granted design area.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "shared-snapshot-b",
+        "display_name": "shared-snapshot-b",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-b",
+          "request": {
+            "operation": "snapshot",
+            "target_id": "mockups",
+            "node_id": "${{shared-request.payload.node_id}}",
+            "request_id": "${{shared-request.event_id}}:shared-snapshot-b"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "shared-request",
+        "target_id": "shared-author-a"
+      },
+      {
+        "source_id": "shared-author-a",
+        "target_id": "shared-snapshot-a",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "shared-request",
+        "target_id": "shared-author-b"
+      },
+      {
+        "source_id": "shared-author-b",
+        "target_id": "shared-snapshot-b",
+        "source_port": "completed"
+      }
+    ]
+  }
+}

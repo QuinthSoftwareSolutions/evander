@@ -1,0 +1,1125 @@
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from io import BytesIO
+import json
+from pathlib import Path
+import re
+import sqlite3
+from typing import Any
+from uuid import uuid4
+
+from PIL import Image, ImageOps
+from pypdf import PdfReader, PdfWriter
+
+from evander.addons import addon_storage_path
+
+from .client import BokioClient
+from .durable_operations import SQLiteDurableOperationLedger
+from .operations import bokio_write_failure_is_uncertain
+from .state import ADDON_ID
+
+
+_EVIDENCE_ID_RE = re.compile(r"^bokio_evidence_[0-9a-f]{32}$")
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SUPPORTED_CONTENT_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+}
+_CONTENT_TYPES_BY_SUFFIX = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+_SUFFIX_BY_CONTENT_TYPE = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+}
+_EVIDENCE_BUNDLE_SOURCE_TYPE = "bokio_evidence_bundle"
+MAX_BOKIO_EVIDENCE_IMAGE_PIXELS = 16_000_000
+
+
+class BokioEvidenceError(RuntimeError):
+    """Raised when evidence storage or association state is invalid."""
+
+
+@dataclass(frozen=True)
+class BokioEvidenceFile:
+    record: dict[str, Any]
+    blob_path: Path
+
+
+class BokioEvidenceStore:
+    """Durable, add-on-owned receipt and invoice evidence store.
+
+    Evidence files are keyed by content hash, while individual communication and
+    connector-artifact sources are retained as immutable provenance.
+    The store intentionally tracks a pending Bokio association rather than blindly
+    retrying it: Bokio upload responses do not offer an idempotency key.
+    """
+
+    def __init__(self, runtime_dir: str | Path) -> None:
+        self.root = addon_storage_path(runtime_dir, ADDON_ID, "evidence")
+        self.blob_root = self.root / "blobs"
+        self.database_path = self.root / "evidence.db"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.blob_root.mkdir(parents=True, exist_ok=True)
+        self._operation_ledger = SQLiteDurableOperationLedger(
+            self.database_path,
+            table="journal_entry_operations",
+            identity_columns=("operation_key",),
+            foreign_keys=True,
+        )
+        self._initialize()
+
+    def ingest_bytes(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        source_type: str,
+        source_key: str,
+        source_metadata: Mapping[str, Any] | None = None,
+        mime_type: str | None = None,
+        created_at: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        if not isinstance(content, bytes) or not content:
+            raise BokioEvidenceError("Bokio evidence content must be non-empty bytes")
+        normalized_source_type = _required_text(source_type, "source_type")
+        normalized_source_key = _required_text(source_key, "source_key")
+        safe_filename = normalize_evidence_filename(filename)
+        content_type = _validated_content_type(content, safe_filename, mime_type)
+        digest = sha256(content).hexdigest()
+        now = _as_utc(created_at or datetime.now(UTC))
+        source_payload = _safe_json_object(source_metadata)
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source_row = connection.execute(
+                "SELECT evidence_id FROM evidence_sources WHERE source_type = ? AND source_key = ?",
+                (normalized_source_type, normalized_source_key),
+            ).fetchone()
+            if source_row is not None:
+                return self._get_with_connection(connection, str(source_row["evidence_id"])), False
+
+            evidence_row = connection.execute(
+                "SELECT evidence_id FROM evidence WHERE sha256 = ?", (digest,)
+            ).fetchone()
+            created = evidence_row is None
+            if evidence_row is None:
+                evidence_id = f"bokio_evidence_{uuid4().hex}"
+                blob_path = self._blob_path(digest, content_type)
+                if not blob_path.exists():
+                    temporary_path = blob_path.with_suffix(".tmp")
+                    temporary_path.write_bytes(content)
+                    temporary_path.replace(blob_path)
+                connection.execute(
+                    """
+                    INSERT INTO evidence (
+                        evidence_id, sha256, filename, mime_type, byte_count, blob_filename,
+                        created_at, ingested_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence_id,
+                        digest,
+                        safe_filename,
+                        content_type,
+                        len(content),
+                        blob_path.name,
+                        _storage_datetime(now),
+                        _storage_datetime(now),
+                        "unmatched",
+                    ),
+                )
+            else:
+                evidence_id = str(evidence_row["evidence_id"])
+
+            connection.execute(
+                """
+                INSERT INTO evidence_sources (
+                    evidence_id, source_type, source_key, source_metadata_json, received_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id,
+                    normalized_source_type,
+                    normalized_source_key,
+                    json.dumps(source_payload, sort_keys=True),
+                    _storage_datetime(now),
+                ),
+            )
+            return self._get_with_connection(connection, evidence_id), created
+
+    def get(self, evidence_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            return self._get_with_connection(connection, evidence_id)
+
+    def get_file(self, evidence_id: str) -> BokioEvidenceFile:
+        record = self.get(evidence_id)
+        blob_path = self.blob_root / str(record["blob_filename"])
+        if not blob_path.is_file():
+            raise FileNotFoundError(f"Bokio evidence blob is missing: {record['evidence_id']}")
+        return BokioEvidenceFile(record=record, blob_path=blob_path)
+
+    def list(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        normalized_status = str(status or "").strip() or None
+        bounded_limit = min(500, max(1, int(limit or 100)))
+        with self._connect() as connection:
+            if normalized_status is None:
+                rows = connection.execute(
+                    "SELECT evidence_id FROM evidence ORDER BY ingested_at DESC LIMIT ?",
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT evidence_id FROM evidence WHERE status = ? ORDER BY ingested_at DESC LIMIT ?",
+                    (normalized_status, bounded_limit),
+                ).fetchall()
+            return [self._get_with_connection(connection, str(row["evidence_id"])) for row in rows]
+
+    def begin_association(
+        self,
+        *,
+        evidence_id: str,
+        journal_entry_id: str,
+        retry_if_failed: bool = False,
+    ) -> dict[str, Any]:
+        evidence_id = validate_evidence_id(evidence_id)
+        journal_entry_id = _required_text(journal_entry_id, "journal_entry_id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._get_with_connection(connection, evidence_id)
+            row = connection.execute(
+                """
+                SELECT * FROM evidence_associations
+                WHERE evidence_id = ? AND journal_entry_id = ?
+                """,
+                (evidence_id, journal_entry_id),
+            ).fetchone()
+            if row is not None:
+                association = _association_from_row(row)
+                if association["status"] == "attached":
+                    return association
+                if association["status"] == "pending":
+                    raise BokioEvidenceError(
+                        "Bokio evidence association is already pending; inspect Bokio before retrying"
+                    )
+                if not retry_if_failed:
+                    raise BokioEvidenceError(
+                        "Bokio evidence association previously failed; set retry_if_failed after "
+                        "checking whether Bokio received the upload"
+                    )
+                claimed = connection.execute(
+                    """
+                    UPDATE evidence_associations
+                    SET status = ?, error = NULL, updated_at = ?
+                    WHERE evidence_id = ? AND journal_entry_id = ? AND status = ?
+                    """,
+                    (
+                        "pending",
+                        _storage_datetime(datetime.now(UTC)),
+                        evidence_id,
+                        journal_entry_id,
+                        "failed",
+                    ),
+                ).rowcount
+                if claimed != 1:
+                    current = self._association_with_connection(
+                        connection, evidence_id, journal_entry_id
+                    )
+                    if current["status"] == "attached":
+                        return current
+                    raise BokioEvidenceError(
+                        "Bokio evidence association is already pending; inspect Bokio before retrying"
+                    )
+                self._refresh_evidence_status(connection, evidence_id)
+                return self._association_with_connection(connection, evidence_id, journal_entry_id)
+            now = _storage_datetime(datetime.now(UTC))
+            connection.execute(
+                """
+                INSERT INTO evidence_associations (
+                    evidence_id, journal_entry_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (evidence_id, journal_entry_id, "pending", now, now),
+            )
+            return self._association_with_connection(connection, evidence_id, journal_entry_id)
+
+    def mark_association_attached(
+        self,
+        *,
+        evidence_id: str,
+        journal_entry_id: str,
+        bokio_result: Any,
+    ) -> dict[str, Any]:
+        evidence_id = validate_evidence_id(evidence_id)
+        journal_entry_id = _required_text(journal_entry_id, "journal_entry_id")
+        with self._connect() as connection:
+            result_payload = _safe_json_value(bokio_result)
+            connection.execute(
+                """
+                UPDATE evidence_associations
+                SET status = ?, bokio_result_json = ?, error = NULL, updated_at = ?
+                WHERE evidence_id = ? AND journal_entry_id = ?
+                """,
+                (
+                    "attached",
+                    json.dumps(result_payload, sort_keys=True),
+                    _storage_datetime(datetime.now(UTC)),
+                    evidence_id,
+                    journal_entry_id,
+                ),
+            )
+            self._refresh_evidence_status(connection, evidence_id)
+            return self._association_with_connection(connection, evidence_id, journal_entry_id)
+
+    def mark_association_failed(
+        self,
+        *,
+        evidence_id: str,
+        journal_entry_id: str,
+        error: Exception | str,
+    ) -> dict[str, Any]:
+        evidence_id = validate_evidence_id(evidence_id)
+        journal_entry_id = _required_text(journal_entry_id, "journal_entry_id")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE evidence_associations
+                SET status = ?, error = ?, updated_at = ?
+                WHERE evidence_id = ? AND journal_entry_id = ?
+                """,
+                (
+                    "failed",
+                    str(error)[:2000],
+                    _storage_datetime(datetime.now(UTC)),
+                    evidence_id,
+                    journal_entry_id,
+                ),
+            )
+            self._refresh_evidence_status(connection, evidence_id)
+            return self._association_with_connection(connection, evidence_id, journal_entry_id)
+
+    def begin_journal_entry_operation(
+        self,
+        *,
+        operation_key: str,
+        payload: Mapping[str, Any],
+        evidence_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        normalized_evidence_ids = [validate_evidence_id(value) for value in evidence_ids]
+        if not normalized_evidence_ids:
+            raise BokioEvidenceError("evidence_ids must contain at least one evidence ID")
+        normalized_payload = _safe_json_object(payload)
+        with self._connect() as connection:
+            self._operation_ledger.begin_immediate(connection)
+            row = self._operation_ledger.fetch_row(connection, (normalized_key,))
+            if row is not None:
+                operation = self._operation_with_connection(connection, normalized_key)
+                if (
+                    operation["payload"] != normalized_payload
+                    or operation["evidence_ids"] != normalized_evidence_ids
+                ):
+                    raise BokioEvidenceError(
+                        "operation_key is already associated with a different journal-entry request"
+                    )
+                return operation
+            for evidence_id in normalized_evidence_ids:
+                self._get_with_connection(connection, evidence_id)
+            now = _storage_datetime(datetime.now(UTC))
+            self._operation_ledger.insert(
+                connection,
+                {
+                    "operation_key": normalized_key,
+                    "payload_json": json.dumps(normalized_payload, sort_keys=True),
+                    "evidence_ids_json": json.dumps(normalized_evidence_ids),
+                    "status": "pending_create",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def get_journal_entry_operation(self, operation_key: str) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            return self._operation_with_connection(connection, normalized_key)
+
+    def claim_journal_entry_creation(self, *, operation_key: str) -> tuple[dict[str, Any], bool]:
+        """Atomically claim the one allowed attempt to create a journal entry."""
+
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            self._operation_ledger.begin_immediate(connection)
+            claimed = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status="pending_create",
+                new_status="creating",
+                values={"updated_at": _storage_datetime(datetime.now(UTC))},
+            )
+            operation = self._operation_with_connection(connection, normalized_key)
+            return operation, claimed == 1
+
+    def mark_journal_entry_created(
+        self, *, operation_key: str, journal_entry_id: str, result: Any
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            updated = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status="creating",
+                new_status="pending_evidence",
+                values={
+                    "journal_entry_id": _required_text(journal_entry_id, "journal_entry_id"),
+                    "result_json": json.dumps(_safe_json_value(result), sort_keys=True),
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
+            if updated != 1:
+                raise BokioEvidenceError(
+                    "Bokio journal-entry creation was not claimed by this operation"
+                )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def mark_journal_entry_operation_completed(self, *, operation_key: str) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            self._operation_ledger.update(
+                connection,
+                (normalized_key,),
+                values={
+                    "status": "completed",
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def mark_journal_entry_operation_needs_attention(
+        self,
+        *,
+        operation_key: str,
+        error: Exception | str,
+        expected_status: str,
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        normalized_expected_status = _required_text(expected_status, "expected_status")
+        with self._connect() as connection:
+            self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=normalized_expected_status,
+                new_status="needs_attention",
+                values={
+                    "error": str(error)[:2000],
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def mark_journal_entry_operation_failed(
+        self,
+        *,
+        operation_key: str,
+        error: Exception | str,
+        expected_status: str,
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        normalized_expected_status = _required_text(expected_status, "expected_status")
+        with self._connect() as connection:
+            self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=normalized_expected_status,
+                new_status="failed",
+                values={
+                    "error": str(error)[:2000],
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def resume_journal_entry_operation(
+        self,
+        *,
+        operation_key: str,
+        retry_if_failed: bool,
+        confirm_not_created: bool = False,
+    ) -> dict[str, Any]:
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            self._operation_ledger.begin_immediate(connection)
+            operation = self._operation_with_connection(connection, normalized_key)
+            status = str(operation["status"])
+            if status not in {"failed", "needs_attention"}:
+                return operation
+            journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
+            if status == "failed":
+                if not retry_if_failed:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry operation previously failed; set retry_if_failed to "
+                        "make a new attempt"
+                    )
+                resumed_status = "pending_evidence" if journal_entry_id else "pending_create"
+            elif journal_entry_id:
+                if not retry_if_failed:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry operation needs attention; set retry_if_failed only "
+                        "after checking the existing journal entry"
+                    )
+                resumed_status = "pending_evidence"
+            else:
+                if not confirm_not_created:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry creation outcome is unknown; inspect Bokio and set "
+                        "confirm_not_created only after confirming the journal entry is absent"
+                    )
+                resumed_status = "pending_create"
+            updated = self._operation_ledger.transition(
+                connection,
+                (normalized_key,),
+                expected_status=status,
+                new_status=resumed_status,
+                values={
+                    "error": None,
+                    "updated_at": _storage_datetime(datetime.now(UTC)),
+                },
+            )
+            if updated != 1:
+                raise BokioEvidenceError(
+                    "Bokio journal-entry operation changed while it was being resumed"
+                )
+            return self._operation_with_connection(connection, normalized_key)
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS evidence (
+                    evidence_id TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL UNIQUE,
+                    filename TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    byte_count INTEGER NOT NULL,
+                    blob_filename TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS evidence_sources (
+                    source_type TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+                    source_metadata_json TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    PRIMARY KEY (source_type, source_key)
+                );
+                CREATE TABLE IF NOT EXISTS evidence_associations (
+                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+                    journal_entry_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    bokio_result_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (evidence_id, journal_entry_id)
+                );
+                CREATE TABLE IF NOT EXISTS journal_entry_operations (
+                    operation_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    evidence_ids_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    journal_entry_id TEXT,
+                    result_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        return self._operation_ledger.connect()
+
+    def _get_with_connection(
+        self, connection: sqlite3.Connection, evidence_id: str
+    ) -> dict[str, Any]:
+        normalized_id = validate_evidence_id(evidence_id)
+        row = connection.execute(
+            "SELECT * FROM evidence WHERE evidence_id = ?", (normalized_id,)
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Unknown Bokio evidence: {normalized_id}")
+        sources = connection.execute(
+            """
+            SELECT source_type, source_key, source_metadata_json, received_at
+            FROM evidence_sources WHERE evidence_id = ? ORDER BY received_at ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+        associations = connection.execute(
+            """
+            SELECT * FROM evidence_associations WHERE evidence_id = ? ORDER BY created_at ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+        return {
+            "evidence_id": str(row["evidence_id"]),
+            "sha256": str(row["sha256"]),
+            "filename": str(row["filename"]),
+            "mime_type": str(row["mime_type"]),
+            "byte_count": int(row["byte_count"]),
+            "blob_filename": str(row["blob_filename"]),
+            "created_at": str(row["created_at"]),
+            "ingested_at": str(row["ingested_at"]),
+            "status": str(row["status"]),
+            "sources": [
+                {
+                    "source_type": str(source["source_type"]),
+                    "source_key": str(source["source_key"]),
+                    "metadata": _load_json_object(source["source_metadata_json"]),
+                    "received_at": str(source["received_at"]),
+                }
+                for source in sources
+            ],
+            "associations": [_association_from_row(association) for association in associations],
+        }
+
+    def _association_with_connection(
+        self, connection: sqlite3.Connection, evidence_id: str, journal_entry_id: str
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            """
+            SELECT * FROM evidence_associations
+            WHERE evidence_id = ? AND journal_entry_id = ?
+            """,
+            (evidence_id, journal_entry_id),
+        ).fetchone()
+        if row is None:
+            raise BokioEvidenceError("Bokio evidence association was not recorded")
+        return _association_from_row(row)
+
+    def _operation_with_connection(
+        self, connection: sqlite3.Connection, operation_key: str
+    ) -> dict[str, Any]:
+        row = self._operation_ledger.fetch_row(connection, (operation_key,))
+        if row is None:
+            raise BokioEvidenceError("Bokio journal-entry operation was not recorded")
+        operation = _operation_from_row(row)
+        journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
+        evidence_ids = operation.get("evidence_ids")
+        if not journal_entry_id or not isinstance(evidence_ids, list):
+            operation["associations"] = []
+            return operation
+        associations = []
+        for evidence_id in evidence_ids:
+            row = connection.execute(
+                """
+                SELECT * FROM evidence_associations
+                WHERE evidence_id = ? AND journal_entry_id = ?
+                """,
+                (evidence_id, journal_entry_id),
+            ).fetchone()
+            if row is not None:
+                associations.append(_association_from_row(row))
+        operation["associations"] = associations
+        return operation
+
+    @staticmethod
+    def _refresh_evidence_status(connection: sqlite3.Connection, evidence_id: str) -> None:
+        statuses = {
+            str(row["status"])
+            for row in connection.execute(
+                "SELECT status FROM evidence_associations WHERE evidence_id = ?",
+                (evidence_id,),
+            ).fetchall()
+        }
+        if "failed" in statuses:
+            status = "needs_attention"
+        elif "attached" in statuses:
+            status = "attached"
+        else:
+            status = "unmatched"
+        connection.execute(
+            "UPDATE evidence SET status = ? WHERE evidence_id = ?",
+            (status, evidence_id),
+        )
+
+    def _blob_path(self, digest: str, content_type: str) -> Path:
+        suffix = _SUFFIX_BY_CONTENT_TYPE[content_type]
+        return self.blob_root / f"{digest}{suffix}"
+
+
+def normalize_stored_evidence_ids(
+    runtime_dir: str | Path,
+    evidence_ids: object,
+    *,
+    required: bool = False,
+) -> list[str]:
+    if evidence_ids is None:
+        normalized: list[str] = []
+    elif isinstance(evidence_ids, list):
+        normalized = [validate_evidence_id(value) for value in evidence_ids]
+    else:
+        raise ValueError("evidence_ids must be a JSON array")
+    if required and not normalized:
+        raise BokioEvidenceError("evidence_ids must contain at least one evidence ID")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("evidence_ids must not contain duplicates")
+    if not normalized:
+        return []
+    store = BokioEvidenceStore(runtime_dir)
+    for evidence_id in normalized:
+        store.get(evidence_id)
+    return normalized
+
+
+def attach_evidence(
+    context: Any,
+    *,
+    evidence_id: str,
+    journal_entry_id: str,
+    description: str | None,
+    retry_if_failed: bool = False,
+) -> dict[str, Any]:
+    store = BokioEvidenceStore(context.runtime_dir)
+    normalized_evidence_id = validate_evidence_id(evidence_id)
+    association = store.begin_association(
+        evidence_id=normalized_evidence_id,
+        journal_entry_id=journal_entry_id,
+        retry_if_failed=retry_if_failed,
+    )
+    if association["status"] == "attached":
+        return {**association, "idempotent": True}
+    try:
+        evidence = store.get_file(normalized_evidence_id)
+        result = BokioClient.from_context(context).upload_document(
+            file_path=evidence.blob_path,
+            allowed_roots=[store.blob_root],
+            description=description,
+            journal_entry_id=journal_entry_id,
+        )
+    except Exception as exc:
+        store.mark_association_failed(
+            evidence_id=normalized_evidence_id,
+            journal_entry_id=journal_entry_id,
+            error=exc,
+        )
+        raise
+    return store.mark_association_attached(
+        evidence_id=normalized_evidence_id,
+        journal_entry_id=journal_entry_id,
+        bokio_result=result,
+    )
+
+
+def create_journal_entry_with_evidence(
+    context: Any,
+    *,
+    payload: dict[str, Any],
+    evidence_ids: list[str],
+    operation_key: str | None,
+    retry_if_failed: bool,
+    confirm_not_created: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+    normalized_evidence_ids = normalize_stored_evidence_ids(
+        context.runtime_dir,
+        evidence_ids,
+        required=True,
+    )
+    generated_key = sha256(
+        json.dumps(
+            {"payload": payload, "evidence_ids": normalized_evidence_ids},
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    store = BokioEvidenceStore(context.runtime_dir)
+    operation = store.begin_journal_entry_operation(
+        operation_key=str(operation_key or generated_key),
+        payload=payload,
+        evidence_ids=normalized_evidence_ids,
+    )
+    if operation["status"] == "completed":
+        return {**operation, "idempotent": True}
+    evidence_bundle: dict[str, Any] | None = None
+    if operation["status"] in {"failed", "needs_attention"}:
+        operation = store.resume_journal_entry_operation(
+            operation_key=operation["operation_key"],
+            retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
+        )
+    if operation["status"] == "pending_create":
+        evidence_bundle = _create_evidence_bundle_if_needed(
+            store,
+            evidence_ids=normalized_evidence_ids,
+            operation_key=operation["operation_key"],
+        )
+        client = BokioClient.from_context(context)
+        operation, claimed = store.claim_journal_entry_creation(
+            operation_key=operation["operation_key"]
+        )
+        if claimed:
+            try:
+                created = client.create_journal_entry(payload)
+                journal_entry_id = str(created.get("id") or "").strip()
+                if not journal_entry_id:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry create response did not include an ID"
+                    )
+                operation = store.mark_journal_entry_created(
+                    operation_key=operation["operation_key"],
+                    journal_entry_id=journal_entry_id,
+                    result=created,
+                )
+            except Exception as exc:
+                if bokio_write_failure_is_uncertain(exc):
+                    store.mark_journal_entry_operation_needs_attention(
+                        operation_key=operation["operation_key"],
+                        error=exc,
+                        expected_status="creating",
+                    )
+                else:
+                    store.mark_journal_entry_operation_failed(
+                        operation_key=operation["operation_key"],
+                        error=exc,
+                        expected_status="creating",
+                    )
+                raise
+    if operation["status"] == "completed":
+        return {**operation, "idempotent": True}
+    if operation["status"] == "creating":
+        raise BokioEvidenceError(
+            "Bokio journal-entry creation is already in flight or its outcome is unknown; "
+            "inspect Bokio before retrying"
+        )
+    if operation["status"] == "needs_attention":
+        operation = store.resume_journal_entry_operation(
+            operation_key=operation["operation_key"],
+            retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
+        )
+    journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
+    if not journal_entry_id:
+        raise BokioEvidenceError("Bokio journal-entry operation is missing its created entry ID")
+    try:
+        _ensure_multi_evidence_is_not_legacy_partial_attachment(
+            store,
+            evidence_ids=normalized_evidence_ids,
+            journal_entry_id=journal_entry_id,
+        )
+        if evidence_bundle is None:
+            evidence_bundle = _create_evidence_bundle_if_needed(
+                store,
+                evidence_ids=normalized_evidence_ids,
+                operation_key=operation["operation_key"],
+            )
+        associations = _attach_journal_entry_evidence(
+            context,
+            evidence_ids=normalized_evidence_ids,
+            journal_entry_id=journal_entry_id,
+            evidence_bundle=evidence_bundle,
+            retry_if_failed=retry_if_failed,
+        )
+    except Exception as exc:
+        store.mark_journal_entry_operation_needs_attention(
+            operation_key=operation["operation_key"],
+            error=exc,
+            expected_status="pending_evidence",
+        )
+        raise
+    operation = store.mark_journal_entry_operation_completed(
+        operation_key=operation["operation_key"]
+    )
+    return {**operation, "associations": associations}
+
+
+def _attach_journal_entry_evidence(
+    context: Any,
+    *,
+    evidence_ids: list[str],
+    journal_entry_id: str,
+    evidence_bundle: dict[str, Any] | None,
+    retry_if_failed: bool,
+) -> list[dict[str, Any]]:
+    if len(evidence_ids) == 1:
+        return [
+            attach_evidence(
+                context,
+                evidence_id=evidence_ids[0],
+                journal_entry_id=journal_entry_id,
+                description=None,
+                retry_if_failed=retry_if_failed,
+            )
+        ]
+
+    if evidence_bundle is None:
+        raise BokioEvidenceError("Bokio multi-evidence bundle was not prepared")
+    association = attach_evidence(
+        context,
+        evidence_id=evidence_bundle["evidence_id"],
+        journal_entry_id=journal_entry_id,
+        description=None,
+        retry_if_failed=retry_if_failed,
+    )
+    return [{**association, "bundle": evidence_bundle}]
+
+
+def _create_evidence_bundle_if_needed(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    operation_key: str,
+) -> dict[str, Any] | None:
+    if len(evidence_ids) == 1:
+        return None
+    return _create_evidence_bundle(
+        store,
+        evidence_ids=evidence_ids,
+        operation_key=operation_key,
+    )
+
+
+def _ensure_multi_evidence_is_not_legacy_partial_attachment(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    journal_entry_id: str,
+) -> None:
+    if len(evidence_ids) == 1:
+        return
+    existing_associations = [
+        association
+        for evidence_id in evidence_ids
+        for association in store.get(evidence_id)["associations"]
+        if association["journal_entry_id"] == journal_entry_id
+    ]
+    if existing_associations:
+        raise BokioEvidenceError(
+            "Journal entry already has legacy individual evidence associations; Bokio permits "
+            "one linked upload, so reconcile the missing evidence manually instead of retrying"
+        )
+
+
+def _create_evidence_bundle(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    operation_key: str,
+) -> dict[str, Any]:
+    writer = PdfWriter()
+    source_files = [store.get_file(evidence_id) for evidence_id in evidence_ids]
+    try:
+        for source_file in source_files:
+            _append_evidence_to_pdf(writer, source_file)
+        if not writer.pages:
+            raise BokioEvidenceError("Bokio evidence bundle has no PDF pages")
+        output = BytesIO()
+        writer.write(output)
+    except BokioEvidenceError:
+        raise
+    except Exception as exc:
+        raise BokioEvidenceError("Could not create a PDF bundle for Bokio evidence") from exc
+    finally:
+        writer.close()
+
+    operation_digest = sha256(operation_key.encode("utf-8")).hexdigest()
+    source_metadata = {
+        "source_evidence_ids": evidence_ids,
+        "source_filenames": [str(source_file.record["filename"]) for source_file in source_files],
+    }
+    bundle, _created = store.ingest_bytes(
+        content=output.getvalue(),
+        filename=f"bokio-evidence-{operation_digest[:12]}.pdf",
+        source_type=_EVIDENCE_BUNDLE_SOURCE_TYPE,
+        source_key=f"journal-entry-operation:{operation_digest}",
+        source_metadata=source_metadata,
+        mime_type="application/pdf",
+    )
+    return {
+        "evidence_id": bundle["evidence_id"],
+        "filename": bundle["filename"],
+        "source_evidence_ids": evidence_ids,
+        "source_filenames": source_metadata["source_filenames"],
+    }
+
+
+def _append_evidence_to_pdf(writer: PdfWriter, source_file: BokioEvidenceFile) -> None:
+    mime_type = str(source_file.record["mime_type"])
+    if mime_type == "application/pdf":
+        reader = PdfReader(source_file.blob_path)
+        if reader.is_encrypted:
+            raise BokioEvidenceError(
+                f"Bokio evidence PDF is encrypted and cannot be bundled: {source_file.record['filename']}"
+            )
+        writer.append(reader)
+        return
+    if mime_type in {"image/jpeg", "image/png"}:
+        image_pdf = BytesIO()
+        with Image.open(source_file.blob_path) as image:
+            _ensure_evidence_image_size(image, filename=str(source_file.record["filename"]))
+            oriented = ImageOps.exif_transpose(image)
+            try:
+                rendered = _render_evidence_image(oriented)
+            finally:
+                oriented.close()
+        try:
+            rendered.save(image_pdf, format="PDF", resolution=300.0)
+        finally:
+            rendered.close()
+        writer.append(PdfReader(image_pdf))
+        return
+    raise BokioEvidenceError(
+        f"Bokio evidence cannot be bundled: unsupported content type {mime_type}"
+    )
+
+
+def _render_evidence_image(image: Image.Image) -> Image.Image:
+    if image.mode in {"RGBA", "LA"} or (
+        image.mode == "P" and "transparency" in image.info
+    ):
+        rgba = image.convert("RGBA")
+        try:
+            background = Image.new("RGBA", image.size, "white")
+            try:
+                background.alpha_composite(rgba)
+                return background.convert("RGB")
+            finally:
+                background.close()
+        finally:
+            rgba.close()
+    return image.convert("RGB")
+
+
+def _ensure_evidence_image_size(image: Image.Image, *, filename: str) -> None:
+    width, height = image.size
+    pixel_count = width * height
+    if pixel_count > MAX_BOKIO_EVIDENCE_IMAGE_PIXELS:
+        raise BokioEvidenceError(
+            f"Bokio evidence image exceeds the {MAX_BOKIO_EVIDENCE_IMAGE_PIXELS:,}-pixel "
+            f"limit: {filename} ({width}x{height})"
+        )
+
+
+def validate_evidence_id(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not _EVIDENCE_ID_RE.fullmatch(normalized):
+        raise BokioEvidenceError("evidence_id must be an opaque Bokio evidence ID")
+    return normalized
+
+
+def normalize_evidence_filename(value: object) -> str:
+    candidate = Path(str(value or "evidence").replace("\\", "/")).name.replace("\x00", "")
+    normalized = _SAFE_FILENAME_RE.sub("-", candidate).strip(".-")
+    if not normalized or normalized in {".", ".."}:
+        normalized = "evidence"
+    return normalized[:255]
+
+
+def supported_evidence_content_type(filename: str, mime_type: str | None = None) -> str | None:
+    normalized = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized in _SUPPORTED_CONTENT_TYPES:
+        return normalized
+    return _CONTENT_TYPES_BY_SUFFIX.get(Path(filename).suffix.lower())
+
+
+def _validated_content_type(content: bytes, filename: str, mime_type: str | None) -> str:
+    content_type = supported_evidence_content_type(filename, mime_type)
+    if content_type not in _SUPPORTED_CONTENT_TYPES:
+        raise BokioEvidenceError("Bokio evidence supports only PDF, JPEG, or PNG files")
+    if content_type == "application/pdf" and not content.startswith(b"%PDF-"):
+        raise BokioEvidenceError("Bokio evidence PDF content does not match the file type")
+    if content_type == "image/jpeg" and not content.startswith(b"\xff\xd8\xff"):
+        raise BokioEvidenceError("Bokio evidence JPEG content does not match the file type")
+    if content_type == "image/png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise BokioEvidenceError("Bokio evidence PNG content does not match the file type")
+    return content_type
+
+
+def _association_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "evidence_id": str(row["evidence_id"]),
+        "journal_entry_id": str(row["journal_entry_id"]),
+        "status": str(row["status"]),
+        "bokio_result": _load_json_value(row["bokio_result_json"]),
+        "error": row["error"],
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _operation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "operation_key": str(row["operation_key"]),
+        "payload": _load_json_object(row["payload_json"]),
+        "evidence_ids": _load_json_list(row["evidence_ids_json"]),
+        "status": str(row["status"]),
+        "journal_entry_id": row["journal_entry_id"],
+        "result": _load_json_value(row["result_json"]),
+        "error": row["error"],
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _required_text(value: object, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise BokioEvidenceError(f"{field_name} is required")
+    return normalized
+
+
+def _safe_json_object(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise BokioEvidenceError("evidence metadata must be a JSON object")
+    return json.loads(json.dumps(dict(value), default=str))
+
+
+def _safe_json_value(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def _load_json_object(value: object) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_json_list(value: object) -> list[str]:
+    try:
+        payload = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in payload] if isinstance(payload, list) else []
+
+
+def _load_json_value(value: object) -> Any:
+    if value is None:
+        return None
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _storage_datetime(value: datetime) -> str:
+    return _as_utc(value).isoformat().replace("+00:00", "Z")

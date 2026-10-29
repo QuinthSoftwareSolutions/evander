@@ -1,0 +1,1818 @@
+{
+  "description": "Default domain workflows for issue/review/git/agent orchestration.",
+  "ir": {
+    "edges": [
+      {
+        "source_id": "trigger-ticket-created-main",
+        "target_id": "gate-filter-6"
+      },
+      {
+        "source_id": "trigger-ticket-created-main",
+        "target_id": "gate-filter-7"
+      },
+      {
+        "source_id": "gate-filter-6",
+        "target_id": "gate-map-1"
+      },
+      {
+        "source_id": "gate-filter-7",
+        "target_id": "gate-map-2"
+      },
+      {
+        "source_id": "gate-map-1",
+        "target_id": "gate-merge-1"
+      },
+      {
+        "source_id": "gate-map-2",
+        "target_id": "gate-merge-1"
+      },
+      {
+        "source_id": "gate-merge-1",
+        "target_id": "gate-dedupe-issue-start-1"
+      },
+      {
+        "source_id": "gate-dedupe-issue-start-1",
+        "target_id": "query-session-list-active-issue-1"
+      },
+      {
+        "source_id": "query-session-list-active-issue-1",
+        "target_id": "gate-filter-no-active-issue-session-1"
+      },
+      {
+        "source_id": "gate-filter-no-active-issue-session-1",
+        "target_id": "effect-vm-create-1"
+      },
+      {
+        "source_id": "effect-vm-create-1",
+        "target_id": "effect-git-ensure-managed-repo-1"
+      },
+      {
+        "source_id": "effect-git-ensure-managed-repo-1",
+        "target_id": "effect-vm-clone-repo-1"
+      },
+      {
+        "source_id": "effect-vm-clone-repo-1",
+        "target_id": "effect-vm-bootstrap-frontend-1"
+      },
+      {
+        "source_id": "effect-vm-bootstrap-frontend-1",
+        "target_id": "gate-filter-1"
+      },
+      {
+        "source_id": "trigger-git-push-1",
+        "target_id": "gate-filter-2"
+      },
+      {
+        "source_id": "gate-filter-2",
+        "target_id": "effect-git-promote-agent-branch-1"
+      },
+      {
+        "source_id": "query-git-pr-note-1",
+        "target_id": "effect-pr-create-1"
+      },
+      {
+        "source_id": "effect-pr-create-1",
+        "target_id": "gate-filter-8"
+      },
+      {
+        "source_id": "gate-filter-8",
+        "target_id": "effect-agent-enqueue-prompt-3"
+      },
+      {
+        "source_id": "effect-git-promote-agent-branch-1",
+        "target_id": "query-session-context-1"
+      },
+      {
+        "source_id": "trigger-pull-request-new-feedback-1",
+        "target_id": "query-session-context-2"
+      },
+      {
+        "source_id": "gate-filter-1",
+        "target_id": "effect-issue-update-state-1"
+      },
+      {
+        "source_id": "gate-filter-1",
+        "target_id": "effect-vm-copy-files-1"
+      },
+      {
+        "source_id": "effect-vm-copy-files-1",
+        "target_id": "effect-session-update-metadata-2"
+      },
+      {
+        "source_id": "effect-vm-copy-files-1",
+        "target_id": "effect-agent-prompt-4"
+      },
+      {
+        "source_id": "effect-agent-prompt-4",
+        "source_port": "completed",
+        "target_id": "query-issue-get-1"
+      },
+      {
+        "source_id": "effect-agent-prompt-4",
+        "source_port": "completed",
+        "target_id": "effect-session-update-metadata-1"
+      },
+      {
+        "source_id": "query-issue-get-1",
+        "target_id": "gate-for-1"
+      },
+      {
+        "source_id": "gate-for-1",
+        "source_port": "body",
+        "target_id": "effect-vm-copy-files-2"
+      },
+      {
+        "source_id": "effect-vm-copy-files-2",
+        "target_id": "effect-agent-prompt-1"
+      },
+      {
+        "allow_cycle": true,
+        "source_id": "effect-agent-prompt-1",
+        "source_port": "completed",
+        "target_id": "gate-for-1"
+      },
+      {
+        "source_id": "gate-for-1",
+        "source_port": "done",
+        "target_id": "effect-vm-copy-files-3"
+      },
+      {
+        "source_id": "effect-vm-copy-files-3",
+        "target_id": "effect-agent-prompt-2"
+      },
+      {
+        "source_id": "trigger-teams-new-message-2",
+        "target_id": "query-session-context-3"
+      },
+      {
+        "source_id": "query-session-context-3",
+        "target_id": "effect-agent-enqueue-prompt-1"
+      },
+      {
+        "source_id": "trigger-teams-direct-message-1",
+        "target_id": "query-session-context-teams-dm-1"
+      },
+      {
+        "source_id": "query-session-context-teams-dm-1",
+        "target_id": "effect-agent-enqueue-prompt-teams-dm-1"
+      },
+      {
+        "source_id": "trigger-review-new-request-1",
+        "target_id": "effect-vm-create-2"
+      },
+      {
+        "source_id": "effect-vm-create-2",
+        "target_id": "effect-git-ensure-managed-repo-2"
+      },
+      {
+        "source_id": "effect-git-ensure-managed-repo-2",
+        "target_id": "effect-vm-clone-repo-2"
+      },
+      {
+        "source_id": "effect-vm-clone-repo-2",
+        "target_id": "effect-vm-copy-files-5"
+      },
+      {
+        "source_id": "effect-vm-copy-files-5",
+        "target_id": "effect-vm-exec-1"
+      },
+      {
+        "source_id": "effect-vm-exec-1",
+        "target_id": "effect-vm-bootstrap-frontend-2"
+      },
+      {
+        "source_id": "effect-vm-bootstrap-frontend-2",
+        "target_id": "gate-filter-3"
+      },
+      {
+        "source_id": "gate-filter-3",
+        "target_id": "effect-vm-copy-files-4"
+      },
+      {
+        "source_id": "effect-vm-copy-files-4",
+        "target_id": "effect-agent-prompt-5"
+      },
+      {
+        "source_id": "trigger-script-run-request-1",
+        "target_id": "gate-filter-5"
+      },
+      {
+        "source_id": "gate-filter-5",
+        "target_id": "effect-ado-pipeline-run-1"
+      },
+      {
+        "source_id": "effect-ado-pipeline-run-1",
+        "target_id": "gate-map-app-demo-metadata-1"
+      },
+      {
+        "source_id": "gate-map-app-demo-metadata-1",
+        "target_id": "effect-session-update-metadata-6"
+      },
+      {
+        "source_id": "effect-session-update-metadata-6",
+        "target_id": "effect-session-set-image-generation-1"
+      },
+      {
+        "source_id": "effect-session-set-image-generation-1",
+        "target_id": "query-session-context-4"
+      },
+      {
+        "source_id": "query-session-context-4",
+        "target_id": "effect-agent-prompt-9"
+      },
+      {
+        "source_id": "query-session-context-2",
+        "target_id": "effect-agent-enqueue-prompt-2"
+      },
+      {
+        "source_id": "query-session-context-1",
+        "target_id": "gate-filter-issue-pr"
+      },
+      {
+        "source_id": "gate-filter-issue-pr",
+        "target_id": "query-git-pr-note-1"
+      },
+      {
+        "source_id": "query-session-context-1",
+        "target_id": "gate-filter-standalone-pr"
+      },
+      {
+        "source_id": "gate-filter-standalone-pr",
+        "target_id": "query-git-pr-note-standalone"
+      },
+      {
+        "source_id": "query-git-pr-note-standalone",
+        "target_id": "effect-pr-create-standalone"
+      },
+      {
+        "source_id": "effect-pr-create-standalone",
+        "target_id": "gate-filter-standalone-pr-preflight"
+      },
+      {
+        "source_id": "gate-filter-standalone-pr-preflight",
+        "target_id": "effect-agent-enqueue-prompt-standalone-pr"
+      }
+    ],
+    "nodes": [
+      {
+        "config": {
+          "directories": [
+            "root/example-industry/app",
+            "root/example-industry/secondary-app"
+          ]
+        },
+        "display_name": "Ticket created",
+        "id": "trigger-ticket-created-main",
+        "type": "trigger:ticket:created"
+      },
+      {
+        "config": {
+          "managed_repo_id_glob": "mr_*"
+        },
+        "display_name": "Git push",
+        "id": "trigger-git-push-1",
+        "type": "trigger:git:push"
+      },
+      {
+        "config": {
+          "ado_organization": "exampleindustry",
+          "project": "Example Industry App",
+          "provider": "ado"
+        },
+        "display_name": "PR feedback",
+        "id": "trigger-pull-request-new-feedback-1",
+        "type": "trigger:pull-request:new-feedback"
+      },
+      {
+        "config": {
+          "targets": [
+            {
+              "target": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
+            },
+            {
+              "message_filter": {
+                "mentions": {
+                  "user_ids": [
+                    "143e5b02-868f-4f0c-a262-cf509b6c09e5"
+                  ]
+                }
+              },
+              "target": "chat:19:0deeedd064364392b26376e3a117a682@thread.v2"
+            },
+            {
+              "message_filter": {
+                "mentions": {
+                  "user_ids": [
+                    "143e5b02-868f-4f0c-a262-cf509b6c09e5"
+                  ]
+                }
+              },
+              "target": "chat:19:0e7e2c2f6c964b9eb1a4b09d2b09578f@thread.v2"
+            }
+          ],
+          "user_ids": []
+        },
+        "display_name": "Teams message",
+        "id": "trigger-teams-new-message-2",
+        "type": "trigger:teams:new-message"
+      },
+      {
+        "config": {
+          "sender_user_ids": [
+            "operator@example.com"
+          ],
+          "targets": [
+            {
+              "target": "chat:19:0e7e2c2f6c964b9eb1a4b09d2b09578f@thread.v2"
+            }
+          ]
+        },
+        "display_name": "Teams direct message",
+        "id": "trigger-teams-direct-message-1",
+        "type": "trigger:teams:direct-message"
+      },
+      {
+        "config": {},
+        "display_name": "Review request created",
+        "id": "trigger-review-new-request-1",
+        "type": "trigger:review:new-request"
+      },
+      {
+        "config": {},
+        "display_name": "Script run request",
+        "id": "trigger-script-run-request-1",
+        "outputs": {
+          "parameters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "script_name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "trigger:script-run-request"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "root/example-industry/app",
+                "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter App ticket directory",
+        "id": "gate-filter-6",
+        "outputs": {
+          "ticket": {
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "comments": {
+                "type": "array"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "directory_path": {
+                "type": "string"
+              },
+              "issue_id": {
+                "type": "string"
+              },
+              "issue_number": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "rejection_reason": {
+                "type": "string"
+              },
+              "repo_source": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_type": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "yaml_path": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "root/example-industry/secondary-app",
+                "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter SecondaryApp ticket directory",
+        "id": "gate-filter-7",
+        "outputs": {
+          "ticket": {
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "comments": {
+                "type": "array"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "directory_path": {
+                "type": "string"
+              },
+              "issue_id": {
+                "type": "string"
+              },
+              "issue_number": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "rejection_reason": {
+                "type": "string"
+              },
+              "repo_source": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_type": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "yaml_path": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "template": {
+            "ado_project": "Example Industry App",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
+            "branch": "main",
+            "directory_path": "root/example-industry/app",
+            "directory_slug": "root-example-industry-app",
+            "frontend_host_checkout": "/srv/example-repos/SampleApplication",
+            "frontend_install_roots": [
+              "/srv/example-repos/SampleApplication/Src/Clients"
+            ],
+            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication",
+            "ticket": {
+              "body": "${{gate-filter-6.ticket.body}}",
+              "comments": "${{gate-filter-6.ticket.comments ?? []}}",
+              "created_at": "${{gate-filter-6.ticket.created_at}}",
+              "description": "${{gate-filter-6.ticket.description}}",
+              "directory_path": "${{gate-filter-6.ticket.directory_path}}",
+              "forwarding_policy": "${{gate-filter-6.ticket.forwarding_policy ?? null}}",
+              "issue_id": "${{gate-filter-6.ticket.issue_id}}",
+              "issue_number": "${{gate-filter-6.ticket.issue_number}}",
+              "metadata": "${{gate-filter-6.ticket.metadata ?? null}}",
+              "reason": "${{gate-filter-6.ticket.reason ?? null}}",
+              "rejection_reason": "${{gate-filter-6.ticket.rejection_reason ?? null}}",
+              "remote_reference": "${{gate-filter-6.ticket.remote_reference ?? null}}",
+              "repo_source": "${{gate-filter-6.ticket.repo_source}}",
+              "source": "${{gate-filter-6.ticket.source}}",
+              "source_type": "${{gate-filter-6.ticket.source_type}}",
+              "state": "${{gate-filter-6.ticket.state}}",
+              "tags": "${{gate-filter-6.ticket.tags ?? []}}",
+              "title": "${{gate-filter-6.ticket.title}}",
+              "updated_at": "${{gate-filter-6.ticket.updated_at}}",
+              "url": "${{gate-filter-6.ticket.url}}",
+              "yaml_path": "${{gate-filter-6.ticket.yaml_path}}"
+            }
+          }
+        },
+        "display_name": "Map App ticket routing",
+        "id": "gate-map-1",
+        "outputs": {
+          "ado_project": {
+            "type": "string"
+          },
+          "agents_template_path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "directory_path": {
+            "type": "string"
+          },
+          "directory_slug": {
+            "type": "string"
+          },
+          "frontend_host_checkout": {
+            "type": "string"
+          },
+          "frontend_install_roots": {
+            "type": "array"
+          },
+          "repo_source": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "object"
+          }
+        },
+        "type": "gate:map"
+      },
+      {
+        "config": {
+          "template": {
+            "ado_project": "Example Industry SecondaryApp",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
+            "branch": "SecondaryApp",
+            "directory_path": "root/example-industry/secondary-app",
+            "directory_slug": "root-example-industry-secondary-app",
+            "frontend_host_checkout": "/srv/example-repos/SecondaryApp",
+            "frontend_install_roots": [
+              "/srv/example-repos/SecondaryApp/Src/AppAdmin",
+              "/srv/example-repos/SecondaryApp/Src/StationGUI"
+            ],
+            "repo_source": "/srv/example-repos/SecondaryApp",
+            "ticket": {
+              "body": "${{gate-filter-7.ticket.body}}",
+              "comments": "${{gate-filter-7.ticket.comments ?? []}}",
+              "created_at": "${{gate-filter-7.ticket.created_at}}",
+              "description": "${{gate-filter-7.ticket.description}}",
+              "directory_path": "${{gate-filter-7.ticket.directory_path}}",
+              "forwarding_policy": "${{gate-filter-7.ticket.forwarding_policy ?? null}}",
+              "issue_id": "${{gate-filter-7.ticket.issue_id}}",
+              "issue_number": "${{gate-filter-7.ticket.issue_number}}",
+              "metadata": "${{gate-filter-7.ticket.metadata ?? null}}",
+              "reason": "${{gate-filter-7.ticket.reason ?? null}}",
+              "rejection_reason": "${{gate-filter-7.ticket.rejection_reason ?? null}}",
+              "remote_reference": "${{gate-filter-7.ticket.remote_reference ?? null}}",
+              "repo_source": "${{gate-filter-7.ticket.repo_source}}",
+              "source": "${{gate-filter-7.ticket.source}}",
+              "source_type": "${{gate-filter-7.ticket.source_type}}",
+              "state": "${{gate-filter-7.ticket.state}}",
+              "tags": "${{gate-filter-7.ticket.tags ?? []}}",
+              "title": "${{gate-filter-7.ticket.title}}",
+              "updated_at": "${{gate-filter-7.ticket.updated_at}}",
+              "url": "${{gate-filter-7.ticket.url}}",
+              "yaml_path": "${{gate-filter-7.ticket.yaml_path}}"
+            }
+          }
+        },
+        "display_name": "Map SecondaryApp ticket routing",
+        "id": "gate-map-2",
+        "outputs": {
+          "ado_project": {
+            "type": "string"
+          },
+          "agents_template_path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "directory_path": {
+            "type": "string"
+          },
+          "directory_slug": {
+            "type": "string"
+          },
+          "frontend_host_checkout": {
+            "type": "string"
+          },
+          "frontend_install_roots": {
+            "type": "array"
+          },
+          "repo_source": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "object"
+          }
+        },
+        "type": "gate:map"
+      },
+      {
+        "config": {},
+        "display_name": "Merge ticket routing payload",
+        "id": "gate-merge-1",
+        "outputs": {
+          "ado_project": {
+            "type": "string"
+          },
+          "agents_template_path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "directory_path": {
+            "type": "string"
+          },
+          "directory_slug": {
+            "type": "string"
+          },
+          "frontend_host_checkout": {
+            "type": "string"
+          },
+          "frontend_install_roots": {
+            "type": "array"
+          },
+          "repo_source": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "object"
+          }
+        },
+        "type": "gate:merge"
+      },
+      {
+        "config": {
+          "key": "issue-start:${{gate-merge-1.directory_path}}:${{gate-merge-1.ticket.issue_number}}",
+          "ttl": "PT15M"
+        },
+        "display_name": "Dedupe rapid issue starts",
+        "id": "gate-dedupe-issue-start-1",
+        "type": "gate:dedupe"
+      },
+      {
+        "config": {
+          "active_only": true,
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "limit": 1,
+          "metadata_equals": {
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "labels.vm-type": "issue"
+          }
+        },
+        "display_name": "Find active issue sessions",
+        "id": "query-session-list-active-issue-1",
+        "outputs": {
+          "count": {
+            "type": "integer"
+          },
+          "sessions": {
+            "type": "array"
+          }
+        },
+        "type": "query:session:list"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": 0,
+                "left": "${{query-session-list-active-issue-1.count}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Require no active issue session",
+        "id": "gate-filter-no-active-issue-session-1",
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": true,
+                "left": "${{effect-vm-bootstrap-frontend-1.success}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{effect-vm-bootstrap-frontend-1.session_id}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Verify successful creation",
+        "id": "gate-filter-1",
+        "outputs": {
+          "message": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "vm_name": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "left": "${{trigger-git-push-1.branch_name ?? \"\"}}",
+                "starts_with": "agents/"
+              },
+              {
+                "left": "${{trigger-git-push-1.ref_name ?? \"\"}}",
+                "starts_with": "refs/evander/agents/"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.session_id ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.default_branch ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.review_branch ?? null}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter repos",
+        "id": "gate-filter-2",
+        "outputs": {
+          "default_branch": {
+            "type": "string"
+          },
+          "branch_name": {
+            "type": "string"
+          },
+          "commit_hash": {
+            "type": "string"
+          },
+          "notes_ref": {
+            "type": "string"
+          },
+          "old_commit_hash": {
+            "type": "string"
+          },
+          "ref_name": {
+            "type": "string"
+          },
+          "managed_repo_id": {
+            "type": "string"
+          },
+          "review_branch": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}",
+                "not_equals": "standalone"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{query-session-context-1.metadata.issue_number ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{query-session-context-1.metadata.issue_title ?? null}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter issue PR sessions",
+        "id": "gate-filter-issue-pr",
+        "outputs": {
+          "metadata": {
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "standalone",
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter standalone PR sessions",
+        "id": "gate-filter-standalone-pr",
+        "outputs": {
+          "metadata": {
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": false,
+                "left": "${{effect-pr-create-1.success}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter PR preflight failures",
+        "id": "gate-filter-8",
+        "outputs": {
+          "destination_ahead_count": {
+            "type": "integer"
+          },
+          "destination_commit": {
+            "type": "string"
+          },
+          "local_ahead_count": {
+            "type": "integer"
+          },
+          "local_branch": {
+            "type": "string"
+          },
+          "local_commit": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "destination_branch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "items": "${{query-issue-get-1.metadata.steps}}"
+        },
+        "display_name": "For each step",
+        "id": "gate-for-1",
+        "outputs": {
+          "current_element": {
+            "type": "object"
+          },
+          "current_index": {
+            "type": "integer"
+          },
+          "is_done": {
+            "type": "boolean"
+          },
+          "item_count": {
+            "type": "integer"
+          }
+        },
+        "type": "gate:for"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": true,
+                "left": "${{effect-vm-bootstrap-frontend-2.success}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{effect-vm-bootstrap-frontend-2.session_id}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Verify successful creation",
+        "id": "gate-filter-3",
+        "outputs": {
+          "message": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "vm_name": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "provision_demo_environment",
+                "left": "${{trigger-script-run-request-1.script_name}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-script-run-request-1.parameters.0 ?? null}}"
+              },
+              {
+                "left": "${{trigger-script-run-request-1.parameters.0 ?? null}}",
+                "matches_regex": "^[a-z0-9]+$"
+              }
+            ]
+          }
+        },
+        "display_name": "Allow App demo provision requests",
+        "id": "gate-filter-5",
+        "outputs": {
+          "parameters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "script_name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "allowed_tools": [
+            "has_pending_feedback",
+            "list_unread_feedback",
+            "list_all_feedback",
+            "list_pr_feedback_attachments",
+            "download_pr_feedback_attachment",
+            "communication_copy_artifact_to_workspace",
+            "post_pr_feedback_reply",
+            "set_issue_plan",
+            "stage_artifact",
+            "submit_git_changes"
+          ],
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "discord_channels": [],
+          "dotnet": true,
+          "email_folders": [],
+          "email_mailboxes": [],
+          "labels": {
+            "vm-type": "issue"
+          },
+          "metadata": {
+            "ado_project": "${{gate-merge-1.ado_project}}",
+            "directory_path": "${{gate-merge-1.directory_path}}",
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "issue_title": "${{gate-merge-1.ticket.title}}"
+          },
+          "model": "gpt-6-sol",
+          "mssql": true,
+          "nuget": true,
+          "playwright": true,
+          "session_id": "issue-${{gate-merge-1.ticket.issue_number}}-${{gate-merge-1.directory_slug}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+          "ttl_hours": 48,
+          "vm_name": "vm-issue-${{gate-merge-1.ticket.issue_number}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Create Issue VM",
+        "id": "effect-vm-create-1",
+        "type": "effect:vm:create"
+      },
+      {
+        "config": {
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "repo_source": "${{gate-merge-1.repo_source}}"
+        },
+        "display_name": "Ensure managed Issue repository",
+        "id": "effect-git-ensure-managed-repo-1",
+        "type": "effect:git:ensure-managed-repo"
+      },
+      {
+        "config": {
+          "clone_branch": "${{gate-merge-1.branch}}",
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "managed_repo_id": "${{effect-git-ensure-managed-repo-1.managed_repo_id}}",
+          "target": "${{effect-vm-create-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Clone Issue Repo",
+        "id": "effect-vm-clone-repo-1",
+        "type": "effect:vm:clone-repo"
+      },
+      {
+        "config": {
+          "host_checkout": "${{gate-merge-1.frontend_host_checkout}}",
+          "install_roots": "${{gate-merge-1.frontend_install_roots}}",
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Bootstrap Issue Frontend",
+        "id": "effect-vm-bootstrap-frontend-1",
+        "type": "effect:vm:bootstrap-frontend"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "destination_path": "/home/agent/AGENTS.md",
+              "overwrite": true,
+              "source_format": "template",
+              "source_path": "${{gate-merge-1.agents_template_path}}"
+            },
+            {
+              "content": "${{gate-merge-1.ticket}}",
+              "content_format": "yaml",
+              "destination_path": "${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml",
+              "overwrite": true
+            },
+            {
+              "destination_path": "/home/agent/PLANS.md",
+              "overwrite": true,
+              "source_format": "file",
+              "source_path": "/opt/evander/templates/PLANS.md"
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Copy files into VM",
+        "id": "effect-vm-copy-files-1",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "model": "gpt-6-luna",
+          "prompt": "You have been issued the task described in ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-1.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When finished, commit and submit the completed work with a complete Markdown summary.",
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Send task prompt",
+        "id": "effect-agent-prompt-1",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a complete Markdown summary attached to the submitted commit. If anything is missing, complete it now. If you make changes during this checklist pass, commit and submit them with an updated complete summary before concluding.",
+          "resume_thread_id": "${{effect-agent-prompt-4.thread_id}}",
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Send follow-up prompt",
+        "id": "effect-agent-prompt-2",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "agent_branch": "${{trigger-git-push-1.branch_name}}",
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "target_branch": "${{trigger-git-push-1.review_branch}}"
+        },
+        "display_name": "Promote agent branch",
+        "id": "effect-git-promote-agent-branch-1",
+        "type": "effect:git:promote-agent-branch"
+      },
+      {
+        "config": {
+          "base_branch": "${{trigger-git-push-1.default_branch}}",
+          "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
+          "destination_branch": "feature/issue-${{query-session-context-1.metadata.issue_number}}",
+          "draft": true,
+          "fill": true,
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "source_ref": "${{trigger-git-push-1.review_branch}}",
+          "session_id": "${{trigger-git-push-1.session_id}}",
+          "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}"
+        },
+        "display_name": "Create PR",
+        "id": "effect-pr-create-1",
+        "type": "effect:pr:create"
+      },
+      {
+        "config": {
+          "base_branch": "${{trigger-git-push-1.default_branch}}",
+          "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-standalone.body}}",
+          "destination_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
+          "fallback_destination_branch": "feature/${{trigger-git-push-1.session_id}}",
+          "draft": true,
+          "fill": true,
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "source_ref": "${{trigger-git-push-1.review_branch}}",
+          "session_id": "${{trigger-git-push-1.session_id}}",
+          "title": "${{query-session-context-1.metadata.pr_title ?? null}}",
+          "fallback_title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
+        },
+        "display_name": "Create standalone PR",
+        "id": "effect-pr-create-standalone",
+        "type": "effect:pr:create"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": false,
+                "left": "${{effect-pr-create-standalone.success}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter standalone PR preflight failures",
+        "id": "gate-filter-standalone-pr-preflight",
+        "outputs": {
+          "destination_ahead_count": {
+            "type": "integer"
+          },
+          "destination_commit": {
+            "type": "string"
+          },
+          "local_ahead_count": {
+            "type": "integer"
+          },
+          "local_branch": {
+            "type": "string"
+          },
+          "local_commit": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "destination_branch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your complete Markdown summary, and submit the exact resulting commit and updated complete summary.\n\n",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.destination_branch}}",
+          "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-git-push-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Prompt agent to merge PR destination",
+        "id": "effect-agent-enqueue-prompt-3",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your complete Markdown summary, and submit the exact resulting commit and updated complete summary.\n\n",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.destination_branch}}",
+          "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-git-push-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Prompt standalone agent to merge PR destination",
+        "id": "effect-agent-enqueue-prompt-standalone-pr",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "metadata": {
+            "agent_thread_id": "${{effect-agent-prompt-4.thread_id}}"
+          },
+          "target": "${{effect-vm-clone-repo-1.session_id}}"
+        },
+        "display_name": "Store session metadata",
+        "id": "effect-session-update-metadata-1",
+        "type": "effect:session:update-metadata"
+      },
+      {
+        "config": {
+          "metadata": {
+            "ado_project": "${{gate-merge-1.ado_project}}",
+            "directory_path": "${{gate-merge-1.directory_path}}",
+            "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+            "issue_title": "${{gate-merge-1.ticket.title}}"
+          },
+          "target": "${{effect-vm-clone-repo-1.session_id}}"
+        },
+        "display_name": "Update session metadata",
+        "id": "effect-session-update-metadata-2",
+        "type": "effect:session:update-metadata"
+      },
+      {
+        "config": {
+          "issue_id": "${{gate-merge-1.ticket.issue_id}}",
+          "state": "In Progress",
+          "sync_proxy_cache": true
+        },
+        "display_name": "Set issue in progress",
+        "id": "effect-issue-update-state-1",
+        "type": "effect:issue:update-state"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "You have been issued the task described in ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-1.target_dir}}. Do not write any code or perform the task. Instead, study the code, understand the assignment, and produce an implementation plan for other agents. Use set_issue_plan MCP tool to store both a short plan summary and the ordered list of steps.\n\nThe goal is not just to list milestones. The goal is to eliminate rediscovery for the implementation agents. Each step must therefore be a self-contained implementation brief that tells a worker where to start and how to verify the result.\n\nFor the plan summary, write a concise orientation for implementers that covers: the intended end state, the main architectural constraints, the required sequencing, and any global risks or invariants that later steps must preserve.\n\nFor each step, write a compact but concrete brief that includes all of the following in plain text:\n- the exact objective of the step\n- the most likely files or directories to edit\n- any files or symbols that should be read first for reference\n- existing patterns, components, handlers, or tests that the worker should mirror\n- the preferred validation commands for that step\n- the definition of done for that step\n- any explicit out-of-scope warnings for that worker\n\nPrefer steps that are implementation-ready and narrowly scoped. Avoid generic instructions like 'inspect the repo' or 'figure out how X works' unless that investigation is itself the deliverable. If uncertainty remains, resolve as much of it as possible now by identifying the concrete files and patterns the worker should use. You must find a balance between overcomplicating your solution (do not add anything to the assignment or expand the scope) and doing too little (the solution must be robust, fulfill the requirements, and follow the patterns already present in the repository). After you have finished this, other agents will implement the plan and you will be asked to check their work.\nRead /home/agent/PLANS.md for some general guidance on plan authoring.",
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Create plan",
+        "id": "effect-agent-prompt-4",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "content": {
+                "current_step_index": "${{gate-for-1.current_index}}",
+                "full_plan": "${{query-issue-get-1.metadata.steps}}",
+                "plan_summary": "${{query-issue-get-1.metadata.plan_summary}}",
+                "total_steps": "${{gate-for-1.item_count}}",
+                "your_task": "${{gate-for-1.current_element}}"
+              },
+              "content_format": "yaml",
+              "destination_path": "${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml",
+              "overwrite": true
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Replace AGENT_TASK.yaml",
+        "id": "effect-vm-copy-files-2",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "content": "${{gate-merge-1.ticket}}",
+              "content_format": "yaml",
+              "destination_path": "${{effect-vm-clone-repo-1.target_dir}}/AGENT_TASK.yaml",
+              "overwrite": true
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-1.vm_name}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Restore full task yaml",
+        "id": "effect-vm-copy-files-3",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "model": "gpt-6-luna",
+          "queue_key": "teams:${{trigger-teams-new-message-2.channel_target}}:${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a Teams message on channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" with target_type=\"${{trigger-teams-new-message-2.target_type}}\", cursor=\"${{trigger-teams-new-message-2.cursor}}\", message_id=\"${{trigger-teams-new-message-2.message_id}}\", and thread_id=\"${{trigger-teams-new-message-2.thread_id}}\". The triggering Teams message content is:\n${{trigger-teams-new-message-2.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. Fetch Teams messages from that target specifically by calling teams_get_messages with channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" and a small limit, then prioritize the message with the triggering message_id above if fetched history includes older thread context. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise use the triggering channel_target above. For channel targets, post replies using thread_id=\"${{trigger-teams-new-message-2.thread_id}}\" when it is non-empty; for chat targets, omit thread_id. If the user asks you to notify, loop in, or mention a person in a channel reply, pass that person's exact Graph user ID, UPN, or mail address in teams_post_status mentions; plain @name text in message does not notify users. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "resume_thread_metadata_key": "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id",
+          "target": "vm-example-receptionist",
+          "vm_name": "vm-example-receptionist",
+          "vm_user": "agent"
+        },
+        "display_name": "Enqueue Teams Prompt",
+        "id": "effect-agent-enqueue-prompt-1",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-6-luna",
+          "queue_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:${{trigger-teams-direct-message-1.message_id ?? trigger-teams-direct-message-1.cursor}}",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "resume_thread_metadata_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id",
+          "target": "vm-example-receptionist",
+          "vm_name": "vm-example-receptionist",
+          "vm_user": "agent"
+        },
+        "display_name": "Enqueue Teams Direct Message Prompt",
+        "id": "effect-agent-enqueue-prompt-teams-dm-1",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "allowed_tools": [
+            "post_pr_comment",
+            "post_pr_inline_comment",
+            "post_pr_feedback_reply",
+            "list_unread_feedback",
+            "list_all_feedback",
+            "list_pr_feedback_attachments",
+            "download_pr_feedback_attachment",
+            "communication_copy_artifact_to_workspace",
+            "submit_pr_review",
+            "stage_artifact"
+          ],
+          "directory_path": "root/example-industry/app",
+          "discord_channels": [],
+          "dotnet": true,
+          "email_folders": [],
+          "email_mailboxes": [],
+          "labels": {
+            "vm-type": "review"
+          },
+          "model": "gpt-6-sol",
+          "mssql": true,
+          "nuget": true,
+          "playwright": true,
+          "session_id": "review-${{trigger-review-new-request-1.review_request.pr_id}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+          "ttl_hours": 24,
+          "vm_name": "vm-review-${{trigger-review-new-request-1.review_request.pr_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "New VM effect",
+        "id": "effect-vm-create-2",
+        "type": "effect:vm:create"
+      },
+      {
+        "config": {
+          "directory_path": "root/example-industry/app",
+          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication"
+        },
+        "display_name": "Ensure managed Review repository",
+        "id": "effect-git-ensure-managed-repo-2",
+        "type": "effect:git:ensure-managed-repo"
+      },
+      {
+        "config": {
+          "directory_path": "root/example-industry/app",
+          "managed_repo_id": "${{effect-git-ensure-managed-repo-2.managed_repo_id}}",
+          "target": "${{effect-vm-create-2.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Clone Review Repo",
+        "id": "effect-vm-clone-repo-2",
+        "type": "effect:vm:clone-repo"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "destination_path": "${{effect-vm-clone-repo-2.target_dir}}/.evander/bin/setup_review_repo.sh",
+              "mode": "0755",
+              "overwrite": true,
+              "source_path": "/opt/evander/scripts/guest/setup_review_repo.sh"
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-2.vm_name}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Copy Review Prep Script",
+        "id": "effect-vm-copy-files-5",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "check": true,
+          "command": "bash .evander/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
+          "target": "${{effect-vm-clone-repo-2.session_id}}",
+          "vm_user": "agent",
+          "working_directory": "${{effect-vm-clone-repo-2.target_dir}}"
+        },
+        "display_name": "Prepare Review Checkout",
+        "id": "effect-vm-exec-1",
+        "type": "effect:vm:exec"
+      },
+      {
+        "config": {
+          "host_checkout": "/srv/example-repos/SampleApplication/Src/Clients",
+          "install_roots": [
+            "/srv/example-repos/SampleApplication/Src/Clients"
+          ],
+          "target": "${{effect-vm-clone-repo-2.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Bootstrap Review Frontend",
+        "id": "effect-vm-bootstrap-frontend-2",
+        "type": "effect:vm:bootstrap-frontend"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "destination_path": "/home/agent/AGENTS.md",
+              "overwrite": true,
+              "source_format": "template",
+              "source_path": "/opt/evander/templates/guest-AGENTS-review.md.tmpl"
+            },
+            {
+              "content": "${{trigger-review-new-request-1.review_request}}",
+              "content_format": "yaml",
+              "destination_path": "${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml",
+              "overwrite": true
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-2.vm_name}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Copy files into VM",
+        "id": "effect-vm-copy-files-4",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "You have been assigned the review task described in ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-2.target_dir}}. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Post single file/line findings with post_pr_inline_comment so the PR UI anchors them to the diff. Use submit_pr_review for a summary with batched inline comments, and post_pr_comment only for top-level PR conversation comments.",
+          "target": "${{effect-vm-clone-repo-2.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Send task prompt",
+        "id": "effect-agent-prompt-5",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "check": true,
+          "directory_path": "root/example/evander",
+          "pipeline_id": 12345,
+          "project": "Example Industry App",
+          "variables": {
+            "resourceBaseName": "${{gate-filter-5.parameters.0}}",
+            "environmentAlias": "${{gate-filter-5.parameters.0}}",
+            "sessionId": "${{gate-filter-5.session_id}}"
+          },
+          "timeout_seconds": 3600,
+          "poll_interval_seconds": 10
+        },
+        "display_name": "Run App demo provisioning pipeline",
+        "id": "effect-ado-pipeline-run-1",
+        "outputs": {
+          "completed": {
+            "type": "boolean"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pipeline_id": {
+            "type": "integer"
+          },
+          "pipeline_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "queued": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "effect:ado:pipeline-run"
+      },
+      {
+        "config": {
+          "template": {
+            "environment_alias": "${{gate-filter-5.parameters.0}}",
+            "app_api_alias": "${{gate-filter-5.parameters.0}}-api",
+            "app_ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+            "app_public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+            "app_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+            "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+            "resource_base_name": "${{gate-filter-5.parameters.0}}",
+            "provisioning_status": "succeeded",
+            "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+            "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+            "session_metadata_patch": {
+              "http_targets": {
+                "targets": {
+                  "${{gate-filter-5.parameters.0}}-api": {
+                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                    "metadata": {
+                      "kind": "exampleindustry_app_demo_environment",
+                      "environment_alias": "${{gate-filter-5.parameters.0}}",
+                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
+                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                      "provisioning_status": "succeeded",
+                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+                      "role": "api"
+                    }
+                  },
+                  "${{gate-filter-5.parameters.0}}-ui": {
+                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                    "metadata": {
+                      "kind": "exampleindustry_app_demo_environment",
+                      "environment_alias": "${{gate-filter-5.parameters.0}}",
+                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
+                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                      "provisioning_status": "succeeded",
+                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+                      "role": "ui"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "display_name": "Map App demo provisioning metadata",
+        "id": "gate-map-app-demo-metadata-1",
+        "outputs": {
+          "environment_alias": {
+            "type": "string"
+          },
+          "app_api_alias": {
+            "type": "string"
+          },
+          "app_base_url": {
+            "type": "string"
+          },
+          "app_public_url": {
+            "type": "string"
+          },
+          "app_ui_alias": {
+            "type": "string"
+          },
+          "pipeline_run_id": {
+            "type": "string"
+          },
+          "pipeline_run_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provisioning_status": {
+            "type": "string"
+          },
+          "public_domain": {
+            "type": "string"
+          },
+          "resource_base_name": {
+            "type": "string"
+          },
+          "session_metadata_patch": {
+            "type": "object"
+          }
+        },
+        "type": "gate:map"
+      },
+      {
+        "config": {
+          "metadata": "${{gate-map-app-demo-metadata-1.session_metadata_patch}}",
+          "target": "${{gate-filter-5.session_id}}"
+        },
+        "display_name": "Store App provisioning metadata",
+        "id": "effect-session-update-metadata-6",
+        "type": "effect:session:update-metadata"
+      },
+      {
+        "config": {
+          "enabled": true,
+          "target": "${{gate-filter-5.session_id}}"
+        },
+        "display_name": "Enable image generation for App demo",
+        "id": "effect-session-set-image-generation-1",
+        "type": "effect:session:set-image-generation-enabled"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "The host-side App demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nApp API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nApp UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nApp API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. For browser work, launch Chromium with the seeded launch helper and navigate to the Public UI URL above; the session browser proxy preserves the application's real origin. For programmatic API access, use $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\n\nWhen generated images are needed for the requested demo, the user explicitly authorizes the imagegen skill's API/CLI fallback through the host OpenAI relay. Do not ask for separate confirmation. Use it only for assets for this named demo environment.\n\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
+          "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}",
+          "target": "${{gate-filter-5.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Resume after App provisioning",
+        "id": "effect-agent-prompt-9",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-6-sol",
+          "prompt": "You have received PR feedback and must handle this exact feedback item before finishing.\n\nFeedback ID: ${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}\nProvider: ${{trigger-pull-request-new-feedback-1.feedback.provider}}\nRepo: ${{trigger-pull-request-new-feedback-1.feedback.repo}}\nPR: ${{trigger-pull-request-new-feedback-1.feedback.pr_id}}\nThread ID: ${{trigger-pull-request-new-feedback-1.feedback.thread_id}}\nComment ID: ${{trigger-pull-request-new-feedback-1.feedback.comment_id}}\nAuthor: ${{trigger-pull-request-new-feedback-1.feedback.author}}\nCreated: ${{trigger-pull-request-new-feedback-1.feedback.created_at}}\n\nFeedback body:\n${{trigger-pull-request-new-feedback-1.feedback.body}}\n\nUse list_all_feedback if you need surrounding PR context. You may also call list_unread_feedback to catch any other unread feedback, but do not skip the feedback item above just because it is no longer returned as unread. If the feedback references an attached file and the attachment tools are available, call list_pr_feedback_attachments with the Feedback ID, download the selected file with download_pr_feedback_attachment, and copy its artifact with communication_copy_artifact_to_workspace before inspecting it. Always respond to this feedback with post_pr_feedback_reply using the thread/comment identifiers above, even if it is just to acknowledge it. If code changes are needed, stage, commit, and push them before replying.",
+          "queue_key": "pr-feedback:${{trigger-pull-request-new-feedback-1.session_id}}:${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}",
+          "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
+          "vm_name": "",
+          "vm_user": "agent"
+        },
+        "display_name": "Enqueue Feedback Prompt",
+        "id": "effect-agent-enqueue-prompt-2",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "notes_ref": "${{trigger-git-push-1.notes_ref}}"
+        },
+        "display_name": "Git PR note",
+        "id": "query-git-pr-note-1",
+        "type": "query:git:pr-note"
+      },
+      {
+        "config": {
+          "commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "notes_ref": "${{trigger-git-push-1.notes_ref}}"
+        },
+        "display_name": "Standalone Git PR note",
+        "id": "query-git-pr-note-standalone",
+        "type": "query:git:pr-note"
+      },
+      {
+        "config": {
+          "target": "${{trigger-git-push-1.session_id}}"
+        },
+        "display_name": "Session context",
+        "id": "query-session-context-1",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "target": "${{trigger-pull-request-new-feedback-1.session_id}}"
+        },
+        "display_name": "Session context",
+        "id": "query-session-context-2",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "issue_id": "${{gate-merge-1.ticket.issue_id}}"
+        },
+        "display_name": "Reload issue",
+        "id": "query-issue-get-1",
+        "type": "query:issue:get"
+      },
+      {
+        "config": {
+          "target": "vm-example-receptionist"
+        },
+        "display_name": "Session context",
+        "id": "query-session-context-3",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "target": "vm-example-receptionist"
+        },
+        "display_name": "Teams DM session context",
+        "id": "query-session-context-teams-dm-1",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "target": "${{gate-filter-5.session_id}}"
+        },
+        "display_name": "Session context",
+        "id": "query-session-context-4",
+        "type": "query:session-context"
+      }
+    ],
+    "version": "v1"
+  },
+  "pack_id": "agent-default",
+  "pack_version": "v1"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "evander-browser-sessions",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test --test-timeout=45000 test/*.test.mjs",
+    "test:browser": "node scripts/build.mjs && mkdir -p test-output && node --test --test-concurrency=1 --test-timeout=60000 test/*.browser.mjs",
+    "check": "tsc --noEmit",
+    "test:helper": "dotnet build helper/Evander.BrowserHelper.csproj --nologo && node scripts/build.mjs && node --test --test-concurrency=1 --test-timeout=75000 test/native-helper.integration.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "playwright": "1.64.1",
+    "typescript": "5.9.3",
+    "@types/node": "22.15.3",
+    "ws": "8.22.0",
+    "@types/ws": "8.18.1"
+  }
+}

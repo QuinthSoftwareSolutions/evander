@@ -1,0 +1,30 @@
+flowchart LR
+    subgraph core[Core Evander]
+        addon[Add-on registration and Admin mounting]
+        session[Sessions, policy, and resume]
+        workflow[Trigger and effect orchestration]
+        managedgit[Managed Git and artifacts]
+        execution[VM and container execution]
+        usage[Model usage and semantic helpers]
+    end
+
+    subgraph team[Team Add-on]
+        domain[Team domain state and invariants]
+        commands[MCP commands and Admin API]
+        runtime[Wakes, leases, prompts, and finalizers]
+        release[Reviews, promotions, and release policy]
+        ui[Team operator UI]
+        outbox[(Durable Team outbox)]
+    end
+
+    addon --> ui
+    session <--> runtime
+    workflow <--> outbox
+    managedgit <--> release
+    execution <--> runtime
+    execution <--> release
+    usage <--> domain
+    commands --> domain
+    commands --> outbox
+    runtime --> domain
+    release --> domain

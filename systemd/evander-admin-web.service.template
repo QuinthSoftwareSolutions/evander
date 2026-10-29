@@ -1,0 +1,22 @@
+[Unit]
+Description=Evander Admin Web
+After=network-online.target
+Wants=network-online.target
+PartOf=evander-team-runtime.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env
+EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env
+EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+EnvironmentFile=-/etc/evander/local-secrets.env
+ExecStartPre=__PROJECT_DIR__/.venv/bin/python -m evander.runtime_generation register --project-dir __PROJECT_DIR__ --runtime-dir __PROJECT_DIR__/runtime --component admin-web
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

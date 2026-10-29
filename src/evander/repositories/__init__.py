@@ -1,0 +1,1 @@
+"""JSON-backed repository adapters."""

@@ -1,0 +1,208 @@
+# Execution Backends
+
+The execution backend abstraction separates host control-plane workflows from the runtime that
+actually runs an agent target. It supports lifecycle and log inspection,
+container-worker sessions, and explicit operator container jobs. It is not a scheduler
+or a replacement for the existing VM provider layer; provider-specific VM details still live behind
+the existing VM services.
+
+## Backends
+
+`libvirt_vm` is the default backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
+
+`container_worker_vm` has a worker-side HTTP daemon, `evander-worker-daemon`, that can run
+jobs in disposable Docker containers while preserving durable per-session state on the worker VM.
+New sessions use the directory's default worker or an explicitly selected entry in
+`container_workers`. Each session keeps its worker assignment for later jobs, status checks, and
+cleanup. Operators use `evander-cli execution ...`; workflows use backend-aware
+`effect:agent:*` nodes. `libvirt_vm` remains the default backend.
+
+For an Ansible-managed worker, non-`none` Docker networking is only valid when
+`evander_worker_egress_policy_enabled: true` is set on the worker VM and the allowlist is
+explicit.
+
+## Current Scope
+
+The shared backend/operator surface owns:
+
+- single-target status inspection
+- target start, stop, and destroy
+- guest agent log snapshots
+- manual container job start/list/smoke operations through the execution CLI
+- container-worker session create/clone/copy/exec/prompt/destroy support through
+  backend-aware `effect:agent:*` workflow nodes
+
+The current implementation does not provide:
+
+- worker scheduling, autoscaling, AKS, or Kubernetes
+- worker lifecycle rebuilds
+- general secret transport to workers
+- general internet egress or Docker-network-only metadata protection
+- issue intake, wake policy, and PR publishing within the execution backend itself; these remain
+  control-plane workflow and provider responsibilities
+
+## Configuration
+
+Backend selection is part of the effective `GatewayConfig`, normally configured through the
+directory's `providers` domain. The YAML below illustrates field names; persisted overlays are
+JSON in `runtime/directory-config/root/.../providers.json`, and legacy gateway YAML is not a
+configuration input.
+
+```yaml
+execution_backend: libvirt_vm
+```
+
+The default is `libvirt_vm`. `container_worker_vm` also requires a worker daemon URL and a bearer token environment variable on the host:
+
+```yaml
+execution_backend: container_worker_vm
+container_worker_base_url: "http://10.0.2.10:11888"
+container_worker_token_env: "EVANDER_WORKER_TOKEN"
+container_worker_default_image: "evander-runner:latest"
+container_worker_images:
+  default: "evander-runner:latest"
+  claude: "evander-runner-claude:latest"
+  dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
+container_worker_active_tool_timeout_seconds: 300
+container_worker_job_timeout_seconds: 1800
+container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
+container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
+container_worker_guest_http_target_browser_proxy_url: "http://<control-plane-private-ip>:11778"
+container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
+container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
+container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
+container_worker_mssql_enabled: true
+container_worker_mssql_host: "172.17.0.1"
+container_worker_mssql_port: 1433
+```
+
+`container_worker_default_image` is the fallback image for legacy sessions or for sessions that do
+not select an approved alias. `container_worker_images` maps operator-safe aliases to exact image
+refs and can be set at the root or directory `providers.json` layer. When `effect:agent:create`
+selects one of those aliases, the resolved image is stored with the session and later
+container-worker jobs for that session reuse the stored image instead of re-resolving a free-form
+reference. Anthropic-backed Claude sessions should use `model_provider_mode: "anthropic"` together
+with the `claude` image alias.
+
+Libvirt VM defaults also carry a directory-scoped `vm.json` template catalog with
+`libvirt_vm_default_template` and `libvirt_vm_templates`. `effect:agent:create.vm_image` can select
+an approved alias from that catalog, and the resolved image/template selection is stored with the
+session. Existing-session upserts preserve that recorded selection when `vm_image` is omitted and
+replace it only when `vm_image` is supplied explicitly. Catalog parsing validates only the map shape, alias syntax, and non-empty image refs; it does not
+inspect the referenced files. Operators must separately verify that each file exists, is readable by
+libvirt, is a qcow2 image, and is cloud-init compatible. These are libvirt templates, not Docker
+images, and the catalog map deep-merges across directory overlays.
+Use `container_image` for `container_worker_vm`.
+The selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE`,
+which uses it as the base overlay image while still falling back to the default Ubuntu image when
+no selection is present.
+For the operator prep and verification flow, see
+[libvirt-vm-template-operations.md](libvirt-vm-template-operations.md).
+
+Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
+Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
+`host_prereqs` runs; Nexus remains only the PyPI/npm path.
+The control plane also exposes `evander-npm-audit-facade` on `11881` for npm audit POSTs;
+it is separate from the worker registry setting and routes package metadata/tarballs through
+Nexus while sending audit requests to public npm.
+
+This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services.
+
+For explicit worker placement, configure the `container_workers` catalog and pass `worker_id`
+when creating a new session or manual job. Existing sessions cannot be moved by changing that
+selector or the directory default. Before changing defaults for older sessions, preview and apply
+`evander-cli execution pin-worker-assignments --runtime-dir runtime` with `--apply` on the second
+run. Keep `runtime/container-worker-assignments.db` and the original token environment references
+available. See [worker selection](container-worker-backend.md#selecting-a-worker-when-creating-an-agent)
+and [changing the default worker](container-worker-backend.md#changing-the-default-worker).
+
+For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields:
+`command`, `image`, the internally resolved clone source/branch, `resource_limits`,
+`persistence_mode`, and `workspace_mode`. Public agent clone effects provide `managed_repo_id`; the
+control plane resolves the directory-scoped restricted-SSH source before creating the lower-level
+execution request. `metadata` remains sanitized caller context and is not used to smuggle commands,
+clone settings, credentials, or repository paths.
+
+The execution CLI never mutates the configured backend. `start-container-job` and
+`smoke-container-worker` explicitly construct the container backend from the loaded config.
+`status`, `logs`, `stop`, and `destroy` select the container backend when the target resolves in
+the container worker execution mapping store; otherwise they use the configured backend.
+`--backend container_worker_vm` or `--backend libvirt_vm` overrides that selection. The mapping store is backed by
+`runtime/container-worker-executions.db`.
+
+Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
+the existing VM services. On `container_worker_vm`, `effect:agent:create` prepares a durable
+session manifest and worker directories, `effect:agent:clone-repo` clones into
+`/home/agent/repos/<repo-name>`, `effect:agent:copy-files` writes under `/home/agent`,
+`effect:agent:exec`
+runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
+starts the configured agent harness in a disposable worker job and removes the job after completion.
+Container clone jobs default to a session-scoped writable Git key so `git push-agent` works;
+set `git_access_mode: read-only` on `effect:agent:clone-repo` for fetch-only sessions.
+`effect:agent:destroy` is the cleanup counterpart: VM-backed sessions destroy the linked VM,
+while container-backed sessions delete worker-side files and jobs but keep the host session
+manifest and container execution mappings as cleanup tombstones. Admin Web > Sessions surfaces
+the resulting container lifecycle state as `stopped`, `failed`, `abandoned`, `cleanup_failed`, or
+`cleaned_up`, along with the last worker observation/completion signal and any cleanup error. A
+cleanup failure must remain visible so operators can retry manual cleanup without losing the
+session/run context in `runtime/sessions.json` or `runtime/container-worker-executions.db`.
+
+
+Chat Assistant session resolution is backend-aware and durable. Admin Web prewarms
+this resolution when a user opens or starts a chat session, then the hidden
+`system.chat_assistant` workflow refreshes the same mapping when the first
+message is posted. For `libvirt_vm`, assistant initialization reuses one shared
+assistant VM/session globally while issuing distinct per-user `agent_thread_id`
+values. For `container_worker_vm`, assistant initialization reuses a distinct
+assistant session per user. The mapping is persisted in
+`runtime/chat-assistant-session-mappings.json` and initialized idempotently so
+concurrent session-start or first-message requests converge on the same mapping.
+
+Container sessions are bootstrapped through mounted `/home/agent`, not image rebuilds. The host writes
+Codex config, shell profile setup, and optional NuGet/.NET/Playwright environment into the durable
+agent home. Toolchains are expected to come from worker-level read-only cache mounts, while writable
+session cache state remains under `/home/agent`. MSSQL bootstrap is not implemented for
+`effect:agent:create` on `container_worker_vm`; `mssql=true` and `mssql_init_root` fail explicitly.
+Container-backed sessions use SQL Server through the separate MCP provisioning tools
+`mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`, which create
+session-owned databases on the worker-host SQL Server instance and return scoped direct TDS
+connection details for app/test commands.
+
+## Remaining Migration Work
+
+Next steps should move behavior only when the contract is stable:
+
+- move standalone VM creation behind `prepare` and `start`
+- have issue VM orchestration build an `ExecutionSpec`
+- migrate issue-worker orchestration to build container worker jobs without changing business-logic callers
+- provision and verify each additional worker's network, storage, credentials, and egress policy
+  independently; the worker catalog does not create infrastructure or balance load
+
+
+## Backend-specific Observability and Recovery
+
+### `libvirt_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=libvirt_vm` before VM create delegation.
+- Chat assistant session mappings are global and should show one `metric_chat_session_mapping_created` and steady `..._reused` markers.
+- Recovery:
+  - If backend selection is wrong, inspect session metadata and directory-level provider config resolution.
+  - If chat session mapping churn appears, inspect the mapping store and initialization logs;
+    use supported session operations rather than editing the live JSON file.
+
+### `container_worker_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=container_worker_vm` before session/worker preparation.
+- Chat assistant mappings are per user; expect `metric_chat_session_mapping_created` once per user and backend, then reuse.
+- Prompt queue markers (`metric_prompt_enqueue_success|failed`) indicate queue persistence latency and failures before worker dispatch retries.
+- Recovery:
+  - On repeated enqueue failures, check runtime store writeability and worker-session state files.
+  - On misrouted tool calls, use `metric_mcp_tool_decision` deny/error reasons and compare to session allowlists.
+
+## Submitting committed work through MCP
+
+Grant `submit_git_changes` to coding sessions with writable managed-Git access. Agents submit an exact commit SHA and a complete Markdown summary in one call; prepared checkout IDs disambiguate multiple repositories or task worktrees. The tool supports VM and container sessions without changing upstream publication policy.
+
+See [Git submission through MCP](git-remotes.md#submitting-committed-work-through-mcp) for permissions, receipts, retries, runtime storage, and migration. Existing Git helper commands remain supported for compatibility.

@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from evander.events.provider_models import AgentCopyFilesEffectDefinition
+
+from .agent_session import (
+    container_backend,
+    effective_config_for_session,
+    normalize_optional_string,
+    require_container_session_id,
+    resolve_vm_target,
+    selected_execution_backend_for_target,
+)
+from .vm_copy_files import VmCopyFilesEffectProvider
+
+
+class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        effect = self._effect()
+        context = self._context()
+        payload = {
+            "target": effect.target,
+            "session_id": effect.session_id,
+            "vm_name": effect.vm_name,
+            "vm_user": effect.vm_user,
+            "allowed_source_roots": effect.allowed_source_roots,
+            "files": [entry.model_dump(mode="json", exclude_none=True) for entry in effect.files],
+        }
+        if resolved_config:
+            payload.update(dict(resolved_config))
+
+        allowed_source_roots = self._approved_source_roots(
+            payload.get("allowed_source_roots"),
+            effect_type="effect:agent:copy-files",
+        )
+        directory_path = str(context.metadata.get("directory_path") or "root")
+        execution_backend, config = selected_execution_backend_for_target(
+            context, payload, directory_path=directory_path
+        )
+        if execution_backend == "libvirt_vm":
+            return self._execute_libvirt(
+                payload,
+                execution_backend=execution_backend,
+                allowed_source_roots=allowed_source_roots,
+            )
+        if execution_backend != "container_worker_vm":
+            raise ValueError(f"Unsupported execution_backend: {execution_backend}")
+
+        session_id, session = require_container_session_id(
+            context,
+            payload,
+            effect_type="effect:agent:copy-files",
+            config=config,
+        )
+        config = effective_config_for_session(
+            context,
+            session_id,
+            fallback_directory_path=getattr(session, "directory_path", directory_path),
+        )
+        files = self._normalize_file_entries(
+            payload.get("files"),
+            allowed_source_roots=allowed_source_roots,
+            effect_type="effect:agent:copy-files",
+        )
+        if not files:
+            raise ValueError("effect:agent:copy-files requires at least one file entry")
+        worker_files = [self._worker_file_entry(entry) for entry in files]
+        preparation_fingerprint = hashlib.sha256(
+            json.dumps(worker_files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        backend = container_backend(context, config)
+        try:
+            result = backend.write_files(
+                session_id=session_id,
+                files=worker_files,
+                preparation_fingerprint=preparation_fingerprint,
+            )
+        except TypeError as exc:
+            if "preparation_fingerprint" not in str(exc):
+                raise
+            result = backend.write_files(session_id=session_id, files=worker_files)
+        return {
+            "success": True,
+            "message": (
+                f"Copied {result.copied_count} file(s) into container worker session {session_id}"
+            ),
+            "session_id": session_id,
+            "execution_backend": "container_worker_vm",
+            "vm_name": None,
+            "copied_count": result.copied_count,
+            "copied_paths": result.copied_paths,
+            "preparation_reused": bool(getattr(result, "preparation_reused", False)),
+        }
+
+    def _execute_libvirt(
+        self,
+        payload: dict[str, Any],
+        *,
+        execution_backend: str,
+        allowed_source_roots: list[Path],
+    ) -> dict[str, Any]:
+        context = self._context()
+        vm_name, session_id = resolve_vm_target(
+            context, payload, effect_type="effect:agent:copy-files"
+        )
+        files = self._normalize_file_entries(
+            payload.get("files"),
+            allowed_source_roots=allowed_source_roots,
+            effect_type="effect:agent:copy-files",
+        )
+        vm_user = normalize_optional_string(payload.get("vm_user")) or "agent"
+        explicit_vm_ip = normalize_optional_string(payload.get("vm_ip"))
+        if explicit_vm_ip:
+            direct_payload = dict(payload)
+            direct_payload.update(
+                {
+                    "target": vm_name,
+                    "vm_ip": explicit_vm_ip,
+                    "vm_user": vm_user,
+                    "files": files,
+                }
+            )
+            direct_provider = VmCopyFilesEffectProvider()
+            direct_provider.initialize(
+                self.effect_definition,
+                replace(context, admin_service=None, vm_file_copier=None),
+            )
+            result = direct_provider.execute(resolved_config=direct_payload)
+        else:
+            vm_copy_files = getattr(context.vm_file_copier, "vm_copy_files", None)
+            if not callable(vm_copy_files):
+                raise RuntimeError("effect:agent:copy-files vm_file_copier is not available")
+            result = vm_copy_files(
+                target=vm_name,
+                files=files,
+                vm_user=vm_user,
+            )
+        return {
+            "success": bool(result.get("success", False)),
+            "message": str(result.get("message") or ""),
+            "session_id": session_id,
+            "execution_backend": execution_backend,
+            "vm_name": str(result.get("vm_name") or vm_name),
+            "vm_ip": normalize_optional_string(result.get("vm_ip")) or explicit_vm_ip,
+            "copied_count": int(result.get("copied_count") or 0),
+            "copied_paths": list(result.get("copied_paths") or []),
+        }
+
+    def _worker_file_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        content = entry.get("content")
+        payload: dict[str, Any] = {
+            "destination_path": entry["destination_path"],
+            "mode": entry.get("mode"),
+            "overwrite": bool(entry.get("overwrite", True)),
+        }
+        if entry.get("merge_strategy"):
+            payload["merge_strategy"] = entry["merge_strategy"]
+        if entry.get("section_id"):
+            payload["section_id"] = entry["section_id"]
+        if entry.get("remove_section_ids"):
+            payload["remove_section_ids"] = list(entry["remove_section_ids"])
+        if content is None:
+            source_path = normalize_optional_string(entry.get("source_path"))
+            if not source_path:
+                raise ValueError("effect:agent:copy-files entries require source_path or content")
+            local_source = Path(source_path).expanduser().resolve()
+            if not local_source.exists():
+                raise FileNotFoundError(f"Source path does not exist: {local_source}")
+            if local_source.is_dir():
+                raise ValueError(
+                    "effect:agent:copy-files only supports file sources for container sessions"
+                )
+            payload["content_base64"] = base64.b64encode(local_source.read_bytes()).decode("ascii")
+            return payload
+        if isinstance(content, (bytes, bytearray)):
+            payload["content_base64"] = base64.b64encode(bytes(content)).decode("ascii")
+        else:
+            payload["content"] = str(content)
+        return payload
+
+    def _effect(self) -> AgentCopyFilesEffectDefinition:
+        if not isinstance(self.effect_definition, AgentCopyFilesEffectDefinition):
+            raise RuntimeError(
+                "AgentCopyFilesEffectProvider initialized with a non-agent-copy-files effect definition"
+            )
+        return self.effect_definition

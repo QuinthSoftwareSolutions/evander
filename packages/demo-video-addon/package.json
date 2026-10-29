@@ -1,0 +1,7 @@
+{
+  "name": "evander-demo-video-fixtures",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {"playwright": "1.59.1"}
+}

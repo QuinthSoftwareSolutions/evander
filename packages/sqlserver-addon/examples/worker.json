@@ -1,0 +1,33 @@
+{
+  "runtime_dir": "/var/lib/evander-sqlserver-addon",
+  "worker_id": "worker-a",
+  "token_env": "EVANDER_SQLSERVER_WORKER_TOKEN",
+  "worker_jobs_db": "/var/lib/agent-worker/runtime/worker-jobs.db",
+  "allocations_enabled": false,
+  "max_per_worker": 2,
+  "connections": {
+    "existing": {
+      "host": "sql.internal.example",
+      "application_host": "sql.internal.example",
+      "port": 1433,
+      "encrypt": true,
+      "trust_server_certificate": false,
+      "credentials": {
+        "admin": {
+          "username_env": "EXAMPLE_SQL_ADMIN_USER",
+          "password_env": "EXAMPLE_SQL_ADMIN_PASSWORD"
+        },
+        "read": {
+          "username_env": "EXAMPLE_SQL_READ_USER",
+          "password_env": "EXAMPLE_SQL_READ_PASSWORD"
+        },
+        "write": {
+          "username_env": "EXAMPLE_SQL_WRITE_USER",
+          "password_env": "EXAMPLE_SQL_WRITE_PASSWORD"
+        }
+      },
+      "operations": []
+    }
+  },
+  "allowed_images": []
+}

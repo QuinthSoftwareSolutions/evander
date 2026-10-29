@@ -1,0 +1,23 @@
+[Unit]
+Description=Reconcile expired test fixtures and recover broker faults
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+EnvironmentFile=/etc/evander-test-fixtures/worker.env
+ExecStart=/opt/evander-worker/.venv/bin/evander-test-fixtures-worker --config /etc/evander-test-fixtures/worker.json --reap-loop
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+# SQLite can spill worker-job queries to temporary files.
+PrivateTmp=yes
+ReadWritePaths=/var/lib/evander-test-fixtures /var/lib/agent-worker/runtime
+
+[Install]
+WantedBy=multi-user.target

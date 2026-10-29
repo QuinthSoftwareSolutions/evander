@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+name = "evander-application-environments-addon"
+version = "0.1.0"
+description = "Independent bounded application environments for Evander."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["evander>=0.123.0", "httpx>=0.28.1", "pydantic>=2.8.0", "starlette>=1.3.1", "uvicorn>=0.42.0"]
+
+[project.entry-points."evander.addons"]
+application_environments = "evander_application_environments_addon:register_addon"
+
+[project.scripts]
+evander-application-environment-worker = "evander_application_environments_addon.worker_api:main"
+evander-application-environment-migrate = "evander_application_environments_addon.migration:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evander_application_environments_addon*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+evander_application_environments_addon = ["addon.json", "ui_static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../../src"]

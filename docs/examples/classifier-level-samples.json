@@ -1,0 +1,104 @@
+[
+  {
+    "state": {
+      "message": "Could you switch to level 2?"
+    },
+    "expected_port": "terra"
+  },
+  {
+    "state": {
+      "message": "Byt till nivå 4, tack."
+    },
+    "expected_port": "astra"
+  },
+  {
+    "state": {
+      "message": "Use level 1 from now on."
+    },
+    "expected_port": "luna"
+  },
+  {
+    "state": {
+      "message": "Gå tillbaka till nivå 3."
+    },
+    "expected_port": "sol"
+  },
+  {
+    "state": {
+      "message": "!LEVEL 2"
+    },
+    "expected_port": "terra"
+  },
+  {
+    "state": {
+      "message": "<p>!LEVEL&nbsp;2</p>"
+    },
+    "expected_port": "terra"
+  },
+  {
+    "state": {
+      "message": "What does level 2 mean?"
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Vad betyder nivå 4?"
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Do not switch to level 2."
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Byt inte till nivå 1."
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "The documentation says \"!LEVEL 2\"."
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "If I asked you to switch to level 2, what would happen?"
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Change to level 9."
+    },
+    "expected_port": "invalid"
+  },
+  {
+    "state": {
+      "message": "Byt till nivå 0."
+    },
+    "expected_port": "invalid"
+  },
+  {
+    "state": {
+      "message": "Can you help me with this export?"
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Please be smarter."
+    },
+    "expected_port": "standard"
+  },
+  {
+    "state": {
+      "message": "Use level 2 or maybe level 4."
+    },
+    "expected_port": "standard"
+  }
+]

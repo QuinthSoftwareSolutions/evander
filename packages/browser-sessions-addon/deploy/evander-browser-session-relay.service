@@ -1,0 +1,21 @@
+[Unit]
+Description=Evander shared browser relay
+After=network-online.target evander-admin-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=evander
+Group=evander
+WorkingDirectory=/opt/evander
+EnvironmentFile=/etc/evander/browser-relay.env
+ImportCredential=evander-credentials-key
+ExecStart=/opt/evander/.venv/bin/evander-browser-session-relay --runtime-dir /opt/evander/runtime --host 127.0.0.1 --port 11890
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

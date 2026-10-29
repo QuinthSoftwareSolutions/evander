@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+from evander.admin.services.vm_agent.common import (
+    Any,
+    SessionManifest,
+    WorkflowEditorFieldOption,
+    _normalize_session_labels,
+    tool_name_value,
+)
+from evander.codex_auth import (
+    CodexAuthMode,
+    effective_codex_auth_mode,
+    effective_subscription_profile_id,
+)
+from evander.reasoning_effort import session_agent_harness
+
+
+class VmAgentContainerSessionPolicyMixin:
+    def _agent_codex_auth_mode_payload(self, session: SessionManifest) -> dict[str, str]:
+        resolver = getattr(self.runtime, "provider_config", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        try:
+            config = (
+                resolve_for_directory(session.directory_path)
+                if callable(resolve_for_directory)
+                else self.config
+            )
+        except Exception:
+            config = self.config
+
+        if self.is_container_session(session):
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+            from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+            assignment = ContainerWorkerAssignmentRepository(self.config.runtime_dir).get(
+                session.session_id
+            )
+            if assignment is not None:
+                config = ContainerWorkerAssignmentService(config).resolve(
+                    session.session_id, session=session, persist=False
+                )
+
+        explicit_mode = session.codex_auth_mode
+        effective_mode = effective_codex_auth_mode(session=session, config=config)
+        source = "session_override" if explicit_mode is not None else "directory_default"
+
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        model_provider_mode = str(
+            metadata.get("model_provider_mode")
+            or getattr(config, "model_provider_mode", None)
+            or "openai_public"
+        ).strip()
+        if model_provider_mode != "openai_public":
+            effective_mode = CodexAuthMode.METERED_API
+            source = "provider_route"
+
+        return {
+            "effective_codex_auth_mode": effective_mode.value,
+            "codex_auth_mode_source": source,
+            "agent_harness": session_agent_harness(session, config),
+            "effective_model_provider_mode": model_provider_mode,
+        }
+
+    def _agent_session_policy_payload(
+        self, session: SessionManifest | None
+    ) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        labels = _normalize_session_labels(session.metadata.get("labels"))
+        payload = {
+            "session_id": session.session_id,
+            "model": session.model,
+            "reasoning_effort": session.reasoning_effort,
+            "fast_mode": session.fast_mode,
+            "cyber_access_program": session.cyber_access_program,
+            "expires_at": session.expires_at,
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
+            "connector_grants": {
+                connector_id: list(operations)
+                for connector_id, operations in session.connector_grants.items()
+            },
+            "host_directory_grants": {
+                directory_id: list(capabilities)
+                for directory_id, capabilities in session.host_directory_grants.items()
+            },
+            "approval_required_tools": [
+                tool_name_value(tool) for tool in session.approval_required_tools
+            ],
+            "approval_tool_settings": {
+                tool_name: settings.model_dump(mode="json")
+                for tool_name, settings in session.approval_tool_settings.items()
+            },
+            "approval_notification_target_ids": list(session.approval_notification_target_ids),
+            "approval_notification_target_options": [
+                option.model_dump(mode="json")
+                for option in self._approval_notification_target_options(session)
+            ],
+            "tool_argument_policies": {
+                tool_name: [rule.model_dump(mode="json") for rule in rules]
+                for tool_name, rules in session.tool_argument_policies.items()
+            },
+            "allowed_script_names": list(session.allowed_script_names),
+            "allowed_contact_ids": (
+                None if session.allowed_contact_ids is None else list(session.allowed_contact_ids)
+            ),
+            "communication_target_ids": (
+                None
+                if session.communication_target_ids is None
+                else list(session.communication_target_ids)
+            ),
+            "discord_channels": list(session.discord_channel_allowlist),
+            "discord_channel_allowlist": list(session.discord_channel_allowlist),
+            "teams_channel_allowlist": list(session.teams_channel_allowlist),
+            "teams_chat_allowlist": list(session.teams_chat_allowlist),
+            "teams_user_allowlist": list(session.teams_user_allowlist),
+            "email_mailboxes": list(session.email_mailbox_allowlist),
+            "email_folders": list(session.email_folder_allowlist),
+            "email_folder_allowlist_by_mailbox": {
+                mailbox_id: list(folders)
+                for mailbox_id, folders in session.email_folder_allowlist_by_mailbox.items()
+            },
+            "email_mailbox_grants": (
+                None
+                if session.email_mailbox_grants is None
+                else [grant.model_dump(mode="json") for grant in session.email_mailbox_grants]
+            ),
+            "email_send_enabled": session.email_send_enabled,
+            "communication_file_receive_enabled": session.communication_file_receive_enabled,
+            "communication_file_send_enabled": session.communication_file_send_enabled,
+            "communication_file_max_bytes": session.communication_file_max_bytes,
+            "communication_file_allowed_mime_types": list(
+                session.communication_file_allowed_mime_types
+            ),
+            "communication_file_allowed_extensions": list(
+                session.communication_file_allowed_extensions
+            ),
+            "communication_file_blocked_extensions": list(
+                session.communication_file_blocked_extensions
+            ),
+            "communication_file_require_approval_for_send": (
+                session.communication_file_require_approval_for_send
+            ),
+            "web_search_enabled": session.web_search_enabled,
+            "image_generation_enabled": session.image_generation_enabled,
+            "codex_auth_mode": (
+                session.codex_auth_mode.value if session.codex_auth_mode is not None else None
+            ),
+            "subscription_profile_id": session.subscription_profile_id,
+            "effective_subscription_profile_id": effective_subscription_profile_id(session=session),
+            "metadata": dict(session.metadata),
+            "labels": labels,
+        }
+        payload.update(self._agent_codex_auth_mode_payload(session))
+        return payload
+
+    def _approval_notification_target_options(
+        self, session: SessionManifest | None
+    ) -> list[WorkflowEditorFieldOption]:
+        if session is None:
+            return []
+        try:
+            return self._communication_notification_target_options(session.directory_path)
+        except Exception:
+            return []
+
+    def effective_tool_policy_payload(
+        self,
+        session: SessionManifest | None,
+        *,
+        effective_policy: Any | None = None,
+        tool_summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        effective_policy = (
+            effective_policy or self.runtime.policy_config.resolve_for_session_manifest(session)
+        )
+        if tool_summary is None:
+            tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
+                session,
+                effective_policy=effective_policy,
+            )
+        inherited_approval_required_tools: list[str] = []
+        approval_required_tools: list[str] = []
+        seen_tools: set[str] = set()
+        for tool in effective_policy.approval_required_tools:
+            value = tool_name_value(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            inherited_approval_required_tools.append(value)
+            approval_required_tools.append(value)
+        for tool in session.approval_required_tools:
+            value = tool_name_value(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            approval_required_tools.append(value)
+
+        tool_argument_policies: dict[str, list[dict[str, Any]]] = {}
+        for source in (effective_policy.tool_argument_policies, session.tool_argument_policies):
+            for tool_name, rules in source.items():
+                tool_rules = tool_argument_policies.setdefault(tool_name, [])
+                tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
+
+        approval_tool_settings = {
+            tool_name_value(tool): self.runtime.policy.approval_grant_settings_for_tool(
+                session,
+                tool,
+                effective_policy=effective_policy,
+            ).model_dump(mode="json")
+            for tool in self.runtime.policy._iter_known_tool_names()
+        }
+        mcp_tool_policies = {
+            tool_name: rule.model_dump(mode="json")
+            for tool_name, rule in effective_policy.mcp_tool_policies.items()
+        }
+
+        return {
+            "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
+            "tool_summary": tool_summary,
+            "inherited_approval_required_tools": inherited_approval_required_tools,
+            "approval_required_tools": approval_required_tools,
+            "approval_tool_settings": approval_tool_settings,
+            "mcp_tool_policies": mcp_tool_policies,
+            "tool_argument_policies": tool_argument_policies,
+        }
+
+    agent_session_policy_payload = _agent_session_policy_payload
+    approval_notification_target_options = _approval_notification_target_options

@@ -1,0 +1,102 @@
+import { createContext, useContext } from "react";
+import type { ChatPrompt } from "../chat/api";
+
+export type DirectoryInfo = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  created_at: string;
+  metadata: Record<string, unknown>;
+  path: string;
+};
+
+export type DirectoryTreeNode = {
+  directory: DirectoryInfo;
+  config_domains: string[];
+  children: DirectoryTreeNode[];
+};
+
+export type AdminResult<T> = {
+  ok: boolean;
+  data: T | null;
+  errors: Array<{ code: string; message: string; field?: string | null }>;
+  validation_diagnostics: Array<{ code: string; message: string; field?: string | null }>;
+};
+
+export type AdminUiState = {
+  privilegedUnlocked: boolean;
+  authBusy: boolean;
+  authMode: "none" | "local_password" | "azure_sso";
+  authRequired: boolean;
+  authenticated: boolean;
+  directoryScopedConfigEnabled: boolean;
+  currentUserId: string;
+  currentUserLabel: string;
+  currentUserPermissions: string[];
+  currentUserEffectivePermissions: string[];
+  assistantEnabled: boolean;
+  assistantRequestPending: boolean;
+  openAssistantWithPrompt: (prompt: ChatPrompt) => void;
+  canReadWorkflows: boolean;
+  canReadWorkflowRuns: boolean;
+  canWriteWorkflows: boolean;
+  canManageWorkflowPacks: boolean;
+  canControlWorkflowRuns: boolean;
+  canManageUsers: boolean;
+  selectedDirectoryPath: string;
+  selectedDirectoryParentPath: string | null;
+  directoryTree: AdminResult<DirectoryTreeNode> | null;
+  directoryStateLoading: boolean;
+  directoryStateError: string | null;
+  directoryPickerOpen: boolean;
+  openDirectoryPicker: () => void;
+  closeDirectoryPicker: () => void;
+  setSelectedDirectoryPath: (path: string) => void;
+  workflowHasUnsavedChanges: boolean;
+  setWorkflowHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
+  refreshDirectoryState: () => Promise<void>;
+  refreshAdminState: () => Promise<void>;
+  refreshAuthSession: (message?: string) => Promise<void>;
+};
+
+const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
+  privilegedUnlocked: false,
+  authBusy: false,
+  authMode: "none",
+  authRequired: false,
+  authenticated: true,
+  directoryScopedConfigEnabled: false,
+  currentUserId: "anonymous",
+  currentUserLabel: "anonymous",
+  currentUserPermissions: [],
+  currentUserEffectivePermissions: [],
+  assistantEnabled: false,
+  assistantRequestPending: false,
+  openAssistantWithPrompt: () => {},
+  canReadWorkflows: false,
+  canReadWorkflowRuns: false,
+  canWriteWorkflows: false,
+  canManageWorkflowPacks: false,
+  canControlWorkflowRuns: false,
+  canManageUsers: false,
+  selectedDirectoryPath: "root",
+  selectedDirectoryParentPath: null,
+  directoryTree: null,
+  directoryStateLoading: false,
+  directoryStateError: null,
+  directoryPickerOpen: false,
+  openDirectoryPicker: () => {},
+  closeDirectoryPicker: () => {},
+  setSelectedDirectoryPath: () => {},
+  workflowHasUnsavedChanges: false,
+  setWorkflowHasUnsavedChanges: () => {},
+  refreshDirectoryState: async () => {},
+  refreshAdminState: async () => {},
+  refreshAuthSession: async () => {},
+};
+
+export const AdminUiContext = createContext<AdminUiState>(DEFAULT_ADMIN_UI_STATE);
+
+export function useAdminUi(): AdminUiState {
+  return useContext(AdminUiContext);
+}

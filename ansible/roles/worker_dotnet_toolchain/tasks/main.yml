@@ -1,0 +1,763 @@
+---
+- name: Resolve worker dotnet toolchain source mode
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_toolchain_uses_archive: >-
+      {{
+        (evander_worker_dotnet_toolchain_archive_path | default('') | string | trim | length) > 0
+      }}
+    evander_worker_dotnet_tools_uses_archive: >-
+      {{
+        (evander_worker_dotnet_tools_archive_path | default('') | string | trim | length) > 0
+      }}
+    evander_worker_dotnet_restore_support_uses_archive: >-
+      {{
+        (evander_worker_dotnet_restore_support_archive_path | default('') | string | trim | length) > 0
+      }}
+
+- name: Check local dotnet toolchain archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_toolchain_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_archive_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_toolchain_uses_archive | bool
+
+- name: Assert local dotnet toolchain archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_archive_stat.stat.exists
+      - evander_worker_dotnet_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet toolchain archive:
+      {{ evander_worker_dotnet_toolchain_archive_path }}. Set
+      evander_worker_dotnet_toolchain_archive_path to a tar.gz containing
+      the contents of a dotnet SDK root, or unset it and set
+      HOST_DOTNET_ROOT/evander_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet toolchain archive is present.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_toolchain_uses_archive | bool
+
+- name: Check local dotnet tools archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_tools_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_tools_archive_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_tools_uses_archive | bool
+
+- name: Check local dotnet restore support archive
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_restore_support_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_restore_support_archive_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_restore_support_uses_archive | bool
+
+- name: Assert local dotnet restore support archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_restore_support_archive_stat.stat.exists
+      - evander_worker_dotnet_restore_support_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet restore support archive:
+      {{ evander_worker_dotnet_restore_support_archive_path }}. Set
+      evander_worker_nuget_fallback_archive_path/HOST_NUGET_FALLBACK_ARCHIVE
+      or evander_worker_dotnet_restore_support_archive_path/HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE
+      to a tar.gz containing the contents of a NuGet global-packages folder, or unset
+      both so the playbook restores {{ evander_worker_dotnet_restore_support_package_id }}
+      locally with the SDK from HOST_DOTNET_ROOT/evander_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet restore support archive is present.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_restore_support_uses_archive | bool
+
+- name: Assert local dotnet tools archive exists
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_tools_archive_stat.stat.exists
+      - evander_worker_dotnet_tools_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet tools archive:
+      {{ evander_worker_dotnet_tools_archive_path }}. Set
+      evander_worker_dotnet_tools_archive_path to a tar.gz containing a
+      dotnet tool-path root with dotnet-ef, or unset it so the playbook installs
+      {{ evander_worker_dotnet_ef_package_id }} locally with the SDK from
+      HOST_DOTNET_ROOT/evander_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet tools archive is present.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - evander_worker_dotnet_tools_uses_archive | bool
+
+- name: Check local dotnet toolchain directory
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_toolchain_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_local_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Check local dotnet launcher
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_local_binary_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Assert local dotnet toolchain directory includes dotnet
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_local_stat.stat.exists
+      - evander_worker_dotnet_local_stat.stat.isdir
+      - evander_worker_dotnet_local_binary_stat.stat.exists
+      - evander_worker_dotnet_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet toolchain at
+      {{ evander_worker_dotnet_toolchain_local_path }}. Expected a dotnet
+      launcher at the root. Install dotnet locally, set HOST_DOTNET_ROOT, or
+      provide evander_worker_dotnet_toolchain_archive_path.
+    success_msg: Local dotnet toolchain includes the dotnet launcher.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Check local dotnet launcher for EF tool install
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_tools_local_binary_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Assert local dotnet launcher is available for EF tool install
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_tools_local_binary_stat.stat.exists
+      - evander_worker_dotnet_tools_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet launcher at
+      {{ evander_worker_dotnet_toolchain_local_path }}/dotnet. The worker
+      deploy uses that local SDK to install {{ evander_worker_dotnet_ef_package_id }}
+      into the shared tools cache. Set HOST_DOTNET_ROOT, or provide
+      evander_worker_dotnet_tools_archive_path/HOST_DOTNET_TOOLS_ARCHIVE
+      with a prebuilt tool-path archive.
+    success_msg: Local dotnet launcher can install EF tooling.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Check local dotnet launcher for restore support package staging
+  ansible.builtin.stat:
+    path: "{{ evander_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_restore_support_local_binary_stat
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Assert local dotnet launcher is available for restore support package staging
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_restore_support_local_binary_stat.stat.exists
+      - evander_worker_dotnet_restore_support_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet launcher at
+      {{ evander_worker_dotnet_toolchain_local_path }}/dotnet. The worker
+      deploy uses that local SDK to restore
+      {{ evander_worker_dotnet_restore_support_package_id }}
+      into the shared NuGet fallback cache. Set HOST_DOTNET_ROOT, or provide
+      evander_worker_dotnet_restore_support_archive_path/HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE
+      with a prebuilt NuGet global-packages archive.
+    success_msg: Local dotnet launcher can stage restore support packages.
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Create local temporary dotnet toolchain archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: evander-dotnet-toolchain
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_archive_tmp
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Pack local dotnet toolchain directory
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_dotnet_toolchain_local_path }}"
+      - -czf
+      - "{{ evander_worker_dotnet_archive_tmp.path }}/dotnet-toolchain.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Create local temporary dotnet tools archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: evander-dotnet-tools
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_tools_archive_tmp
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Create local dotnet tools staging directories
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_tools_archive_tmp.path }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - tools
+    - cli-home
+    - nuget-packages
+  delegate_to: localhost
+  become: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Install dotnet EF tool into local staging directory
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          evander_worker_dotnet_toolchain_local_path ~ '/dotnet',
+          'tool',
+          'install',
+          evander_worker_dotnet_ef_package_id,
+          '--tool-path',
+          evander_worker_dotnet_tools_archive_tmp.path ~ '/tools'
+        ]
+        + (
+          ['--version', evander_worker_dotnet_ef_version]
+          if (evander_worker_dotnet_ef_version | default('') | string | trim | length) > 0
+          else []
+        )
+      }}
+  environment:
+    DOTNET_ROOT: "{{ evander_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ evander_worker_dotnet_tools_archive_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
+    NUGET_PACKAGES: "{{ evander_worker_dotnet_tools_archive_tmp.path }}/nuget-packages"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Verify local staged dotnet EF tool
+  ansible.builtin.command:
+    argv:
+      - "{{ evander_worker_dotnet_tools_archive_tmp.path }}/tools/dotnet-ef"
+      - --version
+  environment:
+    DOTNET_ROOT: "{{ evander_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ evander_worker_dotnet_tools_archive_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
+    PATH: "{{ evander_worker_dotnet_toolchain_local_path }}:{{ lookup('env', 'PATH') }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Pack local dotnet tools directory
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_dotnet_tools_archive_tmp.path }}/tools"
+      - -czf
+      - "{{ evander_worker_dotnet_tools_archive_tmp.path }}/dotnet-tools.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+
+- name: Create local temporary dotnet restore support archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: evander-dotnet-restore-support
+  delegate_to: localhost
+  become: false
+  register: evander_worker_dotnet_restore_support_tmp
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Create local dotnet restore support staging directories
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_restore_support_tmp.path }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - project
+    - cli-home
+    - http-cache
+    - nuget-packages
+  delegate_to: localhost
+  become: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Write local dotnet restore support NuGet config
+  ansible.builtin.copy:
+    dest: "{{ evander_worker_dotnet_restore_support_tmp.path }}/NuGet.Config"
+    mode: "0644"
+    content: |
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <config>
+          <add key="globalPackagesFolder" value="{{ evander_worker_dotnet_restore_support_tmp.path }}/nuget-packages" />
+          <add key="httpCacheFolder" value="{{ evander_worker_dotnet_restore_support_tmp.path }}/http-cache" />
+        </config>
+        <packageSources>
+          <clear />
+          <add key="nuget-org" value="https://api.nuget.org/v3/index.json" />
+        </packageSources>
+      </configuration>
+  delegate_to: localhost
+  become: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Write local dotnet restore support project
+  ansible.builtin.copy:
+    dest: "{{ evander_worker_dotnet_restore_support_tmp.path }}/project/restore-support.csproj"
+    mode: "0644"
+    content: |
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <TargetFramework>net10.0</TargetFramework>
+        </PropertyGroup>
+        <ItemGroup>
+          <PackageReference Include="{{ evander_worker_dotnet_restore_support_package_id }}" Version="{{ evander_worker_dotnet_restore_support_package_version }}" />
+        </ItemGroup>
+      </Project>
+  delegate_to: localhost
+  become: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Restore local dotnet restore support package into staging directory
+  ansible.builtin.command:
+    argv:
+      - "{{ evander_worker_dotnet_toolchain_local_path }}/dotnet"
+      - restore
+      - "{{ evander_worker_dotnet_restore_support_tmp.path }}/project/restore-support.csproj"
+      - --configfile
+      - "{{ evander_worker_dotnet_restore_support_tmp.path }}/NuGet.Config"
+      - -p:NuGetAudit=false
+      - -v
+      - minimal
+  environment:
+    DOTNET_ROOT: "{{ evander_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ evander_worker_dotnet_restore_support_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
+    NUGET_PACKAGES: "{{ evander_worker_dotnet_restore_support_tmp.path }}/nuget-packages"
+    NUGET_HTTP_CACHE_PATH: "{{ evander_worker_dotnet_restore_support_tmp.path }}/http-cache"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Pack local dotnet restore support packages
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ evander_worker_dotnet_restore_support_tmp.path }}/nuget-packages"
+      - -czf
+      - "{{ evander_worker_dotnet_restore_support_tmp.path }}/dotnet-restore-support.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Resolve dotnet toolchain archive to copy
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_toolchain_archive_to_copy: >-
+      {{
+        evander_worker_dotnet_toolchain_archive_path
+        if (evander_worker_dotnet_toolchain_uses_archive | bool)
+        else evander_worker_dotnet_archive_tmp.path ~ '/dotnet-toolchain.tar.gz'
+      }}
+    evander_worker_dotnet_tools_archive_to_copy: >-
+      {{
+        evander_worker_dotnet_tools_archive_path
+        if (evander_worker_dotnet_tools_uses_archive | bool)
+        else evander_worker_dotnet_tools_archive_tmp.path ~ '/dotnet-tools.tar.gz'
+      }}
+    evander_worker_dotnet_restore_support_archive_to_copy: >-
+      {{
+        evander_worker_dotnet_restore_support_archive_path
+        if (evander_worker_dotnet_restore_support_uses_archive | bool)
+        else evander_worker_dotnet_restore_support_tmp.path ~ '/dotnet-restore-support.tar.gz'
+      }}
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Copy dotnet toolchain archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_dotnet_toolchain_archive_to_copy }}"
+    dest: "{{ evander_worker_dotnet_toolchain_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Copy dotnet tools archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_dotnet_tools_archive_to_copy }}"
+    dest: "{{ evander_worker_dotnet_tools_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Copy dotnet restore support archive to worker
+  ansible.builtin.copy:
+    src: "{{ evander_worker_dotnet_restore_support_archive_to_copy }}"
+    dest: "{{ evander_worker_dotnet_restore_support_remote_archive_path }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Fingerprint immutable dotnet bundle inputs
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ evander_worker_dotnet_toolchain_remote_archive_path }}"
+    - "{{ evander_worker_dotnet_tools_remote_archive_path }}"
+  register: evander_dotnet_bundle_inputs
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Validate dotnet selector configuration
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_cache_path == evander_worker_dotnet_bundle_selector ~ '/sdk'
+      - evander_worker_dotnet_tools_cache_path == evander_worker_dotnet_bundle_selector ~ '/tools'
+    fail_msg: Configure evander_worker_dotnet_bundle_selector; SDK and tools paths must use its sdk and tools children.
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Compute dotnet validation identity
+  ansible.builtin.set_fact:
+    evander_dotnet_bundle_identity: "{{ (evander_dotnet_bundle_inputs.results | map(attribute='stat.checksum') | join(':')) ~ ':' ~ evander_runner_image_name }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Inspect selected validated dotnet bundle identity
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import pathlib, sys
+        selector = pathlib.Path(sys.argv[1])
+        if selector.is_symlink():
+            target = selector.resolve()
+            marker = target / '.complete'
+            if marker.is_file() and marker.read_text().strip() == sys.argv[2]:
+                print(target)
+      - "{{ evander_worker_dotnet_bundle_selector }}"
+      - "{{ evander_dotnet_bundle_identity }}"
+  register: evander_dotnet_existing_bundle
+  changed_when: false
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Allocate private dotnet bundle staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    path: "{{ evander_worker_toolchain_cache_root }}"
+    prefix: "dotnet-bundle-{{ evander_dotnet_bundle_inputs.results | map(attribute='stat.checksum') | join(':') | hash('sha256') }}-"
+  register: evander_dotnet_staging
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_existing_bundle.stdout
+
+- name: Select immutable dotnet staging directory
+  ansible.builtin.set_fact:
+    evander_dotnet_bundle_path: "{{ evander_dotnet_existing_bundle.stdout or evander_dotnet_staging.path }}"
+    evander_dotnet_sdk_selector: "{{ evander_worker_dotnet_cache_path }}"
+    evander_dotnet_tools_selector: "{{ evander_worker_dotnet_tools_cache_path }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Allow runner access to the immutable bundle
+  ansible.builtin.file:
+    path: "{{ evander_dotnet_bundle_path }}"
+    state: directory
+    mode: "0755"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Use staged dotnet paths for validation
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_cache_path: "{{ evander_dotnet_bundle_path }}/sdk"
+    evander_worker_dotnet_tools_cache_path: "{{ evander_dotnet_bundle_path }}/tools"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Inspect validated dotnet bundle
+  ansible.builtin.stat:
+    path: "{{ evander_dotnet_bundle_path }}/.complete"
+  register: evander_dotnet_bundle_complete
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Recreate worker dotnet toolchain cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_cache_path }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Recreate worker dotnet tools cache
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_tools_cache_path }}"
+    state: directory
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0755"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Unpack dotnet toolchain into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_dotnet_toolchain_remote_archive_path }}"
+    dest: "{{ evander_worker_dotnet_cache_path }}"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_bundle_complete.stat.exists
+
+- name: Unpack dotnet tools into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_dotnet_tools_remote_archive_path }}"
+    dest: "{{ evander_worker_dotnet_tools_cache_path }}"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_bundle_complete.stat.exists
+
+- name: Unpack dotnet restore support packages into worker NuGet fallback cache
+  ansible.builtin.unarchive:
+    src: "{{ evander_worker_dotnet_restore_support_remote_archive_path }}"
+    dest: "{{ evander_worker_nuget_fallback_cache_path }}"
+    remote_src: true
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Verify worker dotnet toolchain on host cache
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DOTNET_ROOT="{{ evander_worker_dotnet_cache_path }}";
+        dotnet_cli_home="$(mktemp -d)";
+        trap 'rm -rf "$dotnet_cli_home"' EXIT;
+        export DOTNET_CLI_HOME="$dotnet_cli_home";
+        export DOTNET_CLI_TELEMETRY_OPTOUT=1;
+        export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE=1;
+        export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1;
+        export DOTNET_NOLOGO=1;
+        export PATH="$DOTNET_ROOT:{{ evander_worker_dotnet_tools_cache_path }}:$PATH";
+        dotnet --info;
+        dotnet ef --version;
+        dotnet-ef --version
+  changed_when: false
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Verify dotnet, EF tooling, and restore support inside runner container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ evander_worker_dotnet_cache_path }}:/opt/evander/toolchains/dotnet:ro"
+      - -v
+      - "{{ evander_worker_dotnet_tools_cache_path }}:/opt/evander/toolchains/dotnet-tools:ro"
+      - -v
+      - "{{ evander_worker_nuget_fallback_cache_path }}:/opt/evander/nuget-cache-ro:ro"
+      - "{{ evander_runner_image_name }}"
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DOTNET_ROOT="/opt/evander/toolchains/dotnet";
+        dotnet_cli_home="$(mktemp -d)";
+        smoke_dir="$(mktemp -d)";
+        trap 'rm -rf "$dotnet_cli_home" "$smoke_dir"' EXIT;
+        export DOTNET_CLI_HOME="$dotnet_cli_home";
+        export DOTNET_CLI_TELEMETRY_OPTOUT=1;
+        export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE=1;
+        export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1;
+        export DOTNET_NOLOGO=1;
+        export NUGET_PACKAGES="$smoke_dir/packages-local";
+        export NUGET_HTTP_CACHE_PATH="$smoke_dir/http-cache";
+        export PATH="$DOTNET_ROOT:/opt/evander/toolchains/dotnet-tools:$PATH";
+        mkdir -p "$smoke_dir/packages-local" "$smoke_dir/http-cache";
+        cat > "$smoke_dir/NuGet.Config" <<'XML'
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+          </packageSources>
+          <fallbackPackageFolders>
+            <add key="shared-readonly" value="/opt/evander/nuget-cache-ro" />
+          </fallbackPackageFolders>
+        </configuration>
+        XML
+        cat > "$smoke_dir/restore-smoke.csproj" <<'XML'
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net10.0</TargetFramework>
+          </PropertyGroup>
+          <ItemGroup>
+            <PackageReference Include="{{ evander_worker_dotnet_restore_support_package_id }}" Version="{{ evander_worker_dotnet_restore_support_package_version }}" />
+          </ItemGroup>
+        </Project>
+        XML
+        dotnet --info;
+        dotnet ef --version;
+        dotnet-ef --version;
+        dotnet restore "$smoke_dir/restore-smoke.csproj" \
+          --configfile "$smoke_dir/NuGet.Config" \
+          --packages "$smoke_dir/packages-local" \
+          --no-cache \
+          -p:NuGetAudit=false \
+          -v minimal
+  changed_when: false
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Mark validated immutable dotnet bundle
+  ansible.builtin.copy:
+    content: "{{ evander_dotnet_bundle_identity }}\n"
+    dest: "{{ evander_dotnet_bundle_path }}/.complete"
+    mode: "0444"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Atomically select validated dotnet bundle for future sessions
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os, pathlib, sys, uuid
+        target, selector = map(pathlib.Path, sys.argv[1:])
+        if not (target / '.complete').is_file():
+            raise SystemExit('bundle has not passed validation')
+        if selector.is_symlink() and selector.resolve() == target.resolve():
+            raise SystemExit(0)
+        temporary = selector.with_name(selector.name + '.' + uuid.uuid4().hex)
+        temporary.symlink_to(target)
+        try:
+            os.replace(temporary, selector)
+        finally:
+            temporary.unlink(missing_ok=True)
+        print('selected')
+      - "{{ evander_dotnet_bundle_path }}"
+      - "{{ evander_worker_dotnet_bundle_selector }}"
+  register: evander_dotnet_bundle_selection
+  changed_when: "'selected' in evander_dotnet_bundle_selection.stdout"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Restore configured dotnet selectors
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_cache_path: "{{ evander_dotnet_sdk_selector }}"
+    evander_worker_dotnet_tools_cache_path: "{{ evander_dotnet_tools_selector }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Remove temporary local dotnet toolchain archive directory
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_toolchain_uses_archive | bool)
+    - evander_worker_dotnet_archive_tmp.path is defined
+
+- name: Remove temporary local dotnet tools archive directory
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_tools_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_tools_uses_archive | bool)
+    - evander_worker_dotnet_tools_archive_tmp.path is defined
+
+- name: Remove temporary local dotnet restore support archive directory
+  ansible.builtin.file:
+    path: "{{ evander_worker_dotnet_restore_support_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not (evander_worker_dotnet_restore_support_uses_archive | bool)
+    - evander_worker_dotnet_restore_support_tmp.path is defined

@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test fixtures</title><link rel="stylesheet" href="fixtures.css">
+<main><h1>Test fixtures</h1><p>Disposable resources belong to one task and worker session. Idle resources are cleaned up automatically.</p>
+<form id="scope"><label>Directory <input id="directory" value="root" required></label><button>Refresh</button></form>
+<p id="status" role="status"></p><div class="table"><table><thead><tr><th>Lease / task</th><th>Owner / worker</th><th>Readiness</th><th>Expiry</th><th>Resources</th><th>Action</th></tr></thead><tbody id="leases"></tbody></table></div>
+<details><summary>Allocation settings</summary><p>Allocations start disabled. Removing a team also releases its leases; cleanup continues while allocations are disabled.</p>
+<form id="settings-form"><label>Settings JSON <textarea id="settings" rows="18" spellcheck="false"></textarea></label><button>Save settings</button></form></details>
+</main><script type="module" src="fixtures.js"></script></html>

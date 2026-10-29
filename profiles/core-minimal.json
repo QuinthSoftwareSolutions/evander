@@ -1,0 +1,5 @@
+{
+  "name": "profiles/core-minimal",
+  "include_builtin": false,
+  "provider_modules": []
+}

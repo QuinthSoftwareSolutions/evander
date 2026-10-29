@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Callable, Mapping
+from typing import Any
+from threading import Lock
+
+from evander.code_consultation_service import CodeConsultationServiceFactoryPort
+from evander.events.models import (
+    EffectDefinitionDiscriminated,
+    EffectType,
+    WorkflowNodeEnvelope,
+)
+from evander.provider_config import EffectProviderConfig, ProviderConfigResolver
+from evander.orchestration.event_publisher import InternalEventPublisherRuntime
+from evander.provider_runtime.contracts import InternalEventPublisher
+from evander.provider_runtime.adapters import (
+    build_provider_runtime_ports,
+    effect_provider_config_blob,
+)
+from evander.workflow.plugins import EFFECT_PLUGIN_CLASSES
+
+from .providers.base import EffectProviderBase, EffectRuntimeContext
+
+EffectProviderClass = type[EffectProviderBase]
+
+
+class NoopEffectProvider(EffectProviderBase):
+    """Default provider scaffold for effect types awaiting concrete implementations."""
+
+
+DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = dict(
+    EFFECT_PLUGIN_CLASSES
+)
+
+
+class EffectProviderRegistry:
+    def __init__(
+        self,
+        initial: Mapping[EffectType, EffectProviderClass] | None = None,
+        *,
+        defaults_when_empty: bool = True,
+    ) -> None:
+        if initial is None or (defaults_when_empty and not initial):
+            initial = DEFAULT_EFFECT_PROVIDER_REGISTRY
+        self._providers: dict[EffectType, EffectProviderClass] = dict(initial)
+
+    def register(self, effect_type: EffectType, provider_class: EffectProviderClass) -> None:
+        self._providers[effect_type] = provider_class
+
+    def resolve(self, effect_type: EffectType) -> EffectProviderClass:
+        provider_class = self._providers.get(effect_type)
+        if provider_class is None:
+            raise KeyError(f"No effect provider registered for type {effect_type!r}")
+        return provider_class
+
+    def registered_types(self) -> tuple[EffectType, ...]:
+        return tuple(self._providers.keys())
+
+
+class EffectProviderFactory:
+    """Centralized provider constructor to keep env/secret handling host-side."""
+
+    def __init__(
+        self,
+        provider_config_resolver: ProviderConfigResolver,
+        admin_service: object | None = None,
+        *,
+        registry: EffectProviderRegistry | None = None,
+        provider_runtime: object | None = None,
+        admin_adapter: object | None = None,
+        gate_adapter: object | None = None,
+        agent_prompt_activity: object | None = None,
+        internal_event_publisher: InternalEventPublisher | None = None,
+        code_consultation_service_factory: CodeConsultationServiceFactoryPort | None = None,
+        env: Mapping[str, str] | None = None,
+        secret_resolver: Callable[[str], str | None] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.provider_config_resolver = provider_config_resolver
+        self._provider_runtime_ports = build_provider_runtime_ports(
+            provider_runtime=provider_runtime,
+            admin_service=admin_service,
+            admin_adapter=admin_adapter,
+            gate_adapter=gate_adapter,
+        )
+        self.admin_service = (
+            self._provider_runtime_ports.admin_service
+            or admin_service
+            or admin_adapter
+            or provider_runtime
+        )
+        self._admin_adapter = self.admin_service
+        self.agent_prompt_activity = agent_prompt_activity
+        self.internal_event_publisher = internal_event_publisher
+        self._event_publisher_cache: tuple[tuple, InternalEventPublisherRuntime] | None = None
+        self._event_publisher_lock = Lock()
+        self.code_consultation_service_factory = code_consultation_service_factory
+        self.registry = registry or EffectProviderRegistry()
+        self.env = env or dict(os.environ)
+        self.secret_resolver = secret_resolver
+        self.metadata = dict(metadata or {})
+
+    def build(
+        self,
+        effect_definition: EffectDefinitionDiscriminated,
+        *,
+        directory_path: str | None = None,
+        graph_id: str | None = None,
+    ) -> EffectProviderBase:
+        provider_class = self.registry.resolve(effect_definition.type)
+        resolved_config = _resolve_effect_provider_config(
+            self.provider_config_resolver, directory_path
+        )
+        metadata: dict[str, Any] = {
+            **self.metadata,
+            "directory_path": directory_path or "root",
+        }
+        if graph_id is not None:
+            metadata["graph_id"] = graph_id
+        runtime_context = EffectRuntimeContext(
+            provider_config=effect_provider_config_blob(resolved_config),
+            provider_config_resolver=self.provider_config_resolver,
+            vm_creator=self._provider_runtime_ports.vm_creator,
+            vm_repo_cloner=self._provider_runtime_ports.vm_repo_cloner,
+            vm_python_bootstrapper=self._provider_runtime_ports.vm_python_bootstrapper,
+            vm_frontend_bootstrapper=self._provider_runtime_ports.vm_frontend_bootstrapper,
+            agent_resumer=self._provider_runtime_ports.agent_resumer,
+            agent_prompt_activity=self.agent_prompt_activity,
+            internal_event_publisher=self.get_internal_event_publisher(
+                runtime_dir=resolved_config.runtime_dir
+            ),
+            vm_power_controller=self._provider_runtime_ports.vm_power_controller,
+            vm_inventory=self._provider_runtime_ports.vm_inventory
+            or self._provider_runtime_ports.gate_vm_inventory,
+            vm_executor=self._provider_runtime_ports.vm_executor,
+            vm_file_copier=self._provider_runtime_ports.vm_file_copier,
+            vm_file_deleter=self._provider_runtime_ports.vm_file_deleter,
+            session_lookup=self._provider_runtime_ports.session_lookup,
+            issue_updater=self._provider_runtime_ports.issue_updater,
+            session_metadata_updater=self._provider_runtime_ports.session_metadata_updater,
+            session_policy_reconciler=self._provider_runtime_ports.session_policy_reconciler,
+            session_model_settings_updater=(
+                self._provider_runtime_ports.session_model_settings_updater
+            ),
+            session_image_generation_policy_updater=(
+                self._provider_runtime_ports.session_image_generation_policy_updater
+            ),
+            git_branch_promoter=self._provider_runtime_ports.git_branch_promoter,
+            pull_request_creator=self._provider_runtime_ports.pull_request_creator,
+            code_consultation_service_factory=self.code_consultation_service_factory,
+            admin_service=self._admin_adapter,
+            security_scan_service=self._provider_runtime_ports.security_scan_service,
+            env=self.env,
+            secret_resolver=self.secret_resolver,
+            metadata=metadata,
+        )
+        provider = provider_class()
+        validated_definition = _validate_effect_definition(provider_class, effect_definition)
+        provider.initialize(effect_definition=validated_definition, runtime_context=runtime_context)
+        return provider
+
+    def get_internal_event_publisher(self, *, runtime_dir: Any) -> InternalEventPublisher:
+        if self.internal_event_publisher is not None:
+            return self.internal_event_publisher
+        key = InternalEventPublisherRuntime.configuration_key(
+            runtime_dir=runtime_dir, metadata=self.metadata
+        )
+        with self._event_publisher_lock:
+            if self._event_publisher_cache is None or self._event_publisher_cache[0] != key:
+                self._event_publisher_cache = (
+                    key,
+                    InternalEventPublisherRuntime(runtime_dir=runtime_dir, metadata=self.metadata),
+                )
+            return self._event_publisher_cache[1]
+
+
+def _validate_effect_definition(
+    provider_class: EffectProviderClass,
+    effect_definition: EffectDefinitionDiscriminated,
+) -> EffectDefinitionDiscriminated:
+    if type(effect_definition) is WorkflowNodeEnvelope:
+        return provider_class.validate_definition(effect_definition)
+    return effect_definition
+
+
+def _resolve_effect_provider_config(
+    provider_config_resolver: ProviderConfigResolver,
+    directory_path: str | None,
+) -> EffectProviderConfig:
+    resolve_provider_config = getattr(
+        provider_config_resolver, "resolve_effect_provider_config", None
+    )
+    if callable(resolve_provider_config):
+        return resolve_provider_config(directory_path)
+    resolve_for_directory = getattr(provider_config_resolver, "resolve_for_directory", None)
+    if callable(resolve_for_directory):
+        return EffectProviderConfig.model_validate(
+            _model_dump(resolve_for_directory(directory_path))
+        )
+    raise AttributeError("provider_config_resolver must resolve effect provider config")
+
+
+def _model_dump(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    return value

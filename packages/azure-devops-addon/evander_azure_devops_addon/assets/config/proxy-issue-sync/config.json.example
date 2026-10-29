@@ -1,0 +1,5 @@
+{
+  "runtime_dir": "runtime",
+  "poll_interval_seconds": 300,
+  "freshness_window_seconds": 300
+}

@@ -1,0 +1,143 @@
+---
+- name: Deploy evander to Ubuntu 24.04 hosts
+  hosts: evander_hosts
+  become: true
+  vars:
+    evander_repo_parent: "{{ evander_deploy_path | dirname }}"
+    evander_expected_runtime_dir: "{{ evander_deploy_path }}/runtime"
+  pre_tasks:
+    - name: Check for existing Teams ingest settings on unmanaged hosts
+      ansible.builtin.stat:
+        path: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+      register: evander_existing_teams_ingest_settings
+      when: not (evander_manage_teams_ingest_config | bool)
+
+    - name: Read existing Teams ingest settings on unmanaged hosts
+      ansible.builtin.slurp:
+        src: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+      register: evander_existing_teams_ingest_document
+      when:
+        - not (evander_manage_teams_ingest_config | bool)
+        - evander_existing_teams_ingest_settings.stat.exists | default(false)
+      no_log: true
+
+    - name: Preserve existing Teams notification settings for unmanaged hosts
+      ansible.builtin.set_fact:
+        evander_teams_ingest_config: >-
+          {{ evander_existing_teams_ingest_document.content | b64decode | from_json }}
+      when:
+        - not (evander_manage_teams_ingest_config | bool)
+        - evander_existing_teams_ingest_document.content is defined
+      no_log: true
+
+    - name: Assert the service profile is supported
+      ansible.builtin.assert:
+        that:
+          - evander_service_profile in ['full', 'control_plane_only']
+        fail_msg: >-
+          evander_service_profile must be either 'full' or 'control_plane_only'.
+          The profile controls whether the deployment prepares local libvirt guests and
+          the repo-native guest firewall.
+        success_msg: Service profile is supported.
+
+    - name: Assert control-plane-only hosts do not enable the guest firewall
+      ansible.builtin.assert:
+        that:
+          - not (evander_services.firewall | bool)
+        fail_msg: >-
+          evander_services.firewall must be false for control_plane_only deployments.
+          The repo-native firewall manages the isolated libvirt guest network and should
+          only run with the full profile.
+        success_msg: Guest firewall is disabled for control-plane-only profile.
+      when: evander_service_profile == 'control_plane_only'
+
+    - name: Assert the restricted Codex egress proxy configuration is complete
+      ansible.builtin.assert:
+        that:
+          - (evander_codex_egress_proxy_bind_host | string | trim | length) > 0
+          - (evander_codex_egress_proxy_port | int) > 0
+          - (evander_codex_egress_proxy_port | int) <= 65535
+          - (evander_codex_egress_proxy_allowed_client_cidrs | length) > 0
+          - (evander_codex_egress_proxy_allowed_hosts | length) > 0
+        fail_msg: >-
+          The Codex egress proxy requires a private bind address, a valid TCP
+          port, at least one worker client CIDR, and at least one HTTPS
+          destination rule.
+        success_msg: Restricted Codex egress proxy configuration is complete.
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
+    - name: Assert Codex egress proxy worker addresses are numeric
+      ansible.builtin.assert:
+        that:
+          - (hostvars[item].evander_worker_private_ip | default('') | string | trim | length) > 0
+          - >-
+            (hostvars[item].evander_worker_private_ip | string | trim)
+            is match('^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)$')
+        fail_msg: >-
+          Worker {{ item }} needs a numeric evander_worker_private_ip for the
+          Codex egress proxy client allowlist. Set it explicitly when
+          ansible_host is a DNS name.
+        success_msg: Worker Codex egress proxy client address is numeric.
+      loop: "{{ groups.get('evander_worker_hosts', []) }}"
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
+    - name: Assert the runtime directory matches the repo-native service layout
+      ansible.builtin.assert:
+        that:
+          - evander_runtime_dir == evander_expected_runtime_dir
+        fail_msg: >-
+          evander_runtime_dir must currently be {{ evander_expected_runtime_dir }}
+          because scripts/install_systemd_units.sh renders systemd units that hardcode
+          {{ evander_deploy_path }}/runtime.
+        success_msg: Runtime directory matches the repo-native systemd layout.
+
+    - name: Check whether an existing runtime directory is present
+      ansible.builtin.stat:
+        path: "{{ evander_runtime_dir }}"
+      register: evander_existing_runtime_dir
+
+    - name: Announce deployment in control-plane runtime
+      ansible.builtin.copy:
+        dest: "{{ evander_deployment_status_path }}"
+        mode: "0644"
+        content: |
+          {
+            "active": true,
+            "message": {{ evander_deployment_status_message | to_json }},
+            "source": "ansible",
+            "started_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
+            "updated_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
+            "ttl_seconds": {{ evander_deployment_status_ttl_seconds | int }}
+          }
+      when:
+        - evander_existing_runtime_dir.stat.exists | default(false)
+        - evander_existing_runtime_dir.stat.isdir | default(false)
+
+  roles:
+    - role: host_prereqs
+    - role: system_log_rotation
+    - role: apt_cache_relay
+    - role: repo_checkout
+    - role: python_env
+    - role: runtime_bootstrap
+    - role: service_config
+    - role: asterisk_didww
+    - role: systemd_install
+    - role: frontend_build
+    - role: admin_web_caddy
+    - role: network_vm_bootstrap
+    - role: service_runtime
+    - role: package_cache_nexus
+    - role: semantic_store_qdrant
+    - role: application_environments_runtime
+    - role: browser_sessions_runtime
+    - role: verification
+
+  post_tasks:
+    - name: Clear deployment status runtime flag
+      ansible.builtin.file:
+        path: "{{ evander_deployment_status_path }}"
+        state: absent
+      when:
+        - evander_existing_runtime_dir.stat.exists | default(false)
+        - evander_existing_runtime_dir.stat.isdir | default(false)

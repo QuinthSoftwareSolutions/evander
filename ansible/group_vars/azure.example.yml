@@ -1,0 +1,60 @@
+---
+# Example Azure control-plane deployment overrides.
+# Copy this file into an operator-owned deployment config repo as
+# ansible/group_vars/azure.yml and replace all placeholder values there.
+evander_repo_url: "git@example.com:your-org/evander.git"
+evander_repo_ssh_private_key: "{{ vault_evander_repo_ssh_private_key }}"
+evander_deploy_path: "/opt/evander"
+evander_run_user: "evander"
+evander_service_profile: "control_plane_only"
+evander_manage_workflow_config: false
+evander_install_azure_cli: true
+evander_admin_web_caddy_enabled: true
+evander_worker_token: "{{ vault_evander_worker_token }}"
+evander_nexus_admin_password: "{{ vault_evander_nexus_admin_password | default('') }}"
+evander_control_plane_private_ip: "10.0.0.4"
+evander_git_host: "{{ evander_control_plane_private_ip }}"
+
+# Enable only when the target should have Ansible-owned Asterisk/DIDWW trunk
+# configuration. Existing hand-managed Asterisk hosts can leave this disabled.
+evander_asterisk_didww_enabled: false
+evander_asterisk_ari_password: "{{ vault_asterisk_ari_password | default('') }}"
+evander_asterisk_didww_sip_host: "out.didww.com"
+evander_asterisk_didww_sip_username: "{{ vault_didww_sip_username | default('') }}"
+evander_asterisk_didww_sip_password: "{{ vault_didww_sip_password | default('') }}"
+evander_asterisk_didww_from_user: "{{ vault_didww_sip_from_user | default('') }}"
+evander_asterisk_didww_identify_matches: "{{ vault_didww_sip_identify_matches | default(['46.19.208.0/21', '185.238.172.0/22'], true) }}"
+evander_asterisk_didww_inbound_route_id: "{{ vault_didww_inbound_route_id | default('') }}"
+
+evander_admin_web_env:
+  ADMIN_WEB_HOST: "127.0.0.1"
+  ADMIN_WEB_PORT: "8100"
+  EVANDER_ADMIN_WEB_AUTH_MODE: "azure_sso"
+  EVANDER_ADMIN_WEB_USERNAME: "admin"
+  EVANDER_ADMIN_WEB_PASSWORD: "{{ vault_admin_web_password }}"
+  EVANDER_ADMIN_WEB_SESSION_SECRET: "{{ vault_admin_web_session_secret }}"
+  EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS: "43200"
+  EVANDER_ADMIN_WEB_COOKIE_SECURE: "true"
+  EVANDER_ADMIN_WEB_PUBLIC_BASE_URL: "https://admin.example.com"
+  EVANDER_ADMIN_WEB_AZURE_TENANT_ID: "{{ vault_admin_web_azure_tenant_id }}"
+  EVANDER_ADMIN_WEB_AZURE_CLIENT_ID: "{{ vault_admin_web_azure_client_id }}"
+  EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET: "{{ vault_admin_web_azure_client_secret }}"
+  EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS: "operator@example.com"
+  EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI: "https://admin.example.com/api/auth/azure-sso/callback"
+
+evander_render_shared_secrets_env: true
+evander_shared_secrets_env:
+  OPENAI_API_KEY: "{{ vault_openai_api_key }}"
+  AZURE_ARTIFACTS_PAT: "{{ vault_azure_artifacts_pat }}"
+  AZURE_DEVOPS_PAT: "{{ vault_azure_devops_pat }}"
+  AZURE_DEVOPS_DEPLOY_PAT: "{{ vault_azure_devops_pat }}"
+  AZURE_DEVOPS_PR_PAT: "{{ vault_azure_devops_pr_pat }}"
+  DISCORD_BOT_TOKEN: "{{ vault_discord_bot_token }}"
+  MSSQL_SA_PASSWORD: "{{ vault_mssql_sa_password }}"
+  AGENT_PROMPT_TOKEN_SECRET: "{{ vault_agent_prompt_token_secret }}"
+  EVANDER_WORKER_TOKEN: "{{ vault_evander_worker_token }}"
+  RETELL_API_KEY: "{{ vault_retell_api_key }}"
+  EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS: "{{ vault_evander_workflow_event_machine_tokens }}"
+  ASTERISK_ARI_PASSWORD: "{{ vault_asterisk_ari_password }}"
+  DIDWW_SIP_BRIDGE_TOKEN: "{{ vault_didww_sip_bridge_token }}"
+  VOICE_MEDIA_CONTROLLER_TOKEN: "{{ vault_voice_media_controller_token }}"
