@@ -52,6 +52,33 @@ def test_python_env_installs_azure_devops_for_selected_services(services, overri
     assert environment.from_string(task["become_user"]).render(**context) == "evander"
 
 
+@pytest.mark.parametrize("enabled,expected", [(None, False), (False, False), (True, True)])
+@pytest.mark.parametrize("install_env", [None, {"UV_INDEX_URL": "https://packages.example.test/simple"}])
+def test_python_env_installs_demo_video_only_when_selected(enabled, expected, install_env):
+    repo = Path(__file__).resolve().parents[1]
+    tasks = yaml.safe_load((repo / "ansible/roles/python_env/tasks/main.yml").read_text())
+    installs = [
+        task for task in tasks
+        if "./packages/demo-video-addon" in task.get("ansible.builtin.command", {}).get("cmd", "")
+    ]
+    assert len(installs) == 1
+    task = installs[0]
+    context = {"evander_deploy_path": "/opt/evander", "evander_run_user": "evander"}
+    if enabled is not None:
+        context["evander_demo_video_addon_enabled"] = enabled
+    if install_env is not None:
+        context["evander_python_install_env"] = install_env
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    assert environment.from_string("{{ " + task["when"] + " }}").render(**context) is expected
+    assert environment.from_string(task["ansible.builtin.command"]["cmd"]).render(**context) == (
+        "uv pip install --python /opt/evander/.venv/bin/python -e ./packages/demo-video-addon"
+    )
+    assert environment.from_string(task["environment"]).render(**context) == (install_env or {})
+    assert environment.from_string(task["args"]["chdir"]).render(**context) == "/opt/evander"
+    assert environment.from_string(task["become_user"]).render(**context) == "evander"
+
+
 @pytest.mark.parametrize("unit", ["evander-ado-worker.service", "evander-proxy-issue-sync.service"])
 @pytest.mark.parametrize(
     "enabled,installed,expected",

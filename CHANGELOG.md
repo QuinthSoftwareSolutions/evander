@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-30 - Install the selected Demo Video add-on during deployment (1.0.1)
+
+- Add an explicit `evander_demo_video_addon_enabled` inventory flag so CI/CD installs the independent Demo Video package before services start, using the configured deployment user and package index.
+- Document control-plane enablement and keep the package optional for other hosts and core-only installations.
+
 ## 2026-10-29 - Prepare the open-source release (1.0.0)
 
 - License the first-party repository under AGPL-3.0-only. Include the license and distribution metadata for the core package and independent add-ons, while retaining third-party notices and including the licenses of bundled browser dependencies.
