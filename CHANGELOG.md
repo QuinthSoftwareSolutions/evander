@@ -3,6 +3,7 @@
 ## 2026-10-30 - Install the selected Demo Video add-on during deployment (1.0.1)
 
 - Add an explicit `evander_demo_video_addon_enabled` inventory flag so CI/CD installs the independent Demo Video package before services start, using the configured deployment user and package index.
+- Refresh enabled Gateway, Admin Web and workflow orchestrators after a successful selected installation so existing processes load the new narration driver even when other configuration is unchanged.
 - Document control-plane enablement and keep the package optional for other hosts and core-only installations.
 
 ## 2026-10-29 - Prepare the open-source release (1.0.0)

@@ -53,6 +53,7 @@
   environment: "{{ evander_python_install_env | default({}) }}"
   become_user: "{{ evander_run_user }}"
   changed_when: false
+  register: evander_demo_video_package_install
   when: evander_demo_video_addon_enabled | default(false) | bool
 
 - name: Check for provisioned Browser Sessions services

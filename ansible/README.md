@@ -811,6 +811,11 @@ Demo Video narration or video workflows. The Python environment role installs
 the configured deployment user and package index. The package is omitted by default;
 scope the flag to the control-plane group when workers do not need it.
 
+After a successful selected installation, service reconciliation restarts enabled Gateway,
+Admin Web, effect-orchestrator and trigger-orchestrator services to reload their add-on
+catalogs, including when the product revision and managed configuration are unchanged.
+Unrelated services retain their usual reconciliation behavior.
+
 If the provider loader uses an explicit enabled list, include `demo-video-addon` as well.
 See the [Demo Video rollout instructions](../packages/demo-video-addon/docs/operations.md#later-production-activation)
 for media-toolchain, credential and workflow configuration.

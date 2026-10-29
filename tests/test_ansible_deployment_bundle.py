@@ -63,6 +63,7 @@ def test_python_env_installs_demo_video_only_when_selected(enabled, expected, in
     ]
     assert len(installs) == 1
     task = installs[0]
+    assert task["register"] == "evander_demo_video_package_install"
     context = {"evander_deploy_path": "/opt/evander", "evander_run_user": "evander"}
     if enabled is not None:
         context["evander_demo_video_addon_enabled"] = enabled
@@ -77,6 +78,35 @@ def test_python_env_installs_demo_video_only_when_selected(enabled, expected, in
     assert environment.from_string(task["environment"]).render(**context) == (install_env or {})
     assert environment.from_string(task["args"]["chdir"]).render(**context) == "/opt/evander"
     assert environment.from_string(task["become_user"]).render(**context) == "evander"
+
+
+@pytest.mark.parametrize("package_result,refresh", [
+    (None, False), ({}, False), ({"skipped": True}, False),
+    ({"skipped": True, "rc": 0}, False), ({"rc": 1}, False),
+    ({"failed": True, "rc": 0}, False), ({"rc": 0}, True),
+    ({"rc": 0, "changed": False}, True),
+])
+def test_demo_video_install_refreshes_enabled_consumers_without_other_config_changes(package_result, refresh):
+    """An unchanged install must still replace startup registries on existing hosts."""
+    repo = Path(__file__).resolve().parents[1]
+    tasks = yaml.safe_load((repo / "ansible/roles/service_runtime/tasks/main.yml").read_text())
+    reconcile = next(task for task in tasks if "loop" in task and "ansible.builtin.systemd" in task)
+    env = NativeEnvironment(undefined=StrictUndefined)
+    env.filters["bool"] = bool
+    consumers = {"admin_web", "gateway", "effect_orchestrator", "trigger_orchestrator"}
+    for key in (*sorted(consumers), "openai_relay", "firewall", "didww_sip_bridge"):
+        for enabled in (False, True):
+            context = {
+                "item": {"key": key}, "evander_services": {key: enabled},
+                "evander_run_user_membership_changed": False,
+                "evander_managed_service_config_changed": False,
+            }
+            if package_result is not None:
+                context["evander_demo_video_package_install"] = package_result
+            expected = "stopped" if not enabled else (
+                "restarted" if key in consumers and refresh else "started"
+            )
+            assert env.from_string(reconcile["ansible.builtin.systemd"]["state"]).render(**context) == expected
 
 
 @pytest.mark.parametrize("unit", ["evander-ado-worker.service", "evander-proxy-issue-sync.service"])

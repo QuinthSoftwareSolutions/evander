@@ -83,6 +83,13 @@
           and (
             (evander_run_user_membership_changed | default(false))
             or (evander_managed_service_config_changed | default(false))
+            or (
+              item.key in ['admin_web', 'gateway', 'effect_orchestrator', 'trigger_orchestrator']
+              and evander_demo_video_package_install is defined
+              and not (evander_demo_video_package_install.skipped | default(false) | bool)
+              and not (evander_demo_video_package_install.failed | default(false) | bool)
+              and (evander_demo_video_package_install.rc | default(1)) == 0
+            )
           )
         else ('started' if evander_services.get(item.key, false) | bool else 'stopped')
       }}
