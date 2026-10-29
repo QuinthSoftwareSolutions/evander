@@ -45,6 +45,17 @@
       or (evander_services.teams_meeting_ingest | default(false) | bool)
     ) | bool
 
+- name: Install the optional Demo Video integration on selected hosts
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ evander_deploy_path }}/.venv/bin/python -e ./packages/demo-video-addon"
+  args:
+    chdir: "{{ evander_deploy_path }}"
+  environment: "{{ evander_python_install_env | default({}) }}"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  register: evander_demo_video_package_install
+  when: evander_demo_video_addon_enabled | default(false) | bool
+
 - name: Check for provisioned Browser Sessions services
   ansible.builtin.stat:
     path: "{{ item }}"

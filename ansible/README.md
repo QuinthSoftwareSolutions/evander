@@ -802,3 +802,20 @@ needed. To omit the integration, set it to `false` and disable both services in
 
 Service reconciliation skips uninstalled services that are disabled. Previously installed
 services are still stopped and disabled when deselected.
+
+### Optional Demo Video package
+
+Set `evander_demo_video_addon_enabled: true` in the inventory variables for hosts that use
+Demo Video narration or video workflows. The Python environment role installs
+`packages/demo-video-addon` into the deployment virtualenv before services start, using
+the configured deployment user and package index. The package is omitted by default;
+scope the flag to the control-plane group when workers do not need it.
+
+After a successful selected installation, service reconciliation restarts enabled Gateway,
+Admin Web, effect-orchestrator and trigger-orchestrator services to reload their add-on
+catalogs, including when the product revision and managed configuration are unchanged.
+Unrelated services retain their usual reconciliation behavior.
+
+If the provider loader uses an explicit enabled list, include `demo-video-addon` as well.
+See the [Demo Video rollout instructions](../packages/demo-video-addon/docs/operations.md#later-production-activation)
+for media-toolchain, credential and workflow configuration.

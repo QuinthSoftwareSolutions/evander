@@ -103,6 +103,9 @@ encoder revision required by that installed Playwright version.
 Perform this only after Jonathan's source review and the later rollout authorization:
 
 1. Deploy the separately packaged, human-reviewed add-on through the established CI/CD pipeline.
+   Set `evander_demo_video_addon_enabled: true` for selected control-plane hosts so the
+   [Python environment role](../../../ansible/README.md#optional-demo-video-package) installs it
+   before services start.
    Add its module and add-on ID to the existing loader configuration without dropping other entries;
    use supported configuration/readback surfaces and pipeline activation. Do not manually reinstall
    packages, switch the running checkout, copy source/assets into it, or restart services to activate code.
